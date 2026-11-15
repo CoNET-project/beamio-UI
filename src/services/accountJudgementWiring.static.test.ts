@@ -28,7 +28,7 @@ describe('the native state: walletState from passcodeStatus is the only basis ',
 describe('the gate: judged from the read and walletState; undetermined never onboards; locked shows the passcode page (GY)', () => {
 	it('the shell reads walletState first; a locked walletState shows the passcode page, judged again after the unlock', () => {
 		expect(gate).toContain('shellWalletState = await queryNativeWalletState()')
-		expect(gate).toContain("if (shellWalletState === 'locked') {")
+		expect(gate).toContain("if (shellWalletState === 'locked' && identity !== 'missing') {")
 	})
 	it('a build without walletState keeps the existing route (not_reported); a reported state is judged by judgeShell', () => {
 		expect(gate).toContain("if (shellWalletState === 'not_reported') {")
