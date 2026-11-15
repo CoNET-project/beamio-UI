@@ -9,8 +9,11 @@ import { reachNativeWallet, takeInitRefusal } from './nativeWallet'
 import { SHELL_G1_INIT_ENABLED } from './shellChatStart'
 import { queryNativeWalletStatus } from './nativeRecovery'
 import { initShellIdentityOnly } from './chatWorkerBridge'
+import { probeNativeCapabilities } from './nativeChatRouteRegister'
 
 jest.mock('./nativeRecovery', () => ({ queryNativeWalletStatus: jest.fn() }))
+// An init is sent only once the native hello declares identity.native-keys.v1; the G1 cases below assume it is declared.
+jest.mock('./nativeChatRouteRegister', () => ({ probeNativeCapabilities: jest.fn() }))
 // The node read goes to the chain; this test reads no network. The list is set per test.
 jest.mock('./coNETNodeRead', () => ({ readNodeListForInit: jest.fn(async () => []) }))
 import { readNodeListForInit } from './coNETNodeRead'
@@ -26,6 +29,7 @@ describe('G1 has one initiator: the entry path', () => {
 	beforeEach(() => {
 		// CRA resets mock implementations before each test, so the native answer is set here.
 		(initShellIdentityOnly as jest.Mock).mockResolvedValue({ ok: false, reason: 'capability_missing' })
+		;(probeNativeCapabilities as jest.Mock).mockResolvedValue({ answered: true, capabilities: ['identity.native-keys.v1'] })
 		;(readNodeListForInit as jest.Mock).mockResolvedValue([])
 		jest.clearAllMocks()
 		window.localStorage.clear()
