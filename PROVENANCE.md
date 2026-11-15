@@ -14,6 +14,8 @@
 - `package-lock.json` is kept as it was in the source revision. It resolves 1,455 packages through `registry.npmmirror.com`, a public npm mirror, and 312 packages through `registry.npmjs.org`. See the requirements section of `README.md`.
 - Images under `public/` and `src/`: 37 PNG, 2 JPEG, 6 WebP (Pexels photographs), and one ICO file. The project owner confirmed on 2026-11-15 that these images may be published with the source, with their original attribution retained. See the licence section of `README.md`.
 
+- Gate-state vectors, version 2: `src/services/__fixtures__/gate-state-vectors.v2.json` is a byte-for-byte copy of the version 2 vector file of the interface specification package (sha256 `34dcaf66d4334c8a02e3706fa64f44fed6279657b2774f2f69005efb952fdbaa`, 146 cases). The wire test `src/services/gateStateVectors.wire.test.ts` pins that hash and the case count. The test checks the command name and payload forwarded to the shell bridge, and the watcher and status-reader reactions; it does not check the init payload the page assembles, which the transport's own unit tests cover.
+
 ## Excluded (not in this repository)
 
 - Development tooling and build configuration not published with the source: `docs/`, `scripts/`, `temp/`, `.github/`, `.vscode/`.
@@ -21,7 +23,7 @@
 - `.yarn/install-state.gz`: a generated yarn install cache, not source. It is not needed to build the application.
 - `src/pages/Home/assets/allnodes.json`: data file not published with the source.
 - `vendor/conet-chat-sdk/dist/` (116 files): build output of the CoNET Chat SDK. The SDK's `prepare` script regenerates it during `npm ci`.
-- Test-only fixtures (11) under `src/services/__fixtures__/`, omitted together with their readers: `chat-route-register-vectors.v1.json`, `identity-native-keys-vectors.v1.json`, `gossip-sign-vectors.v1.json`, `native-open-vectors.v1.json`, `chat-route-decision-vectors.v1.json`, `native-recovery-vectors.v1.json`, `pgp-migration-vectors.v1.json`, `negative-tests-v1.json`, `identity-public-vectors.v1.json`, `gate-state-vectors.v1.json`, `no-key-reject-vectors.v1.json`. A synthetic replacement will be added in the follow-up.
+- Test-only fixtures (10) under `src/services/__fixtures__/`, omitted together with their readers: `chat-route-register-vectors.v1.json`, `identity-native-keys-vectors.v1.json`, `gossip-sign-vectors.v1.json`, `native-open-vectors.v1.json`, `chat-route-decision-vectors.v1.json`, `native-recovery-vectors.v1.json`, `pgp-migration-vectors.v1.json`, `negative-tests-v1.json`, `identity-public-vectors.v1.json`, `no-key-reject-vectors.v1.json`. A synthetic replacement will be added in the follow-up.
 - CoNET Chat SDK vector, schema and generator files (7): `vendor/conet-chat-sdk/spec/chat-daemon-vectors.v1.json`, `vendor/conet-chat-sdk/spec/sendkey-vectors.v1.json`, `vendor/conet-chat-sdk/spec/chat-daemon-protocol.v1.schema.json`, `vendor/conet-chat-sdk/scripts/genDaemonVectors.ts`, `vendor/conet-chat-sdk/scripts/genDaemonSchema.ts`, `vendor/conet-chat-sdk/scripts/testDaemonConformance.ts`, `vendor/conet-chat-sdk/scripts/testSendKeyVectors.ts`.
 - Test files (28), omitted because they read an omitted fixture or SDK vector file, or because their test data contains PGP armour header lines:
   - `src/services/chatRouteRegister.test.ts`
