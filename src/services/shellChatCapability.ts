@@ -12,6 +12,7 @@ import { isShellBuildKind } from '../utils/shellBuildFlag'
 import { isCashTreesNativeWebView } from '../utils/cashTreesNativeNfc'
 import { isShellContext } from './shellContext'
 import { probeNativeCapabilities } from './nativeChatRouteRegister'
+import { notifyIdentityEntryBlocked } from './identityEntryPrompt'
 import { decideShellState, type UiState } from './shellChatState'
 import { getShellChatUiState, setShellChatUiState } from './shellChatUiState'
 
@@ -24,7 +25,10 @@ export function shellChatBlocked(input: { shell: boolean; state: UiState }): boo
 
 /** Synchronous check for identity paths. Fails closed in a shell until the capability answer is recorded. */
 export function shellChatBlockedNow(): boolean {
-	return shellChatBlocked({ shell: isShellContext(), state: getShellChatUiState() })
+	const blocked = shellChatBlocked({ shell: isShellContext(), state: getShellChatUiState() })
+	// the one guard every identity entry calls: a blocked check after a tap raises the shared prompt
+	if (blocked) notifyIdentityEntryBlocked()
+	return blocked
 }
 
 /** Pure resolution from the build flag, the bridge and the hello capabilities. */

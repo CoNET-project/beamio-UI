@@ -34,6 +34,7 @@ import PasscodeLockScreen from '@/components/PasscodeLockScreen'
 import { VAULT_LOCKED_EVENT } from '@/services/walletVaultEvents'
 import SplashScreen from '@/components/SplashScreen'
 import { EmbeddedPwaUpdateBanner } from '@/components/EmbeddedPwaUpdateBanner'
+import IdentityEntryPrompt from '@/components/IdentityEntryPrompt'
 import BeamioOnboardingModal from '@/pages/Home/LoadingPage'
 import { isCashTreesNativeWebView } from '@/utils/cashTreesNativeNfc'
 import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
@@ -742,6 +743,7 @@ export default function AppEntryGate() {
 	return (
 		<div className="flex h-full min-h-[100dvh] w-full flex-col">
 			<EmbeddedPwaUpdateBanner />
+			<IdentityEntryPrompt />
 			{splashVisible && <SplashScreen />}
 			{nativeNoKey ? (
 				<NativeKeyImportRequired />
