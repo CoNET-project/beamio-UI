@@ -80,6 +80,8 @@
     "backup.key_only_no_mnemonic.body": "This account has no recovery phrase to back up, so this device can't be reset yet.",
     "chat.clear_backup_first.body": "Back up your recovery code before clearing.",
     "backup.readback_unavailable.body": "Unable to read, backup not confirmed.",
+    "backup.mnemonic_intro.body": "Write down this recovery phrase and keep it safe. It is the only way to reset or restore this account, and anyone who holds it may control your wallet.",
+    "backup.mnemonic_done.button": "I have written it down and saved it",
     "chat.import_retry.entry": "Retry import",
     "chat.retry_exhausted.body": "Chat couldn't connect several times, so automatic retries have stopped.",
     "chat.held.lost": "This held message was lost when the app restarted. Send it again.",
