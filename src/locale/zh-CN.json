@@ -116,6 +116,7 @@
     "native_not_ready_retry_title": "原生钱包暂未就绪",
     "native_not_ready_retry_body": "钱包暂时无法确认身份。数据未被删除。可重试，或稍后重启应用。",
     "native_not_ready_retry_action": "重试",
+    "native_not_ready_hint": "原生暂未就绪，可重试",
     "merchant_os_open_failed": "无法打开商户后台，请稍后重试。",
     "create_account_local_error": "当前无法在本设备上新建账号。",
     "create_account_mnemonic_missing": "本机账户缺少恢复短语，暂无法完成用户名创建，账户与资产不受影响。",

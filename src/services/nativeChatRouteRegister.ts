@@ -123,7 +123,8 @@ export async function probeNativeCapabilities(
 	const ok = p.type === 'ready' || (p.type === 'ack' && p.ok === true)
 	const result = (p.type === 'ready' ? p.result : p.result ?? p) as Loose | undefined
 	const caps = isPlainObject(result) && Array.isArray(result.capabilities) ? result.capabilities : []
-	return { answered: ok, capabilities: caps.filter((c): c is string => typeof c === 'string') }
+	// A refusal (ok false) declares nothing: its capability list is not read, so a refused hello counts as unanswered.
+	return { answered: ok, capabilities: ok ? caps.filter((c): c is string => typeof c === 'string') : [] }
 }
 
 /**

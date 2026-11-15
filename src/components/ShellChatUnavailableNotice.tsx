@@ -16,6 +16,7 @@ import PgpFirstIdentityNotice from './PgpFirstIdentityNotice'
 import { ShellIdentityClosedNotice, ShellRetryExhaustedNotice, useIdentityClosedState, useShellRetryExhausted } from './ShellIdentityClosedNotice'
 import { getShellPgpTemporary, getShellPgpTemporaryStopped, subscribeShellPgpTemporary } from '../services/shellPgpTemporary'
 import { requestShellRetryNow } from '../services/shellChatRetryCap'
+import { getNativeIdentityCapability, requestNativeIdentityRetry, subscribeNativeIdentityCapability } from '../services/nativeIdentityProbeRetry'
 
 function usePgpTemporary(): boolean {
 	return useSyncExternalStore(subscribeShellPgpTemporary, getShellPgpTemporary, getShellPgpTemporary)
@@ -45,11 +46,23 @@ export function ShellPgpTemporaryNotice() {
  * `onBack`is given where the notice replaces a full-screen page (Android): the user must be able to leave it.
  */
 export default function ShellChatUnavailableNotice({ onBack }: { onBack?: () => void } = {}) {
+	// While the native hello is unanswered the hint says the native side is not ready yet, with a manual retry.
+	const identity = useSyncExternalStore(subscribeNativeIdentityCapability, getNativeIdentityCapability, getNativeIdentityCapability)
+	const unanswered = identity === 'unanswered'
 	return (
 		<div role="status" className="flex min-h-0 flex-1 flex-col items-center justify-center bg-[#071126] px-6 text-center text-white">
 			<div className="w-full max-w-md rounded-3xl border border-white/15 bg-white/10 p-6 shadow-2xl backdrop-blur-xl">
 				<h1 className="text-xl font-semibold">{tu('shell_chat_unavailable_title')}</h1>
-				<p className="mt-3 text-sm leading-6 text-white/75">{tu('shell_chat_unavailable_body')}</p>
+				<p className="mt-3 text-sm leading-6 text-white/75">{tu(unanswered ? 'native_not_ready_hint' : 'shell_chat_unavailable_body')}</p>
+				{unanswered ? (
+					<button
+						type="button"
+						onClick={() => requestNativeIdentityRetry()}
+						className="mt-5 rounded-xl bg-[#2f80ed] px-4 py-2 text-sm font-medium text-white"
+					>
+						{tu('native_not_ready_retry_action')}
+					</button>
+				) : null}
 				{onBack ? (
 					<button
 						type="button"

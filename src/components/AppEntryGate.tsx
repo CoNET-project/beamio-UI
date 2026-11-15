@@ -23,6 +23,7 @@ import { ensureShellChatState } from '@/services/shellChatCapability'
 import { beamioTagCreateNeeded, idbSignalOf, judgeBrowser, judgeLocalOnly, judgeShellFromNative, type NativeWalletState, type NativeWalletStatus } from '../services/accountJudgement'
 import { queryNativeWalletState } from '../services/nativeRecovery'
 import { identityCapabilityFrom, NATIVE_RETRY_SCREEN, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'
+import { identityProbeDelayMs, onNativeIdentityRetryRequested, requestNativeIdentityRetry, setNativeIdentityCapability } from '@/services/nativeIdentityProbeRetry'
 import { probeNativeCapabilities } from '@/services/nativeChatRouteRegister'
 import { IDENTITY_CAPABILITY_MISSING } from '@/services/bridgeGuard'
 import { NATIVE_WALLET_READY_EVENT, notifyNativeWalletReady, publicWalletSeed, reachNativeWallet, rememberNativeEoa, takeInitRefusal } from '@/services/nativeWallet'
@@ -142,9 +143,31 @@ export default function AppEntryGate() {
 	const nativeRetryAttemptRef = useRef(0)
 	/** true while the native store is not ready (a migration): the splash deadline keeps the wait, never the unavailable screen. */
 	const nativeWaitRef = useRef(false)
+	/** true while the identity hello is unanswered: the probe cadence runs. */
+	const identityUnansweredRef = useRef(false)
+	/** automatic probes since the last start or manual retry: the next delay is 10 s, then 30 s, then 60 s. */
+	const identityProbesDoneRef = useRef(0)
+	const [identityRetryTick, setIdentityRetryTick] = useState(0)
 
 	/** whether the shell declared identity.native-keys.v1, read from its hello answer. */
 	const shellIdentityState = async () => identityCapabilityFrom(await probeNativeCapabilities())
+
+	/** One probe of identity.native-keys.v1. Declared enters the account again (G2); unanswered keeps the cadence going. */
+	const probeIdentityNow = async (): Promise<void> => {
+		const cap = await shellIdentityState()
+		setNativeIdentityCapability(cap)
+		identityUnansweredRef.current = cap === 'unanswered'
+		if (cap === 'unanswered') {
+			setIdentityRetryTick((t) => t + 1)
+			return
+		}
+		identityProbesDoneRef.current = 0
+		if (cap === 'declared') {
+			// the retry screen gives way once the capability is declared; the account is entered by the same init as a start.
+			setStorageUnavailable((prev) => (prev === NATIVE_RETRY_SCREEN ? '' : prev))
+			void initRef.current?.()
+		}
+	}
 
 	/** (B): the gate owns the global bar. Entering the app clears the loading flag, except in a shell: there the App's init clears it
 	 *  once the account is in its state, so the bar does not show before the account is loaded. A screen the gate shows keeps it set. */
@@ -331,6 +354,13 @@ export default function AppEntryGate() {
 		if (nativeShellRef.current) {
 			shellWalletState = await queryNativeWalletState()
 			identity = await shellIdentityState()
+			setNativeIdentityCapability(identity)
+			identityUnansweredRef.current = identity === 'unanswered'
+			if (identity === 'unanswered') {
+				// a start (launch, unlock or retry) starts the probe cadence again
+				identityProbesDoneRef.current = 0
+				setIdentityRetryTick((t) => t + 1)
+			}
 			//a locked native wallet shows the existing passcode page; the account is judged again after the unlock (init runs again).
 			// A missing identity capability shows no passcode page: the local home is judged below.
 			if (shellWalletState === 'locked' && identity === 'declared') {
@@ -399,6 +429,13 @@ export default function AppEntryGate() {
 			// a shell without identity.native-keys.v1 shows the unified unavailable state, not the native-wallet
 			// status screen, and never reaches the page-wallet path (not even for no_key).
 			if (shellEntryFor(identity, native) === 'chat_unavailable') {
+				// unanswered with a public address on this device: the local home opens on it; the identity entries show the retry hint.
+				const persisted = identity === 'unanswered' ? readPersistedShellEoa() : ''
+				if (persisted) {
+					publishNativePwaLog('info', '[AppEntryGate] identity.native-keys.v1 unanswered: local home on the public address')
+					applyLocalWallet(persisted)
+					return
+				}
 				publishNativePwaLog('info', '[AppEntryGate] identity.native-keys.v1 not confirmed: chat unavailable (no page key)')
 				showStorageUnavailable(identity === 'unanswered' ? NATIVE_RETRY_SCREEN : IDENTITY_CAPABILITY_MISSING)
 				return
@@ -536,15 +573,25 @@ export default function AppEntryGate() {
 	// the retry screen's button and its timer call the latest init
 	initRef.current = init
 
-	// a native that did not answer its capability probe is asked again after a short wait (the retry screen also has a button)
+	// the identity hello is unanswered: it is probed again after 10 s, then 30 s, then every 60 s. Stops once it answers.
 	useEffect(() => {
-		if (storageUnavailable !== NATIVE_RETRY_SCREEN) return
+		if (!identityUnansweredRef.current) return
 		const id = window.setTimeout(() => {
-			setStorageUnavailable('')
-			void initRef.current?.()
-		}, 10_000)
+			identityProbesDoneRef.current += 1
+			void probeIdentityNow()
+		}, identityProbeDelayMs(identityProbesDoneRef.current))
 		return () => window.clearTimeout(id)
-	}, [storageUnavailable])
+	}, [identityRetryTick])
+
+	// a manual retry (the identity hint or the retry screen) probes now and starts the cadence again
+	useEffect(
+		() =>
+			onNativeIdentityRetryRequested(() => {
+				identityProbesDoneRef.current = 0
+				void probeIdentityNow()
+			}),
+		[],
+	)
 
 	useEffect(() => {
 		const nativeShell = isCashTreesNativeWebView()
@@ -716,10 +763,7 @@ export default function AppEntryGate() {
 								<button
 									type="button"
 									className="mt-5 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-[#071126]"
-									onClick={() => {
-										setStorageUnavailable('')
-										void initRef.current?.()
-									}}
+									onClick={() => requestNativeIdentityRetry()}
 								>
 									{tu('native_not_ready_retry_action')}
 								</button>
