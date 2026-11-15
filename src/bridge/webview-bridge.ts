@@ -1,4 +1,4 @@
-import { bridgeSourceOf, isTrustedBridgeSource, SHELL_ORIGIN } from './bridgeSource';
+import { bridgeSourceOf, isTrustedShellSource } from './bridgeSource';
 type CallbackFunction = (response: any) => void;
 
 interface BridgeMessage {
@@ -77,7 +77,7 @@ export const Bridge = {
 
 // 监听 Electron 或 Native 的回传
 window.addEventListener('message', (e: MessageEvent) => {
-  	// Bridge source rule: main frame only, exact shell origin. Anything else is dropped.
-  	if (!isTrustedBridgeSource(bridgeSourceOf(e, window), SHELL_ORIGIN)) return;
+  	// Bridge source rule: main frame only, and an origin from the explicit shell allowlist. Anything else is dropped.
+  	if (!isTrustedShellSource(bridgeSourceOf(e, window))) return;
   	Bridge.receive(e.data);
 });
