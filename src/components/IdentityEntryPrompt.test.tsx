@@ -3,7 +3,7 @@
  */
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import IdentityEntryPrompt from './IdentityEntryPrompt'
-import { IDENTITY_ENTRY_PROMPT_EVENT, noteUserGesture } from '../services/identityEntryPrompt'
+import { IDENTITY_ENTRY_PROMPT_EVENT } from '../services/identityEntryPrompt'
 import { onNativeIdentityRetryRequested } from '../services/nativeIdentityProbeRetry'
 import { tu } from '../locale/beamioLocale'
 
@@ -14,7 +14,6 @@ describe('the shared identity prompt on screen', () => {
 		render(<IdentityEntryPrompt />)
 		expect(screen.queryByRole('dialog')).toBeNull()
 		act(() => {
-			noteUserGesture(Date.now())
 			window.dispatchEvent(new Event(IDENTITY_ENTRY_PROMPT_EVENT))
 		})
 		expect(await screen.findByRole('dialog')).toBeTruthy()

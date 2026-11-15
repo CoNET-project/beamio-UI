@@ -4,7 +4,7 @@
  */
 import { useEffect, useState } from 'react'
 import { tu } from '../locale/beamioLocale'
-import { IDENTITY_ENTRY_PROMPT_EVENT, installIdentityEntryGesture } from '../services/identityEntryPrompt'
+import { IDENTITY_ENTRY_PROMPT_EVENT } from '../services/identityEntryPrompt'
 import { requestNativeIdentityRetry } from '../services/nativeIdentityProbeRetry'
 import { shellChatBlockedNow } from '../services/shellChatCapability'
 
@@ -18,7 +18,7 @@ export default function IdentityEntryPrompt() {
 		// the prompt state is set on the next turn: a blocked check may run during another component's render
 		const onPrompt = () => window.setTimeout(() => setOpen(true), 0)
 		window.addEventListener(IDENTITY_ENTRY_PROMPT_EVENT, onPrompt)
-		const removeGesture = installIdentityEntryGesture()
+		// the check runs synchronously inside the press, so the prompt rule sees the press event
 		const onDisabledPress = (ev: Event) => {
 			const target = ev.target as Element | null
 			if (target && typeof target.closest === 'function' && target.closest(DISABLED_TARGET)) shellChatBlockedNow()
@@ -27,7 +27,6 @@ export default function IdentityEntryPrompt() {
 		return () => {
 			window.removeEventListener(IDENTITY_ENTRY_PROMPT_EVENT, onPrompt)
 			document.removeEventListener('pointerdown', onDisabledPress, true)
-			removeGesture()
 		}
 	}, [])
 
