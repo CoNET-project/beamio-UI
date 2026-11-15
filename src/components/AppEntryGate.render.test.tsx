@@ -151,12 +151,12 @@ describe('hello answered without identity.native-keys.v1: the decision does not 
 		expect(recovery.queryNativeWalletState).not.toHaveBeenCalled()
 	})
 
-	it('with no public address on this device, the unified state opens at once and the native status is not awaited', async () => {
+	it('with no public address on this device, the native status is still asked: a locked or unlocked account may enter on its address', async () => {
 		const recovery = jest.requireMock('@/services/nativeRecovery') as { queryNativeWalletState: jest.Mock }
-		recovery.queryNativeWalletState.mockImplementation(() => new Promise(() => undefined))
+		recovery.queryNativeWalletState.mockImplementation(async () => ({ status: 'unknown' }))
 		renderAt('/settings')
 		expect(await screen.findByText('SETTINGS-PAGE')).toBeTruthy()
-		expect(recovery.queryNativeWalletState).not.toHaveBeenCalled()
+		expect(recovery.queryNativeWalletState).toHaveBeenCalled()
 	})
 })
 

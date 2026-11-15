@@ -359,15 +359,14 @@ export default function AppEntryGate() {
 			setNativeIdentityCapability(identity)
 			identityUnansweredRef.current = identity === 'unanswered'
 			if (identity === 'missing') {
+				// a public address on this device: the local home at once, without waiting for the native status.
+				// Without one, the native status still decides (a locked or unlocked account enters on its address).
 				const persisted = readPersistedShellEoa()
 				if (missingIdentityNotReadyEntry(Boolean(persisted)) === 'local_home') {
 					publishNativePwaLog('info', '[AppEntryGate] identity.native-keys.v1 not declared (hello answered): local home on the public address')
 					applyLocalWallet(persisted)
 					return
 				}
-				publishNativePwaLog('info', '[AppEntryGate] identity.native-keys.v1 not declared (hello answered): unified state, no native wait')
-				showStorageUnavailable(IDENTITY_CAPABILITY_MISSING)
-				return
 			}
 			shellWalletState = await queryNativeWalletState()
 			if (identity === 'unanswered') {
@@ -407,6 +406,7 @@ export default function AppEntryGate() {
 					return
 				}
 				publishNativePwaLog('warn', '[AppEntryGate] local mode: no public EOA on this device; nothing is guessed')
+				// a missing capability returned above (unified state, never the import page); an unanswered hello keeps the retry screen, a declared shell the recovery entry.
 				// a missing capability never shows the recovery (import) page: the unified state; the capability-declared shell keeps the recovery entry.
 				if (identity === 'missing') showStorageUnavailable(IDENTITY_CAPABILITY_MISSING)
 				else if (identity === 'unanswered') showStorageUnavailable(NATIVE_RETRY_SCREEN)
