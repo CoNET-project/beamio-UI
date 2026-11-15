@@ -32,3 +32,19 @@ export function shellEntryFor(identity: IdentityCapabilityState, native: NativeW
 	if (native.status === 'locked' || native.status === 'unlocked') return 'enter_native'
 	return 'chat_unavailable'
 }
+
+/**
+ * An init is an identity payload (the G1 account key route). It is sent only when the shell declared identity.native-keys.v1
+ *; a missing capability sends nothing. An unanswered hello keeps the existing path.
+ */
+export function nativeInitAllowed(identity: IdentityCapabilityState): boolean {
+	return identity !== 'missing'
+}
+
+/**
+ * Capability missing and the native wallet not ready: the local home when this device holds a public address, else the unified
+ * unavailable state. Never the recovery or import page, and never a lock page.
+ */
+export function missingIdentityNotReadyEntry(eoaKnown: boolean): 'local_home' | 'unified_unavailable' {
+	return eoaKnown ? 'local_home' : 'unified_unavailable'
+}

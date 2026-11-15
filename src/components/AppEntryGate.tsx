@@ -22,7 +22,7 @@ import NativeKeyImportRequired from '@/components/NativeKeyImportRequired'
 import { ensureShellChatState } from '@/services/shellChatCapability'
 import { beamioTagCreateNeeded, idbSignalOf, judgeBrowser, judgeLocalOnly, judgeShellFromNative, type NativeWalletState, type NativeWalletStatus } from '../services/accountJudgement'
 import { queryNativeWalletState } from '../services/nativeRecovery'
-import { identityCapabilityFrom, shellEntryFor } from '@/services/shellEntryDecision'
+import { identityCapabilityFrom, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'
 import { probeNativeCapabilities } from '@/services/nativeChatRouteRegister'
 import { IDENTITY_CAPABILITY_MISSING } from '@/services/bridgeGuard'
 import { NATIVE_WALLET_READY_EVENT, notifyNativeWalletReady, publicWalletSeed, reachNativeWallet, rememberNativeEoa, takeInitRefusal } from '@/services/nativeWallet'
@@ -324,10 +324,14 @@ export default function AppEntryGate() {
 		// answers `not_reported`, and the existing route applies (unchanged 0.52.930 behaviour).
 		let shellWalletState: NativeWalletState | 'not_reported' | null = null
 		let shellWalletStatus: NativeWalletStatus = 'unknown'
+		// the identity capability is probed once per start; a missing capability sends no init and shows neither the lock nor the import page.
+		let identity: IdentityCapabilityState = 'unanswered'
 		if (nativeShellRef.current) {
 			shellWalletState = await queryNativeWalletState()
+			identity = await shellIdentityState()
 			//a locked native wallet shows the existing passcode page; the account is judged again after the unlock (init runs again).
-			if (shellWalletState === 'locked') {
+			// A missing identity capability shows no passcode page: the local home is judged below.
+			if (shellWalletState === 'locked' && identity !== 'missing') {
 				clearShellSessionSigner()
 				publishNativePwaLog('info', '[AppEntryGate] native walletState locked: passcode page, judged again after the unlock')
 				markDecided()
@@ -350,13 +354,21 @@ export default function AppEntryGate() {
 					showStorageUnavailable('native_recovery_needed')
 					return
 				}
-				const eoa = readPersistedShellEoa() || (await readWalletEoaAddress().then((r) => (r.kind === 'address' ? r.eoa : '')))
+				// the public address: this device's copy, or (with the capability) the native answer. Missing capability: this device's copy only.
+				const eoa = readPersistedShellEoa() || (identity === 'missing' ? '' : await readWalletEoaAddress().then((r) => (r.kind === 'address' ? r.eoa : '')))
 				if (eoa) {
 					applyLocalWallet(eoa)
 					return
 				}
-				publishNativePwaLog('warn', '[AppEntryGate] local mode: no public EOA on this device; the recovery entry (nothing is guessed)')
-				showStorageUnavailable('native_recovery_needed')
+				publishNativePwaLog('warn', '[AppEntryGate] local mode: no public EOA on this device; nothing is guessed')
+				// a missing capability never shows the recovery (import) page: the unified state; the capability-declared shell keeps the recovery entry.
+				if (identity === 'missing') showStorageUnavailable(IDENTITY_CAPABILITY_MISSING)
+				else showStorageUnavailable('native_recovery_needed')
+				return
+			}
+			// Capability missing: the account enters the local home on its public address; no native-account session is started.
+			if (identity === 'missing' && (native.status === 'locked' || native.status === 'unlocked') && 'eoa' in native) {
+				applyLocalWallet(native.eoa)
 				return
 			}
 			if ((native.status === 'locked' || native.status === 'unlocked') && 'eoa' in native) {
@@ -383,7 +395,7 @@ export default function AppEntryGate() {
 			}
 			// a shell without identity.native-keys.v1 shows the unified unavailable state, not the native-wallet
 			// status screen, and never reaches the page-wallet path (not even for no_key).
-			if (shellEntryFor(await shellIdentityState(), native) === 'chat_unavailable') {
+			if (shellEntryFor(identity, native) === 'chat_unavailable') {
 				publishNativePwaLog('info', '[AppEntryGate] identity.native-keys.v1 not declared: chat unavailable (no page key)')
 				showStorageUnavailable(IDENTITY_CAPABILITY_MISSING)
 				return

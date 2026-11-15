@@ -11,7 +11,7 @@ const gate = fs.readFileSync(path.join(__dirname, 'AppEntryGate.tsx'), 'utf8')
 
 describe('AppEntryGate and the missing identity capability', () => {
 	it('the capability state comes from the hello probe and the decision is the shared pure function', () => {
-		expect(gate).toContain("import { identityCapabilityFrom, shellEntryFor } from '@/services/shellEntryDecision'")
+		expect(gate).toContain("import { identityCapabilityFrom, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'")
 		expect(gate).toContain('identityCapabilityFrom(await probeNativeCapabilities())')
 	})
 
@@ -40,7 +40,7 @@ describe('AppEntryGate and the missing identity capability', () => {
 	})
 
 	it('the check runs before the no_key branch, so a shell without the capability never reaches the page-wallet path', () => {
-		const check = gate.indexOf('shellEntryFor(await shellIdentityState(), native)')
+		const check = gate.indexOf('shellEntryFor(identity, native)')
 		const noKey = gate.indexOf("[AppEntryGate] native wallet: no key")
 		expect(check).toBeGreaterThan(0)
 		expect(noKey).toBeGreaterThan(check)

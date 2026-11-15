@@ -5,6 +5,8 @@
 import { persistShellEoa, readPersistedShellEoa } from './shellIdentitySource'
 import { queryNativeWalletStatus, type NativeWalletState } from './nativeRecovery'
 import { forgetInitRefusal, initShellIdentityOnly } from './chatWorkerBridge'
+import { probeNativeCapabilities } from './nativeChatRouteRegister'
+import { identityCapabilityFrom, nativeInitAllowed } from './shellEntryDecision'
 import { readNodeListForInit } from './coNETNodeRead'
 import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
 
@@ -86,6 +88,13 @@ export async function reachNativeWallet(): Promise<NativeWalletState> {
 	let state = await queryNativeWalletStatus()
 	const hint = nativeEoaHint ?? persistedNativeEoa()
 	if (state.status === 'not_ready' && hint) {
+		// The identity-capability rule: an init carries identity. Without the declared capability nothing identity-bearing is sent.
+		const identity = identityCapabilityFrom(await probeNativeCapabilities())
+		if (!nativeInitAllowed(identity)) {
+			lastInitRefusal = null
+			publishNativePwaLog('info', '[nativeWallet] init not sent: identity.native-keys.v1 not declared (no identity payload)')
+			return state
+		}
 		// G1: the EOA only (bc5303be): no route key, no PGP key, no provisionIdentity. The native layer checks the EOA.
 		// The node list is read fresh; an empty or unavailable list is omitted from the init, never sent as [] .
 		const nodes = await readNodeListForInit()

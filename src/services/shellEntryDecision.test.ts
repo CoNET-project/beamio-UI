@@ -49,3 +49,18 @@ describe('shellEntryFor', () => {
 		expect(shellEntryFor('unanswered', NOT_READY)).toBe('native_status')
 	})
 })
+
+describe('the identity-missing init and entry decisions', () => {
+	const { nativeInitAllowed, missingIdentityNotReadyEntry } = jest.requireActual<typeof import('./shellEntryDecision')>('./shellEntryDecision')
+
+	it('an init is never allowed when the capability is missing; declared and unanswered keep the existing path', () => {
+		expect(nativeInitAllowed('missing')).toBe(false)
+		expect(nativeInitAllowed('declared')).toBe(true)
+		expect(nativeInitAllowed('unanswered')).toBe(true)
+	})
+
+	it('capability missing with a known public address: the local home; without one: the unified state, never the import page', () => {
+		expect(missingIdentityNotReadyEntry(true)).toBe('local_home')
+		expect(missingIdentityNotReadyEntry(false)).toBe('unified_unavailable')
+	})
+})
