@@ -46,6 +46,11 @@ import {
 } from '@/utils/beamioProfileLocaleCurrency'
 import {ethers, FetchRequest, keccak256, Network, toUtf8Bytes} from 'ethers' 
 import usdc_abi from './ABI/usdc_abi.json'
+import { encodeInitRaw, parseInitRaw } from './initRecordCodec'
+import { runAuthorizationSign } from './authorizationSign'
+import { readWalletEoaAddress } from './walletEoaAddress'
+import { shellRecordReadState } from './pageRecordDecision'
+import { injectShellSessionKey } from './shellSessionSigner'
 import {
 	customJsonStringify,
 	initProfileTokens,
@@ -492,6 +497,8 @@ export const nfcTopup = async (params: { uid: string; amount: string; currency?:
 
 /** 以 UID 支付：服务端使用 NFC 卡私钥向 payee 转 USDC */
 export const payByNfcUid = async (params: { uid: string; amountUsdc6: string; payee: string }): Promise<{ success: boolean; USDC_tx?: string; error?: string }> => {
+	// Shell: NFC payment is not available in this app (POS-owned, suspended). The request is refused before anything is sent.
+	if (isShellContext()) return { success: false, error: 'NFC payment is not available in this app.' }
 	const res = await fetch(`${beamioApi}/api/payByNfcUid`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
@@ -518,16 +525,18 @@ export async function AuthorizationSign(
 	/** Prefer explicit key (e.g. resolved from mnemonic) over CoNET_Data alone. */
 	privateKeyArmorOverride?: string,
 ): Promise<string> {
-	const privateKey =
-		(typeof privateKeyArmorOverride === 'string' && privateKeyArmorOverride.trim()) ||
-		CoNET_Data?.profiles?.[0]?.privateKeyArmor ||
-		''
+	return runAuthorizationSign({
+		amount,
+		to,
+		explicitKey: typeof privateKeyArmorOverride === 'string' ? privateKeyArmorOverride : '',
+		isShell: isShellContext(),
+		profileKey: CoNET_Data?.profiles?.[0]?.privateKeyArmor ?? '',
+		readBlob: async () => (await checkStorage())?.walletCredentialBlob ?? null,
+		signWithKey: (privateKey, value, payee) => signAuthorizationPayload(new ethers.Wallet(privateKey), value, payee),
+	})
+}
 
-	if (!privateKey) {
-		return ''
-	}
-
-	const wallet = new ethers.Wallet(privateKey)
+async function signAuthorizationPayload(wallet: ethers.Wallet, amount: bigint, to: string): Promise<string> {
 	const from = await wallet.getAddress()
 
 	// 2) 金额 & 时间窗（现在 - 5min 到 1h 后，与注释一致，避免 facilitator 因过期拒绝）
@@ -1324,12 +1333,12 @@ export const createOrGetWallet = async (secretPhrase: string | null, initAccount
 export type CheckStorageResult =
   | { status: 'loaded'; data: encrypt_keys_object }
   | { status: 'empty' }
-  | { status: 'unavailable'; reason: 'timeout' | 'indexeddb' | 'invalid_document' | 'vault_unreadable' | 'native_record' | 'native_recovery_needed' | 'native_retry' }
+  | { status: 'unavailable'; reason: 'timeout' | 'indexeddb' | 'invalid_document' | 'vault_unreadable' | 'native_record' | 'native_recovery_needed' | 'native_retry' | 'eoa_mismatch' | 'app_update_required' }
   /** Encrypted with a passcode and not unlocked yet. Never treated as empty: the gate asks for the passcode. */
   | { status: 'locked' }
 
 // ---------------------------------------------------------------------------
-// Wallet storage (–25.17; logic in passcode/walletVault.ts). The init document keeps the blob with each
+// Wallet storage (logic in passcode/walletVault.ts). The init document keeps the blob with each
 // secret replaced in place by a wrap record. `meta` holds the failure counter and the marker. `vault` is the
 // 127eb973 document, read only to convert data written by that build.
 // ---------------------------------------------------------------------------
@@ -1386,16 +1395,6 @@ const putDocDurable = async (docId: string, title: string): Promise<void> => {
   throw new Error(`[putDocDurable] conflict retries exhausted for ${docId}`)
 }
 
-const parseInitRaw = (b64: string): Loose | null => {
-  try {
-    const data = JSON.parse(Buffer.from(b64, 'base64').toString())
-    return data && typeof data === 'object' ? data : null
-  } catch {
-    return null
-  }
-}
-
-const encodeInitRaw = (data: Loose): string => Buffer.from(customJsonStringify(data)).toString('base64')
 
 /**
  * Plan N: the wallet record. The browser reads and writes the PouchDB `init`document. The shell reads and writes
@@ -1604,6 +1603,15 @@ const readStorageWithStatus = async (allowMigration = true, options: { probe?: b
         const msg = err instanceof Error ? err.message : String(err)
         // the store is not ready yet (migrating, import not done, legacy store unreadable): a wait and a retry, never onboarding.
         return { status: 'unavailable', reason: shellStorageErrorReason(msg) }
+      }
+      // the record is returned only when its account is the native account and it holds a credential. A refusal or a timeout
+      // is a retry; a different account is never used.
+      if (rec) {
+        const native = await readWalletEoaAddress().catch(() => ({ kind: 'refused' as const, code: 'error' }))
+        const state = shellRecordReadState(rec, native)
+        if (state.kind === 'unavailable') return { status: 'unavailable', reason: state.reason }
+        // the page-session key of this account, when one is held, is on the in-memory copy only (the write strips it)
+        rec = injectShellSessionKey(rec)
       }
       if (!rec) return { status: 'empty' }
       data = rec as unknown as encrypt_keys_object

@@ -1,6 +1,5 @@
 /**
  * Institutional AA V2 — EIP-712 typed data + Factory relay API.
- * See: .cursor/rules/beamio-aa-account-dev.mdc
  */
 import { ethers } from 'ethers'
 import { BEAMIO_AA_FACTORY_V2, CONET_MAINNET_CHAIN_ID, CONET_USDC, CONET_BUINT, CONET_GB_ERC20 } from '@/config/chainAddresses'

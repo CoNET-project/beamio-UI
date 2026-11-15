@@ -850,11 +850,13 @@ function AppShell() {
 				publishNativePwaLog('info', '[AppShell] init skip: shell has no account read yet; the entry gate decides and init runs again')
 				setShellInitPending(true)
 				// this run's read can end empty while the entry is already on screen and no wake-up follows. A few bounded reads, then the gate decides.
-				if (shellEmptyReadRetryRef.current < SHELL_EMPTY_READ_RETRY_DELAYS_MS.length) {
-					const delay = SHELL_EMPTY_READ_RETRY_DELAYS_MS[shellEmptyReadRetryRef.current]
-					shellEmptyReadRetryRef.current += 1
-					window.setTimeout(() => { void init('empty-read-retry') }, delay)
-				}
+				// The precondition (an account read) is retried until it holds: after the first bounded reads, the same read repeats at a steady
+				// interval. The start is never skipped for good .
+				const delay = shellEmptyReadRetryRef.current < SHELL_EMPTY_READ_RETRY_DELAYS_MS.length
+					? SHELL_EMPTY_READ_RETRY_DELAYS_MS[shellEmptyReadRetryRef.current]
+					: SHELL_EMPTY_READ_STEADY_RETRY_MS
+				shellEmptyReadRetryRef.current += 1
+				window.setTimeout(() => { void init('empty-read-retry') }, delay)
 				return
 			}
 			publishNativePwaLog('info', '[AppShell] init skip: no local wallet storage')
@@ -3556,6 +3558,8 @@ function AppShell() {
 
 /** delays of the bounded re-reads of an empty shell read (1 s, 2 s, 4 s). */
 const SHELL_EMPTY_READ_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000]
+/** The empty account read repeats at this interval after the first bounded reads, until an account is read . */
+const SHELL_EMPTY_READ_STEADY_RETRY_MS = 10_000
 
 export default function App() {
   return <AppShell />

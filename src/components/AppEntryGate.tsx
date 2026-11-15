@@ -5,7 +5,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { useDaemonContext } from '@/providers/DaemonProvider'
-import { checkStorageWithTransientRetry, sendPendingProfileSync } from '@/services/beamio'
+import { checkStorageWithStatusWithTimeout, checkStorageWithTransientRetry, sendPendingProfileSync, storeSystemDataAndWait } from '@/services/beamio'
+import { clearShellSessionSigner, holdShellSessionFromPhrase, loadShellSessionSigner, recordCarriesAccountKey, refreshShellSessionInMemory, shellSessionEoa } from '@/services/shellSessionSigner'
+import { pageCopyAction, readWalletCredential, type PageCopyAction } from '@/services/walletCredential'
+import { decidePageRecord, type PageRecordRead } from '@/services/pageRecordDecision'
+import { onAppUpdateRequired } from '@/services/appUpdatePrompt'
 import { storageUnavailableRoute } from '@/services/storageRoute'
 import { registerPendingSender } from '@/services/pendingServerSync'
 import { resumeDeferredWrite } from '@/services/shellRecordStore'
@@ -16,12 +20,14 @@ import { NATIVE_FLOW_PENDING_EVENT } from '@/services/nativeFlowPending'
 import { startPgpMigrationOnce } from '@/services/pgpMigrationRunner'
 import NativeKeyImportRequired from '@/components/NativeKeyImportRequired'
 import { ensureShellChatState } from '@/services/shellChatCapability'
-import { beamioTagCreateNeeded, idbSignalOf, judgeBrowser, judgeShellFromNative, type NativeWalletState, type NativeWalletStatus } from '../services/accountJudgement'
+import { beamioTagCreateNeeded, idbSignalOf, judgeBrowser, judgeLocalOnly, judgeShellFromNative, type NativeWalletState, type NativeWalletStatus } from '../services/accountJudgement'
 import { queryNativeWalletState } from '../services/nativeRecovery'
 import { identityCapabilityFrom, shellEntryFor } from '@/services/shellEntryDecision'
 import { probeNativeCapabilities } from '@/services/nativeChatRouteRegister'
 import { IDENTITY_CAPABILITY_MISSING } from '@/services/bridgeGuard'
-import { NATIVE_WALLET_READY_EVENT, notifyNativeWalletReady, publicWalletSeed, reachNativeWallet, rememberNativeEoa } from '@/services/nativeWallet'
+import { NATIVE_WALLET_READY_EVENT, notifyNativeWalletReady, publicWalletSeed, reachNativeWallet, rememberNativeEoa, takeInitRefusal } from '@/services/nativeWallet'
+import { readPersistedShellEoa } from '@/services/shellIdentitySource'
+import { readWalletEoaAddress } from '@/services/walletEoaAddress'
 import { setCoNET_Data } from '@/utils/globals'
 import PasscodeLockScreen from '@/components/PasscodeLockScreen'
 import { VAULT_LOCKED_EVENT } from '@/services/walletVaultEvents'
@@ -127,6 +133,8 @@ export default function AppEntryGate() {
 	}
 	// 任一终态（进入 App / onboarding / recover）已确定；用于 Splash 兜底时安全降级。
 	const decisionMadeRef = useRef(false)
+	/** the local home is shown on a G1 wallet; the native wallet is read again until G2. */
+	const localModeRef = useRef(false)
 	const nativeShellRef = useRef(false)
 	/** attempts of the native store's not-ready retry (a backoff that is never given up; reset when the store reads). */
 	const nativeRetryAttemptRef = useRef(0)
@@ -202,6 +210,7 @@ export default function AppEntryGate() {
 
 	// Shell: the native wallet decides. A native wallet enters the app on its public address; the page storage is not read.
 	const applyNativeWallet = (eoa: string) => {
+		localModeRef.current = false
 		const seed = publicWalletSeed(eoa)
 		setCoNET_Data(seed)
 		setBootCoNETData(seed)
@@ -213,6 +222,103 @@ export default function AppEntryGate() {
 		notifyShellEntry('native-wallet')
 	}
 
+	/**
+	 * the local home on a G1 wallet (the native record exists and is readable; the EOA is for display only). Chat and the
+	 * network features stay unavailable (waiting for init) until the wallet reaches G2.
+	 */
+	const applyLocalWallet = (eoa: string) => {
+		localModeRef.current = true
+		const seed = publicWalletSeed(eoa)
+		setCoNET_Data(seed)
+		setBootCoNETData(seed)
+		setRequireWalletRecover(false)
+		setShowBeamioOnboardingModal(false)
+		publishNativePwaLog('info', '[AppEntryGate] native wallet not initialised (g1_uninitialized): local home; network features wait for init')
+		markWalletEstablished()
+		enterApp()
+		notifyShellEntry('native-wallet-local')
+	}
+
+	/**
+	 * Native G2 and no page wallet record: the page asks walletCredential once and keeps the sealed blob in its IndexedDB
+	 * record. The phrase is not stored and not used: it is dropped when the answer is read. Nothing is stored for another account.
+	 */
+	const readPageRecordForCopy = () => checkStorageWithTransientRetry()
+	const restorePageCopy = async (eoa: string): Promise<PageCopyAction> => {
+		try {
+			const stored = await readPageRecordForCopy()
+			if (stored.status === 'unavailable' && stored.reason === 'eoa_mismatch') return 'eoa_mismatch'
+			const read: PageRecordRead = stored.status === 'loaded' ? { status: 'loaded', data: stored.data } : stored.status === 'empty' ? { status: 'empty' } : { status: 'other' }
+			// the native account is read here (walletEoaAddress); a refusal, a timeout or an unavailable store is a retry.
+			const decision = decidePageRecord(read, await readWalletEoaAddress(), eoa)
+			if (decision === 'update_required') return 'update_required'
+			if (decision === 'record_unavailable') return 'record_unavailable'
+			if (decision === 'eoa_mismatch') {
+				publishNativePwaLog('warn', '[AppEntryGate] page record is for another account (eoa_mismatch): not used, nothing stored')
+				return 'eoa_mismatch'
+			}
+			if (decision === 'retry') {
+				publishNativePwaLog('warn', '[AppEntryGate] page record not decided (native account or store unavailable): retry, nothing used or stored')
+				return 'retry'
+			}
+			if (decision === 'use') return 'none'
+			const answer = await readWalletCredential()
+			const action = pageCopyAction({ pageRecordPresent: false, eoa, answer })
+			if (action === 'store_blob' && answer.kind === 'credential' && answer.blob) {
+				// the page-session key comes from the phrase unsealed for this copy; a mismatch stores nothing.
+				const held = holdShellSessionFromPhrase(answer.mnemonic, eoa)
+				if (held.kind !== 'ok') {
+					publishNativePwaLog('warn', `[AppEntryGate] page copy: the unsealed key is not the native account (${held.code}); nothing stored`)
+					return held.code === 'eoa_mismatch' ? 'eoa_mismatch' : 'retry'
+				}
+				const seed = publicWalletSeed(eoa)
+				setCoNET_Data({ ...seed, walletCredentialBlob: answer.blob })
+				refreshShellSessionInMemory()
+				await storeSystemDataAndWait()
+			}
+			publishNativePwaLog('info', `[AppEntryGate] page copy from the native wallet: ${action}`)
+			return action
+		} catch {
+			// a failed read or write keeps the native wallet as it is: nothing is stored, and the next start asks again.
+			publishNativePwaLog('warn', '[AppEntryGate] page copy from the native wallet: retry (read or write failed)')
+			return 'retry'
+		}
+	}
+
+	/**
+	 * Before the native wallet is entered. The page record is read with a bounded wait. A record for another account is not
+	 * entered. A record with a sealed credential gives the page-session key: the credential is unsealed, and the derived address
+	 * must equal the native account. A recoverable native state is a retry, not an entry. A slow read enters, and the background
+	 * copy decides again.
+	 */
+	const prepareShellEntry = async (eoa: string): Promise<'enter' | 'eoa_mismatch' | 'update_required' | 'unseal_failed' | 'retry' | 'record_unavailable'> => {
+		if (shellSessionEoa() && shellSessionEoa() !== eoa.trim().toLowerCase()) clearShellSessionSigner()
+		const pre = await checkStorageWithStatusWithTimeout(2_000)
+		if (pre.status === 'unavailable' && pre.reason === 'eoa_mismatch') return 'eoa_mismatch'
+		if (pre.status === 'unavailable' && pre.reason === 'native_retry') return 'retry'
+		if (pre.status === 'unavailable' && pre.reason === 'app_update_required') return 'update_required'
+		// a failed page-record read does not hold the native entry: the background copy decides (and shows the record-unavailable state).
+		if (pre.status !== 'loaded') return 'enter'
+		if (recordCarriesAccountKey(pre.data)) return 'enter'
+		const blob = pre.data.walletCredentialBlob
+		if (!blob) return 'enter'
+		const held = await loadShellSessionSigner(blob, eoa)
+		if (held.kind === 'ok') return 'enter'
+		if (held.code === 'eoa_mismatch') return 'eoa_mismatch'
+		if (held.code === 'not_trusted') return 'update_required'
+		// the native layer is locked or not ready: the same retry as a native store that is not ready (no onboarding, nothing used).
+		if (['locked', 'unavailable', 'not_ready', 'timeout', 'keychain_read_failed'].includes(held.code)) return 'retry'
+		return 'unseal_failed'
+	}
+
+	const blockShellEntry = (outcome: 'eoa_mismatch' | 'update_required' | 'unseal_failed' | 'retry' | 'record_unavailable') => {
+		if (outcome === 'eoa_mismatch') showStorageUnavailable('eoa_mismatch')
+		else if (outcome === 'record_unavailable') showStorageUnavailable('native_record')
+		else if (outcome === 'update_required') showStorageUnavailable('app_update_required')
+		else if (outcome === 'unseal_failed') showStorageUnavailable('unseal_failed')
+		else handleStorageUnavailable('native_retry')
+	}
+
 	const init = async () => {
 		// /.2: the shell judges the account from `walletState`(the only basis). A native build that does not report it yet
 		// answers `not_reported`, and the existing route applies (unchanged 0.52.930 behaviour).
@@ -222,6 +328,7 @@ export default function AppEntryGate() {
 			shellWalletState = await queryNativeWalletState()
 			//a locked native wallet shows the existing passcode page; the account is judged again after the unlock (init runs again).
 			if (shellWalletState === 'locked') {
+				clearShellSessionSigner()
 				publishNativePwaLog('info', '[AppEntryGate] native walletState locked: passcode page, judged again after the unlock')
 				markDecided()
 				setSplashVisible(false)
@@ -231,10 +338,43 @@ export default function AppEntryGate() {
 			}
 			const native = await reachNativeWallet()
 			shellWalletStatus = native.status
+			// a G1 wallet the native layer proves readable enters the local home. The EOA comes from this device, or from
+			// walletEoaAddress; with neither, nothing is guessed and the recovery entry is shown.
+			if (
+				native.status === 'not_ready' &&
+				judgeLocalOnly({ walletStatus: 'not_ready', notReadyReason: native.notReadyReason, walletState: shellWalletState ?? 'not_reported' }) === 'enter_local'
+			) {
+				// (c) an address mismatch on the init ends the local home: the recovery entry, nothing is signed or used .
+				if (takeInitRefusal() === 'address_mismatch') {
+					publishNativePwaLog('warn', '[AppEntryGate] local mode: init refused with address_mismatch; the recovery entry')
+					showStorageUnavailable('native_recovery_needed')
+					return
+				}
+				const eoa = readPersistedShellEoa() || (await readWalletEoaAddress().then((r) => (r.kind === 'address' ? r.eoa : '')))
+				if (eoa) {
+					applyLocalWallet(eoa)
+					return
+				}
+				publishNativePwaLog('warn', '[AppEntryGate] local mode: no public EOA on this device; the recovery entry (nothing is guessed)')
+				showStorageUnavailable('native_recovery_needed')
+				return
+			}
 			if ((native.status === 'locked' || native.status === 'unlocked') && 'eoa' in native) {
 				// Enters on the native account only when walletState does not contradict it (a present store, or a build without walletState).
 				if (shellWalletState === 'not_reported' || shellWalletState === 'present') {
+					const prepared = await prepareShellEntry(native.eoa)
+					if (prepared !== 'enter') {
+						blockShellEntry(prepared)
+						return
+					}
 					applyNativeWallet(native.eoa)
+					// the page copy is restored in the background: a held storage read never delays the native entry. Only a refusal of the
+					// build (not_trusted) shows the update prompt.
+					void restorePageCopy(native.eoa).then((action) => {
+						if (action === 'update_required') showStorageUnavailable('app_update_required')
+						if (action === 'eoa_mismatch') showStorageUnavailable('eoa_mismatch')
+						if (action === 'record_unavailable') showStorageUnavailable('native_record')
+					})
 					return
 				}
 				publishNativePwaLog('warn', `[AppEntryGate] native walletState ${shellWalletState}: not confirmed, retry`)
@@ -427,7 +567,21 @@ export default function AppEntryGate() {
 		// A native recovery just succeeded (no reload): re-read the native wallet and enter the app.
 		const onNativeWalletReady = () => {
 			void reachNativeWallet().then(async (native) => {
-				if ((native.status === 'locked' || native.status === 'unlocked') && 'eoa' in native) applyNativeWallet(native.eoa)
+				// the local home stays while the wallet is not initialised; the retry below reads it again.
+				if (localModeRef.current && native.status !== 'locked' && native.status !== 'unlocked') return
+				if ((native.status === 'locked' || native.status === 'unlocked') && 'eoa' in native) {
+					const prepared = await prepareShellEntry(native.eoa)
+					if (prepared !== 'enter') {
+						blockShellEntry(prepared)
+						return
+					}
+					applyNativeWallet(native.eoa)
+					void restorePageCopy(native.eoa).then((action) => {
+						if (action === 'update_required') showStorageUnavailable('app_update_required')
+						if (action === 'eoa_mismatch') showStorageUnavailable('eoa_mismatch')
+						if (action === 'record_unavailable') showStorageUnavailable('native_record')
+					})
+				}
 				else if (shellEntryFor(await shellIdentityState(), native) === 'chat_unavailable') showStorageUnavailable(IDENTITY_CAPABILITY_MISSING)
 				else if (native.status === 'not_ready' || native.status === 'unknown') showStorageUnavailable(`native_wallet_${native.status}`)
 			})
@@ -436,6 +590,7 @@ export default function AppEntryGate() {
 
 		// Sign-out with a passcode set: drop the app content and ask for the passcode again.
 		const onVaultLocked = () => {
+			clearShellSessionSigner()
 			markDecided()
 			setSplashVisible(false)
 			setGateDecided(false)
@@ -469,6 +624,29 @@ export default function AppEntryGate() {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [])
 
+	// A refused build on a background shell write shows the update screen, the same screen a refused read shows.
+	useEffect(() => onAppUpdateRequired(() => showStorageUnavailable('app_update_required')), [])
+
+	// while the wallet is not initialised, the native state is read again every 30 s, so the init retries once
+	// the node list is reachable . Reaching G2 hands the app the native wallet.
+	useEffect(() => {
+		const id = window.setInterval(() => {
+			if (!localModeRef.current) return
+			void reachNativeWallet().then((native) => {
+				if (native.status === 'locked' || native.status === 'unlocked') {
+					notifyNativeWalletReady('')
+					return
+				}
+				// an address mismatch ends the local home for the recovery entry .
+				if (takeInitRefusal() === 'address_mismatch') {
+					localModeRef.current = false
+					setStorageUnavailable('native_recovery_needed')
+				}
+			})
+		}, 30_000)
+		return () => window.clearInterval(id)
+	}, [])
+
 	// Shell capability state (spec, option A): asked once from the shell's hello answer. A no_key held back before
 	// the answer is decided again now (G1): the import route shows only for a shell that declared native keys.
 	useEffect(() => {
@@ -498,7 +676,27 @@ export default function AppEntryGate() {
 			) : storageUnavailable ? (
 				<div className="flex min-h-0 flex-1 flex-col items-center justify-center bg-[#071126] px-6 text-center text-white">
 					<div className="w-full max-w-md rounded-3xl border border-white/15 bg-white/10 p-6 shadow-2xl backdrop-blur-xl">
-						{storageUnavailable.startsWith('native_wallet_') ? (
+						{storageUnavailable === 'app_update_required' ? (
+							<>
+								<h1 className="text-xl font-semibold">{tu('app_update_required_title')}</h1>
+								<p className="mt-3 text-sm leading-6 text-white/75">{tu('app_update_required_body')}</p>
+							</>
+						) : storageUnavailable === 'unseal_failed' ? (
+							<>
+								<h1 className="text-xl font-semibold">The wallet key could not be unlocked on this device</h1>
+								<p className="mt-3 text-sm leading-6 text-white/75">
+									The native wallet did not confirm the key for this account. Nothing was used or created.
+								</p>
+							</>
+						) : storageUnavailable === 'eoa_mismatch' ? (
+							<>
+								<h1 className="text-xl font-semibold">The wallet record on this device is for another account</h1>
+								<p className="mt-3 text-sm leading-6 text-white/75">
+									The wallet record stored on this device does not match the account in the native wallet.
+									Nothing was used or deleted, and no new wallet was created.
+								</p>
+							</>
+						) : storageUnavailable.startsWith('native_wallet_') ? (
 							<>
 								<h1 className="text-xl font-semibold">Native wallet is not ready</h1>
 								<p className="mt-3 text-sm leading-6 text-white/75">

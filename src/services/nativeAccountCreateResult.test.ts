@@ -77,3 +77,10 @@ describe('.3: already_bound and lookup_unavailable are result codes without eoa'
 		expect(acceptNativeCreateResult({ type: 'nativeAccountCreateResult', reqId: OPENED, code: 'lookup_unavailable', eoa: EOA }, OPENED)).toBeNull()
 	})
 })
+
+describe('the create result never carries a private key', () => {
+	it('an ok answer with a privateKeyArmor field is refused: the page reads no key from the create result', () => {
+		expect(acceptNativeCreateResult({ type: 'nativeAccountCreateResult', reqId: OPENED, code: 'ok', eoa: EOA, privateKeyArmor: '0x' + '1'.repeat(64) }, OPENED)).toBeNull()
+	})
+})
+

@@ -328,7 +328,11 @@ export default function PayMeLink ({close, code, address}: Props) {
 	const signRequest = async (messageDataRe: any) => {
 		setProcessing(true)
 		setSendError('') // 重试时清除旧错误，确保重新获取 ethers 签字
-		const paymentHeader = await AuthorizationSign(messageDataRe.maxAmountRequired, messageDataRe.payTo)
+		const paymentHeader = await AuthorizationSign(messageDataRe.maxAmountRequired, messageDataRe.payTo).catch(() => '')
+		if (!paymentHeader) {
+			setProcessing(false)
+			return setSendError(tu('sign_failed'))
+		}
 		const newInit = {
 			method: 'GET',
 			headers: {

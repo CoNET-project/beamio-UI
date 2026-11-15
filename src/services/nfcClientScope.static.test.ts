@@ -94,3 +94,30 @@ describe('renderAction: the simulated bind UI is removed ( residue)', () => {
 		expect(ra).not.toMatch(/Sync NFC Card|Option 2: Got a Card|bind_physical_card|Card Linked/)
 	})
 })
+
+describe('payByNfcUid is refused in a shell before any request, and is unchanged in the browser', () => {
+	const src = read('src/services/beamio.ts')
+	const at = src.indexOf('export const payByNfcUid = async')
+	const end = src.indexOf('export const toBase64', at)
+	const body = src.slice(at, end)
+	const guard = body.indexOf('if (isShellContext()) return')
+	const fetchAt = body.indexOf('fetch(')
+
+	it('the shell guard returns the accurate error before the request is made', () => {
+		expect(at).toBeGreaterThan(0)
+		expect(guard).toBeGreaterThan(-1)
+		expect(fetchAt).toBeGreaterThan(guard)
+		expect(body.slice(guard, fetchAt)).toContain("'NFC payment is not available in this app.'")
+	})
+
+	it('the shell refusal touches no key: nothing before the guard reads a profile or a private key', () => {
+		expect(body.slice(0, guard)).not.toMatch(/privateKey|CoNET_Data|profiles|ethers\.Wallet/)
+	})
+
+	it('the browser path is unchanged: the same endpoint, the same request body, and the same result shape', () => {
+		expect(body).toContain('fetch(`${beamioApi}/api/payByNfcUid`, {')
+		expect(body).toContain('body: JSON.stringify(params),')
+		expect(body).toMatch(/return \{\s*success: res\.ok && data\.success !== false,/)
+	})
+})
+

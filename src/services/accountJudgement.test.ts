@@ -150,3 +150,27 @@ describe('the account creation page never replaces a confirmed local key (overwr
 		expect(recoverSourceOf({ status: 'loaded', keyPresent: false })).toBe('refuse')
 	})
 })
+
+describe('shell: an IndexedDB key never opens the app over a native state that is not present', () => {
+	it('native not ready with a key in IndexedDB: the gate keeps, nothing enters', () => {
+		expect(judgeShell('key', 'not_ready')).toEqual(UND)
+	})
+	it('native unavailable with a key in IndexedDB: the gate keeps', () => {
+		expect(judgeShell('key', 'unavailable')).toEqual(UND)
+	})
+	it('native corrupt with a key in IndexedDB: the gate keeps (error page), no entry', () => {
+		expect(judgeShell('key', 'corrupt')).toEqual(UND)
+	})
+	it('native unknown: the gate keeps whatever IndexedDB holds', () => {
+		expect(judgeShell('key', 'unknown')).toEqual(UND)
+	})
+	it('a locked page store shows the passcode page before a native present record enters', () => {
+		expect(judgeShell('locked', 'present')).toEqual(UNLOCK)
+	})
+	it('native absent with a key in IndexedDB: the known inconsistency enters as today', () => {
+		expect(judgeShell('key', 'absent')).toEqual(HAS)
+	})
+	it('native absent and IndexedDB absent: onboarding (the only confirmed no-account case)', () => {
+		expect(judgeShell('absent', 'absent')).toEqual(NO)
+	})
+})

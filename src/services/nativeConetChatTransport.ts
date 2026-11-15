@@ -594,12 +594,15 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 		}
 		// decide only after the hello answer has arrived, or after its 5 s limit with no answer (null).
 		await hello
-		// an unavailable node list is an explicit failure. The init is never sent with an empty list.
-		if (!readNodes || !readNodes.length) {
+		// The init is never sent with an empty list . A full init needs a node list and fails without one. An identity-only
+		// init (G1) omits the `nodes` key when no list is available: the native layer keeps the nodes it has stored.
+		const haveNodes = !!readNodes && readNodes.length > 0
+		if (!haveNodes && !identityOnly) {
 			this.log('error', `${this.bridge.label}: node list unavailable: not started`)
 			throw new Error(NODES_UNAVAILABLE)
 		}
-		this.nodes = readNodes
+		if (!haveNodes) this.log('warn', `${this.bridge.label}: identity-only init without a node list (the native layer keeps its stored nodes)`)
+		this.nodes = haveNodes ? (readNodes as NodeInfo[]) : []
 		this.routes = []
 			// identity.native-keys.v1: the wallet key never crosses the bridge. A module that does not declare the
 			// capability is not started: nothing is sent, and the caller shows the locked or prompt state (no fallback).
@@ -619,7 +622,7 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 				this.config.chatIndexRegistryAddress ?? '0x1511Caa71081C84d8a591490D1b83879088EED72',
 			apiBaseUrl: this.config.apiBaseUrl,
 			runtime: { ...DEFAULT_RUNTIME, ...(this.config.runtime ?? {}) },
-			nodes: this.nodes,
+			...(haveNodes ? { nodes: this.nodes } : {}),
 			routes: this.routes,
 			// `deferAck: true` (capability `inbound.deferAck`): this page calls `ackInbound` after it has stored or shown each
 			// message. The native module reads `true` as a new page; `false` or a missing field is an old page. The module sends

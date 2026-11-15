@@ -39,14 +39,20 @@ export const judgeBrowser = (idb: IdbSignal): Judgement => {
 }
 
 /**
- * Shell (IndexedDB and the native wallet store). A native `locked` state is not a basis for either answer: the passcode page is shown,
- * and the judgement is made again after the unlock.
+ * Shell (IndexedDB and the native wallet store), in the order of the spec table .
+ * 1. a native `locked` state shows the passcode page; 2. a locked page store does the same (the page lock is not bypassed by a
+ * native record); 3. native `present` enters; 4. (`not_reported`: see judgeShellFromNative); 5. native `not_ready`, `unavailable`,
+ * `corrupt` and `unknown` keep the gate, whatever the page store holds (an IndexedDB key does not open the app); 6. native `absent` is
+ * judged by the page store: absent is no account, a key is an existing account (the known inconsistency kept as today),
+ * anything else is undetermined.
  */
 export const judgeShell = (idb: IdbSignal, native: NativeWalletState): Judgement => {
 	if (native === 'locked') return { account: 'undetermined', action: 'unlock' }
-	if (idb === 'key' || native === 'present') return { account: 'has_account', action: 'enter' }
-	if (idb === 'absent' && native === 'absent') return { account: 'no_account', action: 'onboard' }
-	// A single side absent is not enough for no account; not ready, unavailable, corrupt, unfinished: undetermined (retry).
+	if (idb === 'locked') return { account: 'undetermined', action: 'unlock' }
+	if (native === 'present') return { account: 'has_account', action: 'enter' }
+	if (native !== 'absent') return UNDETERMINED
+	if (idb === 'absent') return { account: 'no_account', action: 'onboard' }
+	if (idb === 'key') return { account: 'has_account', action: 'enter' }
 	return UNDETERMINED
 }
 
@@ -110,6 +116,21 @@ export const judgeShellFromNative = (input: {
 	if (input.walletStatus === 'locked' || input.walletStatus === 'unlocked') return { account: 'has_account', action: 'enter' }
 	// ( /): nothing valid on either side: undetermined, never absent.
 	return UNDETERMINED
+}
+
+/**
+ * Local mode . The entry rests on the native `notReadyReason` = `g1_uninitialized` (the native layer
+ * proves that the record exists and is readable). Anything else keeps the gate: no field, `unreadable`, a locked or present state, or a
+ * contradicting walletState. The EOA is for display only; it is never a basis for signing or identity.
+ */
+export type LocalOnlyDecision = 'enter_local' | 'keep_gate'
+export const judgeLocalOnly = (input: {
+	walletStatus: NativeWalletStatus
+	notReadyReason?: 'g1_uninitialized' | 'unreadable'
+	walletState: NativeWalletState | 'not_reported'
+}): LocalOnlyDecision => {
+	if (input.walletStatus !== 'not_ready' || input.notReadyReason !== 'g1_uninitialized') return 'keep_gate'
+	return input.walletState === 'not_ready' ? 'enter_local' : 'keep_gate'
 }
 
 /** How the account creation page takes its wallet (overwrite estimate). A confirmed local key is reused, never replaced. */

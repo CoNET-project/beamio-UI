@@ -7316,7 +7316,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 				return
 			}
 			const pay = BigInt(Number(message.maxAmountRequired).toFixed(0))
-			const paymentHeader = await AuthorizationSign(pay, message.payTo)
+			const paymentHeader = await AuthorizationSign(pay, message.payTo).catch(() => '')
 			if (!paymentHeader) {
 				setPayTransferError(tu('sign_failed'))
 				setPayTransferLoading(null)

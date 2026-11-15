@@ -1,4 +1,5 @@
 import React, { createContext, useContext, ReactNode, useState, useEffect, useLayoutEffect, useRef, useCallback, Dispatch, SetStateAction } from "react";
+import { SHELL_SESSION_KEY_CLEARED_EVENT } from '../services/shellSessionSigner';
 import packageData from '../../package.json'
 import ScanButton, { type  ScanButtonHandle } from "@/components/scanBtn/ScanButton"
 import { applyBeamioUiLanguageFromProfile } from '@/locale/i18n'
@@ -1045,6 +1046,14 @@ export function DaemonProvider({ children }: DaemonProps) {
       }
       return next
     })
+  }, [])
+  // Shell: when the page-session key is dropped (sign-out, lock, account switch, unload), the profile state drops its key copy too.
+  useEffect(() => {
+    const onKeyCleared = () => {
+      setProfilesState((prev: any) => (Array.isArray(prev) ? prev.map((p: any) => (p && p.privateKeyArmor ? { ...p, privateKeyArmor: '' } : p)) : prev))
+    }
+    window.addEventListener(SHELL_SESSION_KEY_CLEARED_EVENT, onKeyCleared)
+    return () => window.removeEventListener(SHELL_SESSION_KEY_CLEARED_EVENT, onKeyCleared)
   }, [])
   const profiles = profilesState
   const profileWalletKeyId = profiles?.[0]?.keyID

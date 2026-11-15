@@ -262,7 +262,8 @@ export function acceptNativeCreateResult(
 /** Native wallet state (W1 walletStatus): the ack carries `result.status`; with a key, `accountKey` is `eoa:workspace` (public). */
 export const NATIVE_WALLET_STATUS_COMMAND = 'walletStatus'
 export type NativeWalletState =
-	| { status: 'no_key' | 'not_ready' | 'unknown' }
+	| { status: 'no_key' | 'unknown' }
+	| { status: 'not_ready'; notReadyReason?: 'g1_uninitialized' | 'unreadable' }
 	| { status: 'locked' | 'unlocked'; eoa: string }
 
 export async function queryNativeWalletStatus(): Promise<NativeWalletState> {
@@ -270,10 +271,15 @@ export async function queryNativeWalletStatus(): Promise<NativeWalletState> {
 	if (!probe.answered) return { status: 'unknown' }
 	const answer = await requestNativeAck({ type: NATIVE_WALLET_STATUS_COMMAND }, OPEN_TIMEOUT_MS)
 	if (answer.kind !== 'payload') return { status: 'unknown' }
-	const p = answer.payload as { type?: unknown; ok?: unknown; result?: { status?: unknown; accountKey?: unknown } }
+	const p = answer.payload as { type?: unknown; ok?: unknown; result?: { status?: unknown; accountKey?: unknown; notReadyReason?: unknown } }
 	if (p.type !== 'ack' || p.ok !== true || !p.result) return { status: 'unknown' }
 	const st = p.result.status
-	if (st === 'no_key' || st === 'not_ready') return { status: st }
+	if (st === 'no_key') return { status: st }
+	// `notReadyReason` is read only on a not_ready answer; any other value, or none, is unreadable (no field).
+	if (st === 'not_ready') {
+		const reason = p.result.notReadyReason
+		return reason === 'g1_uninitialized' || reason === 'unreadable' ? { status: st, notReadyReason: reason } : { status: st }
+	}
 	if (st === 'locked' || st === 'unlocked') {
 		const key = typeof p.result.accountKey === 'string' ? p.result.accountKey : ''
 		const eoa = key.split(':')[0]?.trim() ?? ''

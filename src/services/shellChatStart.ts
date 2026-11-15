@@ -253,7 +253,7 @@ async function evaluateMissingPgp(deps: ShellChatStartDeps, accountKey: string):
 	}
 	if (ev.state === 'first_identity') {
 		deps.setFirstIdentity(true)
-		deps.log('info', 'shell chat: no chain record and no backup (first identity, 25.30.11); the user creates it from the entry')
+		deps.log('info', 'shell chat: no chain record and no backup (first identity); the user creates it from the entry')
 		return 'pgp_first_identity'
 	}
 	if (ev.state === 'failed') {

@@ -63,3 +63,9 @@ describe('G0 (4): the outcome of a shell read, not the source text', () => {
 	})
 })
 
+describe('a refused origin on a shell record read shows the update prompt', () => {
+	it('origin_refused maps to app_update_required (not to a native record hold)', () => {
+		expect(shellStorageErrorReason('shell_record_origin_refused')).toBe('app_update_required')
+	})
+})
+

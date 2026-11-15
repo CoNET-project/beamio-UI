@@ -90,7 +90,7 @@ function keyDerivesTo(armor: unknown, eoaLower: string): boolean {
  * (the same predicate as the page gate, consumerWalletGate.ts). The EOA private key must sit on the profile bound to that
  * keyID and derive to it. The mnemonic, the @beamioTag and the account name are not required here.
  *  - ok: the record is entered; the app handles a missing tag or name.
- *  - needs_native_recovery: the bound profile has no EOA private key that derives to the account (a mnemonic alone does not count).
+ *  - needs_native_recovery: the bound profile has no EOA private key that derives to the account, and no sealed credential (a mnemonic alone does not count).
  *  - wallet_fields_missing: no valid account EOA (malformed record): a hold, never onboarding.
  * Only a confirmed-absent store reaches onboarding; none of these states does.
  */
@@ -140,7 +140,17 @@ export function shellWalletState(record: unknown): ShellWalletState {
 	const bound = profileList(profiles).filter((p) => typeof p.keyID === 'string' && p.keyID.trim().toLowerCase() === accountKey)
 	// duplicate profiles for the account cannot be selected safely (the app reads profiles[0]): a hold, never onboarding.
 	if (bound.length > 1) return 'duplicate_profiles'
-	return bound.some((p) => keyDerivesTo(p.privateKeyArmor, accountKey)) ? 'ok' : 'needs_native_recovery'
+	if (bound.some((p) => keyDerivesTo(p.privateKeyArmor, accountKey))) return 'ok'
+	// A sealed credential is the other source: the native layer unseals it for one operation, and the EOA it yields is checked
+	// against the native account at that use (fail closed). The gate checks the record's account against the native account first.
+	if (hasSealedCredential(record)) return 'ok'
+	return 'needs_native_recovery'
+}
+
+function hasSealedCredential(record: unknown): boolean {
+	if (!isObject(record)) return false
+	const blob = (record as Loose).walletCredentialBlob
+	return typeof blob === 'string' && blob.trim() !== ''
 }
 
 /**

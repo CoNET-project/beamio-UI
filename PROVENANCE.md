@@ -84,7 +84,7 @@ Test data and strings:
 The same detector was run on the source revision and on this snapshot, over the same set of files (text files of the snapshot; dependency-lock hashes and SVG path data are not counted). Categories: review-number labels (`R` followed by digits), `r`-numbered and `r3`-family labels, `RC` labels, `D-class` labels, `T-n` labels, specification section numbers (`§` and `25.nn` codes), `item N` references, project-manager review references, and `P-` codes.
 
 - Source revision, same files: 2,695 matches in 350 files.
-- This snapshot: 0 matches.
+- This snapshot, as first published: 0 matches. A later scan of the whole repository history found a small number of specification-section references left in comments, one log string and two test titles. They are removed in the follow-up commit that records this correction.
 
 Not removed in this snapshot: references to design-specification terms in prose (for example `spec, option A`), and the state names `G0` to `G2` used in the code. These are product terms, not review labels. Three comment lines in `vendor/conet-chat-sdk/src/call-signal.ts`, `vendor/conet-chat-sdk/src/daemon.ts` and `vendor/conet-chat-sdk/src/wire.ts` still name the omitted file `spec/chat-daemon-vectors.v1.json`. The file is not in this repository.
 

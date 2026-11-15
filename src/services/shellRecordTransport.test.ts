@@ -3,7 +3,7 @@
  * sends through one transport; an injected window.BeamioShellRecord is used alone (no fallback, even when it cannot be used);
  * replies come on the injected object's onmessage and are matched by reqId; a request times out after 10 seconds.
  */
-import { sendShellRecordCommand, setPageOriginForTest, shellRecordTransportKind, SHELL_RECORD_REPLY_TIMEOUT_MS } from './shellRecordTransport'
+import { sendShellRecordCommand, sendWindowOnlyCommand, setPageOriginForTest, shellRecordTransportKind, SHELL_RECORD_REPLY_TIMEOUT_MS } from './shellRecordTransport'
 
 const CMD = { type: 'shellRecordRead', reqId: 77 }
 const ANDROID_ORIGIN = 'https://appassets.androidplatform.net'
@@ -264,6 +264,23 @@ describe('an injection that is present is the only channel (no fallback to the c
 		const chat = jest.fn()
 		w.CashTreesIOS = { chatModuleCommand: chat }
 		expect(shellRecordTransportKind()).toBe('chat')
+	})
+})
+
+describe('window-only commands never use the chat channel (walletEoaAddress, walletCredential)', () => {
+	it('no injected object and a chat channel present: not_supported, and the chat channel is never called', async () => {
+		setPageOriginForTest(ANDROID_ORIGIN)
+		const chat = jest.fn()
+		w.CashTreesAndroid = { getNfcStatus: () => 'ok', chatModuleCommand: chat }
+		expect(await sendWindowOnlyCommand({ type: 'walletCredential', reqId: 1 })).toEqual({ kind: 'not_supported' })
+		expect(chat).not.toHaveBeenCalled()
+	})
+	it('an injected object is used alone', async () => {
+		setPageOriginForTest(ANDROID_ORIGIN)
+		const host = injectedHost((reqId) => ok(reqId, { eoa: '0x' + '9'.repeat(40) }))
+		const answer = await sendWindowOnlyCommand({ type: 'walletEoaAddress', reqId: 3 })
+		expect(answer.kind).toBe('payload')
+		expect(host.postMessage).toHaveBeenCalledTimes(1)
 	})
 })
 

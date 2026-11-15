@@ -64,7 +64,7 @@ function iosChatChannelPresent(): boolean {
 	return !!ios && typeof ios === 'object' && typeof ios.chatModuleCommand === 'function'
 }
 
-/** The transport the page uses now (2, in order). */
+/** The transport the page uses now. */
 export function shellRecordTransportKind(): ShellRecordTransportKind {
 	if (injectionPresent()) return 'window'
 	const platform = getCashTreesNativeNfcHost()
@@ -196,6 +196,16 @@ function sendViaChat(cmd: Loose, timeoutMs: number): Promise<ShellRecordAnswer> 
 		}
 		if (!sent) finish({ kind: 'unavailable' })
 	})
+}
+
+/**
+ * Sends `walletEoaAddress` or `walletCredential` : the window channel only. These commands never fall back to the chat
+ * channel; without the window channel the answer is `not_supported` (Android) or `none` (browser).
+ */
+export function sendWindowOnlyCommand(cmd: Loose, timeoutMs: number = SHELL_RECORD_REPLY_TIMEOUT_MS): Promise<ShellRecordAnswer> {
+	const kind = shellRecordTransportKind()
+	if (kind !== 'window') return Promise.resolve({ kind: kind === 'none' ? 'none' : 'not_supported' })
+	return sendShellRecordCommand(cmd, timeoutMs)
 }
 
 /**

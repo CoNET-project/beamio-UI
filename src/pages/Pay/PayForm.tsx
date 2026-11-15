@@ -284,7 +284,11 @@ const PayForm = ({code, closeWin}: Props) => {
 	const signRequest = async (messageDataRe: any) => {
 		setProcessing (true)
 		const data = messageDataRe.data
-		const paymentHeader = await AuthorizationSign(data.amount, messageDataRe.payTo)
+		const paymentHeader = await AuthorizationSign(data.amount, messageDataRe.payTo).catch(() => '')
+		if (!paymentHeader) {
+			setProcessing(false)
+			return setProcessError(tu('sign_failed'))
+		}
 		const newInit = {
 			method: 'GET',
 			headers: {

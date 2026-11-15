@@ -1,4 +1,4 @@
-/** Beamio wallet identity colors — see `.cursor/rules/beamio-eoa-aa-wallet-color-protocol.mdc`. */
+/** Beamio wallet identity colors. */
 
 export type BeamioWalletKind = 'eoa' | 'aa'
 

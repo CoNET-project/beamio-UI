@@ -1,6 +1,5 @@
 /**
- * Read of this account's own PGP private key blob, with the one-time migration to the DEK-local cipher (
- *  禁止 2 and 25.20).
+ * Read of this account's own PGP private key blob, with the one-time migration to the DEK-local cipher
  *
  * Reading:
  *   - v2 blob  → opened with DEK-local inside the wallet module. Result "ok".

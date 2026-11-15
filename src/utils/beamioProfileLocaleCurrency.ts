@@ -1,7 +1,6 @@
 /**
  * Beamio profile locale + display currency — single source of truth (Consumer PWA).
  * Mirror in bizSite / posPwa; do not cross-import between subprojects.
- * See `.cursor/rules/beamio-profile-locale-currency-protocol.mdc`
  */
 
 export type BeamioUiLocale = 'en' | 'zh-CN'

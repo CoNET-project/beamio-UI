@@ -663,6 +663,7 @@
 	"integral-airdrop-rule-23":"例子 A｜封顶发生在周三 18:00（PT）",
 	"integral-airdrop-rule-24":"封顶前你累计 18 加权GB；封顶后又累计 12 加权GB → 本期可兑换=18；之后的 12 仅用于展示/排行。",
 	"integral-airdrop-rule-25":"例子 B｜早到和晚到的差别",
-	"integral-airdrop-rule-26":"甲：封顶前 30；乙：封顶前 5 → 本期只看封顶前部分：甲按 30，乙按 5。封顶后新增不计入本期兑换。"
-
+	"integral-airdrop-rule-26":"甲：封顶前 30；乙：封顶前 5 → 本期只看封顶前部分：甲按 30，乙按 5。封顶后新增不计入本期兑换。",
+  "app_update_required_title": "当前版本未通过校验",
+  "app_update_required_body": "请更新应用。钱包数据未被删除。"
 }

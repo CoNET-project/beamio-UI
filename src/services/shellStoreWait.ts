@@ -31,7 +31,9 @@ export function splashDeadlineAction(input: { decided: boolean; nativeWaiting: b
  * not done, a legacy store not readable) waits and retries. A recovery hold stops at the recovery entry. Any other error, including
  * `no_key` from shellRecord, stops at unavailable: it never sends the user to onboarding (onboarding follows only an absent store).
  */
-export function shellStorageErrorReason(message: string): 'native_retry' | 'native_recovery_needed' | 'native_record' {
+export function shellStorageErrorReason(message: string): 'native_retry' | 'native_recovery_needed' | 'native_record' | 'app_update_required' {
 	if (/shell_record_(migrating|import_not_done|legacy_store_unreadable)/.test(message)) return 'native_retry'
+	// the native layer refused this page (origin or frame): the page is not a trusted build, so the update prompt is shown.
+	if (message.includes('shell_record_origin_refused')) return 'app_update_required'
 	return message.includes('needs_native_recovery') ? 'native_recovery_needed' : 'native_record'
 }

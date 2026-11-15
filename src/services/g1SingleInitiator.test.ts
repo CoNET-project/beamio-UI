@@ -5,12 +5,15 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { persistShellEoa } from './shellIdentitySource'
-import { reachNativeWallet } from './nativeWallet'
+import { reachNativeWallet, takeInitRefusal } from './nativeWallet'
 import { SHELL_G1_INIT_ENABLED } from './shellChatStart'
 import { queryNativeWalletStatus } from './nativeRecovery'
 import { initShellIdentityOnly } from './chatWorkerBridge'
 
 jest.mock('./nativeRecovery', () => ({ queryNativeWalletStatus: jest.fn() }))
+// The node read goes to the chain; this test reads no network. The list is set per test.
+jest.mock('./coNETNodeRead', () => ({ readNodeListForInit: jest.fn(async () => []) }))
+import { readNodeListForInit } from './coNETNodeRead'
 jest.mock('./chatWorkerBridge', () => ({
 	initShellIdentityOnly: jest.fn(async () => ({ ok: false as const, reason: 'capability_missing' })),
 }))
@@ -23,6 +26,7 @@ describe('G1 has one initiator: the entry path', () => {
 	beforeEach(() => {
 		// CRA resets mock implementations before each test, so the native answer is set here.
 		(initShellIdentityOnly as jest.Mock).mockResolvedValue({ ok: false, reason: 'capability_missing' })
+		;(readNodeListForInit as jest.Mock).mockResolvedValue([])
 		jest.clearAllMocks()
 		window.localStorage.clear()
 	})
@@ -37,6 +41,27 @@ describe('G1 has one initiator: the entry path', () => {
 		await reachNativeWallet()
 		expect(initShellIdentityOnly).toHaveBeenCalledTimes(1)
 		expect((initShellIdentityOnly as jest.Mock).mock.calls[0][0]).toBe(EOA)
+	})
+
+	it('a G1 init with a listed node set sends the list, and an empty or unavailable read sends no nodes (never an empty list)', async () => {
+		persistShellEoa(EOA)
+		;(queryNativeWalletStatus as jest.Mock).mockResolvedValue({ status: 'not_ready' })
+		const nodes = [{ domain: 'a.example', armoredPublicKey: 'x' }]
+		;(readNodeListForInit as jest.Mock).mockResolvedValueOnce(nodes)
+		await reachNativeWallet()
+		expect((initShellIdentityOnly as jest.Mock).mock.calls[0][1]).toEqual(nodes)
+		;(readNodeListForInit as jest.Mock).mockResolvedValueOnce([])
+		await reachNativeWallet()
+		expect((initShellIdentityOnly as jest.Mock).mock.calls[1][1]).toEqual([])
+	})
+
+	it('an init refused with address_mismatch is recorded once for the local home to act on, then cleared', async () => {
+		persistShellEoa(EOA)
+		;(queryNativeWalletStatus as jest.Mock).mockResolvedValue({ status: 'not_ready' })
+		;(initShellIdentityOnly as jest.Mock).mockResolvedValueOnce({ ok: false, reason: 'address_mismatch' })
+		await reachNativeWallet()
+		expect(takeInitRefusal()).toBe('address_mismatch')
+		expect(takeInitRefusal()).toBeNull()
 	})
 
 	it('a G1 attempt with no persisted EOA sends no init', async () => {

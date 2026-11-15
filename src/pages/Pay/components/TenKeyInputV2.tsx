@@ -14,6 +14,7 @@ import usdc_abi from '@/services/ABI/usdc_abi.json'
 import contracts from '@/utils/contracts'
 import { baseEndpoint, CCSA_Card_Address, USDCContract_BASE, BeamioCardFactorySC } from '@/utils/constants'
 import { AuthorizationSign, checkRequestStatus, searchUsername, fetchNfcCardStatus, payByNfcUid, nfcTopup } from '@/services/beamio'
+import { isAuthorizationSignRefused } from '@/services/authorizationSign'
 import { useNfcRead } from '@/hooks/useNfcRead'
 import { isShellContext } from '@/services/shellContext'
 import { formatAmount, fiatPrefix } from '@/services/currency'
@@ -2211,7 +2212,7 @@ const TenKeyInputComponentNew = (props: TenKeyInputComponentProps) => {
 				})
 			} catch (e) {
 				setSubmitting(false)
-				setVoucherPayError((e as Error)?.message ?? tu('request_failed'))
+				setVoucherPayError(isAuthorizationSignRefused(e) ? tu('sign_failed') : ((e as Error)?.message ?? tu('request_failed')))
 				return
 			}
 			setSubmitting(false)
@@ -2403,7 +2404,7 @@ const TenKeyInputComponentNew = (props: TenKeyInputComponentProps) => {
 			}
 		} catch (e) {
 			setSubmitting(false)
-			setVoucherPayError((e as Error)?.message ?? tu('sign_failed'))
+			setVoucherPayError(isAuthorizationSignRefused(e) ? tu('sign_failed') : ((e as Error)?.message ?? tu('sign_failed')))
 		}
 	}
 

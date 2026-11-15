@@ -19,7 +19,7 @@ describe('shell wallet entry on the native wallet', () => {
 
 	it('AppEntryGate asks the native wallet first in a shell; a native wallet enters the app; no key falls to the page wallet (boundary)', () => {
 		const g = read('components/AppEntryGate.tsx')
-		const init = g.slice(g.indexOf('const init = async () => {'), g.indexOf('const init = async () => {') + 3600)
+		const init = g.slice(g.indexOf('const init = async () => {'), g.indexOf('const init = async () => {') + 5200)
 		expect(init).toContain('if (nativeShellRef.current) {')
 		expect(init).toContain('reachNativeWallet()')
 		expect(init).toContain('applyNativeWallet(native.eoa)')

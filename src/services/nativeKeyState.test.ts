@@ -136,7 +136,7 @@ describe('openNativeKeyImport', () => {
 	})
 })
 
-describe('readNativeWalletStatus (walletStatus after the import page closes, , 25.45)', () => {
+describe('readNativeWalletStatus (walletStatus after the import page closes)', () => {
 	// the reply is an ack envelope with the data in result. G0 is ok:true with result.status "no_key".
 	const reply = (payload: (reqId: number) => Record<string, unknown>) => {
 		w.CashTreesIOS = {

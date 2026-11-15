@@ -8,6 +8,7 @@ import { CoNET_Data, setCoNET_Data } from "@/utils/globals"
 import { cachedWallet } from '@/utils/dialWalletCache'
 
 import {GuardianNodesMainnet, conetDepinProvider, beamioApi} from '@/utils/constants'
+import { loadCoNETNodesOutcome } from './coNETNodeRead'
 import contracts from '@/utils/contracts'
 import {ethers} from 'ethers'
 import {toBase64, fromBase64, storeSystemData, storeSystemDataAndWait } from '@/services/beamio'
@@ -293,42 +294,8 @@ export const getCoNETNodesOrThrow = async (): Promise<nodeInfo[]> => {
 }
 
 const loadCoNETNodesFromChain = async (): Promise<nodeInfo[]> => {
-	let timer: ReturnType<typeof setTimeout> | undefined
-	try {
-		const _nodes = await Promise.race([
-			(async () => {
-				const [_nodes1, _nodes2] = await Promise.all([
-					GuardianNodesMainnet.getAllNodes(0, 400),
-					GuardianNodesMainnet.getAllNodes(400, 800),
-				])
-				return [..._nodes1, ..._nodes2]
-			})(),
-			new Promise<never>((_, reject) => {
-				timer = setTimeout(() => reject(new Error('getAllNodes timeout')), 15_000)
-			}),
-		])
-		const Guardian_Nodes: nodeInfo[] = []
-		for (let i = 0; i < _nodes.length; i++) {
-			const node = _nodes[i]
-			const id = parseInt(node[0].toString())
-			const pgpString: string = Buffer.from(node[1], 'base64').toString()
-			const domain: string = node[2]
-			const ipAddr: string = node[3]
-			const region: string = node[4]
-			Guardian_Nodes.push({
-				ip_addr: ipAddr,
-				armoredPublicKey: pgpString,
-				domain,
-				nftNumber: id,
-				region,
-			})
-		}
-		return Guardian_Nodes
-	} catch {
-		return []
-	} finally {
-		if (timer !== undefined) clearTimeout(timer)
-	}
+	const outcome = await loadCoNETNodesOutcome()
+	return outcome.ok ? outcome.nodes : []
 }
 
 const getAllNodes = getCoNETNodesForChat

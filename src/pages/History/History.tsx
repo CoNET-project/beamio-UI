@@ -144,7 +144,11 @@ const History = ({}) => {
 
 	const signRequest = async (messageDataRe: any) => {
 		setProcessing (true)
-		const paymentHeader = await AuthorizationSign(messageDataRe.maxAmountRequired, messageDataRe.payTo)
+		const paymentHeader = await AuthorizationSign(messageDataRe.maxAmountRequired, messageDataRe.payTo).catch(() => '')
+		if (!paymentHeader) {
+			setProcessing(false)
+			return setProcessError(tu('sign_failed'))
+		}
 		const newInit = {
 			method: 'GET',
 			headers: {

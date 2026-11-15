@@ -359,7 +359,7 @@ export async function payWalletUsdcDepositWithLocalWallet(params: {
 		}
 	}
 
-	const paymentHeader = await AuthorizationSign(payAmount, payTo, params.privateKeyArmor)
+	const paymentHeader = await AuthorizationSign(payAmount, payTo, params.privateKeyArmor).catch(() => '')
 	if (!paymentHeader) {
 		return { ok: false, error: 'Wallet signature failed' }
 	}
@@ -522,7 +522,7 @@ export async function payGenesisNodeSeatWithLocalWallet(params: {
 		}
 	}
 
-	const paymentHeader = await AuthorizationSign(payAmount, payTo, params.privateKeyArmor)
+	const paymentHeader = await AuthorizationSign(payAmount, payTo, params.privateKeyArmor).catch(() => '')
 	if (!paymentHeader) {
 		return { ok: false, error: 'Wallet signature failed' }
 	}
@@ -722,7 +722,7 @@ export async function payDiscoverTreasuryBridgeWithLocalWallet(params: {
 		}
 	}
 
-	const paymentHeader = await AuthorizationSign(payAmount, payTo, params.privateKeyArmor)
+	const paymentHeader = await AuthorizationSign(payAmount, payTo, params.privateKeyArmor).catch(() => '')
 	if (!paymentHeader) {
 		return { ok: false, error: 'Wallet signature failed' }
 	}

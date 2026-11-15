@@ -76,7 +76,7 @@ export const CONET_TREASURY_CREATE2 = '0xa311c8fBE7CafC611603Ee925465A62493B73B3
 export const CONET_USDC_FACTORY_LEGACY = '0xfD0D7B0706AaB5E4351bcED37bC3C77ed6813907'
 /**
  * CoNET canonical GB — `GBToken` ERC20（9 decimals；free/paid 双池）。
- * 全项目「GB」默认指此地址；见 `.cursor/rules/beamio-gb-erc20-canonical.mdc`。
+ * 全项目「GB」默认指此地址。
  */
 export const CONET_GB_ERC20 = '0xC3EF02DaE632b4C10abB66e07d92a387c10838D8'
 /** @alias CONET_GB_ERC20 */

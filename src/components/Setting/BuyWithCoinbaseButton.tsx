@@ -9,7 +9,6 @@ type Prof = {
 /**
  * Coinbase Onramp via external URL only — do NOT use WalletLink / @coinbase/wallet-sdk
  * (those write `-walletlink:session:secret` into Local Storage; forbidden for APP signing).
- * See `.cursor/rules/beamio-app-wallet-secret-storage.mdc`.
  */
 export const BuyWithCoinbaseButton = ({ myAddress }: Prof) => {
 	const [loading, setLoading] = useState(false)

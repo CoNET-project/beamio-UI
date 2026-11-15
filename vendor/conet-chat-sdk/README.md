@@ -197,7 +197,7 @@ This package holds the one spec for the chat daemon that the TS Worker,
 
 | File | What it is |
 |---|---|
-| `src/protocol.ts` | The source: every command and event, the capability list, and `COMMAND_PRIVACY` (wallet signature, entry, what nodes see; checked against rules 13–23). |
+| `src/protocol.ts` | The source: every command and event, the capability list, and `COMMAND_PRIVACY` (wallet signature, entry, what nodes see; checked against the protocol privacy rules). |
 
 - `hello` is the first command: the answer is `{ protocolVersion, minProtocolVersion, sdkVersion, implementation, capabilities[] }`. Hosts decide by capability (`negotiateChatDaemon` / `hasCapability`), never by whether a method exists. Daemons older than v1 do not answer; keep the pre-v1 behaviour for them.
 - A daemon answers an unknown command that carries a positive `reqId` with `ack { ok: false, error: 'unknown_command' }`.

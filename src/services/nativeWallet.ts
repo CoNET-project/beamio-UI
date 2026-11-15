@@ -5,6 +5,7 @@
 import { persistShellEoa, readPersistedShellEoa } from './shellIdentitySource'
 import { queryNativeWalletStatus, type NativeWalletState } from './nativeRecovery'
 import { forgetInitRefusal, initShellIdentityOnly } from './chatWorkerBridge'
+import { readNodeListForInit } from './coNETNodeRead'
 import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
 
 /** Fired after a native recovery succeeds: the app re-reads the native wallet state and enters the app (no reload). */
@@ -69,6 +70,14 @@ function persistedNativeEoa(): string | null {
 	return readPersistedShellEoa() || null
 }
 
+/** The last refusal of the G1 identity-only init : an address mismatch leaves the local home). Read once. */
+let lastInitRefusal: string | null = null
+export function takeInitRefusal(): string | null {
+	const reason = lastInitRefusal
+	lastInitRefusal = null
+	return reason
+}
+
 /**
  * The native wallet reaches G2: walletStatus locked or unlocked, with a public account key.
  * A wallet that is not ready (G1) gets one native init on the public address, then is asked again.
@@ -78,8 +87,14 @@ export async function reachNativeWallet(): Promise<NativeWalletState> {
 	const hint = nativeEoaHint ?? persistedNativeEoa()
 	if (state.status === 'not_ready' && hint) {
 		// G1: the EOA only (bc5303be): no route key, no PGP key, no provisionIdentity. The native layer checks the EOA.
-		const started = (await initShellIdentityOnly(hint, [])).ok
-		publishNativePwaLog('info', `[nativeWallet] init to G2 ${started ? 'sent' : 'not started (native module)'}`)
+		// The node list is read fresh; an empty or unavailable list is omitted from the init, never sent as [] .
+		const nodes = await readNodeListForInit()
+		const sent = await initShellIdentityOnly(hint, nodes)
+		lastInitRefusal = sent.ok ? null : sent.reason
+		publishNativePwaLog(
+			'info',
+			`[nativeWallet] init to G2 ${sent.ok ? 'sent' : `not accepted: ${sent.reason}`} (node list ${nodes.length ? 'sent' : 'omitted'})`,
+		)
 		state = await queryNativeWalletStatus()
 	}
 	return state

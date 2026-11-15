@@ -656,5 +656,7 @@
    "integral-airdrop-rule-23": "例 A｜上限発動：水曜18:00（PT）",
    "integral-airdrop-rule-24": "上限前に18加重GBを累積、上限後に12GB追加 → 当期間で交換可能 = 18；残りの12は表示／ランキング用のみ。",
    "integral-airdrop-rule-25": "例 B｜早期参加と遅延参加の差",
-   "integral-airdrop-rule-26": "A：上限前に30、B：上限前に5 → 当期間では上限前の分のみ有効：A=30、B=5。上限後のGBは交換対象外。"
+   "integral-airdrop-rule-26": "A：上限前に30、B：上限前に5 → 当期間では上限前の分のみ有効：A=30、B=5。上限後のGBは交換対象外。",
+  "app_update_required_title": "このバージョンは検証に合格していません",
+  "app_update_required_body": "アプリを更新してください。ウォレットのデータは削除されていません。"
 }

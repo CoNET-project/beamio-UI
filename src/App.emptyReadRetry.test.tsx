@@ -123,6 +123,7 @@ describe('an empty shell read is read again, bounded', () => {
 		renderApp()
 		await waitFor(() => expect(mockChatStarts.length).toBe(1), { timeout: 8000 })
 		expect(mockStorageReads).toBeGreaterThanOrEqual(3)
-		expect(screen.getByRole('button', { name: 'search' })).toBeTruthy()
+		// the bar is rendered on the render after the chat starts: wait for it, rather than assert it on the same tick.
+		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy(), { timeout: 8000 })
 	})
 })

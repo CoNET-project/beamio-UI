@@ -272,6 +272,8 @@ type paymentCard = {
 	upgradev2?: boolean;
 	webFilter: boolean;
 	recoveryWords?:string;
+	/** Shell only: the native-sealed wallet credential blob kept in the page record Never a plaintext phrase. */
+	walletCredentialBlob?: string;
 	/** Browser inbound: armor hashes (no bodies) of lines the page consumed without showing. See utils/inboundDedupeMarkers.ts. */
 	inboundDedupeMarkers?: string[];
 	duplicateCode?: string

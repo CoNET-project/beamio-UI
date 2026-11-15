@@ -648,6 +648,7 @@
 	"integral-airdrop-rule-23": "Example A｜Cap triggered at Wednesday 18:00 (PT)",
 	"integral-airdrop-rule-24": "Before the cap, you accumulated 18 weighted GB; after the cap, 12 more → Redeemable this period = 18; the extra 12 count only for display/rank.",
 	"integral-airdrop-rule-25": "Example B｜Early vs. Late Participation",
-	"integral-airdrop-rule-26": "User A: 30 before cap; User B: 5 before cap → Only pre-cap amounts count: A = 30, B = 5. Post-cap GBs are not included for redemption."
-
+	"integral-airdrop-rule-26": "User A: 30 before cap; User B: 5 before cap → Only pre-cap amounts count: A = 30, B = 5. Post-cap GBs are not included for redemption.",
+  "app_update_required_title": "This version did not pass verification",
+  "app_update_required_body": "Please update the app. Your wallet data was not deleted."
 }

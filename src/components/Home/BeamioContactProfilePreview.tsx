@@ -219,7 +219,11 @@ export default function BeamioContactProfilePreview({ item, close }: Props) {
 			
 		setLoading(true)
 
-		const paymentHeader = await AuthorizationSign(messageData.maxAmountRequired, messageData.payTo)
+		const paymentHeader = await AuthorizationSign(messageData.maxAmountRequired, messageData.payTo).catch(() => '')
+		if (!paymentHeader) {
+			setLoading(false)
+			return setProcessError(tu('sign_failed'))
+		}
 		const newInit = {
 			method: 'GET',
 			headers: {

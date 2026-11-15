@@ -152,6 +152,23 @@ describe('identity-only init: EOA only, no route key, no provisionIdentity', () 
 		expect(Object.keys(initCmd.payload.identity)).toEqual(['eoa'])
 	})
 
+	it('an identity-only init with no node list omits the nodes key: the native layer keeps its stored nodes, never an empty list', async () => {
+		installShell('ready')
+		const cfg = { ...identityOnlyConfig(), getNodes: async () => [] } as unknown as Parameters<typeof createNativeConetChatClient>[0]
+		await expect(initNativeIdentityOnly(cfg)).resolves.toEqual({ ok: true })
+		const initCmd = sent.find((c) => c.type === 'init') as { payload: Record<string, unknown> }
+		expect('nodes' in initCmd.payload).toBe(false)
+	})
+
+	it('an identity-only init with a listed node set sends that list', async () => {
+		installShell('ready')
+		const nodes = [{ domain: 'a.example', armoredPublicKey: 'SYNTHETIC-NODE' }]
+		const cfg = { ...identityOnlyConfig(), getNodes: async () => nodes } as unknown as Parameters<typeof createNativeConetChatClient>[0]
+		await expect(initNativeIdentityOnly(cfg)).resolves.toEqual({ ok: true })
+		const initCmd = sent.find((c) => c.type === 'init') as { payload: { nodes?: unknown } }
+		expect(initCmd.payload.nodes).toEqual(nodes)
+	})
+
 	it('a refused init (address_mismatch) returns the reason; nothing else is sent', async () => {
 		installShell('address_mismatch')
 		const r = await initNativeIdentityOnly(identityOnlyConfig())

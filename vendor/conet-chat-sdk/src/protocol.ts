@@ -15,8 +15,7 @@
  * existing command or event changes meaning.
  * - Every command carries a privacy entry in {@link COMMAND_PRIVACY}: whether it
  * carries a wallet signature, whether it goes through an entry node, and what
- * nodes can read. Check it against rules 13–23 of
- * `.cursor/rules/beamio-conet-chat-protocol.mdc` before merging.
+ * nodes can read. Check it against the protocol rules before merging.
  *
  * Wire framing (all three use the same JSON objects):
  * - page → daemon: a {@link ChatDaemonCommand}. iOS wraps it as
@@ -602,7 +601,7 @@ export interface NativeDaemonEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Privacy annotations (rules 13–23)
+// Privacy annotations
 // ---------------------------------------------------------------------------
 
 /**
@@ -629,7 +628,7 @@ export interface CommandPrivacy {
 }
 
 /**
- * Privacy annotation for every command. Checked against rules 13–23 on 2026-11-01.
+ * Privacy annotation for every command. Checked against the protocol privacy rules.
  * The JSON Schema carries these as `x-privacy`.
  */
 export const COMMAND_PRIVACY: Record<ChatDaemonCommandType, CommandPrivacy> = {

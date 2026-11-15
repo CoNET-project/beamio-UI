@@ -88,7 +88,7 @@ export function postChatModuleCommand(cmd: Loose): boolean {
 }
 
 /**
- * (2, 25.49 a): the global destroy the logout and lock path sends. It tears the native chat session down, so it must
+ * The global destroy the logout and lock path sends. It tears the native chat session down, so it must
  * carry a valid reqId (an integer, 0 to 2^53-1). A destroy without one is answered bad_request and does nothing.
  */
 const DESTROY_REQ_BASE = 790_000_000

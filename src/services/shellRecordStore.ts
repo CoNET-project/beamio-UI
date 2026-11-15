@@ -23,6 +23,7 @@ import { setDeferredLocalOnly } from './pendingServerSync'
 import { publishNativePwaLog } from '../utils/cashTreesNativePwaLog'
 import { assertNoPgpPrivate, BRIDGE_LIMIT_BYTES, canonicalizeProfileKeyIDs, pgpPublicPaths, sanitizeForBridge, shellWalletState, stripWalletFields, utf8ByteLength } from './shellRecordSanitizer'
 import { backoffDelayMs } from './retryBackoff'
+import { notifyAppUpdateRequired } from './appUpdatePrompt'
 
 export const SHELL_RECORD_READ = 'shellRecordRead'
 export const SHELL_RECORD_WRITE = 'shellRecordWrite'
@@ -567,6 +568,8 @@ async function writeAt(payload: Loose, rev: number): Promise<WriteOutcome> {
 		blocked = true
 		return { status: 'timeout' }
 	}
+	// the native layer refused this build: the update prompt is shown (the same prompt a refused read shows).
+	if (answer.kind === 'origin_refused') notifyAppUpdateRequired()
 	if (answer.kind !== 'payload') return { status: 'failed', reason: transportReason(answer) }
 	const parsed = parseShellRecordWrite(answer.payload)
 	if (parsed.status === 'ok') return { status: 'ok', rev: parsed.rev }
