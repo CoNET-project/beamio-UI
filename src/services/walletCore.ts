@@ -11,7 +11,7 @@
  * There is no "sign arbitrary data" command. Signing domains are fixed in this module.
  *
  * Status: implemented commands are deriveSubkeys, deriveProtocolKeys, signProtocolHistory, signGossip and
- * pgpDecrypt. pgpSign is listed in the whitelist and refused as not available.
+ * pgpDecrypt. pgpSign was removed: it answers unknown_command, in any state.
  *
  * Main-thread operations (not worker commands): PGP blob seal/open under DEK-local, the legacy blob open used only to
  * migrate, and the signature of the registration request. They return a blob, a plaintext or a signature, never a key
@@ -30,7 +30,7 @@ const loadOpenPgp = () => import('openpgp')
 /** Chain id in the protocol domain (`beamio.chat.history.v1|224422|eoa`, spec ). */
 export const PROTOCOL_CHAIN_ID = 224422
 
-export const WALLET_COMMANDS = ['deriveSubkeys', 'deriveProtocolKeys', 'signProtocolHistory', 'signGossip', 'pgpSign', 'pgpDecrypt'] as const
+export const WALLET_COMMANDS = ['deriveSubkeys', 'deriveProtocolKeys', 'signProtocolHistory', 'signGossip', 'pgpDecrypt'] as const
 export type WalletCommand = (typeof WALLET_COMMANDS)[number]
 /** Commands that exist in this build. The others are refused with command_not_available. */
 const IMPLEMENTED: ReadonlySet<string> = new Set(['deriveSubkeys', 'deriveProtocolKeys', 'signProtocolHistory', 'signGossip'])
@@ -44,6 +44,7 @@ export type WalletErrorCode =
 	| 'account_mismatch'
 	| 'command_not_allowed'
 	| 'command_not_available'
+	| 'unknown_command'
 	| 'payload_rejected'
 	| 'timeout'
 	| 'pgp_not_loaded'
@@ -420,6 +421,8 @@ export class WalletCore {
 	 * the payload shape before any key use. Resolves with a result only (never the key). Times out after timeoutMs.
 	 */
 	async call(req: WalletCallRequest): Promise<unknown> {
+		// a removed command answers as unknown in every state, before the lock and session checks
+		if (req.command === 'pgpSign') throw new WalletError('unknown_command')
 		if (!this.key) throw new WalletError('locked')
 		const sessionAccount = this.sessions.get(req.session)
 		if (!sessionAccount) throw new WalletError('session_invalid')
