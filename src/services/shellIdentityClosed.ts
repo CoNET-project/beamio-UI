@@ -33,11 +33,17 @@ export function identityClosedSource(reason: IdentityClosedReason, importSwitchF
 	return importSwitchFailedThisSession ? 'import' : 'clear'
 }
 
-export type ClearOutcome = { kind: 'ok' } | { kind: 'refused' } | { kind: 'failed'; code: string }
+/**
+ * - `ok`: the identity was cleared. The page reloads and re-judges the account.
+ * - `refused`: `unregister_refused`. Nothing was removed; the user must back up the recovery code before a reset.
+ * - `incomplete`: `clear_incomplete`. The clear did not finish; it may be retried. Nothing here counts as cleared or as "no account".
+ * - `failed`: any other answer (`clear_failed`, `bad_request`, `busy`, a timeout, no channel). The closed notice stays as it is.
+ */
+export type ClearOutcome = { kind: 'ok' } | { kind: 'refused' } | { kind: 'incomplete' } | { kind: 'failed'; code: string }
 
 /**
- * Maps the `clearIdentity` answer. An ack with `ok: true` is a clear. `unregister_refused` is a refusal: nothing was removed. Any other
- * answer (`clear_failed`, `bad_request`, `busy`, a timeout, no channel) keeps the closed notice as it is.
+ * Maps the `clearIdentity` answer. An ack with `ok: true` is a clear and nothing else is. `unregister_refused` is a refusal, and
+ * `clear_incomplete` is an unfinished clear that can be retried. Any other answer keeps the closed notice as it is.
  */
 export function clearOutcomeOf(answer: { kind: string; payload?: Record<string, unknown> }): ClearOutcome {
 	if (answer.kind !== 'payload' || !answer.payload) return { kind: 'failed', code: answer.kind }
@@ -45,6 +51,7 @@ export function clearOutcomeOf(answer: { kind: string; payload?: Record<string, 
 	if (payload.type === 'ack' && payload.ok === true) return { kind: 'ok' }
 	const error = typeof payload.error === 'string' ? payload.error : 'unknown'
 	if (error === 'unregister_refused') return { kind: 'refused' }
+	if (error === 'clear_incomplete') return { kind: 'incomplete' }
 	return { kind: 'failed', code: error }
 }
 

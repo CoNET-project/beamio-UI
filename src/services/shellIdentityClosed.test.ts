@@ -42,6 +42,10 @@ describe('the clearIdentity answer', () => {
 		expect(clearOutcomeOf({ kind: 'payload', payload: { type: 'ack', ok: false, error: 'unregister_refused' } })).toEqual({ kind: 'refused' })
 	})
 
+	it('clear_incomplete is an incomplete clear that can be retried: never a clear, never a refusal', () => {
+		expect(clearOutcomeOf({ kind: 'payload', payload: { type: 'ack', ok: false, error: 'clear_incomplete' } })).toEqual({ kind: 'incomplete' })
+	})
+
 	it('clear_failed keeps the notice: a failed outcome with its code', () => {
 		expect(clearOutcomeOf({ kind: 'payload', payload: { type: 'ack', ok: false, error: 'clear_failed' } })).toEqual({ kind: 'failed', code: 'clear_failed' })
 	})

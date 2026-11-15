@@ -4,7 +4,7 @@
  */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ShellIdentityClosedNotice, ShellRetryExhaustedNotice } from './ShellIdentityClosedNotice'
-import { clearShellChatIdentity, setIdentityClosed } from '../services/shellIdentityClosed'
+import { clearShellChatIdentity, getIdentityClosed, setIdentityClosed } from '../services/shellIdentityClosed'
 import { requestShellRetryNow, setShellRetryExhausted } from '../services/shellChatRetryCap'
 import { nativeRecoveryOpen } from '../services/nativeRecovery'
 
@@ -90,6 +90,38 @@ describe('the closed notice from a clear', () => {
 		await waitFor(() => expect(screen.getByRole('button', { name: 'chat.clear_failed.entry' })).toBeTruthy())
 		expect(screen.queryByText('chat.clear_refused.body')).toBeNull()
 		expect(screen.getByText('chat.clear_failed.body')).toBeTruthy()
+	})
+})
+
+describe('the clear answers that are neither a clear nor a missing account', () => {
+	it('clear_incomplete shows the retry copy and the clear button, and does not run the re-judgement', async () => {
+		setIdentityClosed({ reason: 'clear_failed', source: 'clear' })
+		clearMock.mockResolvedValue({ kind: 'incomplete' })
+		const onCleared = jest.fn()
+		render(<ShellIdentityClosedNotice onCleared={onCleared} />)
+		fireEvent.click(screen.getByRole('button', { name: 'chat.clear_failed.entry' }))
+		fireEvent.click(screen.getByRole('button', { name: 'chat.clear_confirm.ok' }))
+		expect(await screen.findByText('chat.clear_incomplete.body')).toBeTruthy()
+		expect(screen.getByRole('button', { name: 'chat.clear_failed.entry' })).toBeTruthy()
+		expect(screen.queryByText('chat.clear_refused.body')).toBeNull()
+		expect(onCleared).not.toHaveBeenCalled()
+		expect(getIdentityClosed()).not.toBeNull()
+	})
+
+	it('unregister_refused shows the backup-first copy and a backup entry, and removes nothing', async () => {
+		setIdentityClosed({ reason: 'clear_failed', source: 'clear' })
+		clearMock.mockResolvedValue({ kind: 'refused' })
+		const onCleared = jest.fn()
+		const onOpenBackup = jest.fn()
+		render(<ShellIdentityClosedNotice onCleared={onCleared} onOpenBackup={onOpenBackup} />)
+		fireEvent.click(screen.getByRole('button', { name: 'chat.clear_failed.entry' }))
+		fireEvent.click(screen.getByRole('button', { name: 'chat.clear_confirm.ok' }))
+		expect(await screen.findByText('chat.clear_refused.body')).toBeTruthy()
+		expect(screen.queryByText('chat.clear_incomplete.body')).toBeNull()
+		expect(onCleared).not.toHaveBeenCalled()
+		expect(getIdentityClosed()).not.toBeNull()
+		fireEvent.click(screen.getByRole('button', { name: 'chat.clear_refused.backup_entry' }))
+		expect(onOpenBackup).toHaveBeenCalledTimes(1)
 	})
 })
 

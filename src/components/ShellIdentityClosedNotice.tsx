@@ -35,19 +35,33 @@ export function useShellRetryExhausted(): boolean {
 
 const reloadPage = () => window.location.reload()
 
-type View = 'idle' | 'confirm' | 'busy'
+/** The account settings hold the recovery-code backup. The default switches to them without a reload (the router listens to popstate). */
+const openSettingsForBackup = () => {
+	window.history.pushState({}, '', '/settings')
+	window.dispatchEvent(new PopStateEvent('popstate', { state: {} }))
+}
 
-/** The closed notice. `onCleared` runs after a successful clear (the default reloads the page, which re-judges the account). */
-export function ShellIdentityClosedNotice({ onCleared }: { onCleared?: () => void } = {}) {
+type View = 'idle' | 'confirm' | 'busy'
+/** The last clear answer that the notice shows. `none` shows nothing extra. Neither answer counts as cleared or as "no account". */
+type ClearNotice = 'none' | 'refused' | 'incomplete'
+
+/**
+ * The closed notice. `onCleared` runs after a successful clear (the default reloads the page, which re-judges the account).
+ * `onOpenBackup` opens the recovery-code backup when a reset is refused.
+ */
+export function ShellIdentityClosedNotice({
+	onCleared,
+	onOpenBackup,
+}: { onCleared?: () => void; onOpenBackup?: () => void } = {}) {
 	const closed = useIdentityClosedState()
 	const [view, setView] = useState<View>('idle')
-	const [refused, setRefused] = useState(false)
+	const [notice, setNotice] = useState<ClearNotice>('none')
 	if (!closed) return null
 	const fromImport = closed.source === 'import'
 
 	const clear = async () => {
 		setView('busy')
-		setRefused(false)
+		setNotice('none')
 		let outcome: Awaited<ReturnType<typeof clearShellChatIdentity>>
 		try {
 			outcome = await clearShellChatIdentity()
@@ -59,9 +73,10 @@ export function ShellIdentityClosedNotice({ onCleared }: { onCleared?: () => voi
 			;(onCleared ?? reloadPage)()
 			return
 		}
-		// A refusal removes nothing and keeps the notice. Any other answer also keeps the notice as it is.
+		// A refusal removes nothing, and an incomplete clear can be retried. Both keep the notice; neither is a clear.
 		setView('idle')
-		if (outcome.kind === 'refused') setRefused(true)
+		if (outcome.kind === 'refused') setNotice('refused')
+		else if (outcome.kind === 'incomplete') setNotice('incomplete')
 	}
 
 	return (
@@ -69,7 +84,12 @@ export function ShellIdentityClosedNotice({ onCleared }: { onCleared?: () => voi
 			<div className="w-full max-w-md rounded-3xl border border-white/15 bg-white/10 p-6 shadow-2xl backdrop-blur-xl">
 				<h1 className="text-xl font-semibold">{tu('chat.clear_failed.body')}</h1>
 				{view === 'confirm' && <p className="mt-3 text-sm leading-6 text-white/75">{tu('chat.clear_confirm.body')}</p>}
-				{refused && view !== 'confirm' && (
+				{notice === 'incomplete' && view !== 'confirm' && (
+					<p role="alert" className="mt-3 text-sm leading-6 text-amber-200">
+						{tu('chat.clear_incomplete.body')}
+					</p>
+				)}
+				{notice === 'refused' && view !== 'confirm' && (
 					<p role="alert" className="mt-3 text-sm leading-6 text-amber-200">
 						{tu('chat.clear_refused.body')}
 					</p>
@@ -109,6 +129,16 @@ export function ShellIdentityClosedNotice({ onCleared }: { onCleared?: () => voi
 							className="rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-[#071126] disabled:opacity-60"
 						>
 							{tu('chat.clear_failed.entry')}
+						</button>
+					)}
+					{notice === 'refused' && view !== 'confirm' && (
+						<button
+							type="button"
+							disabled={view === 'busy'}
+							onClick={() => (onOpenBackup ?? openSettingsForBackup)()}
+							className="rounded-full border border-white/30 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+						>
+							{tu('chat.clear_refused.backup_entry')}
 						</button>
 					)}
 				</div>
