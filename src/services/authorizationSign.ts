@@ -22,6 +22,8 @@ export function isAuthorizationSignRefused(e: unknown): boolean {
 export type AuthorizationSignInput = {
 	amount: bigint
 	to: string
+	/** The identity paths are blocked (the shell lacks the chat capability): nothing is unsealed or signed. */
+	identityBlocked?: boolean
 	/** An explicit private key given by the caller; it takes precedence. */
 	explicitKey: string
 	/** Whether the page runs inside a native shell. */
@@ -51,6 +53,7 @@ async function signOnce(input: AuthorizationSignInput, explicit: string): Promis
 }
 
 export async function runAuthorizationSign(input: AuthorizationSignInput): Promise<string> {
+	if (input.identityBlocked) throw new AuthorizationSignRefusedError('identity_capability_missing')
 	const header = await signOnce(input, input.explicitKey.trim())
 	if (!header) throw new AuthorizationSignRefusedError('sign_failed')
 	return header

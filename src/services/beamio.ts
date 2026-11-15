@@ -51,6 +51,7 @@ import { runAuthorizationSign } from './authorizationSign'
 import { readWalletEoaAddress } from './walletEoaAddress'
 import { shellRecordReadState } from './pageRecordDecision'
 import { injectShellSessionKey } from './shellSessionSigner'
+import { shellChatBlockedNow } from './shellChatCapability'
 import {
 	customJsonStringify,
 	initProfileTokens,
@@ -528,6 +529,7 @@ export async function AuthorizationSign(
 	return runAuthorizationSign({
 		amount,
 		to,
+		identityBlocked: shellChatBlockedNow(),
 		explicitKey: typeof privateKeyArmorOverride === 'string' ? privateKeyArmorOverride : '',
 		isShell: isShellContext(),
 		profileKey: CoNET_Data?.profiles?.[0]?.privateKeyArmor ?? '',

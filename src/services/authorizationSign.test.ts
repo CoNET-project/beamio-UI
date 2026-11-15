@@ -104,6 +104,21 @@ describe('payment authorization key routing', () => {
 	})
 })
 
+describe('the identity-blocked shell signs nothing', () => {
+	it('a shell without the identity capability is refused before anything is unsealed or signed', async () => {
+		const args = input({ identityBlocked: true })
+		await expect(runAuthorizationSign(args)).rejects.toMatchObject({ code: 'identity_capability_missing' })
+		expect(args.readBlob).not.toHaveBeenCalled()
+		expect(readWalletCredentialUnseal).not.toHaveBeenCalled()
+		expect(args.signWithKey).not.toHaveBeenCalled()
+	})
+
+	it('a browser is not blocked by the identity check (the flag is false outside a shell)', async () => {
+		const args = input({ isShell: false, profileKey: PROFILE_KEY, identityBlocked: false })
+		await expect(runAuthorizationSign(args)).resolves.toBe(`signed:${PROFILE_KEY}`)
+	})
+})
+
 describe('refusal recognition for the page callers', () => {
 	it('recognises the refusal by type and by name, and nothing else', () => {
 		expect(isAuthorizationSignRefused(new AuthorizationSignRefusedError('locked'))).toBe(true)
