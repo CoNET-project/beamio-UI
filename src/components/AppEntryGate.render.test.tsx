@@ -27,7 +27,7 @@ jest.mock('../services/shellIdentitySource', () => ({
 	setShellIdentityPending: () => undefined,
 	setShellFirstIdentity: () => undefined,
 	persistShellEoa: () => undefined,
-	readPersistedShellEoa: () => '',
+	readPersistedShellEoa: jest.fn(() => ''),
 }))
 
 // The gate's own dependencies: the '@/' alias does not resolve under jest here, so each one is a virtual stub.
@@ -73,7 +73,7 @@ jest.mock('@/services/nativeRecovery', () => ({
 	queryNativeWalletState: jest.fn(async () => ({ status: 'unknown' })),
 }), { virtual: true })
 jest.mock('@/utils/ephemeralCouponClaimWallet', () => ({ ensureEphemeralWalletForCouponClaim: jest.fn() }), { virtual: true })
-jest.mock('@/utils/beamioWalletReadyEvent', () => ({ BEAMIO_WALLET_READY_EVENT: 'beamio:wallet-ready' }), { virtual: true })
+jest.mock('@/utils/beamioWalletReadyEvent', () => ({ BEAMIO_WALLET_READY_EVENT: 'beamio:wallet-ready', dispatchBeamioWalletReady: jest.fn() }), { virtual: true })
 jest.mock('@/utils/consumerWalletGate', () => ({
 	hasCompletedBeamioAccount: () => false,
 	hasLocalPlaintextMnemonic: () => false,
@@ -102,6 +102,15 @@ beforeEach(() => {
 	setShellChatUiState('chat_unavailable')
 })
 
+afterEach(() => {
+	const recovery = jest.requireMock('@/services/nativeRecovery') as { queryNativeWalletState: jest.Mock }
+	recovery.queryNativeWalletState.mockReset()
+	recovery.queryNativeWalletState.mockImplementation(async () => ({ status: 'unknown' }))
+	const identity = jest.requireMock('../services/shellIdentitySource') as { readPersistedShellEoa: jest.Mock }
+	identity.readPersistedShellEoa.mockReset()
+	identity.readPersistedShellEoa.mockImplementation(() => '')
+})
+
 describe('the gate is decided, the chat is not initialised', () => {
 	it('a page that needs no identity renders its child route', async () => {
 		renderAt('/settings')
@@ -122,3 +131,25 @@ describe('the gate is decided, the chat is not initialised', () => {
 		expect(screen.queryByText('CHAT-PAGE')).toBeNull()
 	})
 })
+
+describe('hello answered without identity.native-keys.v1: the decision does not wait for the native status', () => {
+	it('with a public address on this device, the local home opens at once and the native status is not awaited', async () => {
+		const recovery = jest.requireMock('@/services/nativeRecovery') as { queryNativeWalletState: jest.Mock }
+		// a native status query that never answers: a wait on it would hold the splash
+		recovery.queryNativeWalletState.mockImplementation(() => new Promise(() => undefined))
+		const identity = jest.requireMock('../services/shellIdentitySource') as { readPersistedShellEoa: jest.Mock }
+		identity.readPersistedShellEoa.mockImplementation(() => '0x1111111111111111111111111111111111111111')
+		renderAt('/settings')
+		expect(await screen.findByText('SETTINGS-PAGE')).toBeTruthy()
+		expect(recovery.queryNativeWalletState).not.toHaveBeenCalled()
+	})
+
+	it('with no public address on this device, the unified state opens at once and the native status is not awaited', async () => {
+		const recovery = jest.requireMock('@/services/nativeRecovery') as { queryNativeWalletState: jest.Mock }
+		recovery.queryNativeWalletState.mockImplementation(() => new Promise(() => undefined))
+		renderAt('/settings')
+		expect(await screen.findByText('SETTINGS-PAGE')).toBeTruthy()
+		expect(recovery.queryNativeWalletState).not.toHaveBeenCalled()
+	})
+})
+

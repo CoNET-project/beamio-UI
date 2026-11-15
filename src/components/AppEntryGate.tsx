@@ -22,7 +22,7 @@ import NativeKeyImportRequired from '@/components/NativeKeyImportRequired'
 import { ensureShellChatState } from '@/services/shellChatCapability'
 import { beamioTagCreateNeeded, idbSignalOf, judgeBrowser, judgeLocalOnly, judgeShellFromNative, type NativeWalletState, type NativeWalletStatus } from '../services/accountJudgement'
 import { queryNativeWalletState } from '../services/nativeRecovery'
-import { identityCapabilityFrom, NATIVE_RETRY_SCREEN, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'
+import { identityCapabilityFrom, missingIdentityNotReadyEntry, NATIVE_RETRY_SCREEN, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'
 import { identityProbeDelayMs, onNativeIdentityRetryRequested, requestNativeIdentityRetry, setNativeIdentityCapability } from '@/services/nativeIdentityProbeRetry'
 import { probeNativeCapabilities } from '@/services/nativeChatRouteRegister'
 import { IDENTITY_CAPABILITY_MISSING } from '@/services/bridgeGuard'
@@ -353,10 +353,23 @@ export default function AppEntryGate() {
 		// the identity capability is probed once per start; a missing capability sends no init and shows neither the lock nor the import page.
 		let identity: IdentityCapabilityState = 'unanswered'
 		if (nativeShellRef.current) {
-			shellWalletState = await queryNativeWalletState()
+			// the hello answer comes first. A missing capability is a settled state: it never waits for the native status queries,
+			// which have their own 10 s timeouts and would hold the splash.
 			identity = await shellIdentityState()
 			setNativeIdentityCapability(identity)
 			identityUnansweredRef.current = identity === 'unanswered'
+			if (identity === 'missing') {
+				const persisted = readPersistedShellEoa()
+				if (missingIdentityNotReadyEntry(Boolean(persisted)) === 'local_home') {
+					publishNativePwaLog('info', '[AppEntryGate] identity.native-keys.v1 not declared (hello answered): local home on the public address')
+					applyLocalWallet(persisted)
+					return
+				}
+				publishNativePwaLog('info', '[AppEntryGate] identity.native-keys.v1 not declared (hello answered): unified state, no native wait')
+				showStorageUnavailable(IDENTITY_CAPABILITY_MISSING)
+				return
+			}
+			shellWalletState = await queryNativeWalletState()
 			if (identity === 'unanswered') {
 				// a start (launch, unlock or retry) starts the probe cadence again
 				identityProbesDoneRef.current = 0
