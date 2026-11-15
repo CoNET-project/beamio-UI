@@ -3,11 +3,13 @@
  * renders its child routes, so a page that needs no identity keeps working. The chat route stays behind ShellChatGate.
  * Real render. The modules that touch the native bridge or the page stores are replaced by stubs; SYNTHETIC values only.
  */
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import AppEntryGate from './AppEntryGate'
 import { ShellChatGate } from './ShellChatUnavailableNotice'
 import { setShellChatUiState } from '../services/shellChatUiState'
+import { probeNativeCapabilities } from '@/services/nativeChatRouteRegister'
+import { requestNativeIdentityRetry, setNativeIdentityCapability } from '../services/nativeIdentityProbeRetry'
 
 // The copy is the key itself, so the test reads which line is shown.
 jest.mock('../locale/beamioLocale', () => ({ tu: (key: string) => key }))
@@ -46,7 +48,7 @@ jest.mock('@/services/pgpMigrationRunner', () => ({ startPgpMigrationOnce: jest.
 jest.mock('@/components/NativeKeyImportRequired', () => () => null, { virtual: true })
 jest.mock('@/services/shellChatCapability', () => ({ ensureShellChatState: async () => 'chat_unavailable', shellChatBlockedNow: () => true }), { virtual: true })
 jest.mock('@/services/nativeChatRouteRegister', () => ({
-	probeNativeCapabilities: async () => ({ answered: true, capabilities: [] }),
+	probeNativeCapabilities: jest.fn(async () => ({ answered: true, capabilities: [] })),
 }), { virtual: true })
 jest.mock('@/services/nativeWallet', () => ({
 	NATIVE_WALLET_READY_EVENT: 'beamio:native-wallet-ready',
@@ -100,9 +102,14 @@ function renderAt(path: string) {
 beforeEach(() => {
 	// The shell's chat state is unavailable: no identity capability.
 	setShellChatUiState('chat_unavailable')
+	// CRA resets mock implementations before each test: the default hello answer (answered, no capability) is set here.
+	;(probeNativeCapabilities as unknown as jest.Mock).mockImplementation(async () => ({ answered: true, capabilities: [] }))
 })
 
 afterEach(() => {
+	const probe = probeNativeCapabilities as unknown as jest.Mock
+	probe.mockReset()
+	probe.mockImplementation(async () => ({ answered: true, capabilities: [] }))
 	const recovery = jest.requireMock('@/services/nativeRecovery') as { queryNativeWalletState: jest.Mock }
 	recovery.queryNativeWalletState.mockReset()
 	recovery.queryNativeWalletState.mockImplementation(async () => ({ status: 'unknown' }))
@@ -150,6 +157,83 @@ describe('hello answered without identity.native-keys.v1: the decision does not 
 		renderAt('/settings')
 		expect(await screen.findByText('SETTINGS-PAGE')).toBeTruthy()
 		expect(recovery.queryNativeWalletState).not.toHaveBeenCalled()
+	})
+})
+
+describe('the identity hello backoff, run by the gate timer (fake timers)', () => {
+	const probe = probeNativeCapabilities as unknown as jest.Mock
+	const UNANSWERED = { answered: false, capabilities: [] as string[] }
+	const DECLARED = { answered: true, capabilities: ['identity.native-keys.v1'] }
+	/** Moves the clock and lets the gate's async probe and its state effects settle. */
+	const advance = async (ms: number) => {
+		await act(async () => {
+			jest.advanceTimersByTime(ms)
+		})
+	}
+	const flush = async () => {
+		await act(async () => {
+			await Promise.resolve()
+		})
+	}
+
+	beforeEach(() => {
+		jest.useFakeTimers()
+		setNativeIdentityCapability('unknown')
+	})
+	afterEach(() => {
+		jest.useRealTimers()
+		setNativeIdentityCapability('unknown')
+	})
+
+	it('probes at 10 s, 30 s, 60 s, then every 60 s while unanswered; a manual retry restarts the cadence; the answer stops it', async () => {
+		probe.mockImplementation(async () => UNANSWERED)
+		await act(async () => {
+			renderAt('/settings')
+		})
+		await flush()
+		const start = probe.mock.calls.length // the start's own hello
+
+		await advance(9_999)
+		expect(probe.mock.calls.length).toBe(start)
+		await advance(1) // 10 s
+		expect(probe.mock.calls.length).toBe(start + 1)
+
+		await advance(29_999)
+		expect(probe.mock.calls.length).toBe(start + 1)
+		await advance(1) // 30 s after the first
+		expect(probe.mock.calls.length).toBe(start + 2)
+
+		await advance(59_999)
+		expect(probe.mock.calls.length).toBe(start + 2)
+		await advance(1) // 60 s after the second
+		expect(probe.mock.calls.length).toBe(start + 3)
+
+		await advance(60_000) // every 60 s from then on
+		expect(probe.mock.calls.length).toBe(start + 4)
+		await advance(60_000)
+		expect(probe.mock.calls.length).toBe(start + 5)
+
+		// a manual retry probes at once and starts the cadence again: the next automatic probe is 10 s later
+		await act(async () => {
+			requestNativeIdentityRetry()
+		})
+		await flush()
+		expect(probe.mock.calls.length).toBe(start + 6)
+		await advance(9_999)
+		expect(probe.mock.calls.length).toBe(start + 6)
+		await advance(1)
+		expect(probe.mock.calls.length).toBe(start + 7)
+
+		// the hello answers with the capability: probing stops for good. The declared answer starts one init (its own hello),
+		// so the count is taken once that init has settled; from then on no automatic probe runs.
+		probe.mockImplementation(async () => DECLARED)
+		await advance(10_000)
+		// the declared answer runs one init, and that init's zero-delay retry timer fires on the next clock move; the first
+		// 60 s step absorbs it. The backoff is what must stop, so the count is compared from there on.
+		await advance(60_000)
+		const answered = probe.mock.calls.length
+		for (let i = 0; i < 10; i++) await advance(60_000)
+		expect(probe.mock.calls.length).toBe(answered)
 	})
 })
 
