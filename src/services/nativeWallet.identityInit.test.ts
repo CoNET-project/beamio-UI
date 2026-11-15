@@ -42,8 +42,25 @@ describe('the G1 init is sent only with the declared capability', () => {
 		expect(initShellIdentityOnly).toHaveBeenCalledTimes(1)
 	})
 
-	it('an unanswered hello keeps the existing path: the init is sent as before', async () => {
+	it('a timed-out hello (no answer) sends no init: the capability is not confirmed', async () => {
 		;(probeNativeCapabilities as jest.Mock).mockResolvedValue({ answered: false, capabilities: [] })
+		await reachNativeWallet()
+		expect(initShellIdentityOnly).not.toHaveBeenCalled()
+	})
+
+	it('a refused hello (ok false) sends no init, even when a capability list comes with it', async () => {
+		// the probe reports a refusal as answered false; a list in such an answer is not a declaration.
+		;(probeNativeCapabilities as jest.Mock).mockResolvedValue({ answered: false, capabilities: ['identity.native-keys.v1'] })
+		await reachNativeWallet()
+		expect(initShellIdentityOnly).not.toHaveBeenCalled()
+	})
+
+	it('a hello answered later, with the capability declared, sends the init once it is answered', async () => {
+		;(probeNativeCapabilities as jest.Mock)
+			.mockResolvedValueOnce({ answered: false, capabilities: [] })
+			.mockResolvedValueOnce({ answered: true, capabilities: ['identity.native-keys.v1'] })
+		await reachNativeWallet()
+		expect(initShellIdentityOnly).not.toHaveBeenCalled()
 		await reachNativeWallet()
 		expect(initShellIdentityOnly).toHaveBeenCalledTimes(1)
 	})

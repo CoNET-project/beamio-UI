@@ -28,7 +28,7 @@ export function identityCapabilityFrom(probe: { answered: boolean; capabilities:
 export type ShellEntry = 'native_status' | 'enter_native' | 'chat_unavailable'
 
 export function shellEntryFor(identity: IdentityCapabilityState, native: NativeWalletState): ShellEntry {
-	if (identity !== 'missing') return 'native_status'
+	if (identity === 'declared') return 'native_status'
 	if (native.status === 'locked' || native.status === 'unlocked') return 'enter_native'
 	return 'chat_unavailable'
 }
@@ -38,8 +38,11 @@ export function shellEntryFor(identity: IdentityCapabilityState, native: NativeW
  *; a missing capability sends nothing. An unanswered hello keeps the existing path.
  */
 export function nativeInitAllowed(identity: IdentityCapabilityState): boolean {
-	return identity !== 'missing'
+	return identity === 'declared'
 }
+
+/** The retry screen for a native that did not answer its capability probe and has no known public address. */
+export const NATIVE_RETRY_SCREEN = 'native_not_ready_retry'
 
 /**
  * Capability missing and the native wallet not ready: the local home when this device holds a public address, else the unified

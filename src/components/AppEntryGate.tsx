@@ -22,7 +22,7 @@ import NativeKeyImportRequired from '@/components/NativeKeyImportRequired'
 import { ensureShellChatState } from '@/services/shellChatCapability'
 import { beamioTagCreateNeeded, idbSignalOf, judgeBrowser, judgeLocalOnly, judgeShellFromNative, type NativeWalletState, type NativeWalletStatus } from '../services/accountJudgement'
 import { queryNativeWalletState } from '../services/nativeRecovery'
-import { identityCapabilityFrom, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'
+import { identityCapabilityFrom, NATIVE_RETRY_SCREEN, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'
 import { probeNativeCapabilities } from '@/services/nativeChatRouteRegister'
 import { IDENTITY_CAPABILITY_MISSING } from '@/services/bridgeGuard'
 import { NATIVE_WALLET_READY_EVENT, notifyNativeWalletReady, publicWalletSeed, reachNativeWallet, rememberNativeEoa, takeInitRefusal } from '@/services/nativeWallet'
@@ -135,6 +135,8 @@ export default function AppEntryGate() {
 	const decisionMadeRef = useRef(false)
 	/** the local home is shown on a G1 wallet; the native wallet is read again until G2. */
 	const localModeRef = useRef(false)
+	// the latest init, for the retry screen and its timer (set below, after init)
+	const initRef = useRef<(() => Promise<void>) | null>(null)
 	const nativeShellRef = useRef(false)
 	/** attempts of the native store's not-ready retry (a backoff that is never given up; reset when the store reads). */
 	const nativeRetryAttemptRef = useRef(0)
@@ -331,7 +333,7 @@ export default function AppEntryGate() {
 			identity = await shellIdentityState()
 			//a locked native wallet shows the existing passcode page; the account is judged again after the unlock (init runs again).
 			// A missing identity capability shows no passcode page: the local home is judged below.
-			if (shellWalletState === 'locked' && identity !== 'missing') {
+			if (shellWalletState === 'locked' && identity === 'declared') {
 				clearShellSessionSigner()
 				publishNativePwaLog('info', '[AppEntryGate] native walletState locked: passcode page, judged again after the unlock')
 				markDecided()
@@ -355,7 +357,7 @@ export default function AppEntryGate() {
 					return
 				}
 				// the public address: this device's copy, or (with the capability) the native answer. Missing capability: this device's copy only.
-				const eoa = readPersistedShellEoa() || (identity === 'missing' ? '' : await readWalletEoaAddress().then((r) => (r.kind === 'address' ? r.eoa : '')))
+				const eoa = readPersistedShellEoa() || (identity !== 'declared' ? '' : await readWalletEoaAddress().then((r) => (r.kind === 'address' ? r.eoa : '')))
 				if (eoa) {
 					applyLocalWallet(eoa)
 					return
@@ -363,11 +365,12 @@ export default function AppEntryGate() {
 				publishNativePwaLog('warn', '[AppEntryGate] local mode: no public EOA on this device; nothing is guessed')
 				// a missing capability never shows the recovery (import) page: the unified state; the capability-declared shell keeps the recovery entry.
 				if (identity === 'missing') showStorageUnavailable(IDENTITY_CAPABILITY_MISSING)
+				else if (identity === 'unanswered') showStorageUnavailable(NATIVE_RETRY_SCREEN)
 				else showStorageUnavailable('native_recovery_needed')
 				return
 			}
 			// Capability missing: the account enters the local home on its public address; no native-account session is started.
-			if (identity === 'missing' && (native.status === 'locked' || native.status === 'unlocked') && 'eoa' in native) {
+			if (identity !== 'declared' && (native.status === 'locked' || native.status === 'unlocked') && 'eoa' in native) {
 				applyLocalWallet(native.eoa)
 				return
 			}
@@ -396,8 +399,8 @@ export default function AppEntryGate() {
 			// a shell without identity.native-keys.v1 shows the unified unavailable state, not the native-wallet
 			// status screen, and never reaches the page-wallet path (not even for no_key).
 			if (shellEntryFor(identity, native) === 'chat_unavailable') {
-				publishNativePwaLog('info', '[AppEntryGate] identity.native-keys.v1 not declared: chat unavailable (no page key)')
-				showStorageUnavailable(IDENTITY_CAPABILITY_MISSING)
+				publishNativePwaLog('info', '[AppEntryGate] identity.native-keys.v1 not confirmed: chat unavailable (no page key)')
+				showStorageUnavailable(identity === 'unanswered' ? NATIVE_RETRY_SCREEN : IDENTITY_CAPABILITY_MISSING)
 				return
 			}
 			//unknown and not_ready never fall back to the page storage. The account is not entered
@@ -530,6 +533,19 @@ export default function AppEntryGate() {
 		}
 	}
 
+	// the retry screen's button and its timer call the latest init
+	initRef.current = init
+
+	// a native that did not answer its capability probe is asked again after a short wait (the retry screen also has a button)
+	useEffect(() => {
+		if (storageUnavailable !== NATIVE_RETRY_SCREEN) return
+		const id = window.setTimeout(() => {
+			setStorageUnavailable('')
+			void initRef.current?.()
+		}, 10_000)
+		return () => window.clearTimeout(id)
+	}, [storageUnavailable])
+
 	useEffect(() => {
 		const nativeShell = isCashTreesNativeWebView()
 		// the shell re-sends queued profile updates once the native identity is ready, also after a restart.
@@ -579,6 +595,8 @@ export default function AppEntryGate() {
 		// A native recovery just succeeded (no reload): re-read the native wallet and enter the app.
 		const onNativeWalletReady = () => {
 			void reachNativeWallet().then(async (native) => {
+				// the native account is entered only once the identity capability is declared (a timeout or a refusal keeps the local home).
+				if ((await shellIdentityState()) !== 'declared') return
 				// the local home stays while the wallet is not initialised; the retry below reads it again.
 				if (localModeRef.current && native.status !== 'locked' && native.status !== 'unlocked') return
 				if ((native.status === 'locked' || native.status === 'unlocked') && 'eoa' in native) {
@@ -644,7 +662,10 @@ export default function AppEntryGate() {
 	useEffect(() => {
 		const id = window.setInterval(() => {
 			if (!localModeRef.current) return
-			void reachNativeWallet().then((native) => {
+			// read again only once the capability is declared: a missing, refused or unanswered hello keeps the local home.
+			void shellIdentityState().then(async (cap) => {
+				if (cap !== 'declared') return
+				const native = await reachNativeWallet()
 				if (native.status === 'locked' || native.status === 'unlocked') {
 					notifyNativeWalletReady('')
 					return
@@ -688,7 +709,22 @@ export default function AppEntryGate() {
 			) : storageUnavailable ? (
 				<div className="flex min-h-0 flex-1 flex-col items-center justify-center bg-[#071126] px-6 text-center text-white">
 					<div className="w-full max-w-md rounded-3xl border border-white/15 bg-white/10 p-6 shadow-2xl backdrop-blur-xl">
-						{storageUnavailable === 'app_update_required' ? (
+						{storageUnavailable === NATIVE_RETRY_SCREEN ? (
+							<>
+								<h1 className="text-xl font-semibold">{tu('native_not_ready_retry_title')}</h1>
+								<p className="mt-3 text-sm leading-6 text-white/75">{tu('native_not_ready_retry_body')}</p>
+								<button
+									type="button"
+									className="mt-5 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-[#071126]"
+									onClick={() => {
+										setStorageUnavailable('')
+										void initRef.current?.()
+									}}
+								>
+									{tu('native_not_ready_retry_action')}
+								</button>
+							</>
+						) : storageUnavailable === 'app_update_required' ? (
 							<>
 								<h1 className="text-xl font-semibold">{tu('app_update_required_title')}</h1>
 								<p className="mt-3 text-sm leading-6 text-white/75">{tu('app_update_required_body')}</p>

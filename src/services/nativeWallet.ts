@@ -92,7 +92,7 @@ export async function reachNativeWallet(): Promise<NativeWalletState> {
 		const identity = identityCapabilityFrom(await probeNativeCapabilities())
 		if (!nativeInitAllowed(identity)) {
 			lastInitRefusal = null
-			publishNativePwaLog('info', '[nativeWallet] init not sent: identity.native-keys.v1 not declared (no identity payload)')
+			publishNativePwaLog('info', '[nativeWallet] init not sent: identity.native-keys.v1 not confirmed (no identity payload)')
 			return state
 		}
 		// G1: the EOA only (bc5303be): no route key, no PGP key, no provisionIdentity. The native layer checks the EOA.
