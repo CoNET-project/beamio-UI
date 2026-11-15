@@ -79,6 +79,7 @@
     "chat.clear_incomplete.body": "清除未完成，可重试。",
     "backup.key_only_no_mnemonic.body": "此账号没有可备份的助记词，本机暂不能重置。",
     "chat.clear_backup_first.body": "清除前请先备份恢复码。",
+    "backup.readback_unavailable.body": "无法读取，未确认备份。",
     "chat.import_retry.entry": "重试导入",
     "chat.retry_exhausted.body": "聊天多次连接失败，已停止自动重试。",
     "chat.held.lost": "应用重启后，这条已暂存的消息已丢失。请重新发送。",
