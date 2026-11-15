@@ -322,7 +322,7 @@ export interface HistoryLocalLockCommand {
 	reqId: number
 }
 /**
- * Subkeys from the wallet layer (spec r1). Carries K_id, K_idx and DEK only: never P, R_db, S or master.
+ * Subkeys from the wallet layer . Carries K_id, K_idx and DEK only: never P, R_db, S or master.
  * Hex strings, 32 bytes each.
  */
 export interface HistoryLocalUnlockCommand {

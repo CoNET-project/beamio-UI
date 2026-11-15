@@ -1,5 +1,5 @@
 /**
- * Start-up lock for a wallet protected by a passcode (design passcode-unified-ui-spec, –).
+ * Start-up lock for a wallet protected by a passcode.
  * Driven by the flow table (passcodeFlow.ts, mode `unlock`). Visual values come from the tokens (passcode-tokens.v1.json).
  * Shown by AppEntryGate before any app content mounts. Failed tries are counted and waited on; nothing is erased here.
  * Forgetting the passcode leads to an explicit local reset and re-import with the recovery phrase.

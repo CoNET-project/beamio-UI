@@ -109,7 +109,7 @@ export default function MerchantGiftClaimSheet({
 	const handleClaim = async () => {
 		if (inFlightRef.current || submitting || phase === 'success') return
 		setPanelError(null)
-		// G2 batch 2 (option A): a shell without the chat capability claims nothing and reads no key.
+		// Option A: a shell without the chat capability claims nothing and reads no key.
 		if (shellChatBlockedNow()) {
 			setPanelError(tu('shell_chat_unavailable_body'))
 			return

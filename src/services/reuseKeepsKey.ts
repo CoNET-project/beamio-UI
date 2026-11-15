@@ -1,5 +1,5 @@
 /**
- * and the reviewer on de725dda: reusing an existing local key keeps the EOA and the private key.
+ * and a reviewed case: reusing an existing local key keeps the EOA and the private key.
  * A pure check, loadable under jest. createRecover uses it on the reuse path, so a changed key fails closed and nothing is written.
  */
 export type ReusableWallet = { profiles?: ReadonlyArray<{ keyID?: unknown; privateKeyArmor?: unknown }> } | null | undefined

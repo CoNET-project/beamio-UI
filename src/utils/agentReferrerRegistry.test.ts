@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * G2 batch 5 (spec, option A): the four registration functions in `agentReferrerRegistryClient.ts` return the unified
+ * Option A: the four registration functions in `agentReferrerRegistryClient.ts` return the unified
  * copy in a shell without the chat capability. They build no wallet, read no key and make no network call, and they do not
  * throw. The browser path (not blocked) keeps its previous behaviour. The module is loaded for real; its `@/` dependencies are
  * virtual stubs, because jest does not resolve the `@/` alias. SYNTHETIC values only: the key is a made-up hex string.

@@ -71,7 +71,7 @@ export function GenesisLoyaltyVestingSheet({ open, onClose, airdrop, eoa }: Prop
 	const canRelease = status !== 'loading' && view.releasable > 0 && view.started && !!eoa && !identityEntryDisabled
 
 	const handleRelease = useCallback(async () => {
-		// G2 batch 5 (option A): a shell without the chat capability releases nothing and reads no key.
+		// Option A: a shell without the chat capability releases nothing and reads no key.
 		if (shellChatBlockedNow()) {
 			showBeamioToastError(tu('shell_chat_unavailable_body'))
 			return

@@ -172,7 +172,7 @@ export interface DeviceKeyStore {
 /**
  * Concurrent callers for the same store share one pending load/create, so two start-up readers cannot each create a key
  * (the last save wins; data sealed under the other key would be unreadable, found in the e2e run, 2026-11-11). The share
- * honours the `create` flag (review of 80184e29): a read may join a pending create, but a create never joins a pending
+ * honours the `create` flag (a reviewed case): a read may join a pending create, but a create never joins a pending
  * read (a read can fail with device_key_missing and would hide the create). A create that finds a pending read waits for
  * that read to settle, then runs its own load-or-create (which still loads an existing key first, so none is replaced).
  */

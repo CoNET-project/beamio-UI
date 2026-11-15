@@ -225,7 +225,7 @@ export interface HistoryApplierDeps {
 }
 
 /**
- * The queue of history batches (reviewer on e414475e, blocker A). A batch is queued for the account the page has WHEN IT IS QUEUED,
+ * The queue of history batches (a reviewed blocker). A batch is queued for the account the page has WHEN IT IS QUEUED,
  * and it runs only while that account is still the page's account:
  * - when it is queued, its account is fixed (`enqueue`); a batch with no account is not queued;
  * - when it runs, before any plan, the account must be unchanged, and the key must belong to that account (accountOfKey === account);

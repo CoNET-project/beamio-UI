@@ -71,7 +71,7 @@ export default function BusinessStartKetRedeemAdminPage() {
 			setFormError('Enter a valid B-Unit amount greater than 0.')
 			return
 		}
-		// G2 batch 3 (option A): a shell without the chat capability signs nothing and reads no key.
+		// Option A: a shell without the chat capability signs nothing and reads no key.
 		if (shellChatBlockedNow()) {
 			setFormError(tu('shell_chat_unavailable_body'))
 			return

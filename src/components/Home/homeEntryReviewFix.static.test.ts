@@ -1,5 +1,5 @@
 /**
- * Android review (7edc841f, G2 batch 1 fixes): the pay-mode pay QR is not signed in a shell without the chat capability, and the
+ * the pay-mode pay QR is not signed in a shell without the chat capability, and the
  * two full-screen replacements have a way back. Read from source; a removed guard fails this test.
  */
 import { readFileSync } from 'fs'

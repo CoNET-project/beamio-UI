@@ -1,5 +1,5 @@
 /**
- * `POST /api/regiestChatRoute` (spec, 2026-11-13). Two paths, decided by the shell state (`shellChatState`):
+ * `POST /api/regiestChatRoute`. Two paths, decided by the shell state (`shellChatState`):
  *
  * - Browser (not a shell): the page signs the registration with the account key (EIP-191). This is the approved exception
  * Scope: the browser only, this one call.
@@ -81,7 +81,7 @@ export async function submitNativeChatRouteRegister(
 }
 
 /**
- * The backup password rule (decision vectors group C). The native layer forms the backup with the EOA key string
+ * The backup password rule (a decision vector). The native layer forms the backup with the EOA key string
  * in its own memory. The page never forms or sends a password, so this rule is kept here only so that the conformance
  * vectors are checked against one definition.
  */

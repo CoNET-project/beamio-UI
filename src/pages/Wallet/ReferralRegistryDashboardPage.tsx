@@ -2653,7 +2653,7 @@ export default function ReferralRegistryDashboardPage() {
 	const navigate = useNavigate()
 	const { profiles, setShowFooter, referralL0StartKitQuota, refreshReferralL0StartKitQuota } = useDaemonContext()
 	const profile = profiles?.[0]
-	// G2 batch 3 (option A): the admin entries are disabled in a shell without the chat capability.
+	// Option A: the admin entries are disabled in a shell without the chat capability.
 	const identityEntryDisabled = useIdentityEntryDisabled()
 	const signingArmor = resolveSigningPrivateKeyArmor(profile)
 	const derivedEoa = signingArmor ? new ethers.Wallet(signingArmor).address : ''

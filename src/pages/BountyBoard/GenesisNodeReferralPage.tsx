@@ -513,7 +513,7 @@ export default function GenesisNodeReferralPage() {
 		return () => setShowFooter(true)
 	}, [setShowFooter])
 
-	// G2 batch 3 (option A): the armor follows the shell chat state, so the action buttons stay disabled in a blocked shell.
+	// Option A: the armor follows the shell chat state, so the action buttons stay disabled in a blocked shell.
 	const identityEntryDisabled = useIdentityEntryDisabled()
 	const armor = useMemo(
 		() => (identityEntryDisabled ? '' : resolveSigningPrivateKeyArmor(profiles?.[0] ?? CoNET_Data?.profiles?.[0])),

@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * Option A as a rule (spec, accepted 2026-11-13): inside a shell, the identity paths are blocked unless the shell
+ * Option A as a rule: inside a shell, the identity paths are blocked unless the shell
  * declared `identity.native-keys.v1` (`native_chat`). The shell answer decides; nothing is assumed.
  */
 import { resolveShellChatState, shellChatBlocked } from './shellChatCapability'

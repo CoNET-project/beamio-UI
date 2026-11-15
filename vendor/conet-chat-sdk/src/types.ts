@@ -470,7 +470,7 @@ export interface BeamioChatHistory {
 	purgeLocalPlain(): Promise<number>
 	/** Logout: lock the library and zero the keys. */
 	lockLocal(): Promise<void>
-	/** Subkeys from the wallet layer (K_id, K_idx, DEK, hex). Never P or R_db (spec r1 ). */
+	/** Subkeys from the wallet layer (K_id, K_idx, DEK, hex). Never P or R_db . */
 	unlockLocal(keys: { kIdHex: string; kIdxHex: string; dekHex: string }): Promise<void>
 	/** One-time migration of PWA-A plaintext copies. */
 	migrateLocal(extra: Array<{ peer: string; dir: 'in' | 'out'; ts: number; sendId?: string; body: string; pending?: boolean }>): Promise<{ verified: boolean; conversations: number }>

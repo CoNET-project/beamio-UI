@@ -1,5 +1,5 @@
 /**
- * OTA-off protocol checks (0.52.935; ota-pwa-protocol.md, section 6: W1–W6).
+ * OTA-off protocol checks (0.52.935).
  * Test data only. No real keys, no real user data.
  */
 import fs from 'fs'
@@ -48,7 +48,7 @@ describe('embedded PWA OTA protocol (0.52.935)', () => {
 		clearShellGlobals()
 	})
 
-	it('W1 (positive): bridge function AND capability declared -> OTA supported, apply is forwarded', () => {
+	it('(positive): bridge function AND capability declared -> OTA supported, apply is forwarded', () => {
 		const { apply } = installIosBridge({ capability: true })
 		const mod = loadModule()
 		expect(mod.isEmbeddedPwaOtaSupported()).toBe(true)
@@ -56,14 +56,14 @@ describe('embedded PWA OTA protocol (0.52.935)', () => {
 		expect(apply).toHaveBeenCalledTimes(1)
 	})
 
-	it('W2 (negative): store build, no bridge function and no capability -> not supported, no call', () => {
+	it('(negative): store build, no bridge function and no capability -> not supported, no call', () => {
 		const mod = loadModule()
 		expect(mod.isEmbeddedPwaOtaSupported()).toBe(false)
 		// Nothing to call; request must be a no-op and must not throw.
 		expect(() => mod.requestEmbeddedPwaUpdateApply()).not.toThrow()
 	})
 
-	it('W3 (negative): bridge function present but capability NOT declared -> not supported, bridge not called', () => {
+	it('(negative): bridge function present but capability NOT declared -> not supported, bridge not called', () => {
 		const { apply } = installIosBridge({ capability: false })
 		const mod = loadModule()
 		expect(mod.isEmbeddedPwaOtaSupported()).toBe(false)
@@ -78,7 +78,7 @@ describe('embedded PWA OTA protocol (0.52.935)', () => {
 		expect(mod.isEmbeddedPwaOtaSupported()).toBe(false)
 	})
 
-	it('W4 (negative): reply reason "not_supported" -> no error, further calls suppressed for the session', () => {
+	it('(negative): reply reason "not_supported" -> no error, further calls suppressed for the session', () => {
 		const { apply } = installIosBridge({ capability: true })
 		const mod = loadModule()
 		const seen: Array<{ ok: boolean; reason?: string; error?: string }> = []
@@ -97,7 +97,7 @@ describe('embedded PWA OTA protocol (0.52.935)', () => {
 		expect(apply).not.toHaveBeenCalled()
 	})
 
-	it('W5 (negative): embeddedPwaUpdateAvailable while unsupported -> listener never called', () => {
+	it('(negative): embeddedPwaUpdateAvailable while unsupported -> listener never called', () => {
 		installIosBridge({ capability: false })
 		const mod = loadModule()
 		const listener = jest.fn()
@@ -125,7 +125,7 @@ describe('embedded PWA OTA protocol (0.52.935)', () => {
 		expect(listener).toHaveBeenCalledWith({ currentVer: '0.52.935', pendingVer: '0.52.999' })
 	})
 
-	it('W6 (static): every call of the apply bridge in source sits in the guarded util module', () => {
+	it('(static): every call of the apply bridge in source sits in the guarded util module', () => {
 		const srcRoot = path.resolve(__dirname, '..')
 		const offenders: string[] = []
 		const walk = (dir: string) => {

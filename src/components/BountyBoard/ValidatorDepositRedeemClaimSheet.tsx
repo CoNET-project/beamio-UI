@@ -55,7 +55,7 @@ export function ValidatorDepositRedeemClaimSheet({ open, onClose, claimerEoa, on
 
 	const handleClaim = useCallback(async () => {
 		setFormError('')
-		// G2 batch 3 (option A): a shell without the chat capability claims nothing and reads no key.
+		// Option A: a shell without the chat capability claims nothing and reads no key.
 		if (shellChatBlockedNow()) {
 			setFormError(tu('shell_chat_unavailable_body'))
 			return

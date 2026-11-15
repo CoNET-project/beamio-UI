@@ -4,7 +4,7 @@
  * signature. In a browser the host signs with the page's account signer; a native shell answers from its own key store.
  *
  * Decision (2026-11-13, PWA worker task): the worker holds no account key. The history master secret is still
- * derived in the worker from a host signature (/ W2 scope), and PGP decryption still runs in the worker.
+ * derived in the worker from a host signature (/ scope), and PGP decryption still runs in the worker.
  */
 import { ethers } from 'ethers'
 import type { TypedDataDomain, TypedDataField } from 'ethers'

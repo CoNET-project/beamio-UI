@@ -1,5 +1,5 @@
 /**
- * Native chat route registration (spec, W5 kind `chatRouteRegister`, 2026-11-13).
+ * Native chat route registration (kind `chatRouteRegister`).
  *
  * The page asks the native wallet layer with `{type: "chatRouteRegister", reqId, keyID, publicKeyArmored, routeKeyID}`.
  * The native layer builds the wallet, the backup, the timestamp, the nonce, the message and the EIP-191 signature, and
@@ -49,7 +49,7 @@ export type NativeRouteInput = {
 
 type Loose = Record<string, unknown>
 
-/** reqId rule (decision vectors group B): a string of 1–64 ASCII bytes 0x20–0x7E, not trimmed, or an integer 0 to 2^53−1. */
+/** reqId rule (decision vector): a string of 1–64 ASCII bytes 0x20–0x7E, not trimmed, or an integer 0 to 2^53−1. */
 export function isValidReqId(value: unknown): boolean {
 	if (typeof value === 'string') return /^[\x20-\x7e]{1,64}$/.test(value)
 	if (typeof value === 'number') return Number.isInteger(value) && value >= 0 && value <= MAX_SAFE
@@ -127,7 +127,7 @@ export async function probeNativeCapabilities(
 }
 
 /**
- * Judges one ack against the envelope rule (decision vectors group A). Returns the result on success and a code on
+ * Judges one ack against the envelope rule (decision vector). Returns the result on success and a code on
  * failure; anything that breaks the envelope is `bad_ack`.
  */
 export function judgeRouteAck(payload: Loose): NativeRouteOutcome {

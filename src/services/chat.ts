@@ -370,7 +370,7 @@ export function retryShellChatNow(): void {
 }
 registerShellRetryNow(retryShellChatNow)
 
-// Refuses any signing request from the worker in a shell: the native layer signs (W5), not the page.
+// Refuses any signing request from the worker in a shell: the native layer signs, not the page.
 const refuseShellSigning = async (): Promise<string> => {
 	throw new Error('native_signing_only')
 }

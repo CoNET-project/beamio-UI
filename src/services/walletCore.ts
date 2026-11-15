@@ -375,7 +375,7 @@ export class WalletCore {
 	}
 
 	/**
-	 * pointerEip712 (W5 kind pointerEip712): the index pointer signature for ChatIndexRegistry. The domain
+	 * pointerEip712 (kind pointerEip712): the index pointer signature for ChatIndexRegistry. The domain
 	 * name, version, chain and registry, the type and the owner are fixed here; the caller gives only the four values.
 	 */
 	async signPointerEip712(

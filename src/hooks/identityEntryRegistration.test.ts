@@ -1,10 +1,10 @@
 /**
  * @jest-environment node
  *
- * G2 batch 5 (spec, option A): the release button and the agent registration entries show the unified copy, and
+ * Option A: the release button and the agent registration entries show the unified copy, and
  * register, create or unlock nothing, in a shell without the chat capability. These are static guards: the sources are read,
  * so a removed guard fails this test. The behaviour of the four registration functions is covered by
- * `src/utils/agentReferrerRegistryBatch5.test.ts`.
+ * `src/utils/agentReferrerRegistry.test.ts`.
  */
 import { readFileSync } from 'fs'
 import { join } from 'path'

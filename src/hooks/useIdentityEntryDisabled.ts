@@ -1,5 +1,5 @@
 /**
- * Identity entries in a shell without the chat capability are disabled (spec, option A; G2). Every entry reads
+ * Identity entries in a shell without the chat capability are disabled (option A; state G2). Every entry reads
  * this one hook, so the rule is stated once. A browser build is never disabled. The hook follows the shell's chat UI state, so
  * an entry turns on when the shell's hello answer declares `identity.native-keys.v1`.
  */

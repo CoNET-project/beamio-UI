@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * G2 batch 2 (spec, option A): identity entries of Market, merchant gifts and the pay code are disabled in a shell
+ * Option A: identity entries of Market, merchant gifts and the pay code are disabled in a shell
  * without the chat capability. The entries read the hook or the shared capability check before any key or stored profile is
  * read. These are static guards: the sources are read, so a removed guard fails this test.
  */

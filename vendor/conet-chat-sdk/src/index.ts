@@ -154,5 +154,5 @@ export type {
 	Viewport as ChatLocalViewport,
 } from './local/types.js'
 
-/** Local-library key derivation for the wallet layer (spec r1 ). The wallet layer derives; the store receives subkeys. */
+/** Local-library key derivation for the wallet layer . The wallet layer derives; the store receives subkeys. */
 export { deriveLocalKeys, deriveRootDb, kcvOf, sendKeyFromRecord, stableIdFromSendKey, convBlindOf, cidBlindOf, layoutKeyBlindOf } from './local/keys.js'

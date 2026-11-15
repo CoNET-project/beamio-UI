@@ -2744,7 +2744,7 @@ export const createRecover = async (BeamioName: string, pin: string, options: { 
 		const temp = source === 'reuse_local' && local.status === 'loaded'
 			? ensureProfilePrivateKeyArmorFromMnemonic(local.data)
 			: await createOrGetWallet('')
-		// / reviewer (de725dda): the reuse keeps the EOA and the private key, or nothing is written (fail closed).
+		// / A reviewed rule: the reuse keeps the EOA and the private key, or nothing is written (fail closed).
 		if (source === 'reuse_local' && !reuseKeepsKey(local.status === 'loaded' ? local.data : null, temp)) {
 			logRecoverStep('reuse_key_changed', 'fail')
 			throw new LocalCreateError('reuse_key_changed')

@@ -110,7 +110,7 @@ describe('nativeSignGossip', () => {
 	})
 })
 
-describe('nativeSignMessage (W5)', () => {
+describe('nativeSignMessage', () => {
 	it('selfAuth is not a bridge command: refused as not_supported, and no signMessage command is sent', async () => {
 		installShell([NATIVE_KEYS_CAPABILITY], { type: 'ack', ok: true, result: { signature: SIG } })
 		await expect(nativeSignMessage('selfAuth', 'wallet_online_query text')).resolves.toEqual({ ok: false, reason: 'not_supported' })

@@ -1,5 +1,5 @@
 /**
- * Android review (7edc841f, G2 batch 1): where the unavailable notice replaces a full-screen page, the user must be able to leave.
+ * where the unavailable notice replaces a full-screen page, the user must be able to leave.
  * With `onBack` the notice shows one button that calls it; without it (the route-level gate) nothing changes.
  */
 import { fireEvent, render, screen } from '@testing-library/react'

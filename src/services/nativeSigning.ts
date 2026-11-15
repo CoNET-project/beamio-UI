@@ -8,7 +8,7 @@
  * Command names and shapes are provisional until the interface owner confirms them in the new spec:
  * - `gossipSign` { type, reqId, message } -> ack result.signature (kind `gossip`)
  * - `gossipSign` { type, reqId, kind, message, inboundGeneration } -> ack result.signature (envelope | group;)
- *   - `signMessage` { type, reqId, kind, message }           -> ack result.signature   (W5, kind selfAuth)
+ *   - `signMessage` { type, reqId, kind, message }           -> ack result.signature   (kind selfAuth)
  */
 import { ethers } from 'ethers'
 import { NATIVE_KEYS_CAPABILITY } from './shellChatState'
@@ -77,7 +77,7 @@ export async function nativeSignGossip(message: string): Promise<NativeSignOutco
 }
 
 /**
- * W5 `signMessage`, for `selfAuth` only. A `gossip_delivery_ack` text is refused whatever the kind: it must go
+ * `signMessage`, for `selfAuth` only. A `gossip_delivery_ack` text is refused whatever the kind: it must go
  * through `nativeSignGossip`, so an envelope signature can never be replayed as an ack. `envelope` and `group` must carry the
  * inbound generation, so they go through `nativeSignWithGeneration`.
  */

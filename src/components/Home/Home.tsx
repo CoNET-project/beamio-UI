@@ -567,7 +567,7 @@ type HomeProps = {
 }
 
 const Home = (_props: HomeProps) => {
-	// G2 batch 1 (spec, option A): in a shell without the chat capability the coupon list is not shown.
+	// Option A: in a shell without the chat capability the coupon list is not shown.
 	const identityEntryDisabled = useIdentityEntryDisabled()
 	const { setDarkModle, profiles,
 		power, setProfiles, setBeamio, setPaymentLink, setSecureCode,  secureCode, ignoreUrl, setMyAddress, myAddress, beamio, setCurrencyData,
@@ -2673,7 +2673,7 @@ const Home = (_props: HomeProps) => {
 			return
 		}
 		const profile = profiles?.[0]
-		// G2 batch 1 fix (Android ): a shell without the chat capability signs nothing and shows no pay QR.
+		// A shell without the chat capability signs nothing and shows no pay QR.
 		if (!profile?.privateKeyArmor || identityEntryDisabled) {
 			setPayRelayQRPayload(null)
 			setPayRelayQRLoading(false)

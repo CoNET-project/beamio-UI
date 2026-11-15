@@ -73,7 +73,7 @@ function registryContract(): ethers.Contract {
 }
 
 function walletFromConsumerKey(privateKeyArmor?: string | null): ethers.Wallet | null {
-	// G2 batch 4 (option A): a shell without the chat capability builds no signing wallet, even from a key passed in.
+	// Option A: a shell without the chat capability builds no signing wallet, even from a key passed in.
 	if (shellChatBlockedNow()) return null
 	const pk =
 		(privateKeyArmor?.trim() || resolveSigningPrivateKeyArmor(CoNET_Data?.profiles?.[0]) || '').trim()
@@ -219,7 +219,7 @@ export async function registerReferrerUnderIntroducer(
 	privateKeyArmor?: string | null,
 	refereeEoa?: string,
 ): Promise<RegisterResult> {
-	// G2 batch 5 (option A): a shell without the chat capability registers nothing and reads no key.
+	// Option A: a shell without the chat capability registers nothing and reads no key.
 	if (shellChatBlockedNow()) return { success: false, error: tu('shell_chat_unavailable_body') }
 	const wallet = walletFromConsumerKey(privateKeyArmor)
 	if (!wallet) return { success: false, error: 'Wallet signing key is not available' }
@@ -294,7 +294,7 @@ export async function fetchAgentOfMerchant(merchantEoa: string): Promise<string 
 }
 
 export async function registerAgentOnChain(): Promise<RegisterResult> {
-	// G2 batch 5 (option A): a shell without the chat capability registers nothing and reads no key.
+	// Option A: a shell without the chat capability registers nothing and reads no key.
 	if (shellChatBlockedNow()) return { success: false, error: tu('shell_chat_unavailable_body') }
 	const wallet = walletFromConsumerKey()
 	if (!wallet) return { success: false, error: 'Wallet signing key is not available' }
@@ -320,7 +320,7 @@ export async function registerAgentOnChain(): Promise<RegisterResult> {
 }
 
 export async function registerTempUnderAgent(tempEoa: string): Promise<RegisterResult> {
-	// G2 batch 5 (option A): a shell without the chat capability registers nothing and reads no key.
+	// Option A: a shell without the chat capability registers nothing and reads no key.
 	if (shellChatBlockedNow()) return { success: false, error: tu('shell_chat_unavailable_body') }
 	const wallet = walletFromConsumerKey()
 	if (!wallet) return { success: false, error: 'Wallet signing key is not available' }
@@ -364,7 +364,7 @@ export async function registerMerchantUnderAgent(
 	cardAddress: string,
 	tempEoa?: string,
 ): Promise<RegisterResult> {
-	// G2 batch 5 (option A): a shell without the chat capability registers nothing and reads no key.
+	// Option A: a shell without the chat capability registers nothing and reads no key.
 	if (shellChatBlockedNow()) return { success: false, error: tu('shell_chat_unavailable_body') }
 	const wallet = walletFromConsumerKey()
 	if (!wallet) return { success: false, error: 'Wallet signing key is not available' }

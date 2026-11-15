@@ -1435,7 +1435,7 @@ export default function MerchantCardTopUpFlow({
 		const wallet = profile.keyID?.trim()
 		setStep('claiming')
 		if (!key || !wallet) {
-			// G2 batch 2 (option A): in a shell without the chat capability the claim says so, not "sign in".
+			// Option A: in a shell without the chat capability the claim says so, not "sign in".
 			setPayError(shellChatBlockedNow() ? tu('shell_chat_unavailable_body') : 'Sign in to claim membership.')
 			setClaimFailed(true)
 			return
@@ -1502,7 +1502,7 @@ export default function MerchantCardTopUpFlow({
 			setStep('pay')
 			return
 		}
-		// G2 batch 2 (option A): a shell without the chat capability starts no membership claim and reads no key.
+		// Option A: a shell without the chat capability starts no membership claim and reads no key.
 		if (shellChatBlockedNow()) {
 			setPayError(tu('shell_chat_unavailable_body'))
 			return
@@ -1628,7 +1628,7 @@ export default function MerchantCardTopUpFlow({
 
 	const redeemLegsThenBuy = async () => {
 		if (confirmDisabled) return
-		// G2 batch 2 (option A): a shell without the chat capability pays nothing and reads no key.
+		// Option A: a shell without the chat capability pays nothing and reads no key.
 		if (shellChatBlockedNow()) {
 			setPayError(tu('shell_chat_unavailable_body'))
 			return

@@ -274,7 +274,7 @@ export default function RestoreWalletUnifiedScreen({
 		const out = await nativeRecoveryOpen()
 		// A successful open is not a success: the outcome comes as nativeRecoveryResult.
 		if (!out.ok) setRecoveryError(tu(recoveryOpenErrorKey(out.reason)))
-		// 7edc841f residual: the native recovery page is open until ok, cancel or unmount; the entry gate must not cover it.
+		// Late-arrival case: the native recovery page is open until ok, cancel or unmount; the entry gate must not cover it.
 		else announceNativeFlowPending(true)
 	}
 

@@ -1,5 +1,5 @@
 /**
- * (7edc841f, ac1d8fb3): a write the store does not take (migrating, or a conflict) is kept as an intent: the
+ * a write the store does not take (migrating, or a conflict) is kept as an intent: the
  * page's change as field-level operations against the store state it read. It is never written back as it was. Once a read answers
  * ok, the change is applied to the record just read at its current revision. A field both sides changed keeps the page's edit when it
  * is page-editable, otherwise the store's value; the conflict is logged by field name only. The persisted intent holds the
@@ -101,7 +101,7 @@ describe('migrating writes wait for a successful read', () => {
 	})
 })
 
-describe('(7edc841f): a deferred write never overwrites imported data with the page copy', () => {
+describe('a deferred write never overwrites imported data with the page copy', () => {
 	it('the imported account name and chat history survive; the page change is applied on top of the record just read', async () => {
 		jest.useFakeTimers()
 		try {

@@ -124,7 +124,7 @@ export function useCouponUserLike({
 
 	const submitLike = useCallback(async () => {
 		if (!enabled || likeLoading || !cardAddress?.trim() || !tokenId?.trim()) return
-		// G2 batch 2 (option A): a shell without the chat capability sends no like and reads no stored profile.
+		// Option A: a shell without the chat capability sends no like and reads no stored profile.
 		if (shellChatBlockedNow()) {
 			Toast.show({ content: tu('shell_chat_unavailable_body'), position: 'top' })
 			return

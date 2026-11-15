@@ -1,5 +1,5 @@
 /**
- * Numeric passcode settings (design passcode-unified-ui-spec). Web PWA only: the app shell keeps the
+ * Numeric passcode settings. Web PWA only: the app shell keeps the
  * system keystore and collects the passcode in its native overlay.
  * Driven by the flow table (passcodeFlow.ts): enable, change and disable runs. Visual values come from the tokens; the
  * section is a token card so the colours and sizes match the lock screen.

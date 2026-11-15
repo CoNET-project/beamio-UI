@@ -1,5 +1,5 @@
 /**
- * The page's full read of the local decrypted corpus (reviewer block on c723a508; on 2a791a0b).
+ * The page's full read of the local decrypted corpus (a reviewed blocker).
  *
  * The bridge no longer reads the whole history after each load (that was the replay). A load delivers only the entries it
  * downloaded and decrypted, so the chats are rebuilt from the full corpus once, in these cases:

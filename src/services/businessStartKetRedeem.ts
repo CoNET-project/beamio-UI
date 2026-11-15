@@ -148,7 +148,7 @@ export async function signAndSubmitBusinessStartKetRedeemCreate(params: {
 	| { success: true; txHash?: string; codeHash: string }
 	| { success: false; error: string }
 > {
-	// G2 batch 4 (option A): a shell without the chat capability sends nothing and uses no key, even one passed in.
+	// Option A: a shell without the chat capability sends nothing and uses no key, even one passed in.
 	if (shellChatBlockedNow()) {
 		return { success: false, error: tu('shell_chat_unavailable_body') }
 	}

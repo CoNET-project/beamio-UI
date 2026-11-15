@@ -268,7 +268,7 @@ export default function CoNetMiningDetailPage() {
 			setInlineError('Enter a redeem code.')
 			return
 		}
-		// G2 batch 3 (option A): a shell without the chat capability claims nothing and reads no key.
+		// Option A: a shell without the chat capability claims nothing and reads no key.
 		if (shellChatBlockedNow()) {
 			setInlineStatus('error')
 			setInlineError(tu('shell_chat_unavailable_body'))

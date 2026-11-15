@@ -471,7 +471,7 @@ function AppShell() {
     }
     const privateKeyArmor = resolveSigningPrivateKeyArmor(profiles?.[0])
     if (!privateKeyArmor) {
-      // G2 batch 1: in a shell without the chat capability the password unlock does not exist; say so instead.
+      // In a shell without the chat capability the password unlock does not exist; say so instead.
       Toast.show({
         content: shellChatBlockedNow()
           ? tu('shell_chat_unavailable_body')

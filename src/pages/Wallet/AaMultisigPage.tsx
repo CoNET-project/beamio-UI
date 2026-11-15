@@ -1642,7 +1642,7 @@ export default function AaMultisigPage() {
 			return false
 		}
 		if (!privateKeyArmor) {
-			// G2 batch 3 (option A): in a shell without the chat capability the copy says so.
+			// Option A: in a shell without the chat capability the copy says so.
 			Toast.show({ content: shellChatBlockedNow() ? tu('shell_chat_unavailable_body') : 'Wallet signing key unavailable.' })
 			return false
 		}
@@ -1665,7 +1665,7 @@ export default function AaMultisigPage() {
 			return false
 		}
 		if (!privateKeyArmor) {
-			// G2 batch 3 (option A): in a shell without the chat capability the copy says so.
+			// Option A: in a shell without the chat capability the copy says so.
 			setTransferCreateError(shellChatBlockedNow() ? tu('shell_chat_unavailable_body') : 'Wallet signing key unavailable.')
 			return false
 		}
@@ -1701,7 +1701,7 @@ export default function AaMultisigPage() {
 				return
 			}
 			if (!privateKeyArmor) {
-				// G2 batch 3 (option A): in a shell without the chat capability the copy says so.
+				// Option A: in a shell without the chat capability the copy says so.
 				fail(shellChatBlockedNow() ? tu('shell_chat_unavailable_body') : 'Wallet signing key unavailable.')
 				return
 			}

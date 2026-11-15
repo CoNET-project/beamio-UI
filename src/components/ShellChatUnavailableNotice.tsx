@@ -1,5 +1,5 @@
 /**
- * The unified "chat unavailable" state of a shell without the capability (spec, option A). The copy is a draft, to be
+ * The unified "chat unavailable" state of a shell without the capability (option A). The copy is a draft, to be
  * confirmed by the PWA integration owner. It is not a lock page (that is for `no_key` only) and it holds no key.
  *
  * TEST BENCH (transitional): this is the stage before the native commands exist. It is not the final shell form;

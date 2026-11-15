@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * The chat UI state in a shell (spec, option A): a store with subscribers, read by the chat gate.
+ * The chat UI state in a shell (option A): a store with subscribers, read by the chat gate.
  */
 import { getShellChatUiState, setShellChatUiState, subscribeShellChatUiState } from './shellChatUiState'
 

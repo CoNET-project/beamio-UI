@@ -93,7 +93,7 @@ export const idbSignalOf = (read: {
 	return read.reason === 'invalid_document' ? 'corrupt' : 'unavailable'
 }
 
-/** The walletStatus values the gate sees (W1). */
+/** The walletStatus values the gate sees. */
 export type NativeWalletStatus = 'no_key' | 'not_ready' | 'unknown' | 'locked' | 'unlocked'
 
 /**

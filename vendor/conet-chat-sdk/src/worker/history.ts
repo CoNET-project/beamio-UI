@@ -767,7 +767,7 @@ export class HistoryStore {
 	}
 
 	/**
-	 * Subkeys delivered by the wallet layer (spec r1  condition 2). The worker never derives R_db itself, so the
+	 * Subkeys delivered by the wallet layer (condition 2). The worker never derives R_db itself, so the
 	 * local library needs no private key here. Null until the wallet layer unlocks.
 	 */
 	private requireLocalKeys(): { kId: Uint8Array; kIdx: Uint8Array; dek: Uint8Array } {

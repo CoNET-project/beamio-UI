@@ -69,7 +69,7 @@ export interface ShellChatStartDeps {
 	restorePgp: () => Promise<PgpRestoreOutcome>
 	/** Shows the restore failure; the user's entry is the only way to generate, and the page never generates from here. */
 	showPgpFailure: (code: PgpRestoreFailure) => void
-	/** the unified chat-unavailable state (spec, option A), the same screen as a missing identity capability. */
+	/** the unified chat-unavailable state (option A), the same screen as a missing identity capability. */
 	showChatUnavailable: () => void
 	/**
 	 * Schedules another start. `failure`(the default) counts toward the retry limit; `continue`is a step that

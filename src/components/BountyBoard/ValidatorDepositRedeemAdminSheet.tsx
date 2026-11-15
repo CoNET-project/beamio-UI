@@ -230,7 +230,7 @@ export function ValidatorDepositRedeemAdminSheet({ open, onClose, adminEoa, canC
 			referrer = ethers.getAddress(referrerInput.trim())
 		}
 
-		// G2 batch 3 (option A): a shell without the chat capability signs nothing and reads no key.
+		// Option A: a shell without the chat capability signs nothing and reads no key.
 		if (shellChatBlockedNow()) {
 			setFormError(tu('shell_chat_unavailable_body'))
 			return
@@ -398,7 +398,7 @@ export function ValidatorDepositRedeemAdminSheet({ open, onClose, adminEoa, canC
 			})
 			if (display !== 'pending') return
 
-			// G2 batch 3 (option A): a shell without the chat capability cancels nothing and reads no key.
+			// Option A: a shell without the chat capability cancels nothing and reads no key.
 			if (shellChatBlockedNow()) {
 				Toast.show({ content: tu('shell_chat_unavailable_body'), position: 'top' })
 				return

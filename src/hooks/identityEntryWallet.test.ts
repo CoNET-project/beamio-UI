@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * G2 batch 3 (spec, option A): wallet, validator, BountyBoard, brand and sheet entries are disabled in a shell without
+ * Option A: wallet, validator, BountyBoard, brand and sheet entries are disabled in a shell without
  * the chat capability. The entries read the hook or the shared capability check before a key is read. These are static guards:
  * the sources are read, so a removed guard fails this test.
  */
@@ -113,7 +113,7 @@ describe('the entries read the hook or the shared capability check', () => {
 		expect(src).toContain('const localBo = await persistBeamioLanguageLocally(beamio, next)')
 	})
 
-	it('only the two unified keys are used for the blocked copy in batch 3', () => {
+	it('only the two unified keys are used for the blocked copy ', () => {
 		const changed = [
 			'components/BountyBoard/ValidatorDepositRedeemAdminSheet.tsx',
 			'components/BountyBoard/ValidatorDepositRedeemClaimSheet.tsx',

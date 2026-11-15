@@ -1,5 +1,5 @@
 /**
- * Copy of the passcode settings (review of 3c2425d5): the title and the intro follow the capability that is live. The
+ * Copy of the passcode settings (a review of the passcode copy): the title and the intro follow the capability that is live. The
  * numeric passcode is available; passkey and Face ID are not. No line may call the screen UI-only.
  * The Chinese wording is provisional, for the project owner to confirm.
  */

@@ -119,7 +119,7 @@ export async function signAndSubmitValidatorDepositRedeemClaimAirdrop(params: {
 		return { success: false, error: 'ValidatorDepositRedeem address not configured' }
 	}
 
-	// G2 batch 4 (option A): a shell without the chat capability sends nothing and uses no key, even one passed in.
+	// Option A: a shell without the chat capability sends nothing and uses no key, even one passed in.
 	if (shellChatBlockedNow()) {
 		return { success: false, error: tu('shell_chat_unavailable_body') }
 	}
@@ -209,7 +209,7 @@ export async function releaseValidatorDepositRedeemAirdropSelf(params: {
 		return { success: false, error: 'ValidatorDepositRedeem address not configured' }
 	}
 
-	// G2 batch 4 (option A): a shell without the chat capability sends nothing and uses no key, even one passed in.
+	// Option A: a shell without the chat capability sends nothing and uses no key, even one passed in.
 	if (shellChatBlockedNow()) {
 		return { success: false, error: tu('shell_chat_unavailable_body') }
 	}

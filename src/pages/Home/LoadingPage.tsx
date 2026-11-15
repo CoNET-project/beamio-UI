@@ -534,7 +534,7 @@ export default function BeamioOnboardingModal({ home, onInitComplete, requireWal
 	const [loading, SetLoading] = useState(true)
 	const navigate = useNavigate()
 
-	// G2 batch 1 (spec, option A): in a shell without the chat capability the coupon list is not shown.
+	// Option A: in a shell without the chat capability the coupon list is not shown.
 	const identityEntryDisabled = useIdentityEntryDisabled()
 	const [settingsOpen, setSettingsOpen] = useState<''|'CreateUsernamePinScreen'|'RecoveryQRScreen'|'OnboardingWelcomeScreen'|'WalletReadyScreen'|'RestoreWalletScreen'|'ActiveCouponsScreen'|'RedeemVoucherScreen'>('')
 	const [isInitialEntry, setIsInitialEntry] = useState(false)

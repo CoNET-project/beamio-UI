@@ -214,7 +214,7 @@ export function MerchantsBusinessPanel({
 			setCardsByTemp((prev) => ({ ...prev, [key]: { loading: false, rows } }))
 			for (const row of rows) {
 				if (!row.transferred || !row.owner) continue
-				// G2 batch 5: a blocked shell registers no handoff (no key, no send).
+				// A blocked shell registers no handoff (no key, no send).
 				if (!shellChatBlockedNow()) void registerMerchantUnderAgent(row.owner, row.cardAddress, temp.eoa).catch(() => undefined)
 			}
 		} catch {

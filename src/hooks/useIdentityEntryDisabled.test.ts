@@ -1,5 +1,5 @@
 /**
- * G2 batch 1 (spec, option A): identity entries are disabled in a shell without the chat capability, through
+ * Option A: identity entries are disabled in a shell without the chat capability, through
  * one hook. The hook follows the shell's chat UI state. The three batch-1 entry points are checked from source: a removed guard
  * fails this test.
  */

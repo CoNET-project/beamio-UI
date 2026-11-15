@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * G2 batch 4 (spec, option A): the identity services send nothing and read no key in a shell without the chat
+ * Option A: the identity services send nothing and read no key in a shell without the chat
  * capability, and they do not throw. Each service is loaded for real; its `@/` dependencies are virtual stubs, because jest
  * does not resolve the `@/` alias. SYNTHETIC values only: the key below is a made-up hex string, not a real key.
  */
@@ -211,7 +211,7 @@ describe('identity services refuse in a shell without the chat capability', () =
 
 	it('agentReferrerRegistryClient: a key passed in builds no wallet, so the registration returns the unified error and sends nothing', async () => {
 		const res = await registerReferrerUnderIntroducer(ADDR, SYNTHETIC_KEY_HEX, ADDR)
-		// G2 batch 5: the shell check comes first, so the unified copy is returned before any wallet is built (batch 4 returned the English key error)
+		// The shell check comes first, so the unified copy is returned before any wallet is built (an earlier version returned the English key error)
 		expect(res).toEqual({ success: false, error: 'shell_chat_unavailable_body' })
 		expectNoSend(res)
 	})

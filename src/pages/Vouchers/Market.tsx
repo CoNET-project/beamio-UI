@@ -5967,7 +5967,7 @@ function DiscoverMerchantDetailFullScreen({
 		assets: Awaited<ReturnType<typeof getMyAssets>>,
 	) => void
 }) {
-	// G2 batch 2 (option A): in a shell without the chat capability the identity entries are disabled.
+	// Option A: in a shell without the chat capability the identity entries are disabled.
 	const identityEntryDisabled = useIdentityEntryDisabled()
 	const navigate = useNavigate()
 	const location = useLocation()
@@ -6902,7 +6902,7 @@ function DiscoverMerchantDetailFullScreen({
 			referrerEoaFromUi: string,
 		) => {
 			if (genesisSeatLockInFlightRef.current) return
-			// G2 batch 2 (option A): a shell without the chat capability locks no seat and reads no key.
+			// Option A: a shell without the chat capability locks no seat and reads no key.
 			if (shellChatBlockedNow()) {
 				setGenesisSeatPurchase({ kind: 'error', message: tu('shell_chat_unavailable_body') })
 				return
@@ -7167,7 +7167,7 @@ function DiscoverMerchantDetailFullScreen({
 	const submitMerchantUserLike = useCallback(async () => {
 		const card = item.cardAddress?.trim()
 		if (!card || likeLoading || userLiked) return
-		// G2 batch 2 (option A): a shell without the chat capability sends no like and reads no stored profile.
+		// Option A: a shell without the chat capability sends no like and reads no stored profile.
 		if (shellChatBlockedNow()) {
 			setLikeError(tu('shell_chat_unavailable_body'))
 			return
@@ -7704,7 +7704,7 @@ function DiscoverMerchantDetailFullScreen({
 	)
 
 	const handleUsdcTopupContinue = useCallback(async () => {
-		// G2 batch 2 (option A): a shell without the chat capability pays nothing and reads no key.
+		// Option A: a shell without the chat capability pays nothing and reads no key.
 		if (shellChatBlockedNow()) {
 			setDiscoverPayPanelError(tu('shell_chat_unavailable_body'))
 			return
@@ -7942,7 +7942,7 @@ function DiscoverMerchantDetailFullScreen({
 	}, [setDiscoverPayPanelError, usdcTopupQrValue])
 
 	const runDiscoverEoaTopupNow = useCallback(async () => {
-		// G2 batch 2 (option A): a shell without the chat capability pays nothing and reads no key.
+		// Option A: a shell without the chat capability pays nothing and reads no key.
 		if (shellChatBlockedNow()) {
 			setDiscoverPayPanelError(tu('shell_chat_unavailable_body'))
 			return
@@ -8148,7 +8148,7 @@ function DiscoverMerchantDetailFullScreen({
 			const row = offer.coupon
 			const currentStatus = couponClaimStatusById[row.id] ?? 'idle'
 			if (currentStatus !== 'idle') return
-			// G2 batch 2 (option A): a shell without the chat capability claims nothing and reads no stored profile.
+			// Option A: a shell without the chat capability claims nothing and reads no stored profile.
 			if (shellChatBlockedNow()) {
 				setCouponClaimErrorById((s) => ({ ...s, [row.id]: tu('shell_chat_unavailable_body') }))
 				return

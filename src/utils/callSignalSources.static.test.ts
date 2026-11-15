@@ -1,5 +1,5 @@
 /**
- * Review 1303e5e7 blocking items 1, 2 and 4, checked on the source (SYNTHETIC; no values): the call controller never sends to the offer's own
+ * Reviewed blocking items 1, 2 and 4, checked on the source (SYNTHETIC; no values): the call controller never sends to the offer's own
  * key or route; the answer uses the caller's verified record; the receipt to a sender is gated; no reader returns null for a failure.
  */
 import { readFileSync } from 'fs'

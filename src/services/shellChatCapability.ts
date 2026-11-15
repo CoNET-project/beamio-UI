@@ -1,5 +1,5 @@
 /**
- * Option A (spec, accepted by the project 2026-11-13): inside a native shell without `identity.native-keys.v1`,
+ * Option A: inside a native shell without `identity.native-keys.v1`,
  * nothing identity-bearing is sent, the page does not hold the key, and there is no fallback. The chat shows the unified
  * unavailable state.
  *

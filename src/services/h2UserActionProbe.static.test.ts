@@ -1,5 +1,5 @@
 /**
- * Review 92a2c059 H2: a read for a user action that does not feed the page copy takes the probe (checkStorage({ probe: true })), so
+ * A read for a user action that does not feed the page copy takes the probe (checkStorage({ probe: true })), so
  * it does not move the write basis. The start-up read (App init, which builds the page copy) keeps the baseline read. A removed guard
  * fails this test.
  */

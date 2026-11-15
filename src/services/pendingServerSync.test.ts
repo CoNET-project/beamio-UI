@@ -170,7 +170,7 @@ describe('pending server sync queue', () => {
 		expect(profileSyncPending(A, 'deferred')).toBe(false)
 	})
 
-	it('(race, 7edc841f): a success that started before a newer failure does not drop the newer intent', () => {
+	it('(race): a success that started before a newer failure does not drop the newer intent', () => {
 		const started = pendingServerSyncGeneration(A) // 0: nothing queued when v1 started
 		enqueuePendingServerSync(A) // v2 failed and queued (a newer generation)
 		completePendingServerSync(A, started) // v1 succeeds late

@@ -1,5 +1,5 @@
 /**
- * (reviewer on 2a791a0b): the page's full corpus read, run at run time.
+ * (a reviewed case): the page's full corpus read, run at run time.
  * - case A: the same device restores or re-imports, and the corpus already exists: the read runs again and its entries are merged;
  * - case B: the mount has no key: the read waits for the key and is not dropped;
  * - : an old client that is still bound to another account feeds nothing; a failed read is retried a bounded number of times, and a

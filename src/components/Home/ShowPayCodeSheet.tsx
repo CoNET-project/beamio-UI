@@ -46,7 +46,7 @@ export default function ShowPayCodeSheet({
 	const [payRelaySecondsLeft, setPayRelaySecondsLeft] = useState(0)
 	const [paySheetQrSize, setPaySheetQrSize] = useState(256)
 	const [signError, setSignError] = useState<string | null>(null)
-	// G2 batch 2 (spec, option A): in a shell without the chat capability the pay code is not shown.
+	// Option A: in a shell without the chat capability the pay code is not shown.
 	const identityEntryDisabled = useIdentityEntryDisabled()
 
 	const privateKeyArmor = resolveSigningPrivateKeyArmor(profile) || ''

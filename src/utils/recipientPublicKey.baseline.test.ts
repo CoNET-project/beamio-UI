@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- * Review 1303e5e7, blocking an existing contact whose stored baseline came from an earlier build (an armor SHA-256) is not reported as a
+ * A reviewed case: blocking an existing contact whose stored baseline came from an earlier build (an armor SHA-256) is not reported as a
  * changed key; a baseline in the OpenPGP scheme is compared. SYNTHETIC keys generated here.
  */
 import { generateKey } from 'openpgp'

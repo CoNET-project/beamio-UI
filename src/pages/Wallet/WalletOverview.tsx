@@ -63,7 +63,7 @@ export default function WalletOverview() {
 	} = useDaemonContext()
 
 	const profile = profiles?.[0]
-	// G2 batch 3 (option A): the referral claim entry is disabled in a shell without the chat capability.
+	// Option A: the referral claim entry is disabled in a shell without the chat capability.
 	const identityEntryDisabled = useIdentityEntryDisabled()
 	const signingArmor = resolveSigningPrivateKeyArmor(profile)
 	const derivedEoa = signingArmor ? new ethers.Wallet(signingArmor).address : ''

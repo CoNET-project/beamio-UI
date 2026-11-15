@@ -122,7 +122,7 @@ describe('A+B: no record, or a failed read (the read ends empty before the nativ
 			race.nativeResolve?.({ status: 'unlocked', eoa: EOA })
 		})
 		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy(), { timeout: 3000 })
-		//  (666dfed1 review): the init runs once. The chat start is the route to the PGP restore; the push bind and the AA ensure
+		//  The init runs once. The chat start is the route to the PGP restore; the push bind and the AA ensure
 		// are counted so a second init would show.
 		await waitFor(() => expect(mockChatStarts.length).toBe(1))
 		expect(mockPushBinds.length).toBe(1)

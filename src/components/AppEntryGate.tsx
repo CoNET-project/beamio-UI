@@ -569,7 +569,7 @@ export default function AppEntryGate() {
 		// a native ok answer (creation or restore) establishes the wallet at once, synchronously.
 		const onNativeWalletEstablished = () => markWalletEstablished()
 		window.addEventListener(NATIVE_WALLET_ESTABLISHED_EVENT, onNativeWalletEstablished)
-		// 7edc841f residual: while a native create or recovery page is open, a late no_key does not cover it with the import route.
+		// Late-arrival case: while a native create or recovery page is open, a late no_key does not cover it with the import route.
 		const onNativeFlowPending = (e: Event) => {
 			if ((e as CustomEvent<{ open?: boolean }>).detail?.open) noKeyCtl.beginNativeFlow()
 			else noKeyCtl.endNativeFlow()
@@ -659,7 +659,7 @@ export default function AppEntryGate() {
 		return () => window.clearInterval(id)
 	}, [])
 
-	// Shell capability state (spec, option A): asked once from the shell's hello answer. A no_key held back before
+	// Shell capability state (option A): asked once from the shell's hello answer. A no_key held back before
 	// the answer is decided again now (G1): the import route shows only for a shell that declared native keys.
 	useEffect(() => {
 		void ensureShellChatState().then((state) => {

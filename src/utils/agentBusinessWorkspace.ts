@@ -80,7 +80,7 @@ async function generateAvailableTempTag(): Promise<string> {
 }
 
 export async function createAgentTempAccount(agentEoa: string): Promise<AgentTempAccount> {
-	// G2 batch 5 (option A): a blocked shell creates no local temp account and binds nothing; the unified copy reaches the caller.
+	// Option A: a blocked shell creates no local temp account and binds nothing; the unified copy reaches the caller.
 	if (shellChatBlockedNow()) throw new Error(tu('shell_chat_unavailable_body'))
 	// Shell: the page creates no random account key here; agent temp accounts are not available in a shell yet.
 	if (isShellContext()) throw new Error('Creating a temp account is not available in this app version.')
@@ -170,7 +170,7 @@ export async function claimTempCreateMerchantCardNft(
 	temp: AgentTempAccount,
 	code: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-	// G2 batch 5 (option A): a blocked shell unlocks no temp key and sends no claim.
+	// Option A: a blocked shell unlocks no temp key and sends no claim.
 	if (shellChatBlockedNow()) return { ok: false, error: tu('shell_chat_unavailable_body') }
 	const trimmed = code.trim()
 	if (!trimmed) return { ok: false, error: 'Enter a redeem code.' }

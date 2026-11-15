@@ -259,7 +259,7 @@ export function acceptNativeCreateResult(
 	return { code: code as NativeAccountCreateResultCode }
 }
 
-/** Native wallet state (W1 walletStatus): the ack carries `result.status`; with a key, `accountKey` is `eoa:workspace` (public). */
+/** Native wallet state (walletStatus): the ack carries `result.status`; with a key, `accountKey` is `eoa:workspace` (public). */
 export const NATIVE_WALLET_STATUS_COMMAND = 'walletStatus'
 export type NativeWalletState =
 	| { status: 'no_key' | 'unknown' }

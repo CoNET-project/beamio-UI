@@ -1,5 +1,5 @@
 /**
- * / reviewer  (666dfed1): the App's init in a shell may skip for want of an account, and wait for the entry gate. The gate asks
+ * / a reviewed case: the App's init in a shell may skip for want of an account, and wait for the entry gate. The gate asks
  * the init to run again (dispatchBeamioWalletReady) only while such a skip is pending. A normal cold start, where the account is in memory
  * before the storage read ends, never sets it, so the init runs once.
  */

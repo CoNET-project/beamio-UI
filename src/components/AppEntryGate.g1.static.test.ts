@@ -1,5 +1,5 @@
 /**
- * G1 (spec  option A): the native no_key signal reaches the controller before the shell's hello answer is known.
+ * G1 (option A): the native no_key signal reaches the controller before the shell's hello answer is known.
  * The gate must (a) route every no_key through the controller, which holds it back while the capability is unknown or blocked, and
  * (b) re-decide a held no_key when the hello answer arrives. A removed wiring fails this test.
  */

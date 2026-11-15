@@ -1,5 +1,5 @@
 /**
- * Shell and capability state of the chat (spec, decision vectors group D, 2026-11-13).
+ * Shell and capability state of the chat.
  *
  * - The shell is decided by the build (`buildKind = shell`) or by the native bridge. A shell never enters the
  *   page-key path, even when the bridge is missing.

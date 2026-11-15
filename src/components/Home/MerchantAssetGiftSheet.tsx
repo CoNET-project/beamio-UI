@@ -184,7 +184,7 @@ export default function MerchantAssetGiftSheet({ onClose, cards, profile, onSucc
 
 	const handleSubmit = async () => {
 		setSubmitError(null)
-		// G2 batch 2 (option A): a shell without the chat capability sends no gift and reads no key.
+		// Option A: a shell without the chat capability sends no gift and reads no key.
 		if (shellChatBlockedNow()) {
 			setSubmitError(tu('shell_chat_unavailable_body'))
 			return

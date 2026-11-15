@@ -1,5 +1,5 @@
 /**
- * Which account a worker client may feed (reviewer block on 2a791a0b).
+ * Which account a worker client may feed (a reviewed blocker).
  *
  * A worker client is created for one account (its eoaAddress is fixed at creation). A later account change does not stop it by itself, so a
  * client can still be alive while the page already holds another account. The page reads and applies history only when the client's

@@ -11,7 +11,7 @@
  *   capabilityResolved(native)  the shell's hello answer arrived (native = the shell declared identity.native-keys.v1);
  *                               true when a no_key held back before the answer must show the import route now
  *
- * G1 (spec  option A): the import route is for a shell that holds native keys. Until the hello answer
+ * G1 (option A): the import route is for a shell that holds native keys. Until the hello answer
  * is known the capability is `unknown`, and a no_key that arrives then is held back, not shown. A shell without the
  * capability (`blocked`, including a hello that timed out and resolved to a non-native state) never shows it.
  */

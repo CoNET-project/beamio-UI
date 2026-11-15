@@ -1,5 +1,5 @@
 /**
- * The chat UI state in a shell (spec, option A): `chat_unavailable` shows the unified notice in place of the chat;
+ * The chat UI state in a shell (option A): `chat_unavailable` shows the unified notice in place of the chat;
  * `native_chat` and `browser_chat` show the chat. The state is set from the shell's `hello` answer at start (AppEntryGate).
  * Read with `useShellChatUiState`.
  */

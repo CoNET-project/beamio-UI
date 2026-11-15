@@ -2086,7 +2086,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		window.addEventListener("beamio:chat-locked", onLocked)
 		return () => window.removeEventListener("beamio:chat-locked", onLocked)
 	}, [])
-	// Local library first screen (spec r1, r3): once the library serves reads (migration switched or purged), the
+	// Local library first screen : once the library serves reads (migration switched or purged), the
 	// newest text rows are merged into the list. Media rows are not in the library response; they stay with the list.
 	const [libraryOlderPending, setLibraryOlderPending] = useState(false)
 	useEffect(() => {

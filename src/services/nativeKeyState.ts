@@ -141,7 +141,7 @@ export function openNativeKeyImport(timeoutMs: number = IMPORT_TIMEOUT_MS): Prom
 	})
 }
 
-/** Wallet state from W1 `walletStatus`: G0 `no_key`, G1 `not_ready`, G2 `locked` or `unlocked`. */
+/** Wallet state from `walletStatus`: G0 `no_key`, G1 `not_ready`, G2 `locked` or `unlocked`. */
 export type NativeWalletStatus = 'no_key' | 'not_ready' | 'locked' | 'unlocked' | 'unknown' | 'unavailable'
 const WALLET_STATUS_VALUES: readonly string[] = ['no_key', 'not_ready', 'locked', 'unlocked']
 

@@ -83,7 +83,7 @@ export function AgentBusinessInviteSheet({
 	useEffect(() => {
 		if (!open || !agentEoa) return
 		setTemps(loadAgentTempAccounts(agentEoa))
-		// G2 batch 5 (option A): a shell without the chat capability checks and registers nothing; the sheet shows the unified copy.
+		// Option A: a shell without the chat capability checks and registers nothing; the sheet shows the unified copy.
 		if (identityEntryDisabled) {
 			setAgentState('error')
 			setStatusError(tu('shell_chat_unavailable_body'))
@@ -127,7 +127,7 @@ export function AgentBusinessInviteSheet({
 
 	useEffect(() => {
 		if (!open || agentState !== 'agent') return
-		// G2 batch 5: a blocked shell registers no temp account and no merchant handoff.
+		// A blocked shell registers no temp account and no merchant handoff.
 		if (identityEntryDisabled) return
 		let cancelled = false
 		void refreshActiveTempCount().then(() => {
@@ -182,7 +182,7 @@ export function AgentBusinessInviteSheet({
 		try {
 			const rows = await listTempMerchantCards(temp.eoa)
 			setCardsByTemp((prev) => ({ ...prev, [key]: { loading: false, rows } }))
-			// G2 batch 5: a blocked shell does not register handoffs; the read-only card list above still shows.
+			// A blocked shell does not register handoffs; the read-only card list above still shows.
 			if (shellChatBlockedNow()) return
 			let handedOff = false
 			for (const row of rows) {
@@ -205,7 +205,7 @@ export function AgentBusinessInviteSheet({
 
 	const addTemp = async () => {
 		if (creating || agentState !== 'agent' || atTempCap) return
-		// G2 batch 5 (option A): a blocked shell creates no temp account and stores nothing.
+		// Option A: a blocked shell creates no temp account and stores nothing.
 		if (shellChatBlockedNow()) {
 			setCreateError(tu('shell_chat_unavailable_body'))
 			return

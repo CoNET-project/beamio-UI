@@ -1327,7 +1327,7 @@ export default function DiscoverMerchantGiftSheet({
 		setPanelError(null)
 		if (submitInFlightRef.current || submitting) return
 		if (issuedCode) return
-		// G2 batch 2 (option A): a shell without the chat capability pays nothing and reads no key.
+		// Option A: a shell without the chat capability pays nothing and reads no key.
 		if (shellChatBlockedNow()) {
 			setPanelError(tu('shell_chat_unavailable_body'))
 			return
