@@ -1,0 +1,688 @@
+import { IpfsImg } from '@/components/IpfsImg';
+import React, {useRef, useState, useEffect, useMemo} from "react"
+import {AuthorizationSign, aesGcmEncrypt, generateCODE, postToIPFS, storeSystemData} from '@/services/beamio'
+import { nativeSealOrEmpty } from '@/services/nativeSigning'
+import { isShellContext } from '@/services/shellContext'
+import AmountCurrency from '@/components/input/AmountCurrency'
+import { AppButton } from "@/components/button/AppButton"
+import { useDaemonContext } from "@/providers/DaemonProvider"
+import {ethers} from 'ethers'
+import { X, Camera, Check, Plus } from "lucide-react"
+import LockModeSegmented from '@/pages/Pay/PaymentLink/LockModeSegmented'
+import DiceBearCard, {ClosePayload} from '@/components/card/CreateCard'
+import FeeInline from './FeeInline'
+import SuccessShow from './successShow'
+import Securitycode from '@/components/input/Securitycode'
+import ConformView from '@/pages/Pay/send/ConformView'
+import giftEnvelope from '@/components/card/assets/giftEnvelope.svg'
+import {OverlayPortal} from '@/components/OverlayPortal/OverlayPortal'
+import { emitReactionAsNewMessage, sendMessage, initMessage } from '@/services/chat'
+import { CoNET_Data, setCoNET_Data } from '@/utils/globals'
+import { calcFeeFromReceived, formatAmount } from "@/services/currency"
+import { tu } from '@/locale/beamioLocale'
+
+function fiatPrefix(ccy: ICurrency) {
+	if (ccy === "CAD") return "CA$"
+	if (ccy === "USD") return "$"
+	if (ccy === "EUR") return "€"
+	if (ccy === "JPY") return "JP¥"
+	if (ccy==='TWD') return "NT$"
+	if (ccy==='CNY') return 'CN¥'
+	if (ccy==='HKD') return 'HK$'
+	if (ccy==='SGD') return 'SG$'
+	
+  return '$';
+}
+const ipfsEndpoint = `https://ipfs.conet.network/api/getFragment?hash=`
+const getImg = (avatarSeed: string) => `https://api.dicebear.com/8.x/fun-emoji/svg?seed=${encodeURIComponent(avatarSeed).toString()}`
+const aptEndpoint = 'https://api.settleonbase.xyz'
+const showPaylinkSite = 'https://beamio.ca'
+
+const defaultTextTemp = `通过 Beamio 发送，免 Gas 费。`
+
+// 0.8% fee, min 0.02, max 2 USDC
+
+function calcFeeFromNumber(base: number) {
+	if (!isFinite(base) || base <= 0) return 0;
+	const raw = base * 0.008;
+	const clamped = Math.min(Math.max(raw, 0.02), 2);
+	return Number(clamped.toFixed(4));
+}
+
+
+function formatUserDate(timestamp?: string | number): string {
+	if (!timestamp) return ""  // 无日期 → 空
+
+	const num = Number(timestamp)
+	if (!num) return ""        // 防止 NaN
+
+	// 判断是秒还是毫秒（简易方式）
+	const ms = num < 10_000_000_000 ? num * 1000 : num
+
+	const d = new Date(ms)
+	if (isNaN(d.getTime())) return ""  // 避免 Invalid Date
+
+	return d.toLocaleDateString("en-US", {
+		year: "numeric",
+		month: "short",
+		day: "numeric"
+	})
+}
+
+
+const shortAddress = (addr: string) =>
+	addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : ''
+
+type Props = {
+	close: (path: string) => void
+}
+
+export default function PaymentLink ({close}: Props) {
+	
+	const [sendAmount, setSendAmount] = useState("")
+	const [processing, setProcessing] = useState(false)
+	const [amountError, setAmountError]  = useState(false)
+	const [note, setNote] = useState("");
+	const [defaultNodeText, setDefaultNodeText] = useState(defaultTextTemp)
+	const [showAlphaHowItWorks, setShowAlphaHowItWorks] = useState<''|'ConformView'>('')
+	const [focusAmount, setFocusAmount] = useState(false)
+	const {usdcbalance, beamio, setCurrencyData, currencyData, myAddress, profiles, allNodes, setProfiles } = useDaemonContext()
+	const [sendError, setSendError] = useState("")
+	const [message, senMessage] = useState<any>(null)
+	const [successUrl, setSuccessUrl] = useState("")
+	const [lockMode, setLockMode] = useState<PaymentLinkLockMode>("FIAT_LOCKED")
+	const [currency, setCurrency] = useState<ICurrency>('USD')
+	const [valueUSDCAmount, setValueUSDCAmount] = useState("")
+	const [payedUSDC, setPayedUSDC] = useState(0)
+	const [successHash, setSuccessHash] = useState("")
+	const [showGiftEnvelope, setShowGiftEnvelope] = useState(false)
+	const [valuecurrencyAmount, setValuecurrencyAmount] = useState("")
+	const [processError, setProcessError] = useState("")
+	const [securityCodeDigits, setSecurityCodeDigits] = useState("")
+	const [cardCreate, setCardCreate] = useState(false)
+	const [uploadingIPFS, setUploadingIPFS] = useState(false)
+	const [showGiftImageError, setShowGiftImageError] = useState(false)
+	const [currentCurrency, setCurrentCurrency] = useState<ICurrency>('USDC')
+	const [addedNote, setAddedNote] = useState("")
+	const [currencyAmount, setCurrencyAmount] = useState("")
+	const [usdcAmount, setUsdcAmount] = useState("")
+	const [cardTitle, setCardTitle] = useState(tu('your_dynamic_text_goes_here'))
+	const [cardDetail, setCardDetail] = useState(tu('write_some_detail'))
+	const [linkTitle, setLinkTitle] = useState("")
+	const [titleTouched, setTitleTouched] = useState(false)
+
+	const titleError = titleTouched && linkTitle.trim().length === 0
+
+
+	useEffect(() => {
+		if (showGiftImageError) {
+			setTimeout(() => {
+				setShowGiftImageError(false)
+			}, 3000)
+		}
+	}, [showGiftImageError])
+
+	const tryPostToIPFS = async (val: ClosePayload) => {
+		if (!profiles) return
+		setUploadingIPFS(true)
+		const profile = profiles[0]
+		const result = await postToIPFS(profile, val.bgBase64)
+		setUploadingIPFS(false)
+		if (!result) {
+			setShowGiftImageError(true)
+			return console.log (`tryPostToIPFS Error!`)
+		}
+		
+			
+		setShowGiftEnvelope(true)
+		const addnote = {
+			card: {
+				title: val.title,
+				detail: val.detail,
+				image: `${ipfsEndpoint}${result}&t=${Date.now()}`,
+				currency: lockMode=== 'USDC_LOCKED' ? 'USDC' : currentCurrency,
+				currencyAmount: currencyAmount
+			}
+		}
+		setAddedNote(JSON.stringify(addnote))
+
+	}
+
+	useEffect(() => {
+		if (sendError) {
+			setTimeout(() => {
+				setSendError('')
+			}, 2000)
+		}
+	}, [sendError])
+
+	useEffect(() => {
+		if (!beamio) return
+		setCurrency(beamio.currency)
+		
+	}, [beamio])
+
+
+
+	const usdcUsd = useMemo(() => Number((currencyData as any)?.USDC ?? 1), [currencyData])
+	const usdToCur = (c: ICurrency) => (c === "USD" ? 1 : Number((currencyData as any)?.[c] ?? 1))
+
+	const currencyToUsdcAmount = (cur: number, c: ICurrency) => {
+		const u2u = usdcUsd || 1
+		const u2c = usdToCur(c) || 1
+		if (!u2u || !u2c) return 0
+		return cur / u2c / u2u
+	}
+
+	function fxRateUSDCToCurrency(currency: ICurrency): number {
+		// 1 USDC = ? USD
+		const usdcToUSD = currencyData.USDC ?? 1
+
+		if (currency === 'USD') return usdcToUSD
+
+		const usdToCurrency = currencyData[currency]
+		if (typeof usdToCurrency !== 'number') return usdcToUSD
+
+		return usdcToUSD * usdToCurrency
+	}
+
+	function usdcToCurrencyAmount(usdc: number, c: ICurrency) {
+		const rate = fxRateUSDCToCurrency(c)
+		return usdc * rate
+	}
+
+
+	const signRequest = async (messageDataRe: any) => {
+		setProcessing(true)
+		setProcessError('') // 重试时清除旧错误，确保重新获取 ethers 签字
+		const paymentHeader = await AuthorizationSign(messageDataRe.maxAmountRequired, messageDataRe.payTo)
+		const newInit = {
+			method: 'GET',
+			headers: {
+				
+				"X-PAYMENT": paymentHeader,
+				"Access-Control-Expose-Headers": "X-PAYMENT-RESPONSE"
+			},
+			__is402Retry: true
+		}
+
+		const data = messageDataRe.data
+
+		const reqUrl = data.reqUrl
+		try {
+			const secondResponse = await fetch(reqUrl, newInit)
+			const body = await secondResponse.json()
+			console.log(secondResponse.ok)
+			setProcessing (false)
+			if (!secondResponse.ok) {
+				return setProcessError((body as { error?: string })?.error ?? tu('rpc_error'))
+			}
+			setSuccessUrl(data.showUrl)
+			return setSuccessHash(body.USDC_tx)
+
+		} catch (ex) {
+			setProcessing (false)
+			return setProcessError(tu('rpc_error'))
+			
+		}
+
+	}
+
+	const usdcAmountText = useMemo(() => {
+		const _totalUSDC = Number(sendAmount)
+		const fee = calcFeeFromReceived(_totalUSDC)
+		const _netUSDCAmount = _totalUSDC - fee
+		
+		return _netUSDCAmount
+	}, [sendAmount, currentCurrency, currencyData])
+
+
+	const currencyAmountText = useMemo(() => {
+		const _totalUSDC = Number(sendAmount)
+		const fee = calcFeeFromReceived(_totalUSDC)
+		const curr = formatAmount(
+			usdcToCurrencyAmount(_totalUSDC -fee, currentCurrency),
+			currentCurrency
+		)
+		return `${fiatPrefix(currentCurrency)} ${curr}`
+	}, [sendAmount, currentCurrency, currencyData]) // ✅ 把 currencyData 纳入
+
+	const issueCashcode = async () => {
+
+		if ( !profiles?.length || !beamio) {
+			return
+		}
+
+		if (securityCodeDigits.length > 0 &&  securityCodeDigits.length < 6) {
+			return
+		}
+
+		const currency = beamio.currency
+		const numberUSDCAmount = Number(sendAmount)
+		if (isNaN(numberUSDCAmount) || numberUSDCAmount < 0.1) {
+			return 
+		}
+
+		if (usdcbalance - numberUSDCAmount < 0) {
+			return
+		}
+
+		const feeUsdc = calcFeeFromNumber(numberUSDCAmount)
+		
+		const display = {
+			pay: numberUSDCAmount,
+			fee: feeUsdc,
+			receive: numberUSDCAmount - feeUsdc,
+		}
+
+		const currencyAmount1 = lockMode === 'FIAT_LOCKED' ? formatAmount(usdcToCurrencyAmount(display.receive, currentCurrency), currentCurrency) : sendAmount
+
+		let data1: payMe = {
+			currency: lockMode === 'FIAT_LOCKED' ? currentCurrency : 'USDC',
+			currencyAmount: currencyAmount1,
+			title: linkTitle.trim(),
+			usdcAmount: numberUSDCAmount,
+		}
+
+		setProcessing(true)
+			/**
+			 * 
+			 * 		UI test
+			 * 
+			 */
+	
+		// setTimeout(() => {
+		// 	setProcessing(false)
+		// 	setProcessError('RPC ERROR!')
+		// }, 3000)
+
+		const secureCode = generateCODE(securityCodeDigits)
+		
+		
+		const profile: profile = profiles[0]
+
+		const data = {secureCode: secureCode.code, securityCodeDigits}
+		// Shell: the native layer seals (matrix v2). A browser seals with the page's account key, as before.
+		const encryText = isShellContext()
+			? await nativeSealOrEmpty('cashcode', JSON.stringify(data))
+			: await aesGcmEncrypt(JSON.stringify(data), profile.privateKeyArmor)
+		let sendNote = note||defaultNodeText
+		
+
+		if (!encryText?.length) {
+			setProcessing(false)
+			return setProcessError('Generate Check error, try again!')
+		}
+
+		let _addnote = addedNote
+		if (addedNote) {
+			const tryAdd = JSON.parse(addedNote)
+			const card = tryAdd.card
+			const _data = {
+				card: {
+					title: card.title,
+					detail: card.detail,
+					image: card.image,
+					currency: lockMode=== 'USDC_LOCKED' ? 'USDC' : currentCurrency,
+					currencyAmount: currencyAmount1
+				}
+			}
+			_addnote = JSON.stringify(_data)
+		}
+		let postNode = `${note}\r\n${encryText}\r\n${JSON.stringify(data1)}`
+		postNode += _addnote ? `\r\n${_addnote}`: ''
+
+		const params = new URLSearchParams({amount: display.pay.toFixed(4), note: postNode, secureCode: secureCode.hash}).toString()
+		const showpParams = new URLSearchParams({cashcode: secureCode.code, secureCode: secureCode.hash}).toString()
+		const path = `/api/generateCheck?${params}`
+
+
+		const fixedAmount = ethers.parseUnits(display.pay.toString(), 6).toString()
+		
+		const showNetCurrency = formatAmount(display.receive * fxRateUSDCToCurrency(currency), currency)
+		const showUrl = `${showPaylinkSite}?${showpParams}`
+
+
+		const url = aptEndpoint + path
+		const requestEndpoint = `${showPaylinkSite}?${showpParams}`
+		
+		setValueUSDCAmount(`${display.receive}`)
+		setValuecurrencyAmount(`${fiatPrefix(currency)} ${showNetCurrency}`)
+		setPayedUSDC(display.pay)
+
+		/**
+			 * 
+			 * 		UI test
+			 * 
+			 */
+		// setTimeout(() => {
+		// 	setSuccessHash('0xffff')
+		// 	setProcessing(false)
+		// 	setSuccessUrl(showUrl)
+		// }, 1000)
+
+
+		try {
+			const response = await fetch(url, {
+				method: 'GET'
+			})
+			if (response.status !== 402) {
+				setProcessing(false)
+				return setProcessError(tu('rpc_error'))
+			}
+
+			const { x402Version, accepts } = await response.json()
+			const MessageData = accepts[0]
+			const data = {
+				showUrl,
+				node: note,
+				sginTatle: 'Cashcode',
+				reqUrl: url,
+				amount: sendAmount,
+				fee: display.fee
+
+			}
+			MessageData.data = data
+			senMessage(MessageData)
+			setShowAlphaHowItWorks('ConformView')
+			setProcessing(false)
+
+		} catch (ex: any) {
+			setProcessing(false)
+			setProcessError(tu('rpc_error'))
+		}
+		
+
+		
+	}
+
+	return (
+		<div className="mt-0 flex flex-col bg-white px-3 pt-3 pb-2">
+			<div className="mt-1 w-full bg-white">
+			{/* ✅ 去掉外部圆角卡片：不再用 rounded/shadow/灰底 */}
+			<div className="text-slate-800 leading-snug bg-white">
+				{
+				successUrl ? (
+					<SuccessShow
+					note={note}
+					successUrl={successUrl}
+					security={!!securityCodeDigits}
+					lockMode={lockMode}
+					valueUSDCAmount={valueUSDCAmount}
+					successHash={successHash}
+					linkTitle={linkTitle}
+					onReset={() => {
+						close('')
+					}}
+					valueCurrencyAmount={valuecurrencyAmount}
+					/>
+				) : (
+					// ✅ 原来在灰卡片里的 padding，挪到这里保留间距
+					<div className="p-2 space-y-3 bg-white">
+					<div>
+						<div className="text-lg font-semibold">
+						{message ? '' : 'Create Cashcode'}
+						</div>
+					</div>
+
+					{message ? (
+						<>
+
+						{linkTitle && (
+							<div className="text-lg font-semibold">
+								{linkTitle}
+							</div>
+						)}
+						{note && (
+							<textarea
+							value={note}
+							onFocus={() => {
+								if (note === defaultNodeText) setNote('')
+							}}
+							readOnly={true}
+							rows={2}
+							className="w-full rounded-xl bg-slate-900/5 dark:bg-white/5 border border-slate-200 dark:border-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100"
+							/>
+						)}
+
+						<div className="mt-5">
+							<FeeInline
+							payUsdc={Number(sendAmount)}
+							isUSDC={lockMode === 'USDC_LOCKED'}
+							/>
+						</div>
+
+						<ConformView messageData={message} />
+
+						<div className="grid grid-cols-1 gap-3">
+							
+
+							
+							<AppButton
+								fullWidth
+								loading={processing}
+								onClick={() => {
+								signRequest(message)
+								}}
+							>{tu('confirm')}</AppButton>
+							
+						</div>
+						</>
+					) : (
+						<>
+						<section className="input form">
+							<div className="mt-5 flex items-center gap-3">
+							<LockModeSegmented
+								value={lockMode}
+								onChange={val => {
+								setLockMode(val)
+								}}
+							/>
+							</div>
+
+							<section className="input">
+							<AmountCurrency
+								amount={sendAmount}
+								setAmount={setSendAmount}
+								autoEntry={true}
+								readOnly={processing}
+								showLimit={0.1}
+								sendError={sendError}
+								setSendError={setSendError}
+								showMax={true}
+								needBalance={true}
+								focusSignal={focusAmount}
+								feePlus={true}
+								currencyChange={val => setCurrentCurrency(val)}
+							/>
+							</section>
+
+							<Securitycode
+								securityCodeDigits={securityCodeDigits}
+								setSecurityCodeDigits={setSecurityCodeDigits}
+							/>
+
+							{/* Title */}
+							<div className="space-y-1 mb-4">
+								<div className="text-[13px] font-semibold text-slate-500">
+								Title <span className="text-red-500">*</span>
+								</div>
+
+								<input
+									type="text"
+									value={linkTitle}
+									onChange={e => setLinkTitle(e.target.value)}
+									onBlur={() => setTitleTouched(true)}
+									placeholder="e.g. Coffee, Dinner, Invoice #1024"
+									className={[
+										"w-full rounded-[18px] px-4 py-3 text-[15px]",
+										"bg-slate-50 placeholder-slate-400",
+										"shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]",
+										"focus:outline-none transition",
+										titleError
+										? "ring-2 ring-red-400 bg-red-50/40"
+										: "ring-1 ring-black/10 focus:ring-2 focus:ring-[rgba(0,0,255,0.25)]"
+									].join(" ")}
+								/>
+
+								{titleError && (
+									<div className="text-[12px] text-red-500 pl-1">
+										Title is required
+									</div>
+								)}
+							</div>
+
+							{/* Note */}
+							{showGiftEnvelope && (
+								<div className="flex justify-center">
+									<div className="relative w-fit">
+									<IpfsImg
+										src={giftEnvelope}
+										className="w-24 block"
+										alt={tu('gift_envelope')}
+									/>
+
+										<button
+											type="button"
+											onClick={() => setShowGiftEnvelope(false)}
+											className="
+												absolute top-0 right-0 z-30
+												translate-x-1/2 -translate-y-1/8
+												w-7 h-7 rounded-full
+												bg-white/10
+												backdrop-blur-md
+												border border-white/20
+												shadow-[0_4px_10px_rgba(0,0,0,0.12)]
+												hover:bg-white/20
+												active:scale-95
+												transition
+												flex items-center justify-center
+											"
+											aria-label={tu('remove_gift_envelope')}
+										>
+											<X className="w-4 h-4 text-black/30" />
+										</button>
+									</div>
+								</div>
+							)}
+
+							{showGiftImageError && (
+								<div className="flex justify-center">
+									<p className="text-sm text-rose-600">{tu('an_error_occurred_while_uploading_the_image_to_ipfs_please_try_again_lat')}</p>
+								</div>
+							)}
+
+							{uploadingIPFS && (
+								<div className="flex justify-center">
+									<p className="text-sm text-slate-600 flex items-center gap-1">{tu('uploading_image_to_ipfs_please_wait')}<span className="inline-flex w-4">
+										<span className="animate-dot">.</span>
+										<span className="animate-dot delay-200">.</span>
+										<span className="animate-dot delay-400">.</span>
+									</span>
+									</p>
+
+									<style>{`
+									.animate-dot { animation: blink 1.4s infinite both; }
+									.delay-200 { animation-delay: 0.2s; }
+									.delay-400 { animation-delay: 0.4s; }
+									@keyframes blink {
+										0% { opacity: 0.2; }
+										20% { opacity: 1; }
+										100% { opacity: 0.2; }
+									}
+									`}</style>
+								</div>
+							)}
+
+							<textarea
+								value={note}
+								onFocus={() => {
+									if (note === defaultNodeText) setNote('')
+								}}
+								placeholder={tu('whats_this_for')}
+								onChange={(e) => setNote(e.target.value)}
+								rows={2}
+								className="w-full rounded-xl bg-slate-900/5 dark:bg-white/5 border border-slate-200 dark:border-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100"
+							/>
+
+								<div className="mt-5">
+								<FeeInline
+									payUsdc={Number(sendAmount)}
+									isUSDC={lockMode === 'USDC_LOCKED'}
+								/>
+								</div>
+
+							<div className="mt-3 flex gap-3 w-full">
+							{!showGiftEnvelope && !message && (
+								<>
+									{/* iOS glass camera button */}
+									<button
+										type="button"
+										onClick={() => {
+											setCardCreate(true)
+										}}
+										className="
+											shrink-0
+											w-12 h-12
+											rounded-full
+											flex items-center justify-center
+
+											bg-white/30
+											backdrop-blur-md
+
+											shadow-[0_8px_20px_rgba(0,0,0,0.18)]
+											ring-1 ring-white/30
+
+											active:scale-95
+											transition
+											border border-white/50   /* ← 白色 1px 外框 */
+										"
+										aria-label={tu('open_camera')}
+									>
+										<Camera
+											className="w-6 h-6 text-slate-900/20 opacity-80"
+											strokeWidth={2.2}
+										/>
+									</button>
+									</>
+							)}
+
+							<AppButton
+								fullWidth
+								onClick={issueCashcode}
+								className="!text-[16px]"
+								loading={processing}
+								errorText={processError}
+							>
+								Generate
+							</AppButton>
+							</div>
+						</section>
+						</>
+					)}
+					</div>
+				)
+				}
+			</div>
+			<OverlayPortal open={cardCreate}>
+				<div className="absolute inset-0 bg-black/20 backdrop-blur-[2px]">
+					<div className="absolute inset-0">
+						<DiceBearCard
+							onClose={val => {
+								setCardCreate(false)
+								if (val) {
+									tryPostToIPFS(val)
+								}
+							}}
+							initialTitle={cardTitle}
+							initialDetail={cardDetail}
+							usdcAmount={formatAmount(usdcAmountText, 'USDC')}
+							currencyText={currencyAmountText}
+						/>
+					</div>
+				</div>
+			</OverlayPortal>
+			</div>
+		</div>
+)
+}

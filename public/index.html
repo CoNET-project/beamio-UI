@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <!-- Send no Referer anywhere (defence in depth: the page URL must never leave the device). -->
+    <meta name="referrer" content="no-referrer" />
+    <!-- frames only. This origin, blob: (PDF preview) and the wallet-probe schemes. No default-src or child-src here. -->
+    <meta http-equiv="Content-Security-Policy" content="frame-src 'self' blob: metamask: okx: base: cbwallet: coinbase: tpdapp: tpoutside:" />
+    <script>
+      /* Old builds put the Recovery Code in the URL (?beamioTag=…&MasterKey=…). It restores the
+         wallet on its own, so take it out (also recoveryCode / recoverCode) before any other script
+         or request runs; the app reads it once from memory. */
+      (function () {
+        try {
+          var loc = window.location, found = null;
+          function scrub(query) {
+            var parts = query.split('&'), keep = [], key = '', tag = '';
+            for (var i = 0; i < parts.length; i++) {
+              if (!parts[i]) continue;
+              var eq = parts[i].indexOf('='), name = eq < 0 ? parts[i] : parts[i].slice(0, eq);
+              var value = eq < 0 ? '' : parts[i].slice(eq + 1), lower = '';
+              try { lower = decodeURIComponent(name.replace(/\+/g, ' ')).toLowerCase(); } catch (e) { lower = name.toLowerCase(); }
+              if (lower === 'masterkey' || lower === 'recoverycode' || lower === 'recovercode' || lower === 'beamiotag') {
+                var decoded = value;
+                try { decoded = decodeURIComponent(value.replace(/\+/g, ' ')); } catch (e) {}
+                if (lower === 'beamiotag') tag = tag || decoded; else key = key || decoded;
+              } else keep.push(parts[i]);
+            }
+            return { key: key, tag: tag, query: keep.join('&') };
+          }
+          var search = scrub(loc.search.replace(/^\?/, ''));
+          var hash = loc.hash, hashPath = hash, hashQuery = null;
+          var q = hash.indexOf('?');
+          if (q >= 0) { hashPath = hash.slice(0, q); hashQuery = scrub(hash.slice(q + 1)); }
+          var key = search.key || (hashQuery && hashQuery.key) || '';
+          if (!key) return;
+          var tag = search.tag || (hashQuery && hashQuery.tag) || '';
+          found = { beamioTag: tag.replace(/^@+/, ''), masterKey: key };
+          var nextHash = hashQuery ? hashPath + (hashQuery.query ? '?' + hashQuery.query : '') : hash;
+          var next = loc.pathname + (search.query ? '?' + search.query : '') + nextHash;
+          window.history.replaceState(window.history.state, '', next);
+          window.__beamioLegacyRestoreLink = found;
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+    <meta name="theme-color" content="#f8f9fa" />
+    <meta name="description" content="Web site created using create-react-app" />
+	<meta name="mobile-web-app-capable" content="yes" />
+	<meta name="apple-mobile-web-app-capable" content="yes" />
+	<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+	<meta name="fc:miniapp" content='{"version":"next","imageUrl":"https://beamio.ca/app/SS1.png","button":{"title":"Stablecoin Pay App","action":{"type":"launch_miniapp","name":"Beamio.app","url":"https://beamio.ca/app/"}}}' />
+    <link rel="apple-touch-icon" sizes="192x192" href="%PUBLIC_URL%/logo192.png" />
+    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+	
+	<meta
+		name="viewport"
+		content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+	/>
+    <title>Beamio — Stablecoin Pay App on Base</title>
+    <style>
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      background: #000414;
+      /* pan-x/pan-y keeps scroll; pinch-zoom is not in this set. Do not use touch-action: none. */
+      touch-action: pan-x pan-y;
+      -ms-touch-action: pan-x pan-y;
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+    }
+
+    /* 🚩 建议把 #root 也拉满高，否则 React 里还要再写一次 */
+    #root {
+      height: 100%;
+      touch-action: pan-x pan-y;
+    }
+
+    /* 骨架屏样式 */
+    .initModule {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      animation: fadeIn 0.3s ease-in;
+      background: #000414;
+    }
+
+    .round {
+      display: flex;
+      width: 132px;
+      height: 132px;
+      overflow: hidden;
+    }
+
+    .round img {
+      width: 132px;
+      height: 132px;
+      object-fit: contain;
+    }
+
+    .launching {
+      font-size: 14px;
+      text-align: center;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin: 0;
+      color: #f1f1f1;
+    }
+  </style>
+</head>
+
+<body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root" style="height:100%">
+        <div class="initModule">
+            <div class="round">
+				<img src = "%PUBLIC_URL%/beamio-launch.png" />
+			</div>
+        </div> 
+		
+    </div>
+	<div id="overlay-root"></div>
+	<script>
+		(function () {
+			function blockGesture(event) {
+				event.preventDefault();
+			}
+			document.addEventListener('gesturestart', blockGesture, { passive: false, capture: true });
+			document.addEventListener('gesturechange', blockGesture, { passive: false, capture: true });
+			document.addEventListener('gestureend', blockGesture, { passive: false, capture: true });
+			document.addEventListener('wheel', function (event) {
+				if (event.ctrlKey) event.preventDefault();
+			}, { passive: false, capture: true });
+			document.addEventListener('touchmove', function (event) {
+				if (event.touches && event.touches.length > 1) event.preventDefault();
+			}, { passive: false, capture: true });
+			document.addEventListener('keydown', function (event) {
+				if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+				var key = event.key;
+				if (key === '+' || key === '-' || key === '=' || key === '_' || key === '0') {
+					event.preventDefault();
+				}
+			}, true);
+		})();
+	</script>
+</body>
+
+</html>

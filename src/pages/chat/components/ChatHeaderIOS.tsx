@@ -1,0 +1,221 @@
+import { IpfsImg } from '@/components/IpfsImg';
+import React, { useMemo } from "react"
+import { ethers } from "ethers"
+import { motion } from "framer-motion"
+import { ChevronLeft, ChevronRight, Loader2, Phone, PhoneCall } from "lucide-react"
+import { tu } from '@/locale/beamioLocale'
+
+export type searchResult = {
+  address: string
+  created_at: number
+  first_name: string
+  image: string
+  last_name: string
+  username: string
+  follow_count: string
+  follower_count: string
+  
+}
+
+const fmtAddr = (a = "") =>
+  a && a !== ethers.ZeroAddress ? `${a.slice(0, 6)}…${a.slice(-4)}` : "—"
+
+export function ChatHeaderIOS({
+  beamioer,
+  onBack,
+  onCenterClick,
+  layerRef,
+  online,
+  nativeWakeable,
+  avatarSrc,
+  onCall,
+  onPhoneHistory,
+  callBusy,
+  callLoading,
+}: {
+  beamioer?: searchResult
+  onBack?: () => void
+  onCenterClick?: () => void
+  layerRef?: React.Ref<HTMLDivElement>
+  onCall?: () => void
+  onPhoneHistory?: () => void
+  callBusy?: boolean
+  /** A dial is being prepared (routes, offer); show a spinner on the call button. */
+  callLoading?: boolean
+  online: boolean
+  /** Mailbox says a native shell can be woken, including while the listen session is offline. */
+  nativeWakeable?: boolean
+  avatarSrc: string
+}) {
+  const canPlaceCall = online || !!nativeWakeable
+  const tagText = useMemo(() => {
+    if (!beamioer) return ""
+    const u = (beamioer.username || "").trim()
+    if (u && u !== "未知") return u.startsWith("@") ? u : `@${u}`
+    return fmtAddr(beamioer.address)
+  }, [beamioer])
+
+  return (
+    <div ref={layerRef} className="fixed top-0 left-0 right-0 z-[80] transition-opacity duration-300">
+      <div className="pt-[calc(env(safe-area-inset-top)+4px)]">
+        {/* Back：玻璃圆 */}
+        <div className="relative z-20 px-4 h-14 flex items-center justify-between">
+          <button
+            type="button"
+            onClick={onBack}
+            className={[
+              "pointer-events-auto",
+              "h-11 w-11 rounded-full grid place-items-center",
+              "bg-white/50 backdrop-blur-xl",
+              "ring-1 ring-white/60",
+              "shadow-[0_18px_38px_rgba(15,23,42,0.14)]",
+              "active:scale-[0.98] transition"
+            ].join(" ")}
+            aria-label={tu('back')}
+          >
+            <ChevronLeft className="w-6 h-6 text-slate-900" strokeWidth={2.6} />
+          </button>
+          <div className="pointer-events-auto flex items-center gap-2">
+          {onPhoneHistory ? (
+            <button
+              type="button"
+              onClick={onPhoneHistory}
+              className="pointer-events-auto grid h-11 w-11 place-items-center rounded-full bg-white/50 text-slate-900 shadow-[0_18px_38px_rgba(15,23,42,0.14)] ring-1 ring-white/60 backdrop-blur-xl transition active:scale-[0.98]"
+              aria-label="Open Phone history"
+              title="Open Phone history"
+            >
+              <PhoneCall className="h-5 w-5" strokeWidth={2.4} aria-hidden />
+            </button>
+          ) : null}
+          {onCall ? (
+            <button
+              type="button"
+              onClick={onCall}
+              disabled={!canPlaceCall || callBusy}
+              className={[
+                "pointer-events-auto grid h-11 w-11 place-items-center rounded-full bg-white/50 text-slate-900 shadow-[0_18px_38px_rgba(15,23,42,0.14)] ring-1 ring-white/60 backdrop-blur-xl transition active:scale-[0.98]",
+                callLoading
+                  ? "cursor-wait"
+                  : !canPlaceCall || callBusy ? "cursor-not-allowed opacity-40" : "",
+              ].join(" ")}
+              aria-label={!canPlaceCall ? "Voice call unavailable" : callBusy ? "Calling" : "Start voice call"}
+              title={
+                !canPlaceCall
+                  ? "Voice call unavailable (peer offline and not native-wakeable)"
+                  : callBusy
+                    ? "Calling"
+                    : "Start voice call"
+              }
+              aria-busy={callBusy || callLoading}
+            >
+              {callLoading ? (
+                <Loader2 className="h-5 w-5 animate-spin" strokeWidth={2.4} aria-hidden />
+              ) : (
+                <Phone className="h-5 w-5" strokeWidth={2.4} aria-hidden />
+              )}
+            </button>
+          ) : null}
+          </div>
+        </div>
+
+        {/* ✅ 头像（无外圈） + 下方紧凑胶囊（同一中线居中） */}
+			<div className="pointer-events-none relative z-10 -mt-[54px] flex justify-center">
+			<motion.div
+				initial={{ opacity: 0, y: -6, scale: 0.985 }}
+				animate={{ opacity: 1, y: 0, scale: 1 }}
+				transition={{ type: "spring", stiffness: 520, damping: 42 }}
+				className="pointer-events-auto"
+			>
+				{/* ✅ 关键：用 flex-col items-center，保证头像与胶囊同一中线居中 */}
+				<div className="flex flex-col items-center">
+					<div className="relative z-10">
+						{avatarSrc ? (
+							/getFragment|ipfs\.conet\.network/i.test(avatarSrc) ? (
+							<IpfsImg
+							src={avatarSrc}
+							alt=""
+							className="
+								w-[44px] h-[44px]
+								rounded-full
+								object-cover
+								bg-slate-200
+								shadow-[0_10px_24px_rgba(15,23,42,0.18)]
+							"
+							/>
+							) : (
+							<img
+							src={avatarSrc}
+							alt=""
+							className="
+								w-[44px] h-[44px]
+								rounded-full
+								object-cover
+								bg-slate-200
+								shadow-[0_10px_24px_rgba(15,23,42,0.18)]
+							"
+							/>
+							)
+						) : (
+							<div
+							className="
+								w-[44px] h-[44px]
+								rounded-full
+								bg-slate-200
+								shadow-[0_10px_24px_rgba(15,23,42,0.18)]
+							"
+							/>
+						)}
+
+						{/* ✅ Online 状态小绿点 */}
+						{online && (
+							<span
+							className="
+								absolute
+								bottom-0 right-0
+								w-[11px] h-[11px]
+								rounded-full
+								bg-emerald-500
+								ring-2 ring-white
+							"
+							aria-label="online"
+							/>
+						)}
+					</div>
+
+					{/* ✅ 紧凑胶囊：更像 iOS Messages */}
+					<button
+						type="button"
+						onClick={onCenterClick ?? onBack}
+						className={[
+							"pointer-events-auto",
+							"-mt-1",                 // ✅ 更贴近头像（紧凑）
+							"inline-flex items-center gap-1",
+							"px-1 py-1",              // ✅ 更紧凑
+							"rounded-full",
+							"bg-white/60 backdrop-blur-xl",
+							"ring-1 ring-white/70",
+							"shadow-[0_14px_30px_rgba(15,23,42,0.12)]",
+							"active:scale-[0.99] transition"
+						].join(" ")}
+						aria-label={onCenterClick ? "Open profile" : "Back to chats"}
+					>
+						<span
+							className="text-[15px] font-semibold"
+							style={{ color: "rgba(22,82,240,0.6)" }} // ✅ Beamio Blue 60% 透明
+							>
+							{tagText}
+						</span>
+
+						<ChevronRight
+							className="w-4 h-4"
+							strokeWidth={2.6}
+							style={{ color: "rgba(22,82,240,0.6)" }} // ✅ 同色 60%
+						/>
+					</button>
+				</div>
+			</motion.div>
+			</div>
+      </div>
+    </div>
+  )
+}

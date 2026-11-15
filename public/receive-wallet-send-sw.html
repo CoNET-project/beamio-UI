@@ -1,0 +1,1471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta
+		name="viewport"
+		content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+	/>
+	<meta name="theme-color" content="#f8f9fa" />
+	<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
+	<meta http-equiv="Pragma" content="no-cache" />
+	<title>Sign USDC for Beamio</title>
+	<style>
+		:root {
+			--bg: #f4f6f8;
+			--card: #ffffff;
+			--text: #0f172a;
+			--muted: #64748b;
+			--accent: #0051d1;
+			--border: #e2e8f0;
+			--ok: #059669;
+			--warn: #b45309;
+		}
+		* { box-sizing: border-box; }
+		html, body {
+			margin: 0;
+			min-height: 100%;
+			background: var(--bg);
+			color: var(--text);
+			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+			-webkit-text-size-adjust: 100%;
+			touch-action: pan-x pan-y;
+		}
+		main {
+			max-width: 28rem;
+			margin: 0 auto;
+			padding: max(1.25rem, env(safe-area-inset-top, 0px)) 1.25rem max(1.5rem, env(safe-area-inset-bottom, 0px));
+		}
+		h1 {
+			margin: 0 0 0.35rem;
+			font-size: 1.35rem;
+			font-weight: 700;
+			letter-spacing: -0.02em;
+		}
+		.sub {
+			margin: 0 0 1.25rem;
+			color: var(--muted);
+			font-size: 0.95rem;
+			line-height: 1.45;
+		}
+		.card {
+			background: var(--card);
+			border: 1px solid var(--border);
+			border-radius: 1rem;
+			padding: 1rem 1.1rem;
+			margin-bottom: 1rem;
+		}
+		.row-label {
+			font-size: 0.75rem;
+			font-weight: 600;
+			letter-spacing: 0.04em;
+			text-transform: uppercase;
+			color: var(--muted);
+			margin-bottom: 0.35rem;
+		}
+		.amount {
+			font-size: 1.75rem;
+			font-weight: 700;
+			letter-spacing: -0.03em;
+			word-break: break-all;
+		}
+		.addr {
+			font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+			font-size: 0.9rem;
+			line-height: 1.45;
+			word-break: break-all;
+		}
+		#status {
+			min-height: 1.35rem;
+			margin: 0 0 1rem;
+			font-size: 0.9rem;
+			line-height: 1.4;
+			color: var(--muted);
+		}
+		#status.ok { color: var(--ok); }
+		#status.err { color: var(--warn); }
+		button,
+		a.cta {
+			display: block;
+			width: 100%;
+			border: 0;
+			border-radius: 999px;
+			padding: 0.95rem 1.25rem;
+			font-size: 1rem;
+			font-weight: 650;
+			color: #fff;
+			background: var(--accent);
+			cursor: pointer;
+			text-align: center;
+			text-decoration: none;
+			box-sizing: border-box;
+		}
+		button:disabled,
+		a.cta[aria-disabled='true'] {
+			opacity: 0.55;
+			cursor: not-allowed;
+			pointer-events: none;
+		}
+		.hint {
+			margin-top: 0.85rem;
+			font-size: 0.8rem;
+			color: var(--muted);
+			line-height: 1.4;
+		}
+	</style>
+</head>
+<body>
+	<main>
+		<h1>Sign USDC transfer</h1>
+		<p class="sub" id="sub">Confirm in your wallet. Coinbase Smart Wallet sends Base USDC with a normal transfer. EOA wallets can authorize a gasless transfer instead.</p>
+		<div class="card">
+			<div class="row-label">Amount</div>
+			<div class="amount" id="amountLabel">—</div>
+		</div>
+		<div class="card">
+			<div class="row-label">From (signing wallet)</div>
+			<div class="addr" id="fromLabel">—</div>
+		</div>
+		<div class="card">
+			<div class="row-label">To (Beamio EOA)</div>
+			<div class="addr" id="toLabel">—</div>
+		</div>
+		<p id="status">Preparing signature…</p>
+		<button type="button" id="sendBtn" disabled>Sign and return to Beamio</button>
+		<p class="hint">After you sign, Beamio submits the payment for you. Then tap ◀ Beamio at the top-left of your screen to return to the Beamio app.</p>
+	</main>
+	<script>
+		(function () {
+			var USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+			var BASE_HEX = '0x2105'
+			var BASE_CHAIN_ID = 8453
+			var AUTH_TTL_SEC = 3600
+
+			var params = new URLSearchParams(window.location.search)
+			var toRaw = (params.get('to') || '').trim()
+			var amount6Raw = (params.get('amount6') || '').trim()
+
+			var amountEl = document.getElementById('amountLabel')
+			var toEl = document.getElementById('toLabel')
+			var statusEl = document.getElementById('status')
+			var btn = document.getElementById('sendBtn')
+			var hint = document.querySelector('.hint')
+
+			function setStatus(text, kind) {
+				statusEl.textContent = text
+				statusEl.className = kind || ''
+			}
+
+			function isAddress(v) {
+				return /^0x[0-9a-fA-F]{40}$/.test(v)
+			}
+
+			function formatUsdc(amount6) {
+				var s = amount6.toString()
+				if (s.length <= 6) {
+					s = ('000000' + s).slice(-6)
+					return '0.' + s
+				}
+				var whole = s.slice(0, -6)
+				var frac = s.slice(-6).replace(/0+$/, '')
+				return frac ? whole + '.' + frac : whole
+			}
+
+			function randomBytes32() {
+				var bytes = new Uint8Array(32)
+				if (window.crypto && window.crypto.getRandomValues) {
+					window.crypto.getRandomValues(bytes)
+				} else {
+					for (var i = 0; i < 32; i++) bytes[i] = Math.floor(Math.random() * 256)
+				}
+				var hex = ''
+				for (var j = 0; j < bytes.length; j++) {
+					hex += ('0' + bytes[j].toString(16)).slice(-2)
+				}
+				return '0x' + hex
+			}
+
+			function bytesToBase64Url(bytes) {
+				var bin = ''
+				for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+				var b64 = btoa(bin)
+				return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+			}
+
+			function encodeAuthPayload(obj) {
+				var json = JSON.stringify(obj)
+				var bytes = new TextEncoder().encode(json)
+				return bytesToBase64Url(bytes)
+			}
+
+			/** secp256k1 curve order — used to force low-s (Coinbase often returns high-s). */
+			var SECP256K1_N = BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141')
+			var SECP256K1_HALF_N = SECP256K1_N / BigInt(2)
+
+			function padHex64(hexNo0x) {
+				var h = hexNo0x.replace(/^0x/i, '').toLowerCase()
+				if (h.length > 64) return null
+				while (h.length < 64) h = '0' + h
+				return h
+			}
+
+			/**
+			 * Coinbase / WalletLink often return:
+			 * - object / { result } / { signature } / Uint8Array
+			 * - missing 0x
+			 * - EIP-2098 compact (64 bytes / 128 hex)
+			 * - EIP-155 v with Base chainId (132+ hex: r||s||0x422d) — r may start with zeros
+			 * - high-s (non-canonical) 65-byte ECDSA
+			 * - ERC-6492 wraps (~1218 hex, leading 0x0000… + Multicall3) from Smart Wallet
+			 * Normalize to 0x + 130 hex (r||s||v) with low-s and v in {27,28}.
+			 */
+			var ERC6492_MAGIC =
+				'6492649264926492649264926492649264926492649264926492649264926492'
+			function bytesToHex(bytes) {
+				var out = '0x'
+				for (var i = 0; i < bytes.length; i++) {
+					out += (bytes[i] & 0xff).toString(16).padStart(2, '0')
+				}
+				return out
+			}
+			function recoverV27(vNum) {
+				if (!Number.isFinite(vNum) || vNum < 0) return null
+				var n = Math.trunc(vNum)
+				if (n === 0 || n === 1) return 27 + n
+				if (n === 27 || n === 28) return n
+				if (n >= 35) return 27 + ((n - 35) % 2)
+				return null
+			}
+			function isErc6492Hex(hex) {
+				var body = String(hex || '').replace(/^0x/i, '').toLowerCase()
+				return body.length >= 256 && body.slice(-64) === ERC6492_MAGIC
+			}
+			function unwrapErc6492(hex) {
+				var body = String(hex || '').replace(/^0x/i, '').toLowerCase()
+				if (!isErc6492Hex('0x' + body)) return null
+				var encoded = body.slice(0, -64)
+				if (encoded.length < 192 || encoded.length % 2 !== 0) return null
+				var sigOffset = parseInt(encoded.slice(128, 192), 16)
+				if (!Number.isFinite(sigOffset) || sigOffset < 96) return null
+				var sigOffsetHex = sigOffset * 2
+				if (sigOffsetHex + 64 > encoded.length) return null
+				var sigLen = parseInt(encoded.slice(sigOffsetHex, sigOffsetHex + 64), 16)
+				if (!Number.isFinite(sigLen) || sigLen <= 0 || sigLen > 2048) return null
+				var sigStart = sigOffsetHex + 64
+				var sigEnd = sigStart + sigLen * 2
+				if (sigEnd > encoded.length) return null
+				var inner = encoded.slice(sigStart, sigEnd)
+				if (inner.length !== sigLen * 2 || !/^[0-9a-f]+$/.test(inner)) return null
+				return '0x' + inner
+			}
+			/** Standard unwrap + trailing r||s||v before magic (Coinbase nested blobs). */
+			function ecdsaCandidatesFrom6492(hex) {
+				var body = String(hex || '').replace(/^0x/i, '').toLowerCase()
+				if (body.slice(-64) !== ERC6492_MAGIC || body.length < 256) return []
+				var out = []
+				var seen = {}
+				function push(c) {
+					if (!c) return
+					var n = String(c).toLowerCase()
+					if (seen[n]) return
+					seen[n] = true
+					out.push(n.indexOf('0x') === 0 ? c : '0x' + c)
+				}
+				push(unwrapErc6492(hex))
+				var encoded = body.slice(0, -64)
+				if (encoded.length >= 130) {
+					push('0x' + encoded.slice(-130))
+					push('0x' + encoded.slice(-128))
+				}
+				var inner = unwrapErc6492(hex)
+				if (inner) {
+					var ib = inner.replace(/^0x/i, '')
+					if (ib.length > 130) {
+						push('0x' + ib.slice(-130))
+						push('0x' + ib.slice(-128))
+					}
+				}
+				return out
+			}
+			function normalizePlainEcdsa(hexIn) {
+				var hex = String(hexIn || '').trim()
+				if (!hex) return null
+				if (!hex.startsWith('0x') && !hex.startsWith('0X')) hex = '0x' + hex
+				if (!/^0x[0-9a-fA-F]+$/.test(hex)) return null
+				var body = hex.slice(2)
+				var rHex
+				var sBig
+				var vNum
+				if (body.length === 128) {
+					rHex = body.slice(0, 64)
+					var yParityAndS = BigInt('0x' + body.slice(64, 128))
+					var yParity = Number((yParityAndS >> BigInt(255)) & BigInt(1))
+					sBig = yParityAndS & ((BigInt(1) << BigInt(255)) - BigInt(1))
+					vNum = 27 + yParity
+				} else if (body.length === 130) {
+					rHex = body.slice(0, 64)
+					sBig = BigInt('0x' + body.slice(64, 128))
+					vNum = parseInt(body.slice(128, 130), 16)
+				} else if (body.length >= 132 && body.length <= 194 && body.length % 2 === 0) {
+					rHex = body.slice(0, 64)
+					sBig = BigInt('0x' + body.slice(64, 128))
+					vNum = parseInt(body.slice(128), 16)
+				} else {
+					return null
+				}
+				var v27 = recoverV27(vNum)
+				if (v27 == null) return null
+				vNum = v27
+				if (sBig <= BigInt(0) || sBig >= SECP256K1_N) return null
+				if (BigInt('0x' + rHex) === BigInt(0)) return null
+				if (sBig > SECP256K1_HALF_N) {
+					sBig = SECP256K1_N - sBig
+					vNum = vNum === 27 ? 28 : 27
+				}
+				var sHex = padHex64(sBig.toString(16))
+				if (!sHex) return null
+				return '0x' + rHex.toLowerCase() + sHex + (vNum === 28 ? '1c' : '1b')
+			}
+			function normalizeEcdsaHexBody(hexIn) {
+				var hex = String(hexIn || '').trim()
+				if (!hex) return null
+				if (!hex.startsWith('0x') && !hex.startsWith('0X')) hex = '0x' + hex
+				if (!/^0x[0-9a-fA-F]+$/.test(hex)) return null
+				if (isErc6492Hex(hex)) {
+					var cands = ecdsaCandidatesFrom6492(hex)
+					for (var i = 0; i < cands.length; i++) {
+						var n = normalizePlainEcdsa(cands[i])
+						if (n) return n
+					}
+					return null
+				}
+				return normalizePlainEcdsa(hex)
+			}
+			function normalizeWalletSignature(raw) {
+				var candidate = raw
+				if (candidate instanceof Uint8Array) {
+					candidate = bytesToHex(candidate)
+				} else if (candidate && typeof ArrayBuffer !== 'undefined' && candidate instanceof ArrayBuffer) {
+					candidate = bytesToHex(new Uint8Array(candidate))
+				} else if (
+					candidate &&
+					typeof candidate === 'object' &&
+					typeof candidate.byteLength === 'number' &&
+					typeof candidate.buffer === 'object'
+				) {
+					try {
+						candidate = bytesToHex(
+							new Uint8Array(candidate.buffer, candidate.byteOffset || 0, candidate.byteLength)
+						)
+					} catch (_) {}
+				}
+				if (candidate && typeof candidate === 'object') {
+					if (typeof candidate.result === 'string') candidate = candidate.result
+					else if (typeof candidate.signature === 'string') candidate = candidate.signature
+					else if (typeof candidate.data === 'string') candidate = candidate.data
+					else if (
+						candidate.type === 'Buffer' &&
+						Array.isArray(candidate.data)
+					) {
+						candidate = bytesToHex(candidate.data)
+					} else if (Array.isArray(candidate) && typeof candidate[0] === 'string') {
+						candidate = candidate[0]
+					} else if (
+						Array.isArray(candidate) &&
+						candidate.length >= 65 &&
+						typeof candidate[0] === 'number'
+					) {
+						candidate = bytesToHex(candidate)
+					} else if (
+						typeof candidate.r === 'string' &&
+						typeof candidate.s === 'string' &&
+						(candidate.v !== undefined || candidate.yParity !== undefined)
+					) {
+						var vr = padHex64(candidate.r)
+						var vs = padHex64(candidate.s)
+						if (!vr || !vs) return null
+						var recoveredObj = recoverV27(
+							Number(candidate.v !== undefined ? candidate.v : Number(candidate.yParity) + 27)
+						)
+						if (recoveredObj == null) return null
+						candidate = '0x' + vr + vs + (recoveredObj === 28 ? '1c' : '1b')
+					} else {
+						return null
+					}
+				}
+				if (typeof candidate !== 'string') return null
+				return normalizeEcdsaHexBody(candidate)
+			}
+			function coerceSigToHex(rawSig) {
+				if (typeof rawSig === 'string') return rawSig
+				if (!rawSig) return ''
+				if (typeof rawSig === 'object') {
+					if (typeof rawSig.signature === 'string') return rawSig.signature
+					if (typeof rawSig.result === 'string') return rawSig.result
+					if (typeof rawSig.data === 'string') return rawSig.data
+				}
+				return ''
+			}
+
+			function looksLikeSmartWalletSig(rawSig) {
+				var hex =
+					typeof rawSig === 'string'
+						? rawSig
+						: rawSig && typeof rawSig.signature === 'string'
+							? rawSig.signature
+							: coerceSigToHex(rawSig)
+				if (!hex || typeof hex !== 'string') return false
+				if (isErc6492Hex(hex)) return true
+				return hex.replace(/^0x/i, '').length > 194
+			}
+
+			function isNativeShell() {
+				try {
+					if (window.CashTreesIOS && typeof window.CashTreesIOS === 'object') return true
+					if (window.CashTreesAndroid && typeof window.CashTreesAndroid === 'object') return true
+					if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.CashTreesIOS) {
+						return true
+					}
+				} catch (_) {}
+				return false
+			}
+
+			/** Coinbase / MetaMask (etc.) dapp browser — CashTreesIOS is absent here. */
+			function isLikelyWalletInAppBrowser() {
+				try {
+					var ua = String(navigator.userAgent || '')
+					if (
+						/MetaMask|CoinbaseWallet|Coinbase|CBWallet|Base.?Wallet|Trust|Rainbow|imToken|TokenPocket|OKApp|OKX/i.test(
+							ua
+						)
+					) {
+						return true
+					}
+				} catch (_) {}
+				try {
+					var p = window.ethereum
+					if (
+						p &&
+						(p.isMetaMask ||
+							p.isCoinbaseWallet ||
+							p.isBaseWallet ||
+							p.isCoinbaseBrowser ||
+							p.isCoinbaseWalletExtension)
+					) {
+						return true
+					}
+				} catch (_) {}
+				return false
+			}
+
+			/**
+			 * Prefer beamio:// so iOS/Android shell can reclaim focus after sign.
+			 * MetaMask iOS treats hidden iframe custom-scheme loads as “automatically
+			 * opening an external application” and shows Warning even after a button tap.
+			 * Never use iframes — only location.href (non-wallet auto) or a real <a> tap.
+			 */
+			function tryOpenBeamioNative(nativeUrl) {
+				try {
+					window.location.href = nativeUrl
+				} catch (_) {}
+			}
+
+			function replaceSendBtnWithOpenBeamioAnchor(nativeUrl, webUrl, walletBrowser) {
+				var openLink = document.createElement('a')
+				openLink.id = 'sendBtn'
+				openLink.className = 'cta'
+				openLink.href = nativeUrl
+				openLink.textContent = 'Open Beamio'
+				openLink.setAttribute('role', 'button')
+				openLink.addEventListener('click', function () {
+					// Do not preventDefault — the tap must be a real link navigation.
+					window.setTimeout(function () {
+						try {
+							if (document.visibilityState !== 'visible') return
+							setStatus('Still here? Tap Open Beamio again.', 'err')
+						} catch (_) {}
+					}, 1600)
+				})
+				if (btn && btn.parentNode) {
+					btn.parentNode.replaceChild(openLink, btn)
+				}
+				btn = openLink
+				return openLink
+			}
+
+			var SIGN_DONE_KEY = 'beamio:receiveUsdc3009:signed'
+			/** MetaMask often reports selectedAddress ≠ the key that actually signs EIP-712. */
+			var FORCE_FROM_KEY = 'beamio:receiveUsdc3009:forceFrom'
+			var signState = { inFlight: false, done: false, resignOnce: false, walletConfirmed: false }
+			var ethersLoadPromise = null
+
+			function shortAddr(a) {
+				var s = String(a || '')
+				if (s.length < 12) return s
+				return s.slice(0, 6) + '…' + s.slice(-4)
+			}
+
+			function sameAddr(a, b) {
+				try {
+					return String(a || '').toLowerCase() === String(b || '').toLowerCase()
+				} catch (_) {
+					return false
+				}
+			}
+
+			function parseRecoveredFromError(text) {
+				var m = /recovered=(0x[a-fA-F0-9]{40})/i.exec(String(text || ''))
+				return m && isAddress(m[1]) ? m[1] : ''
+			}
+
+			function getForceFrom() {
+				try {
+					var v = sessionStorage.getItem(FORCE_FROM_KEY)
+					return isAddress(v) ? v : ''
+				} catch (_) {
+					return ''
+				}
+			}
+
+			function setForceFrom(addr) {
+				if (!isAddress(addr)) return
+				try {
+					sessionStorage.setItem(FORCE_FROM_KEY, addr)
+				} catch (_) {}
+			}
+
+			function clearForceFrom() {
+				try {
+					sessionStorage.removeItem(FORCE_FROM_KEY)
+				} catch (_) {}
+			}
+
+			function isPermittedAddressError(err) {
+				var msg = err && typeof err.message === 'string' ? err.message : String(err || '')
+				return /permitted Ethereum address|must provide a permitted/i.test(msg)
+			}
+
+			function findInAccounts(accounts, preferred) {
+				if (!Array.isArray(accounts) || !isAddress(preferred)) return ''
+				var want = String(preferred).toLowerCase()
+				for (var i = 0; i < accounts.length; i++) {
+					if (typeof accounts[i] === 'string' && accounts[i].toLowerCase() === want) {
+						return accounts[i]
+					}
+				}
+				return ''
+			}
+
+			async function listPermittedAccounts(provider) {
+				var accounts = []
+				try {
+					var requested = await provider.request({ method: 'eth_requestAccounts' })
+					if (Array.isArray(requested)) accounts = requested
+				} catch (_) {}
+				if (!accounts.length) {
+					try {
+						var listed = await provider.request({ method: 'eth_accounts' })
+						if (Array.isArray(listed)) accounts = listed
+					} catch (_) {}
+				}
+				return accounts.filter(function (a) {
+					return typeof a === 'string' && isAddress(a)
+				})
+			}
+
+			/** Prefer a recovered/selected signer when already permitted — no Connect UI. */
+			function preferSigningAccount(accounts, preferred) {
+				var hit = findInAccounts(accounts, preferred)
+				if (hit) return hit
+				return Array.isArray(accounts) && accounts.length ? accounts[0] : ''
+			}
+
+			function loadEthersLib() {
+				if (ethersLoadPromise) return ethersLoadPromise
+				ethersLoadPromise = new Promise(function (resolve) {
+					try {
+						if (window.ethers && (window.ethers.verifyTypedData || (window.ethers.utils && window.ethers.utils.verifyTypedData))) {
+							resolve(window.ethers)
+							return
+						}
+					} catch (_) {}
+					var s = document.createElement('script')
+					s.src = './vendor/ethers/ethers.umd.min.js'
+					s.async = true
+					s.onload = function () {
+						try {
+							resolve(window.ethers || null)
+						} catch (_) {
+							resolve(null)
+						}
+					}
+					s.onerror = function () {
+						resolve(null)
+					}
+					try {
+						document.head.appendChild(s)
+					} catch (_) {
+						resolve(null)
+					}
+				})
+				return ethersLoadPromise
+			}
+
+			async function recoverTypedSigner(domain, message, signature) {
+				var eth = await loadEthersLib()
+				if (!eth) return ''
+				var types = {
+					TransferWithAuthorization: [
+						{ name: 'from', type: 'address' },
+						{ name: 'to', type: 'address' },
+						{ name: 'value', type: 'uint256' },
+						{ name: 'validAfter', type: 'uint256' },
+						{ name: 'validBefore', type: 'uint256' },
+						{ name: 'nonce', type: 'bytes32' },
+					],
+				}
+				try {
+					if (typeof eth.verifyTypedData === 'function') {
+						return eth.verifyTypedData(domain, types, message, signature)
+					}
+					if (eth.utils && typeof eth.utils.verifyTypedData === 'function') {
+						return eth.utils.verifyTypedData(domain, types, message, signature)
+					}
+				} catch (_) {}
+				return ''
+			}
+
+			function rememberSignedResult(result) {
+				try {
+					sessionStorage.setItem(
+						SIGN_DONE_KEY,
+						JSON.stringify({
+							to: toRaw,
+							amount6: amount6Raw,
+							authB64: result && result.authB64 ? result.authB64 : null,
+							txHash: result && result.txHash ? result.txHash : null,
+							at: Date.now(),
+						})
+					)
+				} catch (_) {}
+			}
+
+			function loadSignedResult() {
+				try {
+					var raw = sessionStorage.getItem(SIGN_DONE_KEY)
+					if (!raw) return null
+					var parsed = JSON.parse(raw)
+					if (!parsed) return null
+					if (parsed.to !== toRaw || String(parsed.amount6) !== String(amount6Raw)) return null
+					if (typeof parsed.at === 'number' && Date.now() - parsed.at > 10 * 60 * 1000) {
+						sessionStorage.removeItem(SIGN_DONE_KEY)
+						return null
+					}
+					if (typeof parsed.txHash === 'string' && /^0x[0-9a-fA-F]{64}$/.test(parsed.txHash)) {
+						return { kind: 'tx', txHash: parsed.txHash }
+					}
+					if (typeof parsed.authB64 === 'string' && parsed.authB64) {
+						return { kind: 'auth', authB64: parsed.authB64 }
+					}
+					return null
+				} catch (_) {
+					return null
+				}
+			}
+
+			function isUserRejected(err) {
+				var code = err && err.code
+				var msg = err && typeof err.message === 'string' ? err.message : ''
+				return code === 4001 || /user rejected|user denied|rejected the request/i.test(msg)
+			}
+
+			function decodeAuthPayload(b64url) {
+				var b64 = String(b64url).replace(/-/g, '+').replace(/_/g, '/')
+				while (b64.length % 4) b64 += '='
+				var bin = atob(b64)
+				var bytes = new Uint8Array(bin.length)
+				for (var k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k)
+				return JSON.parse(new TextDecoder().decode(bytes))
+			}
+
+			function showReturnGuidance(prefix) {
+				setStatus(
+					(prefix || 'Payment submitted.') +
+						' Tap ◀ Beamio at the top-left of your screen to return to the Beamio app.',
+					'ok'
+				)
+				try {
+					hint.textContent =
+						'Your payment is on its way. Your Main Wallet USDC updates in Beamio once it confirms on-chain.'
+				} catch (_) {}
+				try {
+					if (btn && btn.parentNode) btn.parentNode.removeChild(btn)
+				} catch (_) {}
+			}
+
+			var AUTH_ALREADY_USED_RE = /already used|authorization is used|duplicate/i
+			var submitState = { inFlight: false, done: false, autoResignTried: false }
+
+			async function beginResignWithRecovered(recovered, statusHint) {
+				try {
+					sessionStorage.removeItem(SIGN_DONE_KEY)
+				} catch (_) {}
+				signState.done = false
+				signState.inFlight = false
+				signState.resignOnce = false
+				signState.walletConfirmed = false
+				submitState.inFlight = false
+				submitState.done = false
+				try {
+					var retryEl = document.getElementById('retrySubmitBtn')
+					if (retryEl && retryEl.parentNode) retryEl.parentNode.removeChild(retryEl)
+				} catch (_) {}
+				if (!isAddress(recovered)) {
+					clearForceFrom()
+					try {
+						btn.disabled = false
+						btn.textContent = 'Sign and return to Beamio'
+					} catch (_) {}
+					setStatus('Could not detect the MetaMask signing account. Tap Sign again.', 'err')
+					return
+				}
+				setForceFrom(recovered)
+				try {
+					btn.disabled = false
+					btn.textContent = 'Sign in wallet…'
+					var fromEl = document.getElementById('fromLabel')
+					if (fromEl) fromEl.textContent = recovered
+				} catch (_) {}
+				setStatus(
+					statusHint ||
+						('Re-signing with ' + shortAddr(recovered) + ' so the payment matches MetaMask…'),
+					'ok',
+				)
+				void sign()
+			}
+
+
+			function showSubmitRetry(authB64, statusOk, opts) {
+				if (document.getElementById('retrySubmitBtn')) return
+				var resign = !!(opts && opts.resign)
+				var recoveredHint = opts && isAddress(opts.recovered) ? opts.recovered : ''
+				var retry = document.createElement('button')
+				retry.type = 'button'
+				retry.id = 'retrySubmitBtn'
+				retry.textContent = resign ? 'Sign again' : 'Retry payment'
+				retry.addEventListener('click', function () {
+					try {
+						retry.parentNode && retry.parentNode.removeChild(retry)
+					} catch (_) {}
+					if (resign) {
+						var statusEl = document.getElementById('status')
+						var fromStatus = parseRecoveredFromError(statusEl ? statusEl.textContent : '')
+						void beginResignWithRecovered(recoveredHint || fromStatus || getForceFrom())
+						return
+					}
+					submitAuthFromWalletBrowser(authB64, statusOk)
+				})
+				var statusEl2 = document.getElementById('status')
+				if (statusEl2) statusEl2.insertAdjacentElement('afterend', retry)
+			}
+
+			function submitAuthFromWalletBrowser(authB64, statusOk) {
+				if (submitState.inFlight || submitState.done) return
+				var auth
+				try {
+					auth = decodeAuthPayload(authB64)
+				} catch (_) {
+					setStatus('Could not read the signed payment. Please sign again.', 'err')
+					return
+				}
+				submitState.inFlight = true
+				try {
+					if (btn) btn.disabled = true
+				} catch (_) {}
+				setStatus('Submitting payment…', 'ok')
+				fetch('https://beamio.ca/api/receiveUsdc3009', {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify(Object.assign({}, auth, { token: auth.token || USDC })),
+				})
+					.then(function (res) {
+						return res
+							.json()
+							.catch(function () {
+								return {}
+							})
+							.then(function (j) {
+								return { res: res, j: j || {} }
+							})
+					})
+					.then(function (r) {
+						submitState.inFlight = false
+						var errText = String((r.j && (r.j.error || r.j.message)) || '')
+						if ((r.res.ok && r.j.success !== false) || r.j.alreadyUsed || AUTH_ALREADY_USED_RE.test(errText)) {
+							submitState.done = true
+							clearForceFrom()
+							showReturnGuidance((statusOk || 'Signed.') + ' Payment submitted.')
+							return
+						}
+						var resign =
+							/signer mismatch|EIP-3009 signer/i.test(errText) ||
+							/recovered=.*from=/i.test(errText)
+						var recovered = parseRecoveredFromError(errText)
+						setStatus(
+							'Payment was not submitted: ' +
+								(errText || 'HTTP ' + r.res.status) +
+								(resign
+									? '. Tap Sign again — Beamio will use the account MetaMask signed with (' +
+										shortAddr(recovered || getForceFrom()) +
+										').'
+									: '. Tap Retry payment.'),
+							'err',
+						)
+						showSubmitRetry(authB64, statusOk, resign ? { resign: true, recovered: recovered } : null)
+					})
+					.catch(function (e) {
+						submitState.inFlight = false
+						setStatus('Network error while submitting the payment. Tap Retry payment.', 'err')
+						showSubmitRetry(authB64, statusOk)
+					})
+			}
+
+			function navigateBackToBeamio(query, statusOk, authB64) {
+				signState.done = true
+				var nativeUrl = 'beamio://open?' + query
+				var webUrl = 'https://beamio.ca/app/?' + query
+				var walletBrowser = isLikelyWalletInAppBrowser()
+				/*
+				 * Wallet in-app browsers (MetaMask iOS) block beamio://, Universal Links and _blank,
+				 * so we never try to open Beamio from here. The signed auth is submitted straight to
+				 * the API; Beamio's waiting page confirms via balance polling. The user returns with
+				 * the iOS "◀ Beamio" breadcrumb.
+				 */
+				if (walletBrowser) {
+					if (authB64) {
+						submitAuthFromWalletBrowser(authB64, statusOk)
+					} else {
+						showReturnGuidance(statusOk || 'USDC sent.')
+					}
+					return
+				}
+				replaceSendBtnWithOpenBeamioAnchor(nativeUrl, webUrl, walletBrowser)
+				setStatus((statusOk || 'Signed.') + ' Opening Beamio…', 'ok')
+				tryOpenBeamioNative(nativeUrl)
+				if (!isNativeShell()) {
+					window.setTimeout(function () {
+						if (document.visibilityState === 'visible') {
+							window.location.href = webUrl
+						}
+					}, 1500)
+				}
+			}
+
+			function returnToBeamioAuth(authB64) {
+				rememberSignedResult({ authB64: authB64 })
+				navigateBackToBeamio(
+					'receiveUsdcAuth=' + encodeURIComponent(authB64),
+					'Signed.',
+					authB64
+				)
+			}
+
+			function returnToBeamioTx(txHash) {
+				rememberSignedResult({ txHash: txHash })
+				navigateBackToBeamio(
+					'receiveUsdcTx=' + encodeURIComponent(txHash),
+					'USDC sent.'
+				)
+			}
+
+			function returnSignedResult(result) {
+				if (!result) return
+				if (result.kind === 'tx') returnToBeamioTx(result.txHash)
+				else if (result.kind === 'auth') returnToBeamioAuth(result.authB64)
+			}
+
+			function padHex(hex, bytes) {
+				var h = String(hex || '').replace(/^0x/i, '').toLowerCase()
+				while (h.length < bytes * 2) h = '0' + h
+				return h.slice(-bytes * 2)
+			}
+
+			function encodeUsdcTransfer(toAddr, value6) {
+				return '0xa9059cbb' + padHex(toAddr, 32) + padHex(BigInt(value6).toString(16), 32)
+			}
+
+			async function isContractAccount(provider, addr) {
+				try {
+					var code = await provider.request({
+						method: 'eth_getCode',
+						params: [addr, 'latest'],
+					})
+					if (typeof code !== 'string') return false
+					var body = code.replace(/^0x/i, '')
+					if (!body || body === '0' || /^0+$/.test(body)) return false
+					return true
+				} catch (_) {
+					return false
+				}
+			}
+
+			/**
+			 * True only when the wallet reports the account is already smart /
+			 * atomic-capable (EIP-5792 status "supported").
+			 * MetaMask "ready" = plain EOA that *can* upgrade via EIP-7702 — still
+			 * EOA; must NOT force USDC.transfer (allow EIP-3009 / x402).
+			 * @see https://docs.metamask.io/metamask-connect/evm/reference/json-rpc-api/wallet_getCapabilities/
+			 */
+			function capabilityEnabled(cap) {
+				if (cap === true) return true
+				if (!cap || typeof cap !== 'object') return false
+				if (cap.supported === true || cap.supported === 'true') return true
+				var st = String(cap.status || '').toLowerCase()
+				return st === 'supported' || st === 'enabled'
+			}
+
+			function chainCapsLookSmart(chainCaps) {
+				if (!chainCaps || typeof chainCaps !== 'object') return false
+				// Only atomic / atomicBatch indicate an already-smart account
+				// (MetaMask atomic.status "supported", Coinbase atomicBatch).
+				// Do not treat eip7702/delegation/paymasterService as smart —
+				// those can mean wallet feature support, not an upgraded EOA.
+				// Real EIP-7702 code is detected via eth_getCode above.
+				if (capabilityEnabled(chainCaps.atomicBatch)) return true
+				if (capabilityEnabled(chainCaps.atomic)) return true
+				return false
+			}
+
+			function capsObjectLooksSmart(caps) {
+				if (!caps || typeof caps !== 'object') return false
+				if (chainCapsLookSmart(caps)) return true
+				var keys = Object.keys(caps)
+				for (var i = 0; i < keys.length; i++) {
+					if (chainCapsLookSmart(caps[keys[i]])) return true
+				}
+				return false
+			}
+
+			async function walletCapabilitiesLookSmart(provider, addr) {
+				var attempts = [[addr], [addr, [BASE_HEX]], [addr, BASE_HEX]]
+				for (var i = 0; i < attempts.length; i++) {
+					try {
+						var caps = await provider.request({
+							method: 'wallet_getCapabilities',
+							params: attempts[i],
+						})
+						if (capsObjectLooksSmart(caps)) return true
+					} catch (_) {}
+				}
+				return false
+			}
+
+			/** Coinbase Wallet / Base app in-app browser — always USDC.transfer (never EIP-3009). */
+			function isCoinbaseLikeProvider(provider) {
+				if (!provider) return false
+				if (
+					provider.isCoinbaseWallet ||
+					provider.isBaseWallet ||
+					provider.isCoinbaseBrowser ||
+					provider.isCoinbaseWalletExtension
+				) {
+					return true
+				}
+				try {
+					var ua = String(navigator.userAgent || '')
+					if (/CoinbaseWallet|Coinbase|CBWallet|Base.?Wallet/i.test(ua)) return true
+				} catch (_) {}
+				try {
+					var href = String(location.href || '')
+					if (/cb-w\.com|coinbase\.com/i.test(href)) return true
+				} catch (_) {}
+				return false
+			}
+
+			/**
+			 * Pre-check before EIP-3009: Coinbase, on-chain contract / EIP-7702
+			 * delegation code, or wallet capabilities already "supported"
+			 * (not MetaMask "ready" — that is still a plain EOA).
+			 */
+			async function shouldPreferUsdcTransfer(provider, addr) {
+				if (isCoinbaseLikeProvider(provider)) return true
+				if (await isContractAccount(provider, addr)) return true
+				if (await walletCapabilitiesLookSmart(provider, addr)) return true
+				return false
+			}
+
+			async function requestUsdcTransferNow(provider, from, statusMsg) {
+				setSmartWalletCopy()
+				btn.textContent = 'Confirm in wallet…'
+				setStatus(statusMsg || 'Confirm the USDC transfer in your wallet…')
+				var txHash = await sendUsdcTransfer(provider, from)
+				returnToBeamioTx(txHash)
+			}
+
+			async function sendUsdcTransfer(provider, from) {
+				var data = encodeUsdcTransfer(to, amount6)
+				var lastErr = null
+				try {
+					var hash = await provider.request({
+						method: 'eth_sendTransaction',
+						params: [{ from: from, to: USDC, data: data, value: '0x0' }],
+					})
+					if (typeof hash === 'string' && /^0x[0-9a-fA-F]{64}$/.test(hash)) return hash
+				} catch (err) {
+					lastErr = err
+					if (isUserRejected(err)) throw err
+				}
+				try {
+					var callsId = await provider.request({
+						method: 'wallet_sendCalls',
+						params: [
+							{
+								version: '2.0.0',
+								from: from,
+								chainId: BASE_HEX,
+								atomicRequired: true,
+								calls: [{ to: USDC, value: '0x0', data: data }],
+							},
+						],
+					})
+					var id =
+						typeof callsId === 'string'
+							? callsId
+							: callsId && typeof callsId.id === 'string'
+								? callsId.id
+								: ''
+					if (!id) throw lastErr || new Error('Wallet did not return a transaction')
+					for (var i = 0; i < 40; i++) {
+						await new Promise(function (r) {
+							window.setTimeout(r, 500)
+						})
+						var status = await provider.request({
+							method: 'wallet_getCallsStatus',
+							params: [id],
+						})
+						var st =
+							status && typeof status.status === 'number'
+								? status.status
+								: status && status.status
+						if (st === 200 || st === 'CONFIRMED') {
+							var receipts = status.receipts || []
+							var tx =
+								receipts[0] &&
+								(receipts[0].transactionHash || receipts[0].transactionhash)
+							if (typeof tx === 'string' && /^0x[0-9a-fA-F]{64}$/.test(tx)) return tx
+							return '0x' + padHex(id.replace(/^0x/i, '').slice(0, 64) || '1', 32)
+						}
+						if (st === 100 || st === 'FAILED' || st === 'REVERTED') {
+							throw new Error('USDC transfer failed in wallet')
+						}
+					}
+					return '0x' + padHex(id.replace(/^0x/i, '').slice(0, 64) || '1', 32)
+				} catch (err2) {
+					if (isUserRejected(err2)) throw err2
+					throw err2 || lastErr || new Error('Could not send USDC from this wallet')
+				}
+			}
+
+			function setSmartWalletCopy() {
+				try {
+					var subEl = document.getElementById('sub')
+					if (subEl) {
+						subEl.textContent =
+							'Confirm the USDC transfer in your wallet. Your Smart Wallet sends Base USDC to your Beamio address (network fee paid in the wallet).'
+					}
+				} catch (_) {}
+				btn.textContent = 'Send USDC and return to Beamio'
+			}
+
+			if (!isAddress(toRaw)) {
+				setStatus('Missing or invalid Beamio wallet address.', 'err')
+				amountEl.textContent = '—'
+				toEl.textContent = toRaw || '—'
+				return
+			}
+			if (!/^\d+$/.test(amount6Raw) || amount6Raw === '0') {
+				setStatus('Missing or invalid USDC amount.', 'err')
+				toEl.textContent = toRaw
+				return
+			}
+
+			var to = toRaw
+			var amount6 = amount6Raw
+			toEl.textContent = to
+			amountEl.textContent = formatUsdc(amount6) + ' USDC'
+
+			function getProvider() {
+				return window.ethereum || null
+			}
+
+			async function ensureBase(provider) {
+				var chainId = ''
+				try {
+					var raw = await provider.request({ method: 'eth_chainId' })
+					chainId = typeof raw === 'string' ? raw.toLowerCase() : ''
+				} catch (_) {}
+				if (chainId === BASE_HEX) return
+				try {
+					await provider.request({
+						method: 'wallet_switchEthereumChain',
+						params: [{ chainId: BASE_HEX }],
+					})
+				} catch (err) {
+					var code = err && err.code
+					var nested = err && err.data && err.data.originalError && err.data.originalError.code
+					if (code === 4902 || nested === 4902) {
+						await provider.request({
+							method: 'wallet_addEthereumChain',
+							params: [{
+								chainId: BASE_HEX,
+								chainName: 'Base',
+								nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+								rpcUrls: ['https://base-rpc.conet.network'],
+								blockExplorerUrls: ['https://basescan.org'],
+							}],
+						})
+						var after = ''
+						try {
+							var rawAfter = await provider.request({ method: 'eth_chainId' })
+							after = typeof rawAfter === 'string' ? rawAfter.toLowerCase() : ''
+						} catch (_) {}
+						if (after !== BASE_HEX) {
+							await provider.request({
+								method: 'wallet_switchEthereumChain',
+								params: [{ chainId: BASE_HEX }],
+							})
+						}
+					} else {
+						throw err
+					}
+				}
+			}
+
+			async function readTokenDomain(provider) {
+				var name = 'USD Coin'
+				var version = '2'
+				try {
+					var nameData = '0x06fdde03'
+					var nameRaw = await provider.request({
+						method: 'eth_call',
+						params: [{ to: USDC, data: nameData }, 'latest'],
+					})
+					if (typeof nameRaw === 'string' && nameRaw.length >= 130) {
+						var nameHex = nameRaw.slice(2)
+						var offset = parseInt(nameHex.slice(0, 64), 16)
+						var len = parseInt(nameHex.slice(offset * 2, offset * 2 + 64), 16)
+						var strHex = nameHex.slice(offset * 2 + 64, offset * 2 + 64 + len * 2)
+						var decoded = ''
+						for (var i = 0; i < strHex.length; i += 2) {
+							var c = parseInt(strHex.slice(i, i + 2), 16)
+							if (c) decoded += String.fromCharCode(c)
+						}
+						if (decoded.trim()) name = decoded.trim()
+					}
+				} catch (_) {}
+				try {
+					var verData = '0x54fd4d50'
+					var verRaw = await provider.request({
+						method: 'eth_call',
+						params: [{ to: USDC, data: verData }, 'latest'],
+					})
+					if (typeof verRaw === 'string' && verRaw.length >= 130) {
+						var verHex = verRaw.slice(2)
+						var vOffset = parseInt(verHex.slice(0, 64), 16)
+						var vLen = parseInt(verHex.slice(vOffset * 2, vOffset * 2 + 64), 16)
+						var vStrHex = verHex.slice(vOffset * 2 + 64, vOffset * 2 + 64 + vLen * 2)
+						var vDecoded = ''
+						for (var j = 0; j < vStrHex.length; j += 2) {
+							var vc = parseInt(vStrHex.slice(j, j + 2), 16)
+							if (vc) vDecoded += String.fromCharCode(vc)
+						}
+						if (vDecoded.trim()) version = vDecoded.trim()
+					}
+				} catch (_) {}
+				return { name: name, version: version }
+			}
+
+			async function resolveSigningAccount(provider) {
+				var accounts = await listPermittedAccounts(provider)
+				if (!accounts.length) throw new Error('No wallet account')
+				var forced = getForceFrom()
+				var matchedForce = findInAccounts(accounts, forced)
+				if (matchedForce) return matchedForce
+				if (forced) clearForceFrom()
+				var selected = typeof provider.selectedAddress === 'string' ? provider.selectedAddress : ''
+				var matchedSelected = findInAccounts(accounts, selected)
+				if (matchedSelected) return matchedSelected
+				return accounts[0]
+			}
+
+			async function signEip3009Auth(provider, from) {
+				var domainMeta = await readTokenDomain(provider)
+				var domainName =
+					domainMeta.name && /usd\s*coin/i.test(domainMeta.name)
+						? domainMeta.name
+						: 'USD Coin'
+				var domainVersion =
+					domainMeta.version && String(domainMeta.version).length <= 8
+						? String(domainMeta.version)
+						: '2'
+				var nowSec = Math.floor(Date.now() / 1000)
+				var validAfter = '0'
+				var validBefore = String(nowSec + AUTH_TTL_SEC)
+				var nonce = randomBytes32()
+				var transferTypes = [
+					{ name: 'from', type: 'address' },
+					{ name: 'to', type: 'address' },
+					{ name: 'value', type: 'uint256' },
+					{ name: 'validAfter', type: 'uint256' },
+					{ name: 'validBefore', type: 'uint256' },
+					{ name: 'nonce', type: 'bytes32' },
+				]
+				var message = {
+					from: from,
+					to: to,
+					value: amount6,
+					validAfter: validAfter,
+					validBefore: validBefore,
+					nonce: nonce,
+				}
+				var domain = {
+					name: domainName,
+					version: domainVersion,
+					chainId: BASE_CHAIN_ID,
+					verifyingContract: USDC,
+				}
+				var typedWithoutDomain = {
+					types: { TransferWithAuthorization: transferTypes },
+					primaryType: 'TransferWithAuthorization',
+					domain: domain,
+					message: message,
+				}
+				var typedWithDomain = {
+					types: {
+						EIP712Domain: [
+							{ name: 'name', type: 'string' },
+							{ name: 'version', type: 'string' },
+							{ name: 'chainId', type: 'uint256' },
+							{ name: 'verifyingContract', type: 'address' },
+						],
+						TransferWithAuthorization: transferTypes,
+					},
+					primaryType: 'TransferWithAuthorization',
+					domain: domain,
+					message: message,
+				}
+				var rawSig = null
+				try {
+					rawSig = await provider.request({
+						method: 'eth_signTypedData_v4',
+						params: [from, JSON.stringify(typedWithoutDomain)],
+					})
+				} catch (firstErr) {
+					if (isUserRejected(firstErr) || isPermittedAddressError(firstErr)) throw firstErr
+					var firstMsg =
+						firstErr && typeof firstErr.message === 'string'
+							? firstErr.message
+							: String(firstErr || '')
+					if (!/EIP712Domain|must include|primaryType|types/i.test(firstMsg)) throw firstErr
+					rawSig = await provider.request({
+						method: 'eth_signTypedData_v4',
+						params: [from, JSON.stringify(typedWithDomain)],
+					})
+				}
+				if (rawSig) signState.walletConfirmed = true
+				if (looksLikeSmartWalletSig(rawSig)) {
+					return { smartWallet: true, from: from }
+				}
+				var signature = normalizeWalletSignature(rawSig)
+				if (!signature) {
+					throw new Error('Invalid signature from wallet')
+				}
+				var recovered = await recoverTypedSigner(domain, message, signature)
+				if (isAddress(recovered) && !sameAddr(recovered, from)) {
+					return {
+						mismatch: true,
+						recovered: recovered,
+						from: from,
+						signature: signature,
+						validAfter: validAfter,
+						validBefore: validBefore,
+						nonce: nonce,
+					}
+				}
+				return {
+					ok: true,
+					from: from,
+					signature: signature,
+					validAfter: validAfter,
+					validBefore: validBefore,
+					nonce: nonce,
+				}
+			}
+
+			async function sign() {
+				if (signState.done || signState.inFlight) return
+				var existing = loadSignedResult()
+				if (existing) {
+					returnSignedResult(existing)
+					return
+				}
+				var provider = getProvider()
+				if (!provider || typeof provider.request !== 'function') {
+					setStatus('Open this page inside your wallet to sign.', 'err')
+					btn.disabled = false
+					btn.textContent = 'Try again'
+					return
+				}
+				signState.inFlight = true
+				btn.disabled = true
+				btn.textContent = 'Connecting…'
+				setStatus('Connecting wallet…')
+				try {
+					await ensureBase(provider)
+					btn.textContent = 'Sign in wallet…'
+					setStatus('Requesting signature…')
+					void loadEthersLib()
+					var from = await resolveSigningAccount(provider)
+					if (!isAddress(from)) throw new Error('No wallet account')
+					try {
+						var fromEl = document.getElementById('fromLabel')
+						if (fromEl) fromEl.textContent = from
+					} catch (_) {}
+					if (await shouldPreferUsdcTransfer(provider, from)) {
+						await requestUsdcTransferNow(provider, from)
+						return
+					}
+					var authResult
+					try {
+						authResult = await signEip3009Auth(provider, from)
+					} catch (signErr) {
+						if (isPermittedAddressError(signErr)) {
+							clearForceFrom()
+							throw new Error(
+								'MetaMask is not connected to that account. In MetaMask, switch to the account you want to send from, then tap Sign again.',
+							)
+						}
+						throw signErr
+					}
+					if (authResult.smartWallet) {
+						await requestUsdcTransferNow(
+							provider,
+							from,
+							'Smart Wallet detected — confirm the USDC transfer…',
+						)
+						return
+					}
+					if (authResult.mismatch && isAddress(authResult.recovered)) {
+						await requestUsdcTransferNow(
+							provider,
+							from,
+							'Smart account detected — confirm the USDC transfer…',
+						)
+						return
+					}
+					if (!authResult || !authResult.ok) {
+						throw new Error('Could not obtain a matching EIP-3009 signature')
+					}
+					var authB64 = encodeAuthPayload({
+						from: authResult.from,
+						to: to,
+						value: amount6,
+						validAfter: authResult.validAfter,
+						validBefore: authResult.validBefore,
+						nonce: authResult.nonce,
+						signature: authResult.signature,
+					})
+					returnToBeamioAuth(authB64)
+				} catch (err) {
+					if (signState.done || loadSignedResult()) return
+					signState.inFlight = false
+					var msg = err && typeof err.message === 'string' ? err.message : ''
+					if (signState.walletConfirmed && isAddress(from)) {
+						try {
+							signState.inFlight = true
+							await requestUsdcTransferNow(
+								provider,
+								from,
+								'Smart account detected — confirm the USDC transfer…',
+							)
+							return
+						} catch (txErr) {
+							signState.inFlight = false
+							if (isUserRejected(txErr)) {
+								setStatus('Request rejected. Tap below to try again.', 'err')
+								btn.disabled = false
+								btn.textContent = 'Sign and return to Beamio'
+								return
+							}
+							err = txErr
+							msg = txErr && typeof txErr.message === 'string' ? txErr.message : msg
+						}
+					}
+					if (isPermittedAddressError(err)) {
+						clearForceFrom()
+						setStatus(
+							'MetaMask is not connected to that account. In MetaMask, switch to the account you want to send from, then tap Sign again.',
+							'err',
+						)
+					} else if (isUserRejected(err)) {
+						setStatus('Request rejected. Tap below to try again.', 'err')
+					} else {
+						setStatus(msg || 'Could not complete. Tap below to try again.', 'err')
+					}
+					btn.disabled = false
+					btn.textContent = 'Sign and return to Beamio'
+					var recoveredErr = parseRecoveredFromError(msg)
+					if (
+						isAddress(recoveredErr) ||
+						/not connected to this page|not connected to that account|In MetaMask, switch to that account|rejected that signing account/i.test(
+							msg,
+						)
+					) {
+						showSubmitRetry('', '', { resign: true, recovered: recoveredErr })
+					}
+				}
+			}
+
+
+			btn.disabled = false
+			btn.textContent = 'Sign and return to Beamio'
+			/* Coinbase in-app: never show EIP-3009 / authorization copy. */
+			if (isCoinbaseLikeProvider(getProvider()) || isCoinbaseLikeProvider({})) {
+				setSmartWalletCopy()
+			}
+			btn.addEventListener('click', function () {
+				signState.walletConfirmed = false
+				void sign()
+			})
+
+			var existingOnLoad = loadSignedResult()
+			if (existingOnLoad) {
+				returnSignedResult(existingOnLoad)
+			} else {
+				var tries = 0
+				function maybeAuto() {
+					if (signState.done || signState.inFlight || signState.walletConfirmed) return
+					var again = loadSignedResult()
+					if (again) {
+						returnSignedResult(again)
+						return
+					}
+					tries += 1
+					var p = getProvider()
+					if (p) {
+						if (isCoinbaseLikeProvider(p)) setSmartWalletCopy()
+						void sign()
+						return
+					}
+					if (tries < 40) {
+						window.setTimeout(maybeAuto, 150)
+					} else {
+						setStatus('Tap below to send USDC from your wallet.', '')
+					}
+				}
+				window.setTimeout(maybeAuto, 80)
+			}
+		})()
+	</script>
+</body>
+</html>

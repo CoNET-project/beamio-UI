@@ -1,0 +1,42 @@
+import React, { useState } from "react"
+import SearchInputWithDropdown from "./SearchBarWithResults"
+import { ChevronLeft } from "lucide-react"
+
+type Props = {
+  close: (path: string | searchResult) => void
+  /** 仅当搜索面板真正打开时才 focus input，避免 navigate 到 home 时误弹键盘 */
+  isOpen?: boolean
+}
+
+export default function BeamioSearch({ close, isOpen = true }: Props) {
+
+	
+  return (
+    <div
+      className="
+        flex items-center
+        px-6 pb-3
+        border-slate-100
+		mt-4
+      "
+      
+    >
+      <main className="flex-1">
+        <section className="relative">
+          <SearchInputWithDropdown
+            showHistory={true}
+            // ✅ readonly(假input) 时：先切到可输入模式，不要立刻 close
+            closeWindow={path => {
+            
+              // ✅ 真输入模式下才走你原本的 close 逻辑
+              if (path) close(path)
+              	else close("/")
+            }}
+			focus={isOpen}
+			select={true}
+          />
+        </section>
+      </main>
+    </div>
+  )
+}

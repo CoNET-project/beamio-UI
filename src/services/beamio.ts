@@ -1,0 +1,3321 @@
+//			beamio.ts
+
+import { CoNET_Data, setCoNET_Data } from '@/utils/globals'
+import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
+import { abortAfter, BOOT_REQUEST_TIMEOUT_MS } from '@/utils/bootTimeout'
+import { profilesForPersist } from './chatLocalPurge'
+import { isShellContext } from './shellContext'
+import { shellPgpForServerRequest } from './ownPgpPublic'
+import { completePendingServerSync, enqueuePendingServerSync, ensurePendingServerSync, pendingServerSyncGeneration, type FlushOutcome } from './pendingServerSync'
+import { shellRecordAsWalletRecord, shellRecordRead, shellRecordWrite } from './shellRecordStore'
+import { shellStorageErrorReason } from './shellStoreWait'
+import { commitStoredRead, type StoredReadEffects } from './walletCopyCommit'
+import { assertNoPgpPrivate } from './shellRecordSanitizer'
+import { indexedDbDeviceKeyStore } from './passcode/walletWrap'
+import { notifyPasscodeStateChanged } from './walletVaultEvents'
+import {
+  changeWalletPasscode,
+  disableWalletPasscode,
+  hasPlainSecrets,
+  lockWalletSession,
+  migratePlainWallet,
+  openWalletForStartup,
+  passcodeEnabled,
+  readPlainForVerify,
+  resetWalletSession,
+  setWalletPasscode,
+  unlockWalletPasscode,
+  wrapForDisk,
+  type Loose,
+  type PlainMigration,
+  type SetResult,
+  type WalletMeta,
+  type WalletStores,
+} from './passcode/walletVault'
+import { applyBeamioUiLanguageFromProfile } from '@/locale/i18n'
+import {
+	buildBrowserLocaleCurrencyDefaults,
+	buildLocaleCurrencySetupPayload,
+	encodeRegistryLastNameWithLocaleSetup,
+	normalizeBeamioDisplayCurrency,
+	normalizeBeamioUiLocale,
+	parseBeamioAddedSetupFromRegistryLastName,
+	readBeamioUiLanguageBootstrap,
+	writeBeamioUiLanguageBootstrap,
+	type BeamioUiLocale,
+} from '@/utils/beamioProfileLocaleCurrency'
+import {ethers, FetchRequest, keccak256, Network, toUtf8Bytes} from 'ethers' 
+import usdc_abi from './ABI/usdc_abi.json'
+import {
+	customJsonStringify,
+	initProfileTokens,
+	isValidSolanaBase58PrivateKey,
+	postToEndpoint,
+
+} from "../utils/utils"
+
+import {
+	apiv4_endpoint,
+	conetDepinProvider,
+	localDatabaseName,
+
+} from "../utils/constants"
+
+import beamioAccountABI from '@/services/ABI/beamio-AccountRegistry.json'
+import { randomBytes } from '@noble/hashes/utils.js'
+import contracts from "../utils/contracts"
+import { encode as cborEncode, decode as cborDecode } from 'cbor-x'
+import { argon2idAsync } from '@/services/argon2WorkerBridge'
+import { baseEndpoint, USDCContract_BASE } from '../utils/constants'
+import { BASE_MAINNET_FACTORIES, CONET_ACCOUNT_REGISTRY, CONET_BUNIT_AIRDROP_ADDRESS, CONET_MAINNET_CHAIN_ID, CONET_RPC_URL } from '@/config/chainAddresses'
+import { eip712ChainIdForBeamioUserCard, getCardFactoryGatewayForEip712 } from '@/utils/beamioUserCardChain'
+import { isRpcDegraded, reportRpcFailure, isRpcQuotaOrNetworkError } from '@/utils/rpcStatus'
+import { withBaseRpc } from '../utils/baseRpc'
+import { tu } from '@/locale/beamioLocale'
+import {
+	peekBeamioTagBasicMetadataForQuery,
+	rememberBeamioTagBasicMetadata,
+	type BeamioTagBasicMetadata,
+} from '@/utils/beamioTagBasicMetadataGlobalCache'
+import { searchBeamioTagRemote } from '@/services/beamioTagWorkerBridge'
+import {
+	hasCompletedBeamioAccount,
+	hasLocalPlaintextMnemonic,
+	hasLocalSigningMaterial,
+	isTrustedEmptyWalletBlob,
+} from '@/utils/consumerWalletGate'
+import { recoverAllowed, recoverSourceOf } from '@/services/accountJudgement'
+import { reuseKeepsKey } from '@/services/reuseKeepsKey'
+import { stripPeerChatPrivateArmored } from '@/utils/peerChatPrivateArmored'
+
+export type x402Response = {
+	timestamp: string
+	network: string
+	payer: string
+	success: boolean
+	USDC_tx?: string
+	SETTLE_tx?: string
+}
+
+const uuid62 = require('uuid62')
+const PouchDB = require("pouchdb").default
+
+
+
+const SC= new ethers.Contract(USDCContract_BASE, usdc_abi, baseEndpoint)
+export type IBalance= {
+	usdc: string
+	eth: string
+	oracle: {
+		bnb: string
+		eth: string
+		usdc: string
+	}
+}
+
+/** RPC 失败时从 API 获取余额（30s 缓存由服务端负责） */
+const fetchBalanceFromApi = async (address: string): Promise<IBalance | null> => {
+	// a stalled balance read is a failed read after the bound (the caller already treats null as "no balance answer").
+	const timeout = abortAfter(BOOT_REQUEST_TIMEOUT_MS)
+	try {
+		const res = await fetch(`${beamioApi}/api/getBalance?address=${encodeURIComponent(address)}`, { signal: timeout.signal })
+		if (!res.ok) return null
+		const data = await res.json().catch(() => ({}))
+		if (data?.eth != null && data?.usdc != null) {
+			return {
+				eth: String(data.eth),
+				usdc: String(data.usdc),
+				oracle: data?.oracle ?? { bnb: '', eth: '', usdc: '1' },
+			}
+		}
+		return null
+	} catch {
+		return null
+	} finally {
+		timeout.done()
+	}
+}
+
+/** 从 API 获取指定地址 USDC 余额（RPC 熔断或失败时使用），失败返回 null 表示不可信 */
+export const getUsdcBalanceFromApi = async (address: string): Promise<string | null> => {
+	const b = await fetchBalanceFromApi(address)
+	return b?.usdc != null ? String(b.usdc) : null
+}
+
+const getBalance = async (address: string) => {
+	if (!address) return null
+	// 熔断期跳过 RPC（不向 API 服务器请求）
+	try {
+		const [usdc, eth, oracle] = await Promise.all([
+			withBaseRpc((p) => new ethers.Contract(USDCContract_BASE, usdc_abi as ethers.InterfaceAbi, p).balanceOf(address)),
+			withBaseRpc((p) => p.getBalance(address)),
+			getOracle(),
+		])
+		if (oracle) {
+			// getBalanceProcess 期望 oracle.eth.usdc（USDC→USD 汇率）
+			const oracleForBalance = { ...oracle, eth: { usdc: oracle.usdc ?? '1' } }
+			return {
+				eth: ethers.formatUnits(eth as bigint, 18).toString(),
+				usdc: ethers.formatUnits(usdc as bigint, 6).toString(),
+				oracle: oracleForBalance,
+			}
+		}
+	} catch (err) {
+		if (isRpcQuotaOrNetworkError(err)) reportRpcFailure()
+		// 熔断期不请求 API；非熔断期用 API 兜底
+		if (!isRpcDegraded()) return fetchBalanceFromApi(address)
+		return null
+	}
+	return null
+}
+
+const duplicate = contracts.Duplicate
+const duplicate_readOnly = new ethers.Contract(duplicate.address, duplicate.abi, conetDepinProvider)
+
+const isLocal = false
+const remote = 'https://api.settleonbase.xyz'
+const local = 'http://localhost:4088'
+const beamioApi = 'https://beamio.ca'
+const ipfsEndpoint = `https://ipfs.conet.network/api/`
+
+const getFaucetEndpoint = isLocal ? `${local}/api/BeamioFaucet` : `${remote}/api/BeamioFaucet`
+
+/** Base 主网 BeamioOracle 合约，直接读取链上汇率，不再使用 API 服务器 */
+const BEAMIO_ORACLE_BASE = '0x77CB8358c5a37aB7190b0A2C7EaA7fEeDCF11008'
+const BeamioOracleAbi = ['function getRate(uint8 c) view returns (uint256)'] as const
+
+const storageNewUser = `${beamioApi}/api/addUser`
+const followStatusUrl = `${beamioApi}/api/getFollowStatus`
+const removeFollowingUrl = `${beamioApi}/api/removeFollow`
+const addFollowingUrl = `${beamioApi}/api/addFollow`
+const myFollowStatusUrl = `${beamioApi}/api/getMyFollowStatus`
+const getFollowersUrl = `${beamioApi}/api/getMyFollowStatus`
+
+/** CoNET 主网 chainId（BUnitAirdrop 部署链） */
+const CONET_CHAIN_ID = CONET_MAINNET_CHAIN_ID
+
+/** CoNET BUnitAirdrop 合约地址（与 deployments/conet-addresses.json 一致） */
+const CONET_BUNIT_AIRDROP = CONET_BUNIT_AIRDROP_ADDRESS
+
+/** 检查是否可领取 BeamioBUnits（Cluster 读链） */
+export const checkBUnitClaimEligibility = async (
+	address: string,
+): Promise<{ canClaim: boolean; nonce?: string; deadline?: number; reason?: string | null; error?: string }> => {
+	// a stalled eligibility read is a failed read after the bound (never an endless wait on the boot claim check).
+	const timeout = abortAfter(BOOT_REQUEST_TIMEOUT_MS)
+	try {
+		const res = await fetch(`${beamioApi}/api/checkBUnitClaimEligibility?address=${encodeURIComponent(address)}`, { signal: timeout.signal })
+		const data = await res.json().catch(() => ({}))
+		if (!res.ok) return { canClaim: false, error: data?.error ?? res.statusText }
+		return {
+			canClaim: !!data.canClaim,
+			nonce: data.nonce,
+			deadline: data.deadline != null ? Number(data.deadline) : undefined,
+			reason: data.reason ?? null,
+		}
+	} catch (e) {
+		return { canClaim: false, error: (e as Error)?.message ?? tu('request_failed') }
+	} finally {
+		timeout.done()
+	}
+}
+
+/** 使用 EOA 私钥签写 ClaimAirdrop 并提交 claimBUnits 请求（调用方须先 gateBUnitFreeClaimBeforeSubmit） */
+export const signAndClaimBUnits = async (
+	privateKey: string,
+	claimant: string,
+	nonce: string | number,
+	deadline: number
+): Promise<{ success: boolean; txHash?: string; error?: string; code?: string }> => {
+	try {
+		const wallet = new ethers.Wallet(privateKey)
+		if (wallet.address.toLowerCase() !== ethers.getAddress(claimant).toLowerCase()) {
+			return { success: false, error: 'Signer address does not match claimant' }
+		}
+		const domain = {
+			name: 'BUnitAirdrop',
+			version: '1',
+			chainId: CONET_CHAIN_ID,
+			verifyingContract: CONET_BUNIT_AIRDROP as `0x${string}`,
+		}
+		const types = {
+			ClaimAirdrop: [
+				{ name: 'claimant', type: 'address' },
+				{ name: 'nonce', type: 'uint256' },
+				{ name: 'deadline', type: 'uint256' },
+			],
+		}
+		const value = {
+			claimant: ethers.getAddress(claimant),
+			nonce: BigInt(nonce),
+			deadline: BigInt(deadline),
+		}
+		const signature = await wallet.signTypedData(domain, types, value)
+		const res = await fetch(`${beamioApi}/api/claimBUnits`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				claimant: ethers.getAddress(claimant),
+				nonce: String(nonce),
+				deadline: String(deadline),
+				signature,
+			}),
+		})
+		const data = await res.json().catch(() => ({}))
+		if (!res.ok) {
+			return {
+				success: false,
+				error: data?.error ?? res.statusText,
+				code: typeof data?.code === 'string' ? data.code : undefined,
+			}
+		}
+		return { success: true, txHash: data.txHash }
+	} catch (e) {
+		return { success: false, error: (e as Error)?.message ?? 'Claim failed' }
+	}
+}
+
+export type BUnitAutoClaimOutcome = 'skipped_silent' | 'claimed_success' | 'noop'
+
+/** 自动领：IDB + 链上 gate → API eligibility → claim；已领静默，不换钱包可链上复检 */
+export async function runAutoBUnitFreeClaimIfEligible(
+	privateKey: string,
+	claimantRaw: string,
+): Promise<BUnitAutoClaimOutcome> {
+	const {
+		gateBUnitFreeClaimBeforeSubmit,
+		markBUnitFreeClaimSkippedInIdb,
+		isBUnitClaimAlreadyClaimedError,
+		readBUnitFreeClaimHasClaimedOnChain,
+	} = await import('@/utils/bunitFreeClaimGate')
+	const claimant = ethers.getAddress(claimantRaw)
+
+	if ((await gateBUnitFreeClaimBeforeSubmit(claimant)) === 'skip_silent') {
+		return 'skipped_silent'
+	}
+
+	const r = await checkBUnitClaimEligibility(claimant)
+	if (!r.canClaim || r.reason === 'already_claimed') {
+		await markBUnitFreeClaimSkippedInIdb(claimant, 'api')
+		return 'skipped_silent'
+	}
+	if (r.nonce == null || r.deadline == null) return 'noop'
+
+	const onChainBeforePost = await readBUnitFreeClaimHasClaimedOnChain(claimant)
+	if (onChainBeforePost === true) {
+		await markBUnitFreeClaimSkippedInIdb(claimant, 'chain')
+		return 'skipped_silent'
+	}
+
+	const result = await signAndClaimBUnits(privateKey, claimant, r.nonce, r.deadline)
+	if (result.success) {
+		await markBUnitFreeClaimSkippedInIdb(claimant, 'api')
+		return 'claimed_success'
+	}
+	if (isBUnitClaimAlreadyClaimedError(result.error, result.code)) {
+		await markBUnitFreeClaimSkippedInIdb(claimant, 'api')
+		return 'skipped_silent'
+	}
+	return 'noop'
+}
+
+/** 提交 Refuel B-Unit 请求到 API。Cluster 预检后转发 Master，Master 提交 BaseTreasury.purchaseBUnitWith3009Authorization。 */
+export const purchaseBUnitFromBase = async (payload: import('./BeamioCard').IBUnitRefuelPayload): Promise<{ success: boolean; txHash?: string; error?: string }> => {
+	try {
+		const res = await fetch(`${beamioApi}/api/purchaseBUnitFromBase`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(payload),
+		})
+		const data = await res.json().catch(() => ({}))
+		if (!res.ok) return { success: false, error: data?.error ?? res.statusText }
+		return { success: true, txHash: data.txHash }
+	} catch (e) {
+		return { success: false, error: (e as Error)?.message ?? 'Refuel failed' }
+	}
+}
+
+/** 校验 Voucher 支付请求是否过期或已支付。用于 Smart Routing 前置校验。 */
+export const checkRequestStatus = async (
+	requestHash: string,
+	validDays: number,
+	payee: string
+): Promise<{ expired: boolean; fulfilled: boolean; error?: string }> => {
+	try {
+		const params = new URLSearchParams({
+			requestHash,
+			validDays: String(Math.max(1, Math.floor(validDays))),
+			payee: ethers.getAddress(payee),
+		})
+		const res = await fetch(`${beamioApi}/api/checkRequestStatus?${params}`)
+		if (!res.ok) {
+			const err = (await res.json().catch(() => ({}))).error ?? res.statusText
+			return { expired: false, fulfilled: false, error: err }
+		}
+		const { expired, fulfilled } = await res.json()
+		return { expired: !!expired, fulfilled: !!fulfilled }
+	} catch (e) {
+		return { expired: false, fulfilled: false, error: (e as Error)?.message ?? tu('request_failed') }
+	}
+}
+
+/** 查询 NTAG 424 DNA 卡状态（根据 UID）；若已登记则返回 address（AA/EOA） */
+export const fetchNfcCardStatus = async (uid: string): Promise<{ registered: boolean; address?: string }> => {
+	const res = await fetch(`${beamioApi}/api/nfcCardStatus`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ uid }),
+	})
+	if (!res.ok) {
+		const err = (await res.json().catch(() => ({}))).error ?? res.statusText
+		throw new Error(err)
+	}
+	return res.json()
+}
+
+/** 根据 UID 查询 NFC 卡资产（CCSA 点数 + USDC 余额），需卡已登记 */
+export type UIDAssetsResponse = {
+	ok: boolean
+	address?: string
+	cardAddress?: string
+	points?: string
+	points6?: string
+	usdcBalance?: string
+	cardCurrency?: string
+	nfts?: { tokenId: string; attribute: string; tier: string; expiry: string; isExpired: boolean }[]
+	error?: string
+}
+export const fetchUIDAssets = async (uid: string): Promise<UIDAssetsResponse> => {
+	const res = await fetch(`${beamioApi}/api/getUIDAssets`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ uid: uid.trim() }),
+	})
+	const data = (await res.json().catch(() => ({}))) as UIDAssetsResponse
+	if (!res.ok) return { ok: false, error: data.error ?? res.statusText ?? 'Query failed' }
+	return data
+}
+
+/** Base 主网 BeamioUserCard 工厂地址（与 x402sdk chainAddresses 一致） */
+const BASE_CARD_FACTORY = BASE_MAINNET_FACTORIES.CARD_FACTORY
+const BASE_CHAIN_ID = 8453
+
+/** NFC Topup Prepare：获取 executeForAdmin 所需的 cardAddr、data、deadline、nonce、factoryGateway（EIP-712 verifyingContract） */
+export const nfcTopupPrepare = async (params: { uid: string; amount: string; currency?: string }): Promise<{
+	cardAddr: string
+	data: string
+	deadline: number
+	nonce: string
+	factoryGateway: string
+} | { error: string }> => {
+	const res = await fetch(`${beamioApi}/api/nfcTopupPrepare`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(params),
+	})
+	const data = (await res.json().catch(() => ({}))) as {
+		cardAddr?: string
+		data?: string
+		deadline?: number
+		nonce?: string
+		factoryGateway?: string
+		error?: string
+	}
+	if (!res.ok || data.error) return { error: data.error ?? res.statusText ?? 'Prepare failed' }
+	if (!data.cardAddr || !data.data || data.deadline == null || !data.nonce) return { error: 'Invalid prepare response' }
+	let factoryGateway: string = BASE_CARD_FACTORY
+	if (data.factoryGateway && ethers.isAddress(data.factoryGateway)) {
+		factoryGateway = ethers.getAddress(data.factoryGateway)
+	} else {
+		try {
+			factoryGateway = await getCardFactoryGatewayForEip712(data.cardAddr)
+		} catch {
+			/* keep BASE_CARD_FACTORY */
+		}
+	}
+	return {
+		cardAddr: data.cardAddr,
+		data: data.data,
+		deadline: Number(data.deadline),
+		nonce: data.nonce,
+		factoryGateway,
+	}
+}
+
+/** NFC Topup：读取方 UI 用户用 profile 私钥签 ExecuteForAdmin，提交后 Master 调用 factory.executeForAdmin */
+export const nfcTopup = async (params: { uid: string; amount: string; currency?: string }): Promise<{ success: boolean; txHash?: string; error?: string }> => {
+	// Shell: this page-side signing path is not available (POS-owned, suspended; no page-held keys in a shell).
+	if (isShellContext()) return { success: false, error: 'NFC top-up is not available in this app.' }
+	if (!CoNET_Data?.profiles?.length || !CoNET_Data.profiles[0]?.privateKeyArmor) {
+		return { success: false, error: '请先登录 Beamio 账户' }
+	}
+	const prepare = await nfcTopupPrepare(params)
+	if ('error' in prepare) return { success: false, error: prepare.error }
+	const { cardAddr, data, deadline, nonce, factoryGateway } = prepare
+	const privateKey = CoNET_Data.profiles[0].privateKeyArmor
+	const wallet = new ethers.Wallet(privateKey)
+	const dataHash = ethers.keccak256(data)
+	const chainId = await eip712ChainIdForBeamioUserCard(cardAddr)
+	const domain = {
+		name: 'BeamioUserCardFactory',
+		version: '1',
+		chainId,
+		verifyingContract: factoryGateway,
+	}
+	const types = {
+		ExecuteForAdmin: [
+			{ name: 'cardAddress', type: 'address' },
+			{ name: 'dataHash', type: 'bytes32' },
+			{ name: 'deadline', type: 'uint256' },
+			{ name: 'nonce', type: 'bytes32' },
+		],
+	}
+	const message = {
+		cardAddress: cardAddr,
+		dataHash,
+		deadline: BigInt(deadline),
+		nonce: nonce.startsWith('0x') ? nonce : '0x' + nonce,
+	}
+	const adminSignature = await wallet.signTypedData(domain, types, message)
+	const res = await fetch(`${beamioApi}/api/nfcTopup`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ cardAddr, data, deadline, nonce, adminSignature, uid: params.uid }),
+	})
+	const dataRes = (await res.json().catch(() => ({}))) as { success?: boolean; txHash?: string; error?: string }
+	return {
+		success: res.ok && dataRes.success !== false,
+		txHash: dataRes.txHash,
+		error: dataRes.error,
+	}
+}
+
+/** 以 UID 支付：服务端使用 NFC 卡私钥向 payee 转 USDC */
+export const payByNfcUid = async (params: { uid: string; amountUsdc6: string; payee: string }): Promise<{ success: boolean; USDC_tx?: string; error?: string }> => {
+	const res = await fetch(`${beamioApi}/api/payByNfcUid`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(params),
+	})
+	const data = (await res.json().catch(() => ({}))) as { success?: boolean; USDC_tx?: string; error?: string }
+	return {
+		success: res.ok && data.success !== false,
+		USDC_tx: data.USDC_tx,
+		error: data.error,
+	}
+}
+
+export const toBase64 = (s: string) => {
+	const bytes = new TextEncoder().encode(s)
+	let binary = ''
+	for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+	return btoa(binary)
+}
+
+export async function AuthorizationSign(
+	amount: bigint,
+	to: string,
+	/** Prefer explicit key (e.g. resolved from mnemonic) over CoNET_Data alone. */
+	privateKeyArmorOverride?: string,
+): Promise<string> {
+	const privateKey =
+		(typeof privateKeyArmorOverride === 'string' && privateKeyArmorOverride.trim()) ||
+		CoNET_Data?.profiles?.[0]?.privateKeyArmor ||
+		''
+
+	if (!privateKey) {
+		return ''
+	}
+
+	const wallet = new ethers.Wallet(privateKey)
+	const from = await wallet.getAddress()
+
+	// 2) 金额 & 时间窗（现在 - 5min 到 1h 后，与注释一致，避免 facilitator 因过期拒绝）
+	const value = amount
+	const now = BigInt(Math.floor(Date.now() / 1000))
+	const validAfter = now - BigInt(300)   // 5 分钟容错（时钟偏差）
+	const validBefore = now + BigInt(3600) // 1 小时内有效    
+
+	console.log(`AuthorizationSign validAfter = ${validAfter} validBefore ${validBefore}`)
+
+	// 3) 随机 nonce（bytes32）
+	const nonce = ethers.hexlify(ethers.randomBytes(32)) as `0x${string}`
+
+	// 4) EIP-712 域 & 类型 & 数据（与你合约里的 TYPEHASH 字段严格一致）
+	const domain = {
+		name: "USD Coin",          // ERC20Permit(name) -> 你的合约构造里是 "USDC"
+		version: "2",          // OpenZeppelin ERC20Permit 的默认版本是 "1"
+		chainId: 8453,     // 必须与链实际 ID 一致
+		verifyingContract: USDCContract_BASE,
+	} as const;
+
+	const AuthorizationTypes = {
+		TransferWithAuthorization: [
+		{ name: "from",        type: "address" },
+		{ name: "to",          type: "address" },
+		{ name: "value",       type: "uint256" },
+		{ name: "validAfter",  type: "uint256" },
+		{ name: "validBefore", type: "uint256" },
+		{ name: "nonce",       type: "bytes32"  },
+		],
+	}
+
+	const authorization = {
+		from,
+		to,
+		value: value.toString(),
+		validAfter: validAfter.toString(),
+		validBefore: validBefore.toString(),
+		nonce,
+  	}
+
+	// 5) 签名（返回 0x + 65 字节，合约的 bytes 接口可直接用
+	try {
+		const signature = await wallet.signTypedData(domain, AuthorizationTypes, authorization) as `0x${string}`
+		const ret: AuthorizationPayload = {
+			x402Version: 1,
+			scheme: 'exact',
+			network: 'base',
+			payload: {
+				signature,
+				authorization
+			}
+		}
+		console.log(ret)
+		const testSig = await wallet.signMessage("test")
+		console.log('Test signature:', testSig)
+
+		// ✅ 安全方式：支持 UTF-8 字符
+		const json = JSON.stringify(ret)
+		const base64 = toBase64(json)
+		return base64
+	} catch (ex: any) {
+		console.log(`wallet.signTypedData Error: ${ex.message}`)
+		return ''
+	}
+	
+}
+
+function b64ToBytes(s: string): Uint8Array {
+	if (typeof Buffer !== 'undefined') {
+		return new Uint8Array(Buffer.from(s, 'base64'))
+	}
+	const bin = atob(s)
+	const out = new Uint8Array(bin.length)
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+	return out
+}
+
+function bytesToB64(bytes: Uint8Array): string {
+	if (typeof Buffer !== 'undefined') {
+		return Buffer.from(bytes).toString('base64')
+	}
+	let bin = ''
+	for (let i = 0; i < bytes.length; i++) {
+		bin += String.fromCharCode(bytes[i])
+	}
+	return btoa(bin)
+}
+
+// 把 string 转为 Uint8Array
+const enc = new TextEncoder()
+
+
+const b64encode = (bytes: Uint8Array): string => {
+	if (typeof Buffer !== 'undefined') {
+		return Buffer.from(bytes).toString('base64')
+	}
+	let binary = ''
+	for (let i = 0; i < bytes.length; i++) {
+		binary += String.fromCharCode(bytes[i])
+	}
+	return btoa(binary)
+}
+
+const b64decode = (s: string): Uint8Array => {
+	if (typeof Buffer !== 'undefined') {
+		return new Uint8Array(Buffer.from(s, 'base64'))
+	}
+	const binary = atob(s)
+	const bytes = new Uint8Array(binary.length)
+	for (let i = 0; i < binary.length; i++) {
+		bytes[i] = binary.charCodeAt(i)
+	}
+	return bytes
+}
+
+const timingSafeEqualUint8 = (a: Uint8Array, b: Uint8Array): boolean => {
+	if (a.length !== b.length) return false
+	let diff = 0
+	for (let i = 0; i < a.length; i++) {
+		diff |= a[i] ^ b[i]
+	}
+	return diff === 0
+}
+
+
+
+export function encodeStoredCBOR(obj: any): string {
+	const bytes = cborEncode(obj)  // 这里是 Uint8Array（真正的 CBOR 二进制）
+  	return bytesToB64(bytes)       // 再转为 Base64 字符串
+}
+
+export function decodeStoredCBOR(b64: string): any {
+	const bytes = b64ToBytes(b64)  // Base64 → Uint8Array
+  	return cborDecode(bytes)       // CBOR → 原始对象
+}
+
+/** BeamioCurrency 枚举：与 BeamioCurrency.sol 一致 */
+const BEAMIO_CURRENCY = { CAD: 0, USD: 1, JPY: 2, CNY: 3, USDC: 4, HKD: 5, EUR: 6, SGD: 7, TWD: 8 } as const
+
+/** 从 Base 链上 BeamioOracle 直接读取汇率，不再使用 API 服务器。getRate(c) 返回「1 单位该货币 = X USD」E18 */
+export const getOracle = async (): Promise<{
+	usdcad?: string; usdjpy?: string; usdcny?: string; usdc?: string;
+	usdhkd?: string; usdtwd?: string; usdeur?: string; usdsgd?: string;
+} | null> => {
+	try {
+		const res = await withBaseRpc(async (provider) => {
+			const oracle = new ethers.Contract(BEAMIO_ORACLE_BASE, BeamioOracleAbi, provider)
+			const ids = [BEAMIO_CURRENCY.CAD, BEAMIO_CURRENCY.JPY, BEAMIO_CURRENCY.CNY, BEAMIO_CURRENCY.USDC,
+				BEAMIO_CURRENCY.HKD, BEAMIO_CURRENCY.EUR, BEAMIO_CURRENCY.SGD, BEAMIO_CURRENCY.TWD] as const
+			const rates = await Promise.all(ids.map((c) => oracle.getRate(c)))
+			const ratesNum = rates.map((r) => Number(ethers.formatUnits(r, 18)))
+			// 链上：1 外币 = X USD；前端需 1 USD = Y 外币，故非 USD/USDC 用倒数
+			return {
+				usdcad: ratesNum[0] > 0 ? String(1 / ratesNum[0]) : undefined,
+				usdjpy: ratesNum[1] > 0 ? String(1 / ratesNum[1]) : undefined,
+				usdcny: ratesNum[2] > 0 ? String(1 / ratesNum[2]) : undefined,
+				usdc: String(ratesNum[3] || 1),
+				usdhkd: ratesNum[4] > 0 ? String(1 / ratesNum[4]) : undefined,
+				usdeur: ratesNum[5] > 0 ? String(1 / ratesNum[5]) : undefined,
+				usdsgd: ratesNum[6] > 0 ? String(1 / ratesNum[6]) : undefined,
+				usdtwd: ratesNum[7] > 0 ? String(1 / ratesNum[7]) : undefined,
+			}
+		})
+		return res
+	} catch {
+		return null
+	}
+}
+
+/** 将 getOracle 返回的原始数据解析为 currencyData 格式，供全局 feeder 和各页面使用 */
+export const parseOracleToCurrencyData = (data: { usdcad?: string | number; usdjpy?: string | number; usdcny?: string | number; usdc?: string | number; usdhkd?: string | number; usdtwd?: string | number; usdeur?: string | number; usdsgd?: string | number } | null): currencyData => {
+	if (!data) {
+		return { CAD: 1.35, USD: 1, JPY: 150, CNY: 7.2, USDC: 1, HKD: 7.8, SGD: 1.35, EUR: 0.92, TWD: 31 }
+	}
+	return {
+		CAD: Number(data.usdcad) || 1.35,
+		USD: 1,
+		JPY: Number(data.usdjpy) || 150,
+		CNY: Number(data.usdcny) || 7.2,
+		USDC: Number(data.usdc) || 1,
+		HKD: Number(data.usdhkd) || 7.8,
+		TWD: Number(data.usdtwd) || 31,
+		EUR: Number(data.usdeur) || 0.92,
+		SGD: Number(data.usdsgd) || 1.35
+	}
+}
+
+/** 全局 Oracle 刷新间隔：5 分钟 */
+export const ORACLE_REFRESH_MS = 5 * 60 * 1000
+
+
+export const estimateGasUSDC = async (amount: number, to: string) => {
+	if (!CoNET_Data?.profiles?.length) {
+		return null
+	}
+	const privateKey = CoNET_Data.profiles[0].privateKeyArmor
+	const wallet = new ethers.Wallet(privateKey, baseEndpoint)
+	const sc = new ethers.Contract(USDCContract_BASE, usdc_abi, wallet)
+	const _amount = ethers.parseUnits(amount.toFixed(2), 6)
+	try {
+		const [gas, price, oracle] = await Promise.all([
+			sc.transfer.estimateGas(to || ethers.ZeroAddress, _amount),
+			baseEndpoint.getFeeData(),
+			getOracle(),
+		])
+
+		if (oracle) {
+			return {gas: gas * BigInt(3), price: price.gasPrice, oracle}
+		}
+
+		return null
+	} catch (ex) {
+		return null
+	}
+}
+
+const CURRENCY_CN: Record<string, string> = {
+  USD: "美元", USDC: "美元", USDT: "美元",
+  EUR: "欧元",
+  JPY: "日元",
+  CNY: "人民币", CNH: "离岸人民币",
+  HKD: "港元",
+  GBP: "英镑",
+  AUD: "澳元",
+  CAD: "加元",
+  SGD: "新元",
+  TWD: "新台币",
+}
+/** 中文数字（整数部分），支持到兆 */
+function toChineseNumber(input: number | string): string {
+	// 输入清理
+	let n: number
+	if (typeof input === "number") n = input
+	else {
+		const cleaned = input.trim().replace(/[^\d.-]/g, "")
+		const parsed = parseFloat(cleaned)
+		n = Number.isFinite(parsed) ? parsed : 0
+	}
+
+	const negative = n < 0
+	n = Math.abs(n)
+
+	// 四舍五入到分
+	const cents = Math.round(n * 100)
+	const intPart = Math.floor(cents / 100)
+	const jiao = Math.floor((cents % 100) / 10)
+	const fen = cents % 10
+
+	// 金融大写数字与单位
+	const digits = ["零", "壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖"]
+	const unitsSmall = ["", "拾", "佰", "仟"]
+	const unitsSection = ["", "万", "亿", "兆"]
+
+	/** 0~9999 内的转换（节内简化规则：非最高位的“壹拾/佰/仟”可省略壹） */
+	const sectionToCN = (num: number): string => {
+		if (num === 0) return ""
+		let s = ""
+		const str = String(num)
+		const len = str.length
+		for (let i = 0; i < len; i++) {
+		const d = parseInt(str[len - 1 - i])
+		if (d === 0) {
+			if (!s.startsWith("零") && s !== "") s = "零" + s
+		} else {
+			const isHighPos = i === len - 1 // 节最高位不省略
+			const digitStr = (d === 1 && i > 0 && !isHighPos) ? "" : digits[d]
+			s = digitStr + unitsSmall[i] + s
+		}
+		}
+		return s.replace(/零+/g, "零").replace(/^零|零$/g, "")
+	}
+
+	// 整数部分
+	let intCN = ""
+	if (intPart === 0) {
+		intCN = "零"
+	} else {
+		let nLeft = intPart
+		let unitIndex = 0
+		while (nLeft > 0 && unitIndex < unitsSection.length) {
+		const section = nLeft % 10000
+		if (section !== 0) {
+			const head = sectionToCN(section)
+			intCN = head + unitsSection[unitIndex] + intCN
+		} else if (!intCN.startsWith("零") && intCN !== "") {
+			intCN = "零" + intCN
+		}
+		nLeft = Math.floor(nLeft / 10000)
+		unitIndex++
+		}
+		intCN = intCN.replace(/零+/g, "零").replace(/^零|零$/g, "")
+	}
+
+	// 小数部分（角/分）
+	let fracCN = ""
+	if (jiao === 0 && fen === 0) {
+		fracCN = "整"
+	} else if (jiao === 0 && fen !== 0) {
+		fracCN = "零" + digits[fen] + "分"
+	} else if (jiao !== 0 && fen === 0) {
+		fracCN = digits[jiao] + "角"
+	} else {
+		fracCN = digits[jiao] + "角" + digits[fen] + "分"
+	}
+
+	const sign = negative ? "负" : ""
+	return sign + intCN + "元" + fracCN
+}
+
+
+/** 日语金融漢数字（壱 弐 参 肆 伍 陸 漆 捌 玖 零），支持小数（角/分） */
+function toJapaneseNumber(input: number | string): string {
+	let n: number
+	if (typeof input === "number") n = input
+	else {
+		const cleaned = input.trim().replace(/[^\d.-]/g, "")
+		const parsed = parseFloat(cleaned)
+		n = Number.isFinite(parsed) ? parsed : 0
+	}
+
+	const negative = n < 0
+	n = Math.abs(n)
+
+	const cents = Math.round(n * 100)
+	const intPart = Math.floor(cents / 100)
+	const jiao = Math.floor((cents % 100) / 10)
+	const fen = cents % 10
+
+	// ✅ 金融漢数字（日语）
+	const digits = ["零", "壱", "弐", "参", "肆", "伍", "陸", "漆", "捌", "玖"]
+	const unitsSmall = ["", "拾", "百", "千"]
+	const unitsSection = ["", "万", "億", "兆"]
+
+	const sectionToJP = (num: number): string => {
+		if (num === 0) return ""
+		let s = ""
+		for (let i = 0; i < 4; i++) {
+		const d = num % 10
+		if (d !== 0) {
+			const digitStr = (d === 1 && i > 0) ? "" : digits[d]
+			s = digitStr + unitsSmall[i] + s
+		} else if (!s.startsWith("零") && s !== "") {
+			s = "零" + s
+		}
+		num = Math.floor(num / 10)
+		if (num === 0) break
+		}
+		return s.replace(/零+/g, "零").replace(/^零|零$/g, "")
+	}
+
+	let intCN = ""
+	if (intPart === 0) {
+		intCN = "零"
+	} else {
+		let nLeft = intPart
+		let unitIndex = 0
+		while (nLeft > 0 && unitIndex < unitsSection.length) {
+		const section = nLeft % 10000
+		if (section !== 0) {
+			const head = sectionToJP(section)
+			intCN = head + unitsSection[unitIndex] + intCN
+		} else if (!intCN.startsWith("零") && intCN !== "") {
+			intCN = "零" + intCN
+		}
+		nLeft = Math.floor(nLeft / 10000)
+		unitIndex++
+		}
+		intCN = intCN.replace(/零+/g, "零").replace(/^零|零$/g, "")
+	}
+
+	let fracCN = ""
+	if (jiao === 0 && fen === 0) {
+		fracCN = "整"
+	} else if (jiao === 0 && fen !== 0) {
+		fracCN = "零" + digits[fen] + "分"
+	} else if (jiao !== 0 && fen === 0) {
+		fracCN = digits[jiao] + "角"
+	} else {
+		fracCN = digits[jiao] + "角" + digits[fen] + "分"
+	}
+
+	const sign = negative ? "マイナス " : ""
+	return sign + intCN + "ドル" + (fracCN ? fracCN : "")
+}
+
+export const redeemCodeHash = (redeemCode: string, passcode: string) => {
+	const hash = ethers.solidityPackedKeccak256(['string', 'string'], [redeemCode, passcode])
+	return hash
+}
+
+export const generateCODE = (passcode: string) => {
+	const code: string = uuid62.v4()
+	const hash = ethers.solidityPackedKeccak256(['string', 'string'], [code, passcode])
+	return ({
+		code, hash
+	})
+}
+
+
+
+/** 生成 request 唯一 hash（bytes32），供 URL 与链上 originalPaymentHash 使用 */
+export const generateRequestHash = (): string => {
+	const seed = uuid62.v4() + '-' + Date.now() + '-' + Math.random().toString(36).slice(2)
+	return ethers.keccak256(ethers.toUtf8Bytes(seed))
+}
+
+//		https://beamio.ca/app/?nftRedeemcode=null&tagid=${tagid}&uid=${uid}&counter=${counter}
+
+/**
+ * 将金额格式化为人类可读的文字形式
+ * @param amount number | string
+ * @param lang "cn" | "en" | "ja"
+ * @param currency 货币代码，如 USDC、JPY
+ */
+export function formatAmountReadable(amount: number | string, lang='en', currency='USD'): string {
+	const code = (currency || "").toUpperCase()
+
+	// 统一解析数值（兼容 string）
+	let n: number
+	if (typeof amount === "number") n = amount
+	else {
+		const cleaned = amount.replace(/[^\d.-]/g, "")
+		const parsed = parseFloat(cleaned)
+		n = Number.isFinite(parsed) ? parsed : 0
+	}
+
+	if (lang === "cn") {
+		// 中文：直接用 toChineseNumber（内含“元/角/分”），不要再额外拼 “元”
+		const name = CURRENCY_CN[code] || code
+		return `${name} ${toChineseNumber(n)}`
+	}
+
+	// 其它语言维持整数可读（如需带小数，可改为 n.toLocaleString）
+	const intPart = Math.floor(Math.max(0, n))
+
+	if (lang === "ja") {
+		const CURRENCY_JA: Record<string, string> = {
+			USD: "米", USDC: "米", USDT: "米",
+			EUR: "ユーロ", JPY: "円", CNY: "人民元", HKD: "香港ドル",
+			GBP: "英ポンド", AUD: "豪ドル", CAD: "カナダドル",
+			SGD: "シンガポールドル", TWD: "ニュー台湾ドル",
+		}
+		const name = CURRENCY_JA[code] || code
+		return `${name} ${toJapaneseNumber(n)}`
+	}
+
+	if (lang === "en") return toEnglishCheckWords(amount)
+
+	return `${code} ${intPart.toLocaleString("en-US")}`
+}
+
+ // 千分位格式化（固定两位小数）
+export const formatWithThousands = (n: string | number, fixed = 2): string => {
+	const num = Number(n)
+	if (isNaN(num)) return "0.00"
+
+	const [intPart, decPart = "00"] = num.toFixed(fixed).split(".")
+	const intWithCommas = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+	return `${intWithCommas}${fixed ? '.' + decPart : ''}`
+}
+
+export const getUSDCFaucet = async (address: string) => {
+	const params = new URLSearchParams({address}).toString()
+	const url = `${getFaucetEndpoint}?${params}`
+	try {
+		const req = await fetch(url, {
+			method: 'GET'
+		})
+		if (req.status !== 200) {
+			console.log(`getFaucet status !== 200 Error!`)
+			return false
+		}
+
+		return true
+
+	} catch (ex) {
+		console.log(`getFaucet Error`, ex)
+	}
+	return false
+}
+
+export function toEnglishCheckWords(input: number | string): string {
+	// 1) 统一为字符串，清理除 0-9 . - 之外的字符
+	let s = typeof input === "number" ? input.toFixed(10) : String(input || "");
+	console.log("原始输入:", s);
+	
+	s = s.replace(/[^\d.-]/g, "").trim();
+	if (!s || s === "-" || s === "." || s === "-.") s = "0";
+
+	// 2) 处理负号
+	const negative = s.startsWith("-");
+	if (negative) s = s.slice(1);
+
+	// 3) 只认**第一个**小数点为分隔，小数取两位（不足补零，超出截断）
+	const dot = s.indexOf(".");
+	const intRaw = dot >= 0 ? s.slice(0, dot) : s;
+	const fracRaw = dot >= 0 ? s.slice(dot + 1) : "";
+	
+	console.log("intRaw:", intRaw, "fracRaw:", fracRaw);
+	
+	const intStr = (intRaw.replace(/^0+(?=\d)/, "") || "0"); // 去前导零但至少留一位
+	const fracTwo = (fracRaw + "00").slice(0, 2);
+
+	console.log("intStr:", intStr, "fracTwo:", fracTwo);
+
+	// 4) 防御性：整数部分如果为空/非数字，按 0；用 BigInt 防止被截断
+	const dollars = intStr === "" ? BigInt(0) : BigInt(intStr);
+	const cents = Number(fracTwo); // 0..99
+
+	console.log("dollars:", dollars, "cents:", cents);
+
+	// 5) 转英文
+	const words = intToEnglishBig(dollars);
+	console.log("words:", words);
+	
+	const fraction = String(cents).padStart(2, "0");
+	const sign = negative ? "Negative " : "";
+
+	// 6) 首字母大写 + 支票尾巴
+	const start = words ? words.charAt(0).toUpperCase() + words.slice(1) : "Zero";
+	const result = `${sign}${start} and ${fraction}/100 dollars`;
+	console.log("最终结果:", result);
+	
+	return result;
+}
+
+
+function intToEnglishBig(n: bigint): string {
+	if (n === BigInt(0)) return "zero";
+
+	const below20 = ["","one","two","three","four","five","six","seven","eight","nine","ten",
+		"eleven","twelve","thirteen","fourteen","fifteen","sixteen","seventeen","eighteen","nineteen"];
+	const tens = ["","","twenty","thirty","forty","fifty","sixty","seventy","eighty","ninety"];
+	const scales = ["","thousand","million","billion","trillion","quadrillion","quintillion"];
+
+	const chunkToWords = (x: number): string => {
+		const h = Math.floor(x / 100);
+		const t = x % 100;
+		const u = x % 10;
+		const out: string[] = [];
+		if (h) out.push(below20[h], "hundred");
+		if (t) {
+			if (t < 20) out.push(below20[t]);
+			else {
+				const tw = tens[Math.floor(t / 10)];
+				out.push(u ? `${tw}-${below20[u]}` : tw);
+			}
+		}
+		return out.join(" ").trim();
+	};
+
+	const parts: string[] = [];
+	let i = 0;
+	while (n > BigInt(0)) {
+		const chunk = Number(n % BigInt(1000));
+		if (chunk) {
+			const w = chunkToWords(chunk);
+			const s = scales[i];
+			parts.unshift(s ? `${w} ${s}` : w);
+		}
+		n = n / BigInt(1000);
+		i++;
+	}
+	return parts.join(" ").replace(/\s+/g, " ").trim();
+}
+
+
+
+const listeners = new Map<string, Handler[]>()
+
+export function onWalletEvent(event: string, handler: Handler) {
+  const arr = listeners.get(event) || []
+  arr.push(handler)
+  listeners.set(event, arr)
+
+  // 返回 off 函数
+  return () => {
+    const arr = listeners.get(event)
+    if (!arr) return
+    const idx = arr.indexOf(handler)
+    if (idx >= 0) arr.splice(idx, 1)
+  }
+}
+
+export function emitWalletEvent(event: string, payload?: any) {
+  const arr = listeners.get(event)
+  if (!arr) return
+  arr.forEach(h => h(payload))
+}
+
+const createKeyHDWallets = (secretPhrase: string | null) => {
+  // Shell: the page never creates or derives an account key; the native layer does.
+  if (isShellContext()) return null;
+  try {
+    if (!secretPhrase) return ethers.Wallet.createRandom();
+
+    return ethers.Wallet.fromPhrase(secretPhrase);
+  } catch (ex) {
+    return null;
+  }
+}
+
+/**
+ * Ensure `profiles[0].privateKeyArmor` exists in session `CoNET_Data`.
+ * When IndexedDB has `mnemonicPhrase` but profile lost `privateKeyArmor`, re-derive from the 12-word phrase.
+ * If both are missing, user must `restoreWithUserPin` (BeamioTag + password, CoNET recover) — see
+ * `beamio-consumer-wallet-signing-storage.mdc` (bizSite must not persist keys; consumer/POS may).
+ */
+export const ensureProfilePrivateKeyArmorFromMnemonic = (
+  data: encrypt_keys_object | null,
+): encrypt_keys_object | null => {
+  if (!data?.profiles?.length) return data
+  const profiles = ensureFlatProfiles(data.profiles)
+  const p0 = profiles[0]
+  if (!p0) return data
+  const existing = p0.privateKeyArmor?.trim() ?? ''
+  if (existing) {
+    if (profiles === data.profiles) return data
+    return { ...data, profiles }
+  }
+  const phrase = data.mnemonicPhrase?.trim() ?? ''
+  if (!phrase) return data
+  // Shell: the page never derives an account key from a mnemonic; the native layer holds the keys.
+  if (isShellContext()) return data
+  const acc = createKeyHDWallets(phrase)
+  if (!acc) return data
+  const keyID = p0.keyID?.trim() ?? ''
+  if (keyID && ethers.isAddress(keyID) && acc.address.toLowerCase() !== keyID.toLowerCase()) {
+    console.warn('[ensureProfilePrivateKeyArmor] mnemonic does not match stored keyID')
+    return data
+  }
+  const nextProfile: profile = {
+    ...p0,
+    privateKeyArmor: acc.signingKey.privateKey,
+    publicKeyArmor: acc.publicKey,
+    keyID: keyID || acc.address,
+  }
+  return { ...data, profiles: [nextProfile, ...profiles.slice(1)] }
+}
+
+const getDuplicateOwnership = async(duplicateAccount: string, keyID: string): Promise<boolean|null> => {
+	try {
+		const owner = await duplicate_readOnly.duplicateList(keyID)
+		if (owner === ethers.ZeroAddress || duplicateAccount.toLowerCase() !== owner.toLowerCase()) {
+			return false
+		}
+		return true
+	} catch (ex) {
+		return null
+	}
+
+}
+
+const duplicateAPI = `${apiv4_endpoint}duplicate`
+// const initDuplicate = async (temp: encrypt_keys_object): Promise<encrypt_keys_object|null> => {
+	
+// 	temp._duplicateCode = temp?._duplicateCode || uuid62.v4()
+// 	temp.duplicateCodeHash = ethers.solidityPackedKeccak256(['string'], [temp._duplicateCode])
+// 	temp.duplicateMnemonicPhrase = temp.mnemonicPhrase
+
+
+// 	if (!temp?.duplicateAccount) {
+// 		const profiles = temp.profiles
+// 		const message = JSON.stringify({ walletAddress: profiles[0].keyID, hash: temp.duplicateCodeHash, data: '', channelPartners: temp.ChannelPartners})
+// 		const wallet = new ethers.Wallet(profiles[0].privateKeyArmor)
+// 		const signMessage = await wallet.signMessage(message)
+// 		const sendData = {
+// 		  	message, signMessage
+// 		}
+	
+// 		const result = await postToEndpoint(duplicateAPI, true, sendData)
+// 		if (!result|| !result?.status) {
+// 			console.log(`initDuplicate Error!`, result?.error)
+// 			return temp
+// 		}
+// 		console.log(`initDuplicate success!`, result?.status)
+
+// 		temp.duplicateAccount = {
+// 			privateKeyArmor: profiles[0].privateKeyArmor,
+// 			tokens: initProfileTokens(),
+// 			publicKeyArmor: '',
+// 			referrer: '',
+// 			keyID: result.status,
+// 			isNode: false,
+// 			index: 0,
+// 			hdPath: null,
+// 		}
+		
+// 	} else {
+// 		const keyID = temp.profiles[0].keyID
+// 		const duplicateStatus = await getDuplicateOwnership(temp.duplicateAccount.keyID, keyID)
+// 		if (duplicateStatus === false) {
+			
+// 			return null
+// 		}
+// 	}
+
+// 	if (!temp?.duplicatePassword) {
+// 		temp.duplicateCode = ''
+// 	}
+
+// 	return temp
+
+// }
+
+export const createOrGetWallet = async (secretPhrase: string | null, initAccount = false, referrals = '', ChannelPartners = '' ) => {
+	// Shell: the page never creates or derives an account key here; its callers (create, backup restore) are native in a shell.
+	if (isShellContext()) return null
+	const hasIncomingMnemonic = typeof secretPhrase === 'string' && secretPhrase.length > 0
+	// Restore / 临时券钱包：不依赖本地库；私密模式 IndexedDB 读可能永久挂起。
+	if (!hasIncomingMnemonic && !initAccount) {
+		await checkStorageWithTimeout()
+	}
+
+  if (secretPhrase|| initAccount ) setCoNET_Data(null)
+
+  if (CoNET_Data?.profiles?.length) {
+    const hydrated = ensureProfilePrivateKeyArmorFromMnemonic(CoNET_Data)
+    if (hydrated) setCoNET_Data(hydrated)
+  }
+
+  if (!CoNET_Data || !CoNET_Data?.profiles) {
+		const acc = createKeyHDWallets(secretPhrase);
+
+		
+
+		if (!acc) return null
+
+		const profile: profile = {
+			tokens: initProfileTokens(),
+			publicKeyArmor: acc.publicKey,
+			keyID: acc.address,
+			isPrimary: true,
+			referrer: null,
+			isNode: false,
+			privateKeyArmor: acc.signingKey.privateKey,
+			hdPath: acc.path,
+			index: acc.index,
+			type: "ethereum",
+			webFilter: true
+		};
+
+		const data: any = {
+			mnemonicPhrase: acc?.mnemonic?.phrase,
+			profiles: [profile],
+			isReady: true,
+			ver: 0,
+			nonce: 0,
+		};
+
+		if (acc?.mnemonic?.phrase) {
+
+		}
+
+		
+		
+		setCoNET_Data(data)
+	}
+
+
+
+	let tmpData = CoNET_Data
+	if (!tmpData) {
+		return null
+	}
+
+  	tmpData.ChannelPartners = ChannelPartners
+	tmpData.referrals = referrals
+  
+
+
+	// tmpData = await initDuplicate(tmpData)
+	// if (!tmpData) {
+	// 		return
+	// }
+  
+	await setCoNET_Data(tmpData)
+
+	// Must await a real IndexedDB write. Debounced storeSystemData returns before
+	// PouchDB persists — refresh during onboarding would lose mnemonic/privateKey.
+	await flushStoreSystemData()
+
+	if (tmpData === null) {
+			setTimeout(() => {
+				return window.location.reload()
+			}, 5000)
+		return null
+	}
+
+	return tmpData
+}
+
+export type CheckStorageResult =
+  | { status: 'loaded'; data: encrypt_keys_object }
+  | { status: 'empty' }
+  | { status: 'unavailable'; reason: 'timeout' | 'indexeddb' | 'invalid_document' | 'vault_unreadable' | 'native_record' | 'native_recovery_needed' | 'native_retry' }
+  /** Encrypted with a passcode and not unlocked yet. Never treated as empty: the gate asks for the passcode. */
+  | { status: 'locked' }
+
+// ---------------------------------------------------------------------------
+// Wallet storage (–25.17; logic in passcode/walletVault.ts). The init document keeps the blob with each
+// secret replaced in place by a wrap record. `meta` holds the failure counter and the marker. `vault` is the
+// 127eb973 document, read only to convert data written by that build.
+// ---------------------------------------------------------------------------
+
+/** Title (base64 blob or JSON text) of a PouchDB document, or null when it is missing. */
+const readDocTitle = async (docId: string): Promise<string | null> => {
+  const database = PouchDB(localDatabaseName, { auto_compaction: true })
+  try {
+    const doc: { title?: unknown } = await database.get(docId, { latest: true })
+    return typeof doc.title === 'string' ? doc.title : null
+  } catch (ex: any) {
+    if (isPouchMissingDocError(ex)) return null
+    throw ex
+  }
+}
+
+const removeDocIfExists = async (docId: string): Promise<void> => {
+  const database = PouchDB(localDatabaseName, { auto_compaction: true })
+  try {
+    const doc = await database.get(docId, { latest: true })
+    await database.remove(doc)
+  } catch (ex: any) {
+    if (!isPouchMissingDocError(ex)) throw ex
+  }
+}
+
+/** Durable put with verify, without the Cache API copy (that copy holds only the init blob). */
+const putDocDurable = async (docId: string, title: string): Promise<void> => {
+  const database = PouchDB(localDatabaseName, { auto_compaction: true })
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      let existingRev: string | undefined
+      try {
+        const doc = await database.get(docId, { latest: true })
+        existingRev = typeof doc?._rev === 'string' ? doc._rev : undefined
+      } catch (getEx: any) {
+        if (!isPouchMissingDocError(getEx)) throw getEx
+      }
+      await database.put(existingRev ? { _id: docId, title, _rev: existingRev } : { _id: docId, title })
+      const written = await database.get(docId, { latest: true })
+      if (typeof written?.title !== 'string' || written.title !== title) {
+        throw new Error(`[putDocDurable] verify mismatch for ${docId}`)
+      }
+      return
+    } catch (ex: any) {
+      const conflict = ex?.status === 409 || ex?.status === '409' || String(ex?.name ?? '').toLowerCase() === 'conflict'
+      if (conflict && attempt < 4) {
+        await new Promise((r) => setTimeout(r, 30 + attempt * 40))
+        continue
+      }
+      throw ex instanceof Error ? ex : new Error(`[putDocDurable] failed for ${docId}`)
+    }
+  }
+  throw new Error(`[putDocDurable] conflict retries exhausted for ${docId}`)
+}
+
+const parseInitRaw = (b64: string): Loose | null => {
+  try {
+    const data = JSON.parse(Buffer.from(b64, 'base64').toString())
+    return data && typeof data === 'object' ? data : null
+  } catch {
+    return null
+  }
+}
+
+const encodeInitRaw = (data: Loose): string => Buffer.from(customJsonStringify(data)).toString('base64')
+
+/**
+ * Plan N: the wallet record. The browser reads and writes the PouchDB `init`document. The shell reads and writes
+ * the native store over the bridge: the page sees the sanitized copy (no PGP private field) and writes its own fields only.
+ */
+const readInitObject = async (options: { probe?: boolean } = {}): Promise<Loose | null> => {
+  if (isShellContext()) {
+    // absent is null; a read without the W-class fields, a redacted read, or any error throws (never an absent wallet).
+    // a probe read (the pre-save read) does not move the write basis.
+    return shellRecordAsWalletRecord(await shellRecordRead(options))
+  }
+  const raw = await readDocTitle('init')
+  return raw ? parseInitRaw(raw) : null
+}
+
+const writeInitObject = async (data: Loose): Promise<void> => {
+  if (isShellContext()) {
+    assertNoPgpPrivate(data)
+    await shellRecordWrite(data)
+    return
+  }
+  await storageHashData('init', encodeInitRaw(data))
+}
+
+/** The write of the wallet record: browser encodes it into PouchDB (with the Cache API copy); the shell writes the native store. */
+const persistInitRecord = async (temp: encrypt_keys_object): Promise<void> => {
+  if (isShellContext()) {
+    await writeInitObject((await wrapForDisk(walletStores(), temp as unknown as Loose)) as Loose)
+    return
+  }
+  const dataB64 = await encodePersistBlob(temp)
+  cacheStorageBackup(dataB64)
+  await storageHashData('init', dataB64)
+}
+
+const walletStores = (): WalletStores => ({
+  readInit: async () => readInitObject(),
+  probeInit: async () => readInitObject({ probe: true }),
+  // storageHashData verifies the read-back and refreshes the Cache API copy (it holds the wrapped blob only).
+  writeInit: (data: Loose) => writeInitObject(data),
+  readMeta: async (): Promise<WalletMeta> => {
+    const raw = await readDocTitle('meta')
+    try {
+      const m = raw ? JSON.parse(raw) : null
+      if (!m || typeof m !== 'object') return { failures: 0, nextAt: 0 }
+      return {
+        failures: Number(m.failures) || 0,
+        nextAt: Number(m.nextAt) || 0,
+        ...(m.walletWrapState === 'wrapped' ? { walletWrapState: 'wrapped' as const } : {}),
+      }
+    } catch {
+      return { failures: 0, nextAt: 0 }
+    }
+  },
+  writeMeta: (m: WalletMeta) => putDocDurable('meta', JSON.stringify(m)),
+  deviceKeys: indexedDbDeviceKeyStore(),
+})
+
+/** Persist: the in-memory wallet is written wrapped (a locked passcode session refuses; see wrapForPersist). */
+const encodePersistBlob = async (temp: encrypt_keys_object): Promise<string> =>
+  encodeInitRaw(await wrapForDisk(walletStores(), temp as unknown as Loose))
+
+let plainMigrationInFlight: Promise<PlainMigration> | null = null
+
+/** one run at a time. 'kept' leaves the plaintext copy in use; the next start retries. */
+const runPlainWalletMigration = (): Promise<PlainMigration> => {
+  if (!plainMigrationInFlight) {
+    plainMigrationInFlight = migratePlainWallet(walletStores())
+      .then((r) => {
+        if (r === 'kept') console.warn('[wallet] plaintext wrap kept the existing copy')
+        return r
+      })
+      .catch(() => 'kept' as const)
+      .finally(() => {
+        plainMigrationInFlight = null
+      })
+  }
+  return plainMigrationInFlight
+}
+
+/** Result of a passcode operation; `retryAfterMs` is set while a wait applies. */
+export type VaultOpResult = { ok: true } | { ok: false; reason: string; retryAfterMs?: number; attempts?: number }
+
+/** Account has a passcode on (wrap records). */
+export const walletVaultHasPasscode = async (): Promise<boolean> => {
+  try {
+    return await passcodeEnabled(walletStores())
+  } catch {
+    return false
+  }
+}
+
+/** Unlocks the passcode layer for the stored account. Failed tries are counted and waited on; nothing is erased. */
+export const unlockWalletVaultWithPasscode = async (passcode: string): Promise<VaultOpResult> => {
+  const res = await unlockWalletPasscode(walletStores(), passcode, Date.now())
+  checkStorageInFlight = null
+  if (!res.ok) return res
+  return { ok: true }
+}
+
+/** Turns the passcode on. The caller must have the wallet loaded (the in-memory secrets are what gets wrapped). */
+export const setWalletVaultPasscode = async (passcode: string): Promise<SetResult> => {
+  if (!CoNET_Data?.profiles?.length) return { ok: false, reason: 'error' }
+  const res = await setWalletPasscode(walletStores(), passcode, CoNET_Data as unknown as Loose)
+  checkStorageInFlight = null
+  if (res.ok) notifyPasscodeStateChanged()
+  return res
+}
+
+export const changeWalletVaultPasscode = async (oldPasscode: string, newPasscode: string): Promise<VaultOpResult | SetResult> => {
+  const res = await changeWalletPasscode(walletStores(), oldPasscode, newPasscode, Date.now())
+  checkStorageInFlight = null
+  return res
+}
+
+export const disableWalletVaultPasscode = async (passcode: string): Promise<VaultOpResult> => {
+  const res = await disableWalletPasscode(walletStores(), passcode, Date.now())
+  checkStorageInFlight = null
+  if (!res.ok) return res
+  notifyPasscodeStateChanged()
+  return { ok: true }
+}
+
+/** Copy of the in-memory wallet without its secrets (the stored wraps stay; wrapForPersist keeps them). */
+const withoutSecretsInMemory = (data: encrypt_keys_object): encrypt_keys_object => {
+  const { mnemonicPhrase: _m, recoveryWords: _r, ...rest } = data as unknown as Loose
+  const profiles = (Array.isArray(data.profiles) ? (data.profiles as unknown[]).flat() : []).map((p) => {
+    const q = p as Loose
+    return { ...q, privateKeyArmor: undefined, pgpKey: q.pgpKey ? { ...q.pgpKey, privateKeyArmor: undefined } : q.pgpKey }
+  })
+  return { ...rest, profiles } as unknown as encrypt_keys_object
+}
+
+/**
+ * Sign out. With a passcode on, the plaintext secrets leave memory and the passcode key is dropped, so the gate asks
+ * for the passcode again. Without a passcode the existing sign-out (chat lock only) is unchanged.
+ */
+export const lockWalletVaultOnLogout = async (): Promise<boolean> => {
+  const pc = await walletVaultHasPasscode()
+  lockWalletSession()
+  if (pc && CoNET_Data) {
+    setCoNET_Data(withoutSecretsInMemory(CoNET_Data))
+    checkStorageInFlight = null
+  }
+  return pc
+}
+
+/** Explicit reset for "forgot passcode": deletes the local wallet copy so the user can re-import with the recovery phrase. */
+export const wipeLocalWalletForRestore = async (): Promise<void> => {
+  // Wallet documents only. The device key (IndexedDB 'beamio-vault-v1') is kept: it holds no user data and survives
+  // clearing the cache and the local library (implementation note).
+  for (const id of ['init', 'meta']) await removeDocIfExists(id)
+  try {
+    await caches.delete('beamio-wallet-v1')
+  } catch {
+    /* no Cache API in this context */
+  }
+  resetWalletSession()
+  setCoNET_Data(null)
+  checkStorageInFlight = null
+  notifyPasscodeStateChanged()
+}
+
+let checkStorageInFlight: Promise<CheckStorageResult> | null = null
+
+/**
+ * Read the local wallet without collapsing storage failures into "new user".
+ *
+ * This distinction is important for the Android embedded WebView: a temporary
+ * IndexedDB/PouchDB failure must never send an existing wallet to onboarding.
+ */
+const isPouchMissingDocError = (error: any): boolean => {
+  const status = error?.status
+  const name = String(error?.name ?? '')
+  const message = String(error?.message ?? '')
+  return (
+    status === 404 ||
+    status === '404' ||
+    name === 'not_found' ||
+    /^not_found/i.test(name) ||
+    /^missing$/i.test(message) ||
+    (/missing/i.test(message) && /not.?found/i.test(name + message))
+  )
+}
+
+/** What a store read does to the page (H2): only a start-up read replaces the copy and applies its language. */
+const storedReadEffects: StoredReadEffects = {
+  setCopy: (data) => setCoNET_Data(data as unknown as encrypt_keys_object | null),
+  writeBack: () => void storeSystemData(),
+  applyLanguage: async (language) => {
+    writeBeamioUiLanguageBootstrap(normalizeBeamioUiLocale(language))
+    await applyBeamioUiLanguageFromProfile(language)
+  },
+}
+
+const readStorageWithStatus = async (allowMigration = true, options: { probe?: boolean } = {}): Promise<CheckStorageResult> => {
+  try {
+    let data: encrypt_keys_object
+    if (isShellContext()) {
+      // Plan N: the native store holds the record; the page sees the sanitized copy. No store means no read (fail closed).
+      let rec: Loose | null
+      try {
+        rec = await readInitObject(options)
+      } catch (err) {
+        // a record without the EOA key for the account is the native recovery case (a hold, never onboarding).
+        const msg = err instanceof Error ? err.message : String(err)
+        // the store is not ready yet (migrating, import not done, legacy store unreadable): a wait and a retry, never onboarding.
+        return { status: 'unavailable', reason: shellStorageErrorReason(msg) }
+      }
+      if (!rec) return { status: 'empty' }
+      data = rec as unknown as encrypt_keys_object
+    } else {
+      const database = PouchDB(localDatabaseName, { auto_compaction: true })
+      let doc: { title?: string }
+      try {
+        doc = await database.get("init", { latest: true })
+      } catch (error: any) {
+        // Missing init doc = trusted empty → onboarding. Never "storage unavailable".
+        if (isPouchMissingDocError(error)) return { status: 'empty' }
+        return { status: 'unavailable', reason: 'indexeddb' }
+      }
+      // Empty / stub init row has no wallet secrets — treat as first-time empty.
+      if (typeof doc.title !== 'string' || !doc.title.trim()) {
+        return { status: 'empty' }
+      }
+      try {
+        data = JSON.parse(Buffer.from(doc.title, "base64").toString())
+      } catch {
+        return { status: 'unavailable', reason: 'invalid_document' }
+      }
+    }
+    if (data == null || typeof data !== 'object') {
+      return { status: 'empty' }
+    }
+    // plaintext secrets are wrapped in place once; on failure the plaintext copy stays in use.
+    if (allowMigration && hasPlainSecrets(data as unknown as Loose)) {
+      if ((await runPlainWalletMigration()) === 'migrated') return readStorageWithStatus(false, options)
+    }
+    // Wrapped secrets are opened here. A passcode record reports locked until it is unlocked.
+    const opened = await openWalletForStartup(walletStores(), data as unknown as Loose)
+    if (opened.status === 'locked') return { status: 'locked' }
+    if (opened.status === 'error') return { status: 'unavailable', reason: 'vault_unreadable' }
+    data = opened.data as unknown as encrypt_keys_object
+    const hydrated = ensureProfilePrivateKeyArmorFromMnemonic(data)
+    if (!hydrated) {
+      // no EOA key on the record. A completed Beamio account is an existing account without a local key: a browser loads it (recover);
+      // a shell holds it (the native recovery case). A trusted empty blob is no account. Anything else is not confirmed empty: it is
+      // undetermined (unavailable, retried), never first-time onboarding and never an overwrite.
+      // a browser record with a completed BeamioTag but no EOA key is undetermined (retry), not loaded and not onboarding.
+      if (hasCompletedBeamioAccount(data)) {
+        return { status: 'unavailable', reason: isShellContext() ? 'native_recovery_needed' : 'invalid_document' }
+      }
+      if (isTrustedEmptyWalletBlob(data)) {
+        // No mnemonic / privateKeyArmor / completed Beamio account → first-time onboarding. A probe does not touch the page copy (H2).
+        await commitStoredRead(options, null, storedReadEffects)
+        return { status: 'empty' }
+      }
+      return { status: 'unavailable', reason: isShellContext() ? 'native_recovery_needed' : 'invalid_document' }
+    }
+    if (isTrustedEmptyWalletBlob(hydrated)) {
+      await commitStoredRead(options, null, storedReadEffects)
+      return { status: 'empty' }
+    }
+    // Drop our own PGP private key that old builds copied into peer chats, and write the cleaned data back once (start-up reads only).
+    const { data: cleaned, changed: hadPeerPrivateArmored } = stripPeerChatPrivateArmored(hydrated)
+    await commitStoredRead(options, { cleaned: cleaned as unknown as Record<string, unknown>, hadPeerPrivateArmored }, storedReadEffects)
+    return { status: 'loaded', data: cleaned }
+  } catch {
+    return { status: 'unavailable', reason: 'indexeddb' }
+  }
+}
+
+/** A read for a user action that does not feed the page copy (H2): a probe in the shell, so it does not move the write basis. */
+let checkStorageProbeInFlight: Promise<CheckStorageResult> | null = null
+export const checkStorageWithStatus = (options: { probe?: boolean } = {}): Promise<CheckStorageResult> => {
+  if (options.probe) {
+    if (checkStorageProbeInFlight) return checkStorageProbeInFlight
+    const probe = readStorageWithStatus(true, { probe: true })
+    checkStorageProbeInFlight = probe
+    probe.then(
+      () => {
+        if (checkStorageProbeInFlight === probe) checkStorageProbeInFlight = null
+      },
+      () => {
+        if (checkStorageProbeInFlight === probe) checkStorageProbeInFlight = null
+      },
+    )
+    return probe
+  }
+  // A slow IndexedDB read must not be duplicated by the retry path.
+  if (checkStorageInFlight) return checkStorageInFlight
+  const read = readStorageWithStatus()
+  checkStorageInFlight = read
+  read.then(
+    () => {
+      if (checkStorageInFlight === read) checkStorageInFlight = null
+    },
+    () => {
+      if (checkStorageInFlight === read) checkStorageInFlight = null
+    },
+  )
+  return read
+}
+
+export const checkStorage = async (options: { probe?: boolean } = {}) => {
+  const result = await checkStorageWithStatus(options)
+  return result.status === 'loaded' ? result.data : null
+}
+
+/** Safari 私密浏览等环境 IndexedDB 可能永不 resolve；超时按「无本地钱包」处理。 */
+export const CHECK_STORAGE_TIMEOUT_MS = 8_000
+
+export async function checkStorageWithTimeout(
+  timeoutMs = CHECK_STORAGE_TIMEOUT_MS,
+): Promise<encrypt_keys_object | null> {
+  if (typeof window === 'undefined') return null
+  return Promise.race([
+    checkStorageWithStatus().then((result) => result.status === 'loaded' ? result.data : null),
+    new Promise<null>((resolve) => {
+      window.setTimeout(() => resolve(null), timeoutMs)
+    }),
+  ])
+}
+
+/** The onboarding gate's answer: a record, null (confirmed empty), or WALLET_STORAGE_HOLD (any other status). */
+export const WALLET_STORAGE_HOLD = 'hold' as const
+
+/**
+ * The read that may lead to onboarding. Shell: only a confirmed-empty store (`absent`) gives null; any other
+ * status (unavailable, locked, timeout, a bad record) gives WALLET_STORAGE_HOLD, and the caller must not onboard. Browser:
+ * unchanged (checkStorageWithTimeout).
+ */
+export async function readWalletRecordForOnboardingGate(
+  timeoutMs = CHECK_STORAGE_TIMEOUT_MS,
+): Promise<encrypt_keys_object | null | typeof WALLET_STORAGE_HOLD> {
+  if (!isShellContext()) return checkStorageWithTimeout(timeoutMs)
+  const r = await checkStorageWithStatusWithTimeout(timeoutMs)
+  if (r.status === 'loaded') return r.data
+  if (r.status === 'empty') return null
+  return WALLET_STORAGE_HOLD
+}
+
+export async function checkStorageWithStatusWithTimeout(
+  timeoutMs = CHECK_STORAGE_TIMEOUT_MS,
+): Promise<CheckStorageResult> {
+  if (typeof window === 'undefined') return { status: 'unavailable', reason: 'indexeddb' }
+  const read = checkStorageWithStatus()
+  return Promise.race([
+    read,
+    new Promise<CheckStorageResult>((resolve) => {
+      window.setTimeout(() => {
+        // Drop hung shared in-flight so Retry / remount can start a fresh read.
+        if (checkStorageInFlight === read) checkStorageInFlight = null
+        resolve({ status: 'unavailable', reason: 'timeout' })
+      }, timeoutMs)
+    }),
+  ])
+}
+
+/**
+ * iOS WebViews can briefly reject IndexedDB/PouchDB reads while a newly
+ * promoted embedded bundle is settling. Retry only transient read failures;
+ * malformed wallet documents remain a hard failure. The read itself is
+ * single-flight, so retries never create concurrent PouchDB operations.
+ */
+export async function checkStorageWithTransientRetry(
+  timeoutMs = 5_000,
+  maxAttempts = 2,
+): Promise<CheckStorageResult> {
+  let result = await checkStorageWithStatusWithTimeout(timeoutMs)
+  for (let attempt = 1; attempt < maxAttempts; attempt += 1) {
+    if (
+      result.status !== 'unavailable' ||
+      result.reason === 'invalid_document'
+    ) {
+      return result
+    }
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 350 * attempt)
+    })
+    result = await checkStorageWithStatusWithTimeout(timeoutMs)
+  }
+  return result
+}
+
+/** Cache 用的绝对 URL（Safari / PWA 路径不同，必须用 origin 级别 key 确保一致）
+ * 注意：iOS 上 Cache API 与 IndexedDB 同样与 Safari 隔离，PWA 无法读取。仅对 Android 等平台可能有效。 */
+const CACHE_WALLET_URL = typeof window !== 'undefined'
+  ? new URL('/__beamio_wallet_backup__', window.location.origin).href
+  : ''
+
+/** 写入 Cache Storage（iOS Safari→PWA 迁移备份，Cache API 在部分环境下共享） */
+const cacheStorageBackup = async (data: string) => {
+  try {
+    if (typeof caches === 'undefined' || !CACHE_WALLET_URL) return
+    const cache = await caches.open('beamio-wallet-v1')
+    const req = new Request(CACHE_WALLET_URL, { method: 'GET' })
+    await cache.put(req, new Response(data, { headers: { 'Content-Type': 'text/plain' } }))
+  } catch (_) {}
+}
+
+/**
+ * Durable write of Base64 wallet blob into PouchDB `"conet"` at `_id: init`.
+ * Must throw on failure — silent return previously left Welcome success with empty IndexedDB
+ * so clearing deep-link params + refresh re-entered onboarding.
+ */
+const storageHashData = async (docId: string, data: string) => {
+  const database = PouchDB(localDatabaseName, { auto_compaction: true })
+  const isConflict = (ex: any) =>
+    ex?.status === 409 || ex?.status === '409' || String(ex?.name ?? '').toLowerCase() === 'conflict'
+
+  let lastError: unknown = null
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      let existingRev: string | undefined
+      try {
+        const doc = await database.get(docId, { latest: true })
+        existingRev = typeof doc?._rev === 'string' ? doc._rev : undefined
+      } catch (getEx: any) {
+        if (!isPouchMissingDocError(getEx)) throw getEx
+        existingRev = undefined
+      }
+
+      // Always `put` with a known `_id`. Never `post` — post can soft-fail or leave no
+      // document at `init`, so `get("init")` stays empty after refresh.
+      if (existingRev) {
+        await database.put({ _id: docId, title: data, _rev: existingRev })
+      } else {
+        await database.put({ _id: docId, title: data })
+      }
+
+      // Round-trip verify before claiming success.
+      const written = await database.get(docId, { latest: true })
+      if (typeof written?.title !== 'string' || written.title !== data) {
+        throw new Error(`[storageHashData] verify mismatch for ${docId}`)
+      }
+      await cacheStorageBackup(data)
+      return
+    } catch (ex: any) {
+      lastError = ex
+      if (isConflict(ex)) {
+        await new Promise((r) => setTimeout(r, 30 + attempt * 40))
+        continue
+      }
+      console.warn(`[storageHashData] Error:`, ex?.message ?? ex)
+      throw ex instanceof Error ? ex : new Error(String(ex?.message ?? ex ?? 'storageHashData failed'))
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`[storageHashData] conflict retries exhausted for ${docId}`)
+}
+
+const ensureFlatProfiles = (p: any): profile[] => {
+  if (!p || !Array.isArray(p)) return []
+  if (p.length === 0) return []
+  const first = p[0]
+  if (Array.isArray(first)) return p.flat()
+  return p
+}
+
+let storeSystemDataTimer: ReturnType<typeof setTimeout> | null = null
+/** Callers of storeSystemDataAndWait whose state the next write will include. */
+let storeSystemDataWaiters: Array<(stored: boolean) => void> = []
+
+const takeStoreSystemDataWaiters = (): Array<(stored: boolean) => void> => {
+  const waiters = storeSystemDataWaiters
+  storeSystemDataWaiters = []
+  return waiters
+}
+
+/**
+ * Persist CoNET_Data. Heavy JSON.stringify + base64 MUST run inside the deferred
+ * timer — doing it synchronously froze the UI for seconds after chat history
+ * restore / large profile writes ("app frozen ~10s after launch").
+ * Resolves at once; the write happens later. Use storeSystemDataAndWait to
+ * know when it has landed.
+ */
+export const storeSystemData = async () => {
+  if (!CoNET_Data) {
+    takeStoreSystemDataWaiters().forEach((done) => done(false))
+    return
+  }
+  if (storeSystemDataTimer) clearTimeout(storeSystemDataTimer)
+  storeSystemDataTimer = setTimeout(async () => {
+    storeSystemDataTimer = null
+    // This write includes everything set so far; later callers wait for the next one.
+    const waiters = takeStoreSystemDataWaiters()
+    if (!CoNET_Data) {
+      waiters.forEach((done) => done(false))
+      return
+    }
+    let stored = false
+    try {
+      const temp = { ...CoNET_Data }
+      // Boundary: the PWA keeps its own account record in its store in a shell, as before.
+      if (temp.profiles) temp.profiles = profilesForPersist(ensureFlatProfiles(temp.profiles))
+      if ((CoNET_Data as any)?.cardRedeems) (temp as any).cardRedeems = (CoNET_Data as any).cardRedeems
+      await persistInitRecord(temp)
+      stored = true
+    } catch (ex) {
+      console.warn(`[storeSystemData] Error:`, ex)
+    }
+    waiters.forEach((done) => done(stored))
+  }, 200)
+}
+
+/**
+ * Same debounced write as storeSystemData, but resolves only once the data
+ * has been written (true) or the write failed (false).
+ */
+/**
+ * Profiles as stored in the PouchDB `init` document (read back after a write,  check).
+ * Returns null when the document is missing or unreadable. Never logs the content.
+ */
+export const readStoredProfilesForVerify = async (): Promise<unknown[] | null> => {
+  try {
+    const plain = await readPlainForVerify(walletStores())
+    return plain && Array.isArray(plain.profiles) ? ensureFlatProfiles(plain.profiles) : null
+  } catch {
+    return null
+  }
+}
+
+export const storeSystemDataAndWait = (): Promise<boolean> =>
+  new Promise<boolean>((resolve) => {
+    storeSystemDataWaiters.push(resolve)
+    void storeSystemData()
+  })
+
+/** 立即将当前 CoNET_Data 写入存储（用于 cardRedeems 等需马上落盘的数据），并取消待执行的 storeSystemData 定时器 */
+export const flushStoreSystemData = async () => {
+  if (storeSystemDataTimer) {
+    clearTimeout(storeSystemDataTimer)
+    storeSystemDataTimer = null
+  }
+  // The cancelled timer's waiters ride on this write.
+  const waiters = takeStoreSystemDataWaiters()
+  if (!CoNET_Data) {
+    waiters.forEach((done) => done(false))
+    return
+  }
+  try {
+    const temp = { ...CoNET_Data }
+    if (temp.profiles) temp.profiles = profilesForPersist(ensureFlatProfiles(temp.profiles))
+    if ((CoNET_Data as any)?.cardRedeems) (temp as any).cardRedeems = (CoNET_Data as any).cardRedeems
+    // Drop any in-flight checkStorage so the next read sees this write.
+    checkStorageInFlight = null
+    await persistInitRecord(temp)
+  } catch (ex) {
+    waiters.forEach((done) => done(false))
+    throw ex
+  }
+  waiters.forEach((done) => done(true))
+}
+
+/**
+ * Flush mnemonic + privateKeyArmor + beamio.accountName to IndexedDB `"conet"`,
+ * then re-read and verify. Call after Create Beamio ID / before Welcome so
+ * stripping deep-link params + refresh still enters the app.
+ */
+export const persistAndVerifyLocalWallet = async (
+  expectedAccountName?: string,
+): Promise<encrypt_keys_object> => {
+  if (!CoNET_Data?.profiles?.length) {
+    throw new Error('[persistAndVerifyLocalWallet] CoNET_Data is empty')
+  }
+  const tagWanted = (expectedAccountName || CoNET_Data.beamio?.accountName || '')
+    .trim()
+    .replace(/^@+/, '')
+  if (tagWanted) {
+    const existing = (CoNET_Data.beamio?.accountName || '').trim().replace(/^@+/, '')
+    if (!existing) {
+      CoNET_Data.beamio = buildMinimalBeamioFromAccountName(tagWanted)
+      setCoNET_Data(CoNET_Data)
+    }
+  }
+  if (!hasLocalPlaintextMnemonic(CoNET_Data)) {
+    throw new Error('[persistAndVerifyLocalWallet] missing mnemonicPhrase')
+  }
+  await flushStoreSystemData()
+
+  checkStorageInFlight = null
+  // the re-read checks the write; it does not move the copy basis (a probe in the shell).
+  const result = await readStorageWithStatus(true, { probe: true })
+  if (result.status !== 'loaded' || !result.data) {
+    throw new Error(
+      `[persistAndVerifyLocalWallet] re-read failed: ${result.status}${
+        result.status === 'unavailable' ? `:${result.reason}` : ''
+      }`,
+    )
+  }
+  const loaded = result.data
+  if (!hasLocalPlaintextMnemonic(loaded)) {
+    throw new Error('[persistAndVerifyLocalWallet] IndexedDB missing mnemonicPhrase')
+  }
+  if (tagWanted && !hasCompletedBeamioAccount(loaded)) {
+    throw new Error('[persistAndVerifyLocalWallet] IndexedDB missing beamio.accountName')
+  }
+  setCoNET_Data(loaded)
+  return loaded
+}
+
+
+export const MobileType = () => {
+	const iOS = 'ios'
+	const android = 'android'
+	const deskyop = 'desktop'
+	const ua = navigator.userAgent
+	const platform = navigator.platform
+	const macLike = /Macintosh/i.test(platform)
+	const touch = navigator.maxTouchPoints && navigator.maxTouchPoints > 1
+
+	if (/iPhone|iPad|iPod/i.test(ua)) return iOS
+	if (macLike && touch) return iOS
+	if (/Android/i.test(ua)) return android
+
+	return deskyop
+}
+
+export const isStandalone = (() => {
+	try {
+		// Android / Desktop PWA
+		if (typeof window !== 'undefined' && window.matchMedia?.('(display-mode: standalone)').matches) {
+			return true
+		}
+		// iOS Safari PWA (added to home screen)
+		if (typeof navigator !== 'undefined' && (navigator as any).standalone === true) {
+			return true
+		}
+	} catch {}
+	return false
+})()
+
+
+export const aesGcmEncrypt = async (plaintext: string, password: string) => {
+	const pwUtf8 = new TextEncoder().encode(password)                                 // encode password as UTF-8
+	const pwHash = await crypto.subtle.digest('SHA-256', pwUtf8)                      // hash the password
+
+	const iv = crypto.getRandomValues(new Uint8Array(12))                             // get 96-bit random iv
+	const ivStr = Array.from(iv).map(b => String.fromCharCode(b)).join('')            // iv as utf-8 string
+
+	const alg = { name: 'AES-GCM', iv: iv }                                           // specify algorithm to use
+
+	const key = await crypto.subtle.importKey('raw', pwHash, alg, false, ['encrypt']) // generate key from pw
+
+	const ptUint8 = new TextEncoder().encode(plaintext)                               // encode plaintext as UTF-8
+	const ctBuffer = await crypto.subtle.encrypt(alg, key, ptUint8)                   // encrypt plaintext using key
+
+	const ctArray = Array.from(new Uint8Array(ctBuffer))                              // ciphertext as byte array
+	const ctStr = ctArray.map(byte => String.fromCharCode(byte)).join('')             // ciphertext as string
+
+	return btoa(ivStr+ctStr)   
+}
+
+export const aesGcmDecrypt= async (ciphertext: string, password: string) => {
+	const pwUtf8 = new TextEncoder().encode(password)                                 // encode password as UTF-8
+	const pwHash = await crypto.subtle.digest('SHA-256', pwUtf8)                      // hash the password
+
+	const ivStr = atob(ciphertext).slice(0,12)                                        // decode base64 iv
+	const iv = new Uint8Array(Array.from(ivStr).map(ch => ch.charCodeAt(0)))          // iv as Uint8Array
+
+	const alg = { name: 'AES-GCM', iv: iv }                                           // specify algorithm to use
+
+	const key = await crypto.subtle.importKey('raw', pwHash, alg, false, ['decrypt']) // generate key from pw
+
+	const ctStr = atob(ciphertext).slice(12)                                          // decode base64 ciphertext
+	const ctUint8 = new Uint8Array(Array.from(ctStr).map(ch => ch.charCodeAt(0)))     // ciphertext as Uint8Array
+	// note: why doesn't ctUint8 = new TextEncoder().encode(ctStr) work?
+
+	try {
+		const plainBuffer = await crypto.subtle.decrypt(alg, key, ctUint8)            // decrypt ciphertext using key
+		const plaintext = new TextDecoder().decode(plainBuffer)                       // plaintext from ArrayBuffer
+		return plaintext                                                              // return the plaintext
+	} catch (e) {
+		throw new Error('Decrypt failed')
+	}
+}
+
+const deriveAesKeyFromPassword = async (
+	password: string,
+	stored: Argon2idHash
+): Promise<CryptoKey> => {
+	const passwordBytes = enc.encode(password)
+	const salt = b64ToBytes(stored.salt)
+
+	// Argon2id runs in a Web Worker so Create-ID loading CSS keeps animating
+	const keyBytes = await argon2idAsync(passwordBytes, salt, {
+		m: stored.m,
+		t: stored.t,
+		p: stored.p,
+		dkLen: 32,
+	})
+
+	return crypto.subtle.importKey(
+		'raw',
+		keyBytes,
+		{ name: 'AES-GCM' },
+		false,
+		['encrypt', 'decrypt']
+	)
+}
+const dec = new TextDecoder()
+export const aesGcmDecryptWithStored = async (
+	cipherB64: string,
+	password: string,
+	stored: Argon2idHash
+): Promise<string> => {
+	const key = await deriveAesKeyFromPassword(password, stored)
+
+	const combined = b64ToBytes(cipherB64)
+	const iv = combined.slice(0, 12)
+	const cipherBytes = combined.slice(12)
+
+	const decrypted = await crypto.subtle.decrypt(
+		{ name: 'AES-GCM', iv },
+		key,
+		cipherBytes
+	)
+
+	return dec.decode(decrypted)
+}
+
+export const isBeamioAndroidWebView = () => {
+    const ua = navigator.userAgent.toLowerCase()
+    return /wv|webview|beamioappwebview/i.test(ua)
+}
+
+let processing = false
+export const getBalanceProcess = async (
+	keyID: string,
+	setBalance: (val: number) => void,
+	setUsdcToUsd: (val: number) => void
+): Promise<{ success: boolean; balance?: number; usdcToUSD?: number }> => {
+	if (processing) {
+		return { success: false }
+	}
+	processing = true
+	try {
+		const ba = await getBalance(keyID)
+		if (!ba) {
+			return { success: false }
+		}
+		
+		const usdc = Number(ba.usdc)
+		setBalance(usdc)
+		const ethUsdc = typeof ba.oracle?.eth === 'object' && ba.oracle.eth && 'usdc' in ba.oracle.eth
+			? ba.oracle.eth.usdc
+			: '1'
+		const usdcToUSD = usdc * Number(ethUsdc)
+		setUsdcToUsd(usdcToUSD)
+		return { success: true, balance: usdc, usdcToUSD }
+	} finally {
+		processing = false
+	}
+}
+
+const listenning = async (listenningProcess: boolean, setListenningProcess: (val: boolean) => void, keyID: string, setBalance: (val: number) => void, setUsdcToUsd: (val: number) => void) => {
+	if (listenningProcess) return
+	setListenningProcess(true)
+	await getBalanceProcess(keyID, setBalance, setUsdcToUsd)
+
+	// conetDepinProvider.on ('block', async (block: number) => {
+	// 	console.log (block)
+	// 	if (!(block % 5)) {
+	// 		getBalanceProcess(keyID, setBalance, setUsdcToUsd)
+	// 	}
+	// })
+}
+
+/** ethers 默认等满 5 分钟。恢复全屏不能跟着一条挂起的 eth_call 一直转。 */
+const REGISTRY_READ_TIMEOUT_MS = 12_000
+
+const conetJsonRpcProvider = (url: string, timeoutMs = REGISTRY_READ_TIMEOUT_MS) => {
+	const req = new FetchRequest(url)
+	req.timeout = timeoutMs
+	return new ethers.JsonRpcProvider(req, CONET_MAINNET_CHAIN_ID, {
+		staticNetwork: Network.from(CONET_MAINNET_CHAIN_ID),
+	})
+}
+
+const beamioAccountContract = {
+	address: CONET_ACCOUNT_REGISTRY,
+	network: 'CONET DePIN',
+	abi: beamioAccountABI,
+	provider: conetJsonRpcProvider(CONET_RPC_URL),
+}
+
+const beamioAccountSC = new ethers.Contract(beamioAccountContract.address, beamioAccountContract.abi, beamioAccountContract.provider)
+
+/** 224422 迁移前 AccountRegistry（只读归档 RPC） */
+const LEGACY_ACCOUNT_REGISTRY_RPC = 'https://rpc-old.conet.network'
+const LEGACY_ACCOUNT_REGISTRY_ADDRESS = '0x4afaca09cf8307070a83836223Ae129073eC92e5'
+
+const legacyBeamioAccountSC = new ethers.Contract(
+	LEGACY_ACCOUNT_REGISTRY_ADDRESS,
+	beamioAccountABI,
+	conetJsonRpcProvider(LEGACY_ACCOUNT_REGISTRY_RPC, 8_000)
+)
+
+const withRegistryReadTimeout = async <T>(work: Promise<T>, ms = REGISTRY_READ_TIMEOUT_MS): Promise<T> => {
+	let timer: number | undefined
+	try {
+		return await Promise.race([
+			work,
+			new Promise<T>((_, reject) => {
+				timer = window.setTimeout(() => reject(new Error('registry_read_timeout')), ms)
+			}),
+		])
+	} finally {
+		if (timer !== undefined) window.clearTimeout(timer)
+	}
+}
+
+type RecoverStoragePayload = {
+	stored?: Argon2idHash
+	img?: string
+	recoverData?: unknown
+}
+
+type ValidRecoverStoragePayload = RecoverStoragePayload & {
+	stored: Argon2idHash
+	img: string
+}
+
+const decodeRecoverStoragePayload = (encoded: string): RecoverStoragePayload | null => {
+	try {
+		const obj = JSON.parse(fromBase64(encoded)) as RecoverStoragePayload
+		if (!obj || typeof obj !== 'object') return null
+		return {
+			stored: obj.stored,
+			img: typeof obj.img === 'string' ? obj.img : undefined,
+			recoverData: obj.recoverData,
+		}
+	} catch {
+		return null
+	}
+}
+
+const isValidRecoverStoragePayload = (obj: RecoverStoragePayload | null): obj is ValidRecoverStoragePayload =>
+	!!obj?.img && !!obj?.stored
+
+/** 从指定 AccountRegistry 读取 @tag 对应的 PIN recover blob */
+const fetchRecoverPayloadByAccountName = async (
+	accountName: string,
+	registry: ethers.Contract
+): Promise<{ encoded: string; payload: ValidRecoverStoragePayload } | null> => {
+	try {
+		const encoded: string = await withRegistryReadTimeout(registry.getBase64ByAccountName(accountName))
+		if (!encoded?.trim()) return null
+		const payload = decodeRecoverStoragePayload(encoded)
+		if (!isValidRecoverStoragePayload(payload)) return null
+		return { encoded, payload }
+	} catch {
+		return null
+	}
+}
+
+export const buildMinimalBeamioFromAccountName = (accountName: string): beamio => ({
+	accountName,
+	firstName: '',
+	lastName: '',
+	image: '',
+	darkTheme: false,
+	isUSDCFaucet: false,
+	isETHFaucet: false,
+	initialLoading: true,
+	createdAt: Date.now(),
+	language: 'en',
+	currency: 'USD',
+	tax: '0',
+})
+
+const parseRegistryAccountToBeamio = (userInfo: {
+	accountName?: string
+	image?: string
+	darkTheme?: boolean
+	isUSDCFaucet?: boolean
+	isETHFaucet?: boolean
+	initialLoading?: boolean
+	firstName?: string
+	lastName?: string
+	createdAt?: bigint | number
+	exists?: boolean
+	pgpKeyID?: string
+	pgpKey?: string
+} | null): beamio | null => {
+	if (!userInfo?.exists || !userInfo.accountName?.trim()) return null
+	const { displayLastName, setup } = parseBeamioAddedSetupFromRegistryLastName(userInfo.lastName || '')
+	const addedSetup: beamioAddedSetup = setup ?? { language: 'en', currency: 'USD', tax: '0' }
+	return {
+		accountName: userInfo.accountName,
+		image: userInfo.image ?? '',
+		darkTheme: userInfo.darkTheme ?? false,
+		initialLoading: userInfo.initialLoading ?? false,
+		isUSDCFaucet: userInfo.isUSDCFaucet ?? false,
+		isETHFaucet: userInfo.isETHFaucet ?? false,
+		firstName: userInfo.firstName ?? '',
+		lastName: displayLastName,
+		createdAt: Number(userInfo.createdAt),
+		language: normalizeBeamioUiLocale(addedSetup.language) as ILanguage,
+		currency: normalizeBeamioDisplayCurrency(addedSetup.currency) as ICurrency,
+		tax: addedSetup.tax || '0',
+		localeCurrencyConfigured: setup !== null,
+		// in a shell the PGP public material is not stored in the record; the page takes it from identityPublic.
+		...(isShellContext() ? {} : { pgpPublicKeyID: userInfo.pgpKeyID ?? '', pgpPublicKeyArmor: userInfo.pgpKey ?? '' }),
+	}
+}
+
+/**
+ * The account read in three exclusive results (the global RPC rule): `ok`, `no_account`(a valid answer that holds
+ * no account), and `network_error` (a failed or timed-out read, or an undecodable answer). A failed read is never `no_account`.
+ */
+export type UserInfoLookup =
+	| { status: 'ok'; info: beamio }
+	| { status: 'no_account' }
+	| { status: 'network_error'; reason: string }
+
+const readUserInfoLookup = async (registry: ethers.Contract, keyID: string): Promise<UserInfoLookup> => {
+	let userInfo: Parameters<typeof parseRegistryAccountToBeamio>[0]
+	try {
+		userInfo = await withRegistryReadTimeout(registry.getAccount(keyID))
+	} catch (ex) {
+		return { status: 'network_error', reason: ex instanceof Error ? ex.message.slice(0, 80) : 'rpc' }
+	}
+	try {
+		const info = parseRegistryAccountToBeamio(userInfo)
+		return info ? { status: 'ok', info } : { status: 'no_account' }
+	} catch {
+		return { status: 'network_error', reason: 'undecodable_answer' }
+	}
+}
+
+const defaultBrowserParams: Argon2idParams = {
+	memoryKB: 32 * 1024, // 32 MB
+	iterations: 3,
+	parallelism: 1,
+	hashLen: 32
+}
+
+
+
+const hashPasswordBrowser = async (
+	password: string,
+	params: Argon2idParams = defaultBrowserParams
+): Promise<Argon2idHash> => {
+	const salt = randomBytes(16)
+
+	const hash = await argon2idAsync(enc.encode(password), salt, {
+		m: params.memoryKB,
+		t: params.iterations,
+		p: params.parallelism,
+		dkLen: params.hashLen,
+	})
+
+	return {
+		algo: 'argon2id',
+		v: 19,
+		m: params.memoryKB,
+		t: params.iterations,
+		p: params.parallelism,
+		salt: b64encode(salt),
+		hash: b64encode(hash),
+	}
+}
+
+
+export const checkBeamioAccountAPI = async (preBeamio: string): Promise<boolean> => {
+	try {
+		const isExits = await beamioAccountSC.isAccountNameAvailable(preBeamio)
+		return isExits
+	} catch (ex: any) {
+		// On-chain probe failed (RPC down, contract missing, ABI mismatch, decode error, ...).
+		// MUST NOT default to "available" — that lets the user finish onboarding on a broken
+		// chain and silently take an already-taken handle. Surface to caller's catch instead.
+		console.warn(`checkBeamioAccountAPI: on-chain probe failed for "${preBeamio}": ${ex?.shortMessage || ex?.message || ex}`)
+		throw new Error('UNABLE_TO_VERIFY_HANDLE_ONCHAIN')
+	}
+}
+
+type IAccountRecover = {
+	hash: string
+	encrypto: string
+}
+
+const newUser = async (BeamioName: string, recoverData:IAccountRecover[], privateKey: string) => {
+	let signWallet: ethers.Wallet
+	let signMessage: string
+	try {
+		signWallet = new ethers.Wallet(privateKey)
+		signMessage = await signWallet.signMessage(signWallet.address)
+	} catch (err) {
+		console.warn(`[newUser] sign fail errType=${err instanceof Error ? err.name : typeof err}`)
+		throw new LocalCreateError('sign_failed')
+	}
+	const Url = storageNewUser
+	try {
+		const body = {
+			accountName: BeamioName,
+			recover: recoverData,
+			wallet: signWallet.address,
+			signMessage
+		}
+
+		const resp = await fetch(Url, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json"
+			},
+			body: JSON.stringify(body)
+		})
+
+		if (!resp.ok) {
+			return false
+		}
+
+		const json = await resp.json()
+		return true
+	} catch (err) {
+		console.error("newUser error:", err)
+	}
+	return false
+}
+
+const isValidEthersPrivateKey = (pk: unknown): pk is string => {
+	if (!pk || typeof pk !== 'string') return false
+	const s = String(pk).trim().replace(/^0x/i, '')
+	return /^[0-9a-fA-F]{64}$/.test(s)
+}
+
+const migrateLegacyRecoverToNewRegistry = async (
+	accountName: string,
+	encodedRecover: string,
+	privateKey: string,
+	wallet: string
+): Promise<{ ok: boolean; beamio: beamio }> => {
+	const nameHash = ethers.solidityPackedKeccak256(['string'], [accountName])
+	const recover: IAccountRecover[] = [{ hash: nameHash, encrypto: encodedRecover }]
+	const fallbackBeamio = buildMinimalBeamioFromAccountName(accountName)
+
+	// A failed read is neither a record nor "no record": nothing is regenerated and nothing is created .
+	const legacyRead = await readUserInfoLookup(legacyBeamioAccountSC, wallet)
+	if (legacyRead.status === 'network_error') return { ok: false, beamio: fallbackBeamio }
+	const legacyProfile = legacyRead.status === 'ok' ? legacyRead.info : null
+	const beamioForEnqueue = legacyProfile ?? fallbackBeamio
+	beamioForEnqueue.accountName = accountName
+
+	const ok = legacyProfile
+		? await RegenerateUser(beamioForEnqueue, recover, privateKey)
+		: await newUser(accountName, recover, privateKey)
+
+	return { ok, beamio: beamioForEnqueue }
+}
+
+/**
+ * postBeamio's result: true (the server has it); false (not sent: invalid input, or a browser failure, or a shell
+ * HTTP refusal that is queued for a re-send); 'deferred' (shell only: queued in the persistent pending sync, re-sent later).
+ */
+export type PostBeamioResult = boolean | 'deferred'
+
+/** a save (a user's update) or a re-send from the pending queue. A queued re-send keeps its failure count. */
+type PostBeamioFrom = 'save' | 'queue'
+/** A save that could not reach the server is a new intent (its count starts again); a re-send keeps the queued item. */
+const queueSync = (eoa: string, from: PostBeamioFrom): void => (from === 'queue' ? ensurePendingServerSync(eoa) : enqueuePendingServerSync(eoa))
+
+const postBeamioFrom = async (beamio: beamio, privateKey: string, from: PostBeamioFrom): Promise<PostBeamioResult> => {
+	if (!isValidEthersPrivateKey(privateKey)) {
+		// a shell without the account's EOA key here (a native wallet session) keeps the update pending: it is re-sent once a
+		// read gives the key. It is never dropped silently.
+		const accountInMemory = String(CoNET_Data?.profiles?.[0]?.keyID ?? '').trim().toLowerCase()
+		if (isShellContext() && /^0x[0-9a-f]{40}$/.test(accountInMemory)) {
+			queueSync(accountInMemory, from)
+			return 'deferred'
+		}
+		console.warn('[postBeamio] invalid privateKey, skipping')
+		return false
+	}
+	const Url = storageNewUser
+	let signWallet: ethers.Wallet
+	try {
+		signWallet = new ethers.Wallet(privateKey)
+	} catch (ex: any) {
+		console.warn('[postBeamio] Wallet creation failed:', ex?.message || ex)
+		return false
+	}
+	const shell = isShellContext()
+	const eoa = signWallet.address
+	// The queue generation at the start: a newer queued intent during this request keeps its queued item.
+	const startedGen = shell ? pendingServerSyncGeneration(eoa) : 0
+	// (c) and : in a shell the PGP public material comes from identityPublic. Not ready: the request is queued (never sent
+	// with an empty or omitted value, since the server writes that as '').
+	const shellPgp = shell ? await shellPgpForServerRequest() : null
+	if (shell && !shellPgp) {
+		console.warn('[postBeamio] shell: identityPublic not ready; queued for a re-send')
+		queueSync(eoa, from)
+		return 'deferred'
+	}
+	const signMessage = await signWallet.signMessage(signWallet.address)
+
+
+	const lastname = encodeRegistryLastNameWithLocaleSetup(
+		beamio.lastName ?? '',
+		buildLocaleCurrencySetupPayload(beamio),
+	)
+	try {
+		const body = {
+			accountName: beamio.accountName,
+			wallet: signWallet.address,
+			image: beamio.image,
+			isUSDCFaucet: beamio.isUSDCFaucet,
+			darkTheme: beamio.darkTheme,
+			isETHFaucet: beamio.isETHFaucet,
+			firstName: beamio.firstName,
+			lastName: lastname,
+			pgpKeyID: shellPgp ? shellPgp.keyID : (beamio.pgpPublicKeyID ?? ''),
+			pgpKey: shellPgp ? shellPgp.publicArmor : (beamio.pgpPublicKeyArmor ?? ''),
+			signMessage
+		}
+
+		// the start awaits this save, so a stalled server is a failed call after the bound (never an endless wait).
+		const timeout = abortAfter(BOOT_REQUEST_TIMEOUT_MS)
+		let resp: Response
+		try {
+			resp = await fetch(Url, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json"
+				},
+				body: JSON.stringify(body),
+				signal: timeout.signal,
+			})
+		} finally {
+			timeout.done()
+		}
+
+		if (!resp.ok) {
+			// Shell: the request is kept for a re-send. A server answer that is not an explicit refusal (5xx, 408, 429) waits
+			// and is not counted; a 4xx refusal is returned as a refusal (it counts as a failure when re-sent).
+			if (shell) {
+				queueSync(eoa, from)
+				if (resp.status >= 500 || resp.status === 408 || resp.status === 429) return 'deferred'
+			}
+			return false
+		}
+		if (shell) completePendingServerSync(eoa, startedGen)
+		return true
+	} catch (err) {
+		console.error("newUser error:", err)
+		// Shell: a network failure is retried later (not counted as a refusal).
+		if (shell) {
+			queueSync(eoa, from)
+			return 'deferred'
+		}
+	}
+	return false
+}
+
+export const postBeamio = async (beamio: beamio, privateKey: string): Promise<PostBeamioResult> => postBeamioFrom(beamio, privateKey, 'save')
+
+/**
+ * The re-send of a queued account: built at send time from the latest local state (the profile and the account
+ * copy in memory), never from an older copy. If that state is not the queued account, the item waits (deferred).
+ */
+export async function sendPendingProfileSync(eoa: string): Promise<FlushOutcome> {
+	const profile = CoNET_Data?.profiles?.[0]
+	const current = CoNET_Data?.beamio
+	// Not this account in memory yet, or no EOA private key in this session (a native wallet session): the item waits (deferred).
+	// The key comes back with the record read (option B); the update is sent once a read gives it. This is not a failure.
+	if (!profile || !current || String(profile.keyID ?? '').toLowerCase() !== eoa) return 'deferred'
+	if (typeof profile.privateKeyArmor !== 'string' || !profile.privateKeyArmor.trim()) return 'deferred'
+	const r = await postBeamioFrom(current as beamio, profile.privateKeyArmor, 'queue')
+	if (r === true) return 'sent'
+	if (r === 'deferred') return 'deferred'
+	return 'failed'
+}
+
+/** Single path: profile language / currency / tax → chain + local + UI i18n */
+export async function persistBeamioProfileLocaleCurrency(
+	beamio: beamio,
+	privateKeyArmor: string,
+	patch?: Partial<Pick<beamio, 'language' | 'currency' | 'tax'>>,
+): Promise<beamio | null> {
+	if (!isValidEthersPrivateKey(privateKeyArmor)) return null
+	const bo: beamio = {
+		...beamio,
+		...patch,
+		language: normalizeBeamioUiLocale(patch?.language ?? beamio.language) as ILanguage,
+		currency: normalizeBeamioDisplayCurrency(patch?.currency ?? beamio.currency) as ICurrency,
+		tax: String(patch?.tax ?? beamio.tax ?? '0'),
+		localeCurrencyConfigured: true,
+	}
+	// Explicit: false is a failure; 'deferred'is queued for a re-send (the local copy is kept).
+	const serverSync = await postBeamio(bo, privateKeyArmor)
+	if (serverSync === false) return null
+	if (CoNET_Data) {
+		CoNET_Data.beamio = bo
+		setCoNET_Data(CoNET_Data)
+	}
+	writeBeamioUiLanguageBootstrap(bo.language as BeamioUiLocale)
+	await storeSystemData()
+	await applyBeamioUiLanguageFromProfile(bo.language)
+	return bo
+}
+
+/** Local CoNET_Data + bootstrap mirror when chain save unavailable or wallet locked. */
+export async function persistBeamioLanguageLocally(
+	beamio: beamio | null | undefined,
+	language: unknown,
+): Promise<beamio | null> {
+	const nextLang = normalizeBeamioUiLocale(language) as ILanguage
+	writeBeamioUiLanguageBootstrap(nextLang)
+	await applyBeamioUiLanguageFromProfile(nextLang)
+	if (!CoNET_Data && !beamio) return null
+	const base = beamio ?? CoNET_Data?.beamio
+	if (!base?.accountName?.trim()) return null
+	const bo: beamio = { ...base, language: nextLang }
+	if (CoNET_Data) {
+		CoNET_Data.beamio = bo
+		setCoNET_Data(CoNET_Data)
+	}
+	await flushStoreSystemData()
+	return bo
+}
+
+export function mergeLocalLocaleLanguageOntoChainProfile(
+	chainBeamio: beamio,
+	localBeamio?: beamio | null,
+): beamio {
+	if (chainBeamio.localeCurrencyConfigured) return chainBeamio
+	const localLang = localBeamio?.language ?? readBeamioUiLanguageBootstrap()
+	if (!localLang) return chainBeamio
+	return { ...chainBeamio, language: normalizeBeamioUiLocale(localLang) as ILanguage }
+}
+
+/** First launch when chain has no locale JSON: browser defaults → chain + local + UI */
+export async function bootstrapProfileLocaleCurrencyIfUnset(
+	beamio: beamio,
+	privateKeyArmor: string,
+): Promise<beamio> {
+	if (beamio.localeCurrencyConfigured) {
+		writeBeamioUiLanguageBootstrap(normalizeBeamioUiLocale(beamio.language))
+		await applyBeamioUiLanguageFromProfile(beamio.language)
+		return beamio
+	}
+	const localLang = CoNET_Data?.beamio?.language ?? readBeamioUiLanguageBootstrap()
+	const defaults = localLang
+		? {
+				...buildBrowserLocaleCurrencyDefaults(),
+				language: normalizeBeamioUiLocale(localLang),
+			}
+		: buildBrowserLocaleCurrencyDefaults()
+	const next = await persistBeamioProfileLocaleCurrency(beamio, privateKeyArmor, defaults)
+	if (next) return next
+	const fallback: beamio = {
+		...beamio,
+		...defaults,
+		localeCurrencyConfigured: true,
+	}
+	if (CoNET_Data) {
+		CoNET_Data.beamio = fallback
+		setCoNET_Data(CoNET_Data)
+	}
+	writeBeamioUiLanguageBootstrap(normalizeBeamioUiLocale(fallback.language))
+	await flushStoreSystemData()
+	await applyBeamioUiLanguageFromProfile(fallback.language)
+	return fallback
+}
+
+const aesGcmEncryptWithStored = async (
+		plaintext: string,
+		password: string,
+		stored: Argon2idHash
+	): Promise<string> => {
+	const key = await deriveAesKeyFromPassword(password, stored)
+
+	// 12 字节随机 IV（GCM 推荐长度）
+	const iv = crypto.getRandomValues(new Uint8Array(12))
+
+	const data = enc.encode(plaintext)
+
+	const encrypted = await crypto.subtle.encrypt(
+		{ name: 'AES-GCM', iv },
+		key,
+		data
+	)
+
+	const cipherBytes = new Uint8Array(encrypted)
+
+	// 拼成 iv || ciphertext
+	const combined = new Uint8Array(iv.length + cipherBytes.length)
+	combined.set(iv, 0)
+	combined.set(cipherBytes, iv.length)
+
+	return bytesToB64(combined)
+}
+
+export function fromBase64(b64: string): string {
+	const bin = atob(b64)
+	const bytes = new Uint8Array(bin.length)
+	for (let i = 0; i < bin.length; i++) {
+		bytes[i] = bin.charCodeAt(i)
+	}
+	return new TextDecoder().decode(bytes)
+}
+
+
+/** A local (device-side) failure while creating an account. The message is a step name, never a secret. */
+export class LocalCreateError extends Error {
+	constructor(readonly step: string) {
+		super(step)
+		this.name = 'LocalCreateError'
+	}
+}
+
+/**
+ * One create step, logged through the native debug channel. The production build drops `console` (craco: drop_console),
+ * so the channel is `publishNativePwaLog`. Only the step name and the error type are logged, never a key, passphrase,
+ * recovery code or payload.
+ */
+const logRecoverStep = (step: string, outcome: 'ok' | 'fail', err?: unknown): void => {
+	const errType = err === undefined ? '' : ` errType=${err instanceof Error ? err.name : typeof err}`
+	publishNativePwaLog(outcome === 'ok' ? 'info' : 'warn', `[createRecover] ${step} ${outcome}${errType}`)
+}
+
+export const createRecover = async (BeamioName: string, pin: string, options: { mustReuseKey?: boolean } = {}) => {
+	let step = 'createOrGetWallet'
+	try {
+		// (overwrite estimate): a confirmed local EOA key is reused, so the EOA stays the same and the key is not replaced. A new
+		// wallet is created only when the store is confirmed empty; a locked, unreadable or unconfirmed store is refused (nothing is written).
+		const local = await checkStorageWithStatus({ probe: true })
+		const source = recoverSourceOf({
+			status: local.status === 'unavailable' ? 'unavailable' : local.status,
+			keyPresent: local.status === 'loaded' && hasLocalSigningMaterial(local.data),
+		})
+		if (source === 'refuse') throw new LocalCreateError('local_wallet_unconfirmed')
+		// the page opened for an existing key never creates a new wallet, even if the store reads as empty now.
+		if (!recoverAllowed(source, options.mustReuseKey === true)) throw new LocalCreateError('existing_key_required')
+		const temp = source === 'reuse_local' && local.status === 'loaded'
+			? ensureProfilePrivateKeyArmorFromMnemonic(local.data)
+			: await createOrGetWallet('')
+		// / reviewer (de725dda): the reuse keeps the EOA and the private key, or nothing is written (fail closed).
+		if (source === 'reuse_local' && !reuseKeepsKey(local.status === 'loaded' ? local.data : null, temp)) {
+			logRecoverStep('reuse_key_changed', 'fail')
+			throw new LocalCreateError('reuse_key_changed')
+		}
+		logRecoverStep(step, 'ok')
+		if (!temp || !temp?.mnemonicPhrase || !temp?.profiles?.length) {
+			throw new LocalCreateError(!temp ? 'wallet_null' : !temp?.mnemonicPhrase ? 'mnemonic_missing' : 'profile_missing')
+		}
+		const wallet = temp.profiles[0].privateKeyArmor
+		if (!wallet) throw new LocalCreateError('private_key_missing')
+
+		step = 'generateCODE'
+		const recoverCode = generateCODE('')
+		step = 'hashPassword'
+		const stored = await hashPasswordBrowser(pin)
+
+		const phraseBase64 = toBase64(temp.mnemonicPhrase)
+
+		step = 'encrypt'
+		const img = await aesGcmEncryptWithStored(phraseBase64, recoverCode.code, stored)
+		const img1 = await aesGcmEncryptWithStored(phraseBase64, pin, stored)
+
+		const storageEncryptedImg = toBase64(JSON.stringify({stored, img}))
+		temp.encryptedString = recoverCode.code
+		const obj = { pin, recoverCode: recoverCode.code, qrCode: recoverCode.code, temp}
+		const hash = ethers.solidityPackedKeccak256(['string'], [BeamioName])
+		const storageEncryptedImg1 = toBase64(JSON.stringify({stored, img: img1}))
+
+		// newUser returns false only on an HTTP or network failure; a local failure throws (LocalCreateError).
+		step = 'newUser'
+		const registered = await newUser(BeamioName, [{hash: recoverCode.hash, encrypto: storageEncryptedImg}, {hash, encrypto: storageEncryptedImg1}], wallet)
+		logRecoverStep('newUser', registered ? 'ok' : 'fail')
+		if (!registered) return null
+
+		// AppEntryGate requires beamio.accountName + mnemonic in IndexedDB `"conet"`.
+		// Verify round-trip so Welcome is never shown with an empty local wallet.
+		step = 'persist'
+		const tag = BeamioName.trim().replace(/^@+/, '')
+		if (tag) {
+			temp.beamio = buildMinimalBeamioFromAccountName(tag)
+			setCoNET_Data(temp)
+			await persistAndVerifyLocalWallet(tag)
+		} else {
+			setCoNET_Data(temp)
+			await persistAndVerifyLocalWallet()
+		}
+		logRecoverStep('persist', 'ok')
+
+		return obj
+	} catch (err) {
+		if (err instanceof LocalCreateError) throw err
+		logRecoverStep(step, 'fail', err)
+		throw new LocalCreateError(step)
+	}
+}
+
+/**
+ * Register a fresh BeamioTag + access password on-chain without touching the
+ * signed-in Consumer profile or IndexedDB. Used by agent temp EOA pre-registration.
+ */
+export const createDetachedRecoverAccount = async (BeamioName: string, pin: string) => {
+	// Shell: the page creates no random account key; the agent temp account is native.
+	if (isShellContext()) return null
+	const acc = ethers.Wallet.createRandom()
+	const phrase = acc.mnemonic?.phrase
+	if (!phrase) return null
+	const recoverCode = generateCODE('')
+	const stored = await hashPasswordBrowser(pin)
+	const phraseBase64 = toBase64(phrase)
+	const img = await aesGcmEncryptWithStored(phraseBase64, recoverCode.code, stored)
+	const img1 = await aesGcmEncryptWithStored(phraseBase64, pin, stored)
+	const storageEncryptedImg = toBase64(JSON.stringify({ stored, img }))
+	const hash = ethers.solidityPackedKeccak256(['string'], [BeamioName])
+	const storageEncryptedImg1 = toBase64(JSON.stringify({ stored, img: img1 }))
+	const registered = await newUser(
+		BeamioName,
+		[{ hash: recoverCode.hash, encrypto: storageEncryptedImg }, { hash, encrypto: storageEncryptedImg1 }],
+		acc.privateKey,
+	)
+	if (!registered) return null
+	const eoa = ethers.getAddress(acc.address)
+	// newUser can return before Master finishes AccountRegistry write — wait until PIN decrypt works.
+	const deadline = Date.now() + 45_000
+	while (Date.now() < deadline) {
+		const hit =
+			(await fetchRecoverPayloadByAccountName(BeamioName, beamioAccountSC)) ||
+			(await fetchRecoverPayloadByAccountName(BeamioName, legacyBeamioAccountSC))
+		if (hit?.payload?.img && hit.payload.stored) {
+			try {
+				await aesGcmDecryptWithStored(hit.payload.img, pin, hit.payload.stored)
+				return { eoa }
+			} catch {
+				/* blob incomplete or still propagating — keep waiting */
+			}
+		}
+		await new Promise((resolve) => window.setTimeout(resolve, 1_500))
+	}
+	return { eoa }
+}
+
+/** Decrypt a recover package in memory. Does not call createOrGetWallet or storeSystemData. */
+export const unlockDetachedRecoverPrivateKey = async (
+	username: string,
+	pin: string,
+): Promise<string | null> => {
+	// Shell: the page derives no account key from a recover package.
+	if (isShellContext()) return null
+	const accountName = username.trim()
+	if (!accountName || !pin) return null
+	try {
+		const recoverHit =
+			(await fetchRecoverPayloadByAccountName(accountName, beamioAccountSC))
+			|| (await fetchRecoverPayloadByAccountName(accountName, legacyBeamioAccountSC))
+		if (!recoverHit?.payload?.img || !recoverHit.payload.stored) return null
+		const mnemonicBase64 = await aesGcmDecryptWithStored(
+			recoverHit.payload.img,
+			pin,
+			recoverHit.payload.stored,
+		)
+		const phrase = fromBase64(mnemonicBase64)
+		const key = createKeyHDWallets(phrase)
+		if (!key?.privateKey) return null
+		return key.privateKey
+	} catch {
+		return null
+	}
+}
+
+export const restoreWithRedeem = async (recoveryCode: string, pin: string) => {
+	// Shell: recovery is done by the native recovery engine; the page never restores here.
+	if (isShellContext()) throw new Error('native_recovery_only')
+	const hash = ethers.solidityPackedKeccak256(['string'], [recoveryCode])
+
+	try {
+		const hashedImg: string = await beamioAccountSC.getBase64ByNameHash(hash)
+		const objStr = fromBase64(hashedImg)
+		const obj = JSON.parse(objStr)
+
+		if (!obj?.img || !obj?.stored) {
+			return false
+		}
+
+		const mnemonicPhrase = await aesGcmDecryptWithStored (obj.img, pin + recoveryCode, obj.stored)
+		const mnemonicPhraseB = fromBase64(mnemonicPhrase)
+		const temp = await createOrGetWallet(mnemonicPhraseB)
+		if (!temp||!temp?.profiles?.length) {
+			return false
+		}
+		const profile: profile = temp.profiles[0]
+		// The chain read: a record is used; "no record" and a failed read both keep the local copy (nothing is written from a failure).
+		const beamioRead = await getUserInfoLookup(profile.keyID)
+		if (beamioRead.status === 'ok') {
+			temp.beamio = beamioRead.info
+		}
+		
+		return temp
+	} catch (ex: any) {
+		console.log(`checkBeamioAccount error ${ex.message}`)
+		return false
+	}
+}
+
+/** The account read in three results (see UserInfoLookup). App init uses this one, so a failed read is not taken for "no account". */
+export const getUserInfoLookup = async (keyID: string): Promise<UserInfoLookup> => readUserInfoLookup(beamioAccountSC, keyID)
+
+export const restoreWithUserPin = async (username: string, pin: string, test = false) => {
+	// Shell: recovery is done by the native recovery engine; the page never restores here.
+	if (isShellContext()) throw new Error('native_recovery_only')
+	try {
+		const accountName = username.trim()
+		if (!accountName) return false
+
+		let recoverHit = await fetchRecoverPayloadByAccountName(accountName, beamioAccountSC)
+		let legacyEncodedForMigrate: string | undefined
+
+		if (!recoverHit) {
+			const legacyHit = await fetchRecoverPayloadByAccountName(accountName, legacyBeamioAccountSC)
+			if (!legacyHit) {
+				return false
+			}
+			recoverHit = legacyHit
+			legacyEncodedForMigrate = legacyHit.encoded
+		}
+
+		const obj = recoverHit.payload
+
+		const mnemonicPhrase = await aesGcmDecryptWithStored (obj.img, pin, obj.stored)
+		const mnemonicPhraseB = fromBase64(mnemonicPhrase)
+
+		const key = createKeyHDWallets(mnemonicPhraseB)
+		if (!key) {
+			return
+		}
+		if (test) {
+			return true
+		}
+		const temp = await createOrGetWallet(mnemonicPhraseB)
+
+		if (!temp||!temp?.profiles?.length) {
+			return false
+		}
+
+		const profile: profile = temp.profiles[0]
+
+		if (legacyEncodedForMigrate) {
+			const privateKey = temp.profiles[0].privateKeyArmor
+			if (isValidEthersPrivateKey(privateKey)) {
+				const { ok, beamio: migratedBeamio } = await migrateLegacyRecoverToNewRegistry(
+					accountName,
+					legacyEncodedForMigrate,
+					privateKey,
+					profile.keyID
+				)
+				// A migration that did not complete (a failed read among it) writes no record .
+				if (ok) temp.beamio = migratedBeamio
+				if (!ok) {
+					console.warn(`[restoreWithUserPin] legacy AccountRegistry migrate (addUser) failed for @${accountName}`)
+				}
+			} else if (!temp.beamio) {
+				temp.beamio = buildMinimalBeamioFromAccountName(accountName)
+			}
+		}
+
+		// A record is used. A valid "no account" keeps the local name as the copy; a failed read writes nothing, and the restore then reports
+		// the wallet as incomplete .
+		const onchainRead = await getUserInfoLookup(profile.keyID)
+		if (onchainRead.status === 'ok') {
+			temp.beamio = onchainRead.info
+		} else if (onchainRead.status === 'no_account' && !temp.beamio) {
+			temp.beamio = buildMinimalBeamioFromAccountName(accountName)
+		}
+		if (obj.recoverData) {
+			;(temp as any).recoveredBusinessDraft = obj.recoverData
+		}
+
+		return temp
+	} catch (ex: any) {
+		console.log(`checkBeamioAccount error ${ex.message}`)
+		return false
+	}
+}
+
+function workerHitToSearchResult(hit: Record<string, unknown>): searchResult {
+	return {
+		username: String(hit.username ?? hit.accountName ?? ''),
+		address: String(hit.address ?? ''),
+		image: String(hit.image ?? ''),
+		first_name: String(hit.first_name ?? hit.firstName ?? ''),
+		last_name: String(hit.last_name ?? hit.lastName ?? ''),
+		created_at: typeof hit.created_at === 'number' ? hit.created_at : Number(hit.created_at) || 0,
+		follow_count: String(hit.follow_count ?? ''),
+		follower_count: String(hit.follower_count ?? ''),
+	} as searchResult
+}
+
+function searchResultToBeamioTagBasicMetadata(r: searchResult): BeamioTagBasicMetadata {
+	return {
+		username: String(r.username ?? ''),
+		address: String(r.address ?? ''),
+		image: String(r.image ?? ''),
+		first_name: String(r.first_name ?? ''),
+		last_name: String(r.last_name ?? ''),
+		created_at: typeof r.created_at === 'number' ? r.created_at : Number(r.created_at) || 0,
+		follow_count: String(r.follow_count ?? ''),
+		follower_count: String(r.follower_count ?? ''),
+	}
+}
+
+function beamioTagBasicMetadataToSearchResult(m: BeamioTagBasicMetadata): searchResult {
+	return {
+		username: m.username,
+		address: m.address,
+		image: m.image,
+		first_name: m.first_name,
+		last_name: m.last_name,
+		created_at: m.created_at,
+		follow_count: m.follow_count,
+		follower_count: m.follower_count,
+	} as searchResult
+}
+
+/**
+ * @deprecated Prefer BeamioTag Worker IDB. Kept only for one-shot read of old LS during migration.
+ */
+function rememberSearchUsersIfTrustworthy(keyword: string, live: { results?: searchResult[] } | null) {
+	const q = keyword.trim()
+	if (!q || !live?.results?.length) return
+	if (!ethers.isAddress(q)) return
+	const first = live.results[0]
+	if (!first?.address) return
+	const qAddrNorm = ethers.getAddress(q).toLowerCase()
+	if (first.address.toLowerCase() === qAddrNorm) {
+		rememberBeamioTagBasicMetadata(searchResultToBeamioTagBasicMetadata(first))
+	}
+}
+
+/**
+ * search-users via BeamioTag Worker serverDB (IndexedDB local-first).
+ * All UI call sites keep `searchUsername` — network + IDB live in the Worker when ready.
+ */
+export async function searchUsernameStaleWhileRevalidate(
+	keyward: string,
+	opts?: { forceNetwork?: boolean },
+): Promise<{ results?: searchResult[] } | null> {
+	const raw = (keyward ?? '').trim()
+	if (!raw) return { results: [] }
+
+	if (!opts?.forceNetwork && ethers.isAddress(raw)) {
+		const cached = peekBeamioTagBasicMetadataForQuery(raw)
+		if (cached) {
+			void searchBeamioTagRemote(raw).then((live) => {
+				if (live?.results?.length) {
+					rememberSearchUsersIfTrustworthy(raw, {
+						results: live.results.map((h) => workerHitToSearchResult(h)),
+					})
+				}
+			})
+			return { results: [beamioTagBasicMetadataToSearchResult(cached)] }
+		}
+	}
+
+	const viaWorker = await searchBeamioTagRemote(raw)
+	if (!viaWorker) return null
+	const results = (viaWorker.results ?? []).map((h) => workerHitToSearchResult(h))
+	if (raw && results.length) {
+		rememberSearchUsersIfTrustworthy(raw, { results })
+	}
+	return { results }
+}
+
+export const searchUsername = (keyward: string) => searchUsernameStaleWhileRevalidate(keyward)
+
+export { peekBeamioTagBasicMetadataForQuery, rememberBeamioTagBasicMetadata }
+export type { BeamioTagBasicMetadata }
+
+export const getFollowStatus = async (wallet: string, followAddress: string) => {
+	//		isFollowingAddress
+
+	const params = new URLSearchParams({wallet, followAddress}).toString()
+	const Url = `${followStatusUrl}?${params}`
+	try {
+		const res = await fetch(Url, {method: 'GET'})
+		if (res.status !== 200) {
+			return null
+		}
+		return await res.json()
+	} catch (ex: any) {
+		return null
+	}
+	
+}
+
+export const removeFollowing = async (privateKey: string, followAddress: string) => {
+	const Url = removeFollowingUrl
+	const wallet = new ethers.Wallet(privateKey)
+
+	try {
+		const body = {
+			wallet: wallet.address,
+			followAddress,
+			signMessage: await wallet.signMessage(wallet.address)
+		}
+
+		const resp = await fetch(Url, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json"
+			},
+			body: JSON.stringify(body)
+		})
+
+		if (!resp.ok) {
+			return false
+		}
+
+		const json = await resp.json()
+		return true
+	} catch (err) {
+		console.error("removeFollowing error:", err)
+	}
+	return false
+}
+
+export const addFollowing = async (privateKey: string, followAddress: string) => {
+	const Url = addFollowingUrl
+	const wallet = new ethers.Wallet(privateKey)
+
+	try {
+		const body = {
+			wallet: wallet.address,
+			followAddress,
+			signMessage: await wallet.signMessage(wallet.address)
+		}
+
+		const resp = await fetch(Url, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json"
+			},
+			body: JSON.stringify(body)
+		})
+
+		if (!resp.ok) {
+			return false
+		}
+
+		const json = await resp.json()
+		return true
+	} catch (err) {
+		console.error("addFollowing error:", err)
+	}
+	return false
+}
+
+export const getMyFollowStatus = async (wallet: string) => {
+	const params = new URLSearchParams({wallet}).toString()
+	const Url = `${myFollowStatusUrl}?${params}`
+	try {
+		const res = await fetch(Url, {method: 'GET'})
+		const data = await res.json()
+		if (res.status !== 200) {
+			console.log(`getMyFollowStatus Error!, status code: ${data}`)
+			return null
+		}
+		return data
+	} catch (ex: any) {
+		return null
+	}
+}
+
+const RegenerateUser = async (beamio: beamio, recoverData:IAccountRecover[], privateKey: string) => {
+  // as in postBeamio, a shell sends only with the PGP material from identityPublic; otherwise the request is deferred.
+  const shellPgp = isShellContext() ? await shellPgpForServerRequest() : null
+  // RegenerateUser is not queued (its recovery data does not travel with the queued re-send, which is postBeamio only).
+  if (isShellContext() && !shellPgp) return false
+	
+	const signWallet = new ethers.Wallet(privateKey)
+	const signMessage = await signWallet.signMessage(signWallet.address)
+	const Url = storageNewUser
+	const lastName = encodeRegistryLastNameWithLocaleSetup(
+		beamio.lastName ?? '',
+		buildLocaleCurrencySetupPayload({ ...beamio, tax: beamio.tax ?? '0' }),
+	)
+	try {
+		const body = {
+			accountName: beamio.accountName,
+			recover: recoverData,
+			wallet: signWallet.address,
+			signMessage,
+			isUSDCFaucet: beamio.isUSDCFaucet,
+			darkTheme: beamio.darkTheme,
+			isETHFaucet: beamio.isETHFaucet,
+			firstName: beamio.firstName,
+			lastName: lastName,
+			pgpKeyID: shellPgp ? shellPgp.keyID : (beamio.pgpPublicKeyID ?? ''),
+			pgpKey: shellPgp ? shellPgp.publicArmor : (beamio.pgpPublicKeyArmor ?? '')
+		}
+
+		const controller = new AbortController()
+		const timeout = window.setTimeout(() => controller.abort(), 30_000)
+		const resp = await fetch(Url, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json"
+			},
+			body: JSON.stringify(body),
+			signal: controller.signal,
+		})
+		window.clearTimeout(timeout)
+
+		if (!resp.ok) {
+			return false
+		}
+
+		const json = await resp.json()
+		return true
+	} catch (err) {
+		console.error("newUser error:", err)
+	}
+	return false
+}
+
+export const RegenerateRecover = async (mnemonicPhrase: string, beamio: beamio, pin: string, privateKey: string) => {
+	await new Promise(executor => setTimeout(() => executor(true), 1000))
+	const recoverCode =  generateCODE('')
+	const stored = await hashPasswordBrowser(pin)
+	const phraseBase64 = toBase64(mnemonicPhrase)
+	const img = await aesGcmEncryptWithStored (phraseBase64, recoverCode.code, stored)
+	const img1 = await aesGcmEncryptWithStored (phraseBase64, pin, stored)
+
+	const storageEncryptedImg = toBase64(JSON.stringify({stored, img}))
+	const obj = { pin, recoverCode: recoverCode.code, qrCode: recoverCode.code}
+	const hash = ethers.solidityPackedKeccak256(['string'], [beamio.accountName])
+	const storageEncryptedImg1 = toBase64(JSON.stringify({stored, img: img1}))
+	const result = await RegenerateUser(beamio, [{hash: recoverCode.hash, encrypto: storageEncryptedImg}, {hash, encrypto: storageEncryptedImg1}], privateKey)
+	if (!result) {
+		return null
+	}
+	return obj
+}
+
+
+export const getFololowsData = async (wallet: string) => {
+	const params = new URLSearchParams({wallet}).toString()
+	const Url = `${getFollowersUrl}?${params}`
+	try {
+		const res = await fetch(Url, {method: 'GET'})
+		const data = await res.json()
+		if (res.status !== 200) {
+			console.log(`getMyFollowStatus Error!, status code: ${data}`)
+			return null
+		}
+		return data
+	} catch (ex: any) {
+		return null
+	}
+	
+}
+
+//		curl -v "https://ipfs.conet.network/api/getFragment?hash=0x5de59d1bc6d7e11ef2c304163773d80089f39802cc77a9b3944fa4ea8fdbe42c"
+
+export const postToIPFS = async (profile: profile, image: string): Promise<string | null> => {
+	const url = `${ipfsEndpoint}storageFragment`
+	const wallet = new ethers.Wallet(profile.privateKeyArmor)
+	const hash = keccak256(toUtf8Bytes(image))
+	try {
+		const body = {
+			wallet: wallet.address,
+			image,
+			signMessage: await wallet.signMessage(wallet.address)
+		}
+
+		const resp = await fetch(url, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json"
+			},
+			body: JSON.stringify(body)
+		})
+
+		const respText = await resp.text()
+
+		if (!resp.ok) {
+			let errMsg = `IPFS upload failed: ${resp.status} ${resp.statusText}`
+			try {
+				const parsed = respText ? JSON.parse(respText) : null
+				if (parsed?.error) errMsg = parsed.error
+			} catch (_) {
+				if (respText) errMsg += ` - ${respText.slice(0, 200)}`
+			}
+			console.error("postToIPFS error:", errMsg)
+			throw new Error(errMsg)
+		}
+
+		// Server returns 200 with empty body on success; parse JSON only if body present
+		if (respText) {
+			try {
+				const data = JSON.parse(respText)
+				if (data?.error) {
+					console.error("postToIPFS error:", data.error)
+					throw new Error(data.error)
+				}
+			} catch (e: any) {
+				if (e instanceof SyntaxError) {
+					// Non-JSON body, treat as success (e.g. empty or plain text)
+				} else {
+					throw e
+				}
+			}
+		}
+
+		// Permanent local cache keyed by hash (local-first library).
+		void import('@/utils/ipfsImageLibrary')
+			.then(({ putLocalIpfsImageFromDataUrl }) => putLocalIpfsImageFromDataUrl(hash, image))
+			.catch(() => {})
+
+		return hash
+	} catch (err: any) {
+		console.error("postToIPFS error:", err)
+		throw err instanceof Error ? err : new Error(err?.message ?? "IPFS upload failed")
+	}
+}

@@ -1,0 +1,112 @@
+
+
+@tailwind base;
+
+/* 在 base 之后立即覆盖 Tailwind 对 SVG 的重置 */
+@layer base {
+  svg {
+    display: inline !important;
+    vertical-align: baseline !important;
+  }
+  
+  img {
+    /* display: inline !important; */
+  }
+}
+
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100vh;
+  height: 100dvh;
+  height: var(--beamio-native-viewport-height, 100dvh);
+  /* WebView 兼容：由 native / visualViewport 写入真实可见高度，避免 iOS 100vh 过高 */
+  min-height: -webkit-fill-available;
+  min-height: 100dvh;
+  min-height: var(--beamio-native-viewport-height, 100dvh);
+  margin: 0;
+  padding: 0;
+  /* 禁用弹力下拉（rubber-band / overscroll bounce） */
+  overscroll-behavior: none;
+  overscroll-behavior-x: none;
+}
+
+body {
+  margin: 0;
+  background-color: white;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
+    "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  overflow-x: hidden;
+   padding-bottom: 0 !important; /* 覆盖 Tailwind 的安全区域设置 */
+  
+}
+
+
+
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New",
+    monospace;
+}
+:root,
+.theme-light {
+  --app-bg: #ffffff;
+  --app-text: #000000;
+  --footer-bg: #f8f8f8;
+  --footer-text: #111827;
+  --scan-btn-icon: #000000;
+}
+
+/* Dark 主题变量 */
+.dark,
+.theme-dark {
+  --app-bg: #050505;
+  --app-text: #f9fafb;
+  --footer-bg: #050505;
+  --footer-text: #e5e7eb;
+  --scan-btn-icon: #ffffff;
+}
+/* 防止输入框触发滚动 */
+input:focus {
+  transform: translateZ(0);  /* 启用硬件加速 */
+}
+
+/* Active promotions Social Missions help toast — avoid 204px max-width + translateY clip */
+.beamio-promotion-help-toast .adm-toast-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.beamio-promotion-help-toast .adm-toast-main {
+  position: static !important;
+  top: auto !important;
+  transform: none !important;
+  max-width: min(88vw, 300px);
+  width: auto;
+  word-break: normal;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+  text-align: center;
+  line-height: 1.5;
+}
+.beamio-promotion-help-toast .adm-toast-main-text {
+  padding: 14px 16px;
+}
+.beamio-promotion-help-toast .adm-auto-center,
+.beamio-promotion-help-toast .adm-auto-center-content {
+  width: 100%;
+  overflow: visible;
+}

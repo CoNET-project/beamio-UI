@@ -1,0 +1,1578 @@
+import { fiatPrefix } from '@/services/currency'
+import {
+	formatDiscoverRechargeBonusDisplayString,
+	formatDiscoverRechargeBonusSidePillText,
+	parseDiscoverRechargeBonusRules,
+	pickPrimaryDiscoverRechargeBonusRule,
+	type DiscoverRechargeBonusRule,
+} from '@/utils/discoverRechargeBonus'
+import {
+	readSocialExchangeFromMetadata,
+	socialExchangeSummaryLabel,
+} from '@/utils/socialExchangeMetadata'
+import type { ChainCardSocialPromotion } from '@/utils/discoverMerchantSocialPromotionChain'
+
+type FiatCurrencyCode = Parameters<typeof fiatPrefix>[0]
+
+export type DiscoverMerchantPromotionRow = {
+	id: string
+	kind: 'topup' | 'rechargeBonus' | 'social' | 'couponSocial' | 'couponExchange'
+	title: string
+	description: string
+}
+
+type SocialPromotionReward = {
+	enabled?: boolean
+	points13: number
+	/** Whole % of top-up (ratio E6); Discover labels as `N% of top-up`. */
+	asPercent?: boolean
+}
+
+type SocialPromotionEvent = {
+	user?: SocialPromotionReward
+	ref?: SocialPromotionReward
+}
+
+type ShareTokenMetadataSocialPromotion = {
+	enabled?: boolean
+	events?: {
+		linkClick?: SocialPromotionEvent
+		like?: SocialPromotionEvent
+		topup?: SocialPromotionEvent
+	}
+}
+
+type ShareTokenMetadataCouponSocialPromotion = {
+	enabled?: boolean
+	events?: {
+		linkClick?: SocialPromotionEvent
+		like?: SocialPromotionEvent
+		claim?: SocialPromotionEvent
+		burn?: SocialPromotionEvent
+	}
+}
+
+type ShareTokenMetadataTopupPromotionFixedTier = {
+	topupAmount: number
+	bonusAmount: number
+}
+
+type ShareTokenMetadataTopupPromotion = {
+	enabled?: boolean
+	validFrom?: string
+	validTo?: string
+	minimumTopupAmount: number
+	rewardType: 'percent' | 'fixed'
+	rewardValue: number
+	/** Fixed multi-tier Store Credit Multipliers (canonical). */
+	fixedTiers?: ShareTokenMetadataTopupPromotionFixedTier[]
+}
+
+/** Discover Welcome Offer carousel card when ≥2 Store Credit Multipliers. */
+export type DiscoverStoreCreditMultiplierCard = {
+	id: string
+	topupAmount: number
+	bonusAmount: number
+	totalValue: number
+	bonusPercent: number
+	isBestValue: boolean
+	/** e.g. `+10% BONUS` / `+20% MATCH` — null when Best Value badge is used. */
+	percentHeader: string | null
+	/** e.g. `BEST VALUE • +15%` */
+	bestValueBadge: string | null
+	topupLabel: string
+	freeCreditLabel: string
+	valLabel: string
+	suggestedAmount: string
+}
+
+export type DiscoverTopupPromotionCapsuleCopy = {
+	/** Fixed product headline for Discover New Customer Bonus panel. */
+	title: string
+	description: string
+	/** Prefill Discover top-up amount field (human number, no currency prefix). */
+	suggestedAmount?: string
+	ctaLabel?: string
+}
+
+const CARD_SOCIAL_EVENT_KEYS = ['linkClick', 'like', 'topup'] as const
+const COUPON_SOCIAL_EVENT_KEYS = ['linkClick', 'like', 'claim', 'burn'] as const
+
+export type CouponSocialPromotionEventKey = (typeof COUPON_SOCIAL_EVENT_KEYS)[number]
+
+/** On-chain rule slot per coupon event (linkClick keeps ruleId = issuedTokenId). */
+export const COUPON_SOCIAL_PROMOTION_EVENT_RULE_SLOTS: Record<CouponSocialPromotionEventKey, number> = {
+	linkClick: 0,
+	like: 1,
+	claim: 2,
+	burn: 3,
+}
+
+export function couponSocialPromotionRuleIdForEvent(
+	issuedTokenId: string,
+	eventKey: CouponSocialPromotionEventKey,
+): string {
+	const base = BigInt(String(issuedTokenId).trim())
+	const slot = COUPON_SOCIAL_PROMOTION_EVENT_RULE_SLOTS[eventKey]
+	if (slot === 0) return base.toString()
+	return (base * 100n + BigInt(slot)).toString()
+}
+
+function parsePositiveInt(raw: unknown): number | null {
+	if (raw == null || raw === '') return null
+	const n = typeof raw === 'number' ? raw : Number.parseInt(String(raw).trim(), 10)
+	if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return null
+	return n
+}
+
+function parseAmount(raw: unknown): number | null {
+	if (raw == null || raw === '') return null
+	const n = typeof raw === 'number' ? raw : Number.parseFloat(String(raw).replace(/,/g, '').trim())
+	if (!Number.isFinite(n) || n <= 0) return null
+	return Math.round(n * 100) / 100
+}
+
+function parseYmd(raw: unknown): string | undefined {
+	if (typeof raw !== 'string') return undefined
+	const t = raw.trim()
+	if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return undefined
+	return t
+}
+
+function formatLocalYmd(d: Date = new Date()): string {
+	const y = d.getFullYear()
+	const m = String(d.getMonth() + 1).padStart(2, '0')
+	const day = String(d.getDate()).padStart(2, '0')
+	return `${y}-${m}-${day}`
+}
+
+function moneyPrefixForCurrency(currencyCode: string): string {
+	const ccy = (currencyCode || 'CAD').toUpperCase() as FiatCurrencyCode
+	return ccy === 'USDC' ? '$' : fiatPrefix(ccy)
+}
+
+function shareMetadataRoot(meta: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+	if (!meta) return null
+	const share = meta.shareTokenMetadata
+	if (share && typeof share === 'object') return share as Record<string, unknown>
+	return meta
+}
+
+/** Only allow safe inline style colors (hex / rgb / rgba). */
+export function discoverSafeCssColor(raw: string | null | undefined): string | null {
+	if (raw == null || typeof raw !== 'string') return null
+	const t = raw.trim()
+	if (!t) return null
+	if (/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(t)) return t
+	if (/^rgba?\(/i.test(t)) return t
+	return null
+}
+
+export function discoverParseCssRgb(color: string): { r: number; g: number; b: number } | null {
+	const t = color.trim()
+	const hex = t.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i)
+	if (hex) {
+		let h = hex[1]
+		if (h.length === 3) h = h.split('').map((c) => c + c).join('')
+		if (h.length === 8) h = h.slice(0, 6)
+		return {
+			r: parseInt(h.slice(0, 2), 16),
+			g: parseInt(h.slice(2, 4), 16),
+			b: parseInt(h.slice(4, 6), 16),
+		}
+	}
+	const rgb = t.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i)
+	if (rgb) {
+		return { r: Number(rgb[1]), g: Number(rgb[2]), b: Number(rgb[3]) }
+	}
+	return null
+}
+
+/**
+ * Mix merchant brand color toward white for Discover / Top-up page chrome.
+ * `whiteAmount` 0 = brand, 1 = white.
+ */
+export function discoverMixCssColorWithWhite(color: string, whiteAmount: number): string | null {
+	const rgb = discoverParseCssRgb(color)
+	if (!rgb) return null
+	const t = Math.min(1, Math.max(0, whiteAmount))
+	const r = Math.round(rgb.r + (255 - rgb.r) * t)
+	const g = Math.round(rgb.g + (255 - rgb.g) * t)
+	const b = Math.round(rgb.b + (255 - rgb.b) * t)
+	return `rgb(${r}, ${g}, ${b})`
+}
+
+/** Mix brand toward black for CTA / badge chrome. `blackAmount` 0 = brand, 1 = black. */
+export function discoverMixCssColorWithBlack(color: string, blackAmount: number): string | null {
+	const rgb = discoverParseCssRgb(color)
+	if (!rgb) return null
+	const t = Math.min(1, Math.max(0, blackAmount))
+	const r = Math.round(rgb.r * (1 - t))
+	const g = Math.round(rgb.g * (1 - t))
+	const b = Math.round(rgb.b * (1 - t))
+	return `rgb(${r}, ${g}, ${b})`
+}
+
+/** Text on a solid brand fill (gift card / CTA). */
+export function discoverContrastTextOnBrand(color: string): '#ffffff' | '#111827' {
+	const rgb = discoverParseCssRgb(color)
+	if (!rgb) return '#ffffff'
+	const L = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255
+	return L > 0.62 ? '#111827' : '#ffffff'
+}
+
+/**
+ * Card-level Discover brand color from flattened `backgroundColor` or
+ * `shareTokenMetadata.backgroundColor` (Merchant OS Base card background).
+ */
+export function parseDiscoverCardBrandColor(meta: Record<string, unknown> | null | undefined): string | null {
+	if (meta == null) return null
+	const share = shareMetadataRoot(meta)
+	const raw =
+		meta.backgroundColor ??
+		meta.background_color ??
+		share?.backgroundColor ??
+		share?.background_color
+	return typeof raw === 'string' && raw.trim() ? discoverSafeCssColor(raw) : null
+}
+
+export const DISCOVER_MERCHANT_PAGE_WHITE_MIX = 0.9
+export const DISCOVER_TOPUP_PAGE_FALLBACK_BG = '#F9F9FB'
+
+function parseDiscoverTierBackgroundColor(tier: unknown): string | null {
+	if (tier == null || typeof tier !== 'object') return null
+	const o = tier as Record<string, unknown>
+	const nested =
+		o.properties != null && typeof o.properties === 'object'
+			? (o.properties as Record<string, unknown>)
+			: null
+	const bgRaw =
+		o.backgroundColor ?? o.background_color ?? nested?.backgroundColor ?? nested?.background_color
+	return typeof bgRaw === 'string' && bgRaw.trim() ? discoverSafeCssColor(bgRaw) : null
+}
+
+function discoverMetadataTiers(meta: Record<string, unknown> | null | undefined): unknown[] | null {
+	if (!meta) return null
+	if (Array.isArray(meta.tiers) && meta.tiers.length > 0) return meta.tiers
+	const share = shareMetadataRoot(meta)
+	if (share && Array.isArray(share.tiers) && share.tiers.length > 0) return share.tiers
+	return null
+}
+
+function parseDiscoverHighestTierBackground(
+	meta: Record<string, unknown> | null | undefined,
+): string | null {
+	const raw = discoverMetadataTiers(meta)
+	if (!raw) return null
+	let bestMin = -1n
+	let bestBg: string | null = null
+	for (const item of raw) {
+		if (item == null || typeof item !== 'object') continue
+		const o = item as Record<string, unknown>
+		const minRaw = o.minUsdc6 ?? o.min_usdc6
+		let minUsdc6 = 0n
+		try {
+			if (typeof minRaw === 'bigint') minUsdc6 = minRaw
+			else if (typeof minRaw === 'number' && Number.isFinite(minRaw)) minUsdc6 = BigInt(Math.trunc(minRaw))
+			else if (typeof minRaw === 'string' && minRaw.trim()) minUsdc6 = BigInt(minRaw.trim())
+		} catch {
+			minUsdc6 = 0n
+		}
+		const bg = parseDiscoverTierBackgroundColor(item)
+		if (minUsdc6 > bestMin) {
+			bestMin = minUsdc6
+			bestBg = bg
+		} else if (minUsdc6 === bestMin && bg) {
+			bestBg = bg
+		}
+	}
+	return bestBg
+}
+
+/**
+ * Discover / Top-up brand chrome: card-level `backgroundColor`, then tiers[0],
+ * then the highest `minUsdc6` tier. Same chain as Discover merchant detail.
+ */
+export function parseDiscoverMerchantBrandColor(
+	meta: Record<string, unknown> | null | undefined,
+): string | null {
+	const cardLevel = parseDiscoverCardBrandColor(meta)
+	if (cardLevel) return cardLevel
+	const tiers = discoverMetadataTiers(meta)
+	const first = tiers?.length ? parseDiscoverTierBackgroundColor(tiers[0]) : null
+	if (first) return first
+	return parseDiscoverHighestTierBackground(meta)
+}
+
+/** Soft merchant page surface: brand mixed toward white, or the Top-up gray fallback. */
+export function resolveDiscoverMerchantPageBrandColor(
+	meta: Record<string, unknown> | null | undefined,
+	fallback = DISCOVER_TOPUP_PAGE_FALLBACK_BG,
+): string {
+	const brand = parseDiscoverMerchantBrandColor(meta)
+	if (!brand) return fallback
+	return discoverMixCssColorWithWhite(brand, DISCOVER_MERCHANT_PAGE_WHITE_MIX) ?? fallback
+}
+
+export type DiscoverStoreCreditTopupQuote = {
+	principal: number
+	bonus: number
+	total: number
+	principalLabel: string
+	bonusLabel: string
+	totalLabel: string
+}
+
+function rewardFromPayload(raw: SocialPromotionReward | undefined): SocialPromotionReward | null {
+	if (!raw || raw.enabled === false) return null
+	const points = parsePositiveInt(raw.points13)
+	if (points == null) return null
+	return { enabled: true, points13: points, asPercent: raw.asPercent === true }
+}
+
+function eventHasReward(ev: SocialPromotionEvent | undefined): boolean {
+	if (!ev) return false
+	return rewardFromPayload(ev.user) != null || rewardFromPayload(ev.ref) != null
+}
+
+function formatRewardLine(role: 'User' | 'Referrer', reward: SocialPromotionReward | undefined): string | null {
+	const normalized = rewardFromPayload(reward)
+	if (!normalized) return null
+	const points = normalized.points13
+	if (normalized.asPercent) {
+		return `${role}: ${points}% of top-up`
+	}
+	return `${role}: ${points} pt${points === 1 ? '' : 's'}`
+}
+
+function cardSocialPromotionEventLabel(key: (typeof CARD_SOCIAL_EVENT_KEYS)[number]): string {
+	switch (key) {
+		case 'linkClick':
+			return 'Link click'
+		case 'like':
+			return 'Like'
+		case 'topup':
+			return 'Top-up'
+		default:
+			return key
+	}
+}
+
+function couponSocialPromotionEventLabel(key: (typeof COUPON_SOCIAL_EVENT_KEYS)[number]): string {
+	switch (key) {
+		case 'linkClick':
+			return 'Link click'
+		case 'like':
+			return 'Like'
+		case 'claim':
+			return 'Claim'
+		case 'burn':
+			return 'Burn'
+		default:
+			return key
+	}
+}
+
+function eventDraftFromPayload(raw: SocialPromotionEvent | undefined): SocialPromotionEvent {
+	return {
+		user:
+			raw?.user && raw.user.enabled !== false
+				? {
+						enabled: true,
+						points13: raw.user.points13,
+						...(raw.user.asPercent === true ? { asPercent: true as const } : {}),
+					}
+				: undefined,
+		ref:
+			raw?.ref && raw.ref.enabled !== false
+				? {
+						enabled: true,
+						points13: raw.ref.points13,
+						...(raw.ref.asPercent === true ? { asPercent: true as const } : {}),
+					}
+				: undefined,
+	}
+}
+
+function eventsPayloadFromRaw(
+	eventsRaw: Record<string, unknown> | undefined,
+	keys: readonly string[],
+): Record<string, SocialPromotionEvent> {
+	const events: Record<string, SocialPromotionEvent> = {}
+	if (!eventsRaw || typeof eventsRaw !== 'object') return events
+	for (const key of keys) {
+		const ev = eventsRaw[key]
+		if (ev && typeof ev === 'object') {
+			const draft = eventDraftFromPayload(ev as SocialPromotionEvent)
+			if (eventHasReward(draft)) events[key] = draft
+		}
+	}
+	return events
+}
+
+function normalizeSocialPromotionPayload(raw: Record<string, unknown>): ShareTokenMetadataSocialPromotion | null {
+	if (!raw.events || typeof raw.events !== 'object') return null
+	const events = eventsPayloadFromRaw(raw.events as Record<string, unknown>, CARD_SOCIAL_EVENT_KEYS)
+	if (Object.keys(events).length === 0) return null
+	return {
+		enabled: raw.enabled !== false,
+		events,
+	}
+}
+
+function normalizeCouponSocialPromotionPayload(raw: Record<string, unknown>): ShareTokenMetadataCouponSocialPromotion | null {
+	if (!raw.events || typeof raw.events !== 'object') return null
+	const events = eventsPayloadFromRaw(raw.events as Record<string, unknown>, COUPON_SOCIAL_EVENT_KEYS)
+	if (Object.keys(events).length === 0) return null
+	return {
+		enabled: raw.enabled !== false,
+		events,
+	}
+}
+
+export function parseSocialPromotionFromMetadata(
+	meta: Record<string, unknown> | null | undefined,
+): ShareTokenMetadataSocialPromotion | null {
+	if (!meta) return null
+	const direct = meta.socialPromotion
+	if (direct && typeof direct === 'object') {
+		return normalizeSocialPromotionPayload(direct as Record<string, unknown>)
+	}
+	const share = shareMetadataRoot(meta)
+	if (share) {
+		const nested = share.socialPromotion
+		if (nested && typeof nested === 'object') {
+			return normalizeSocialPromotionPayload(nested as Record<string, unknown>)
+		}
+	}
+	return null
+}
+
+function parseCouponSocialPromotionFromMetadata(
+	meta: Record<string, unknown> | null | undefined,
+): ShareTokenMetadataCouponSocialPromotion | null {
+	if (!meta || typeof meta !== 'object') return null
+	const raw = meta.socialPromotion
+	if (!raw || typeof raw !== 'object') return null
+	return normalizeCouponSocialPromotionPayload(raw as Record<string, unknown>)
+}
+
+function approxEq(a: number, b: number): boolean {
+	return Math.abs(a - b) < 0.005
+}
+
+/**
+ * Heal legacy buggy encode: `rewardType: percent` + unscaled bonusValue === rewardValue
+ * (should have been paymentAmount * rewardValue / 100). Treat as **fixed** 
+ */
+function healTopupPromotionRewardType(
+	promo: ShareTokenMetadataTopupPromotion,
+	legacyBonus?: DiscoverRechargeBonusRule | null,
+): ShareTokenMetadataTopupPromotion {
+	if (promo.rewardType !== 'percent') return promo
+	const min = parseAmount(promo.minimumTopupAmount)
+	const reward = parseAmount(promo.rewardValue)
+	if (min == null || reward == null) return promo
+	const scaled = Math.round(min * reward) / 100
+	if (!legacyBonus) return promo
+	const bv = legacyBonus.bonusValue
+	if (!legacyBonus.bonusProportional && approxEq(bv, reward)) {
+		return { ...promo, rewardType: 'fixed' }
+	}
+	if (legacyBonus.bonusProportional && approxEq(bv, reward) && !approxEq(bv, scaled)) {
+		return { ...promo, rewardType: 'fixed' }
+	}
+	return promo
+}
+
+function normalizeTopupPromotionFixedTiers(raw: unknown): ShareTokenMetadataTopupPromotionFixedTier[] {
+	if (!Array.isArray(raw)) return []
+	const out: ShareTokenMetadataTopupPromotionFixedTier[] = []
+	const seen = new Set<number>()
+	for (const row of raw) {
+		if (!row || typeof row !== 'object') continue
+		const o = row as Record<string, unknown>
+		const topup = parseAmount(o.topupAmount ?? o.topup_amount ?? o.paymentAmount)
+		const bonus = parseAmount(o.bonusAmount ?? o.bonus_amount ?? o.bonusValue)
+		if (topup == null || bonus == null || topup <= 0 || bonus <= 0) continue
+		const key = Math.round(topup * 100)
+		if (seen.has(key)) continue
+		seen.add(key)
+		out.push({ topupAmount: topup, bonusAmount: bonus })
+	}
+	out.sort((a, b) => a.topupAmount - b.topupAmount)
+	return out
+}
+
+function normalizeTopupPromotionPayload(raw: Record<string, unknown>): ShareTokenMetadataTopupPromotion | null {
+	const fixedTiers = normalizeTopupPromotionFixedTiers(raw.fixedTiers ?? raw.fixed_tiers)
+	let min = parseAmount(raw.minimumTopupAmount ?? raw.minimum_topup_amount)
+	let reward = parseAmount(raw.rewardValue ?? raw.reward_value)
+	const rewardTypeRaw = String(raw.rewardType ?? raw.reward_type ?? '').trim().toLowerCase()
+	// Missing / unknown → fixed (not percent). Explicit "percent" still honored.
+	const rewardType: 'percent' | 'fixed' = rewardTypeRaw === 'percent' ? 'percent' : 'fixed'
+	if (rewardType === 'fixed' && fixedTiers.length > 0) {
+		if (min == null || min <= 0) min = fixedTiers[0].topupAmount
+		if (reward == null || reward <= 0) reward = fixedTiers[0].bonusAmount
+	}
+	if (min == null || reward == null) return null
+	if (raw.enabled === false) return null
+	return {
+		enabled: true,
+		validFrom: parseYmd(raw.validFrom ?? raw.valid_from),
+		validTo: parseYmd(raw.validTo ?? raw.valid_to),
+		minimumTopupAmount: min,
+		rewardType,
+		rewardValue: reward,
+		...(rewardType === 'fixed' && fixedTiers.length > 0 ? { fixedTiers } : {}),
+	}
+}
+
+function parseTopupPromotionFromMetadata(
+	meta: Record<string, unknown> | null | undefined,
+): ShareTokenMetadataTopupPromotion | null {
+	if (!meta) return null
+	const share = shareMetadataRoot(meta) ?? meta
+	const legacyBonus = pickPrimaryDiscoverRechargeBonusRule(parseDiscoverRechargeBonusRules(meta ?? {}))
+	const direct = share.topupPromotion
+	if (direct && typeof direct === 'object') {
+		const normalized = normalizeTopupPromotionPayload(direct as Record<string, unknown>)
+		return normalized ? healTopupPromotionRewardType(normalized, legacyBonus) : null
+	}
+	return null
+}
+
+export function isTopupPromotionActive(
+	promo: ShareTokenMetadataTopupPromotion | null | undefined,
+	now: Date = new Date(),
+): boolean {
+	if (!promo || promo.enabled === false) return false
+	const min = parseAmount(promo.minimumTopupAmount)
+	const reward = parseAmount(promo.rewardValue)
+	if (min == null || reward == null) return false
+	const today = formatLocalYmd(now)
+	const from = parseYmd(promo.validFrom)
+	const to = parseYmd(promo.validTo)
+	if (from && today < from) return false
+	if (to && today > to) return false
+	return true
+}
+
+function formatBonusRuleAmount(value: number): string {
+	if (!Number.isFinite(value)) return '0'
+	return Number.isInteger(value)
+		? value.toLocaleString('en-US')
+		: value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+const NEW_CUSTOMER_BONUS_TITLE = 'New Customer Bonus'
+const NEW_CUSTOMER_BONUS_CTA = 'Claim & Top Up'
+
+/** Marketing money label — match design: `CA$ 100` (space after prefix). */
+function formatPromoMoneyLabel(moneyPrefix: string, amount: number): string {
+	return `${moneyPrefix} ${formatBonusRuleAmount(amount)}`
+}
+
+function formatTopupPromotionCapsuleCopy(
+	promo: ShareTokenMetadataTopupPromotion,
+	currencyCode: string,
+): DiscoverTopupPromotionCapsuleCopy {
+	const moneyPrefix = moneyPrefixForCurrency(currencyCode)
+	const min = parseAmount(promo.minimumTopupAmount)
+	const reward = parseAmount(promo.rewardValue)
+	const suggestedAmount = min != null ? String(min) : undefined
+	if (promo.rewardType === 'percent' && reward != null) {
+		const pctLabel = formatBonusRuleAmount(reward)
+		const minLabel = min != null ? formatPromoMoneyLabel(moneyPrefix, min) : `${moneyPrefix} —`
+		return {
+			title: NEW_CUSTOMER_BONUS_TITLE,
+			description: `Top up ${minLabel} or more, Get ${pctLabel}% bonus instantly!`,
+			suggestedAmount,
+			ctaLabel: NEW_CUSTOMER_BONUS_CTA,
+		}
+	}
+	if (min != null && reward != null) {
+		const totalReceive = Number((min + reward).toFixed(2))
+		return {
+			title: NEW_CUSTOMER_BONUS_TITLE,
+			description: `Top up ${formatPromoMoneyLabel(moneyPrefix, min)}, Get ${formatPromoMoneyLabel(moneyPrefix, totalReceive)} instantly!`,
+			suggestedAmount,
+			ctaLabel: NEW_CUSTOMER_BONUS_CTA,
+		}
+	}
+	return {
+		title: NEW_CUSTOMER_BONUS_TITLE,
+		description: 'Top up to unlock an instant bonus balance.',
+		suggestedAmount,
+		ctaLabel: NEW_CUSTOMER_BONUS_CTA,
+	}
+}
+
+export type DiscoverProspectJoinPanelCopy = {
+	heading: string
+	body: string
+	/** Green pill, e.g. `Get 50% Bonus Points`. Null when no top-up bonus to show. */
+	bonusBadge: string | null
+	/** Trust footer under Claim CTA. Always the CoNET L1 vault line. */
+	chargeFooter: string | null
+	hasTopupPromotion: boolean
+	hasChargePromotion: boolean
+	ctaLabel: string
+	/**
+	 * When length > 1, Welcome Offer hides heading/body/bonusBadge and shows
+	 * a horizontal Store Credit Multiplier carousel instead.
+	 */
+	multiplierCards: DiscoverStoreCreditMultiplierCard[]
+}
+
+/**
+ * Build Welcome Offer carousel cards from Store Credit Multipliers.
+ * Returns [] when fewer than 2 tiers (caller keeps single-offer copy).
+ */
+export function resolveDiscoverStoreCreditMultiplierCards(params: {
+	metadataRoot: Record<string, unknown> | null | undefined
+	currency: string
+}): DiscoverStoreCreditMultiplierCard[] {
+	const meta = params.metadataRoot ?? null
+	const moneyPrefix = moneyPrefixForCurrency(params.currency)
+	const tiers: { topupAmount: number; bonusAmount: number }[] = []
+
+	const topupPromo = parseTopupPromotionFromMetadata(meta)
+	if (topupPromo?.fixedTiers && topupPromo.fixedTiers.length > 0) {
+		for (const t of topupPromo.fixedTiers) {
+			tiers.push({ topupAmount: t.topupAmount, bonusAmount: t.bonusAmount })
+		}
+	} else if (!metadataHasTopupPromotionBlock(meta)) {
+		const rules = parseDiscoverRechargeBonusRules(meta ?? {})
+		for (const rule of rules) {
+			if (rule.paymentAmount > 0 && rule.bonusValue > 0) {
+				tiers.push({ topupAmount: rule.paymentAmount, bonusAmount: rule.bonusValue })
+			}
+		}
+	}
+
+	if (tiers.length < 2) return []
+
+	const withPct = tiers.map((t, index) => ({
+		...t,
+		index,
+		bonusPercent: t.topupAmount > 0 ? Math.round((t.bonusAmount / t.topupAmount) * 10000) / 100 : 0,
+	}))
+
+	let bestIndex = 0
+	if (withPct.length >= 3) {
+		bestIndex = Math.floor((withPct.length - 1) / 2)
+	} else {
+		bestIndex = withPct.reduce(
+			(best, row, i) => (row.bonusPercent > withPct[best].bonusPercent ? i : best),
+			0,
+		)
+	}
+
+	const maxPctIndex = withPct.reduce(
+		(best, row, i) => (row.bonusPercent > withPct[best].bonusPercent ? i : best),
+		0,
+	)
+
+	return withPct.map((row, i) => {
+		const totalValue = Number((row.topupAmount + row.bonusAmount).toFixed(2))
+		const pctLabel = formatBonusRuleAmount(row.bonusPercent)
+		const isBestValue = i === bestIndex
+		const isMatch = !isBestValue && i === maxPctIndex
+		const topupMoney = formatPromoMoneyLabel(moneyPrefix, row.topupAmount)
+		const freeMoney = formatPromoMoneyLabel(moneyPrefix, row.bonusAmount)
+		const valMoney = formatPromoMoneyLabel(moneyPrefix, totalValue)
+		return {
+			id: `scm-${i}-${Math.round(row.topupAmount * 100)}`,
+			topupAmount: row.topupAmount,
+			bonusAmount: row.bonusAmount,
+			totalValue,
+			bonusPercent: row.bonusPercent,
+			isBestValue,
+			percentHeader: isBestValue ? null : isMatch ? `+${pctLabel}% MATCH` : `+${pctLabel}% BONUS`,
+			bestValueBadge: isBestValue ? `BEST VALUE • +${pctLabel}%` : null,
+			topupLabel: topupMoney,
+			freeCreditLabel: `+${freeMoney} Free Credit`,
+			valLabel: `Val: ${valMoney}`,
+			suggestedAmount: String(row.topupAmount),
+		}
+	})
+}
+
+function joinCircleSubject(welcomeTitle?: string, passTitle?: string): string | null {
+	const welcome = welcomeTitle?.trim() ?? ''
+	if (/inner\s+circle/i.test(welcome) || /inner\s+circle/i.test(passTitle ?? '')) {
+		return 'the Inner Circle'
+	}
+	const stripped = welcome.replace(/^welcome\s+to\s+/i, '').trim()
+	if (stripped) return stripped
+	const pass = passTitle?.trim() ?? ''
+	return pass || null
+}
+
+function readActiveTopupPromotionAmounts(params: {
+	metadataRoot: Record<string, unknown> | null | undefined
+	currency: string
+}): {
+	minLabel: string | null
+	percent: number | null
+	receiveLabel: string | null
+} | null {
+	const unified = resolveDiscoverUnifiedTopupPromotion(params)
+	if (!unified?.active) return null
+	const moneyPrefix = moneyPrefixForCurrency(params.currency)
+	if (unified.source === 'topupPromotion' && unified.topupPromo) {
+		const promo = unified.topupPromo
+		const min = parseAmount(promo.minimumTopupAmount)
+		const reward = parseAmount(promo.rewardValue)
+		if (min == null || reward == null) return null
+		const minLabel = formatPromoMoneyLabel(moneyPrefix, min)
+		if (promo.rewardType === 'percent') {
+			const totalReceive = Number((min * (1 + reward / 100)).toFixed(2))
+			return {
+				minLabel,
+				percent: reward,
+				receiveLabel: formatPromoMoneyLabel(moneyPrefix, totalReceive),
+			}
+		}
+		const totalReceive = Number((min + reward).toFixed(2))
+		return {
+			minLabel,
+			percent: null,
+			receiveLabel: formatPromoMoneyLabel(moneyPrefix, totalReceive),
+		}
+	}
+	if (unified.bonusRule) {
+		const rule = unified.bonusRule
+		const minLabel = formatPromoMoneyLabel(moneyPrefix, rule.paymentAmount)
+		if (rule.bonusProportional) {
+			const pct = (rule.bonusValue / rule.paymentAmount) * 100
+			const totalReceive = Number((rule.paymentAmount + rule.bonusValue).toFixed(2))
+			return {
+				minLabel,
+				percent: pct,
+				receiveLabel: formatPromoMoneyLabel(moneyPrefix, totalReceive),
+			}
+		}
+		const totalReceive = Number((rule.paymentAmount + rule.bonusValue).toFixed(2))
+		return {
+			minLabel,
+			percent: null,
+			receiveLabel: formatPromoMoneyLabel(moneyPrefix, totalReceive),
+		}
+	}
+	return null
+}
+
+/**
+ * Discover prospect blue panel: merchant welcome + this card's active
+ * top-up / charge promotion. Never invents amounts when metadata has none.
+ */
+export function resolveDiscoverProspectJoinPanelCopy(params: {
+	metadataRoot: Record<string, unknown> | null | undefined
+	currency: string
+	welcomeTitle?: string
+	welcomeBody?: string
+	passTitle?: string
+}): DiscoverProspectJoinPanelCopy {
+	const welcomeTitle = params.welcomeTitle?.trim() ?? ''
+	const welcomeBody = params.welcomeBody?.trim() ?? ''
+	const amounts = readActiveTopupPromotionAmounts(params)
+	const actor = parseDiscoverActorRewardPercentsFromMetadata(params.metadataRoot)
+	const chargePercent = actor.chargePercent
+	const bonusPercent = amounts?.percent ?? actor.topupPercent
+	const hasTopupPromotion = amounts != null || (actor.topupPercent != null && actor.topupPercent > 0)
+	const hasChargePromotion = chargePercent != null && chargePercent > 0
+	const subject = joinCircleSubject(welcomeTitle, params.passTitle)
+
+	let heading = welcomeTitle || (params.passTitle?.trim() ? `Welcome to ${params.passTitle.trim()}` : 'Exclusive Welcome Offer')
+	if (amounts?.receiveLabel) {
+		heading = subject
+			? `Join ${subject} & Get ${amounts.receiveLabel}!`
+			: `Join & Get ${amounts.receiveLabel}!`
+	} else if (hasTopupPromotion && subject && !welcomeTitle) {
+		heading = `Welcome to ${subject}`
+	}
+
+	let body = welcomeBody
+	if (amounts?.minLabel && bonusPercent != null && bonusPercent > 0) {
+		body = `Top up ${amounts.minLabel} today to unlock exclusive member privileges and an instant ${formatBonusRuleAmount(bonusPercent)}% bonus points match.`
+	} else if (amounts?.minLabel && amounts.receiveLabel) {
+		body = `Top up ${amounts.minLabel} today to unlock exclusive member privileges and get ${amounts.receiveLabel} instantly.`
+	} else if (!body && hasTopupPromotion) {
+		body = 'Top up this merchant Pass to enjoy instant bonus rewards.'
+	}
+
+	const bonusBadge =
+		bonusPercent != null && bonusPercent > 0
+			? `Get ${formatBonusRuleAmount(bonusPercent)}% Bonus Points`
+			: amounts?.receiveLabel
+				? `Get ${amounts.receiveLabel}`
+				: null
+
+	const chargeFooter = 'CoNET L1 smart vault • Never expires & 100% redeemable'
+
+	const multiplierCards = resolveDiscoverStoreCreditMultiplierCards({
+		metadataRoot: params.metadataRoot,
+		currency: params.currency,
+	})
+
+	return {
+		heading,
+		body,
+		bonusBadge,
+		chargeFooter,
+		hasTopupPromotion,
+		hasChargePromotion,
+		ctaLabel: 'Claim Offer & Top Up',
+		multiplierCards,
+	}
+}
+
+function formatRechargeBonusCapsuleCopy(
+	rule: DiscoverRechargeBonusRule,
+	currencyCode: string,
+): DiscoverTopupPromotionCapsuleCopy {
+	const moneyPrefix = moneyPrefixForCurrency(currencyCode)
+	const suggestedAmount = String(rule.paymentAmount)
+	if (rule.bonusProportional) {
+		const pct = (rule.bonusValue / rule.paymentAmount) * 100
+		const pctLabel = formatBonusRuleAmount(pct)
+		return {
+			title: NEW_CUSTOMER_BONUS_TITLE,
+			description: `Top up ${formatPromoMoneyLabel(moneyPrefix, rule.paymentAmount)} or more, Get ${pctLabel}% bonus instantly!`,
+			suggestedAmount,
+			ctaLabel: NEW_CUSTOMER_BONUS_CTA,
+		}
+	}
+	const totalReceive = Number((rule.paymentAmount + rule.bonusValue).toFixed(2))
+	return {
+		title: NEW_CUSTOMER_BONUS_TITLE,
+		description: `Top up ${formatPromoMoneyLabel(moneyPrefix, rule.paymentAmount)}, Get ${formatPromoMoneyLabel(moneyPrefix, totalReceive)} instantly!`,
+		suggestedAmount,
+		ctaLabel: NEW_CUSTOMER_BONUS_CTA,
+	}
+}
+
+/** Single source of truth: metadata top-up promotion (hero / capsule / Active promotions panel). */
+export type DiscoverUnifiedTopupPromotion = {
+	source: 'topupPromotion' | 'bonusRules'
+	topupPromo?: ShareTokenMetadataTopupPromotion
+	bonusRule?: DiscoverRechargeBonusRule
+	active: boolean
+}
+
+function metadataHasTopupPromotionBlock(meta: Record<string, unknown> | null | undefined): boolean {
+	const share = shareMetadataRoot(meta)
+	const raw = share?.topupPromotion
+	return raw != null && typeof raw === 'object'
+}
+
+/** Prefer `shareTokenMetadata.topupPromotion` when present; legacy `bonusRules` only when no top-up block. */
+export function resolveDiscoverUnifiedTopupPromotion(params: {
+	metadataRoot: Record<string, unknown> | null | undefined
+}): DiscoverUnifiedTopupPromotion | null {
+	const meta = params.metadataRoot ?? null
+	if (metadataHasTopupPromotionBlock(meta)) {
+		const topupPromo = parseTopupPromotionFromMetadata(meta)
+		if (!topupPromo) return null
+		return {
+			source: 'topupPromotion',
+			topupPromo,
+			active: isTopupPromotionActive(topupPromo),
+		}
+	}
+	const primaryBonus = pickPrimaryDiscoverRechargeBonusRule(parseDiscoverRechargeBonusRules(meta ?? {}))
+	if (!primaryBonus) return null
+	return {
+		source: 'bonusRules',
+		bonusRule: primaryBonus,
+		active: true,
+	}
+}
+
+/**
+ * Quote Store Credit Multiplier / top-up bonus for an entered amount.
+ * Returns null when the promotion is inactive or the amount does not qualify.
+ */
+export function quoteDiscoverStoreCreditTopupBonus(params: {
+	metadataRoot: Record<string, unknown> | null | undefined
+	currency: string
+	amount: number
+}): DiscoverStoreCreditTopupQuote | null {
+	const amount = Number(params.amount)
+	if (!Number.isFinite(amount) || amount <= 0) return null
+	const unified = resolveDiscoverUnifiedTopupPromotion({ metadataRoot: params.metadataRoot })
+	if (!unified?.active) return null
+
+	let bonus: number | null = null
+	if (unified.source === 'topupPromotion' && unified.topupPromo) {
+		const promo = unified.topupPromo
+		const min = parseAmount(promo.minimumTopupAmount)
+		const reward = parseAmount(promo.rewardValue)
+		if (min == null || reward == null) return null
+		if (promo.rewardType === 'percent') {
+			if (amount < min) return null
+			bonus = Number(((amount * reward) / 100).toFixed(2))
+		} else if (promo.fixedTiers && promo.fixedTiers.length > 0) {
+			let picked: ShareTokenMetadataTopupPromotionFixedTier | null = null
+			for (const tier of promo.fixedTiers) {
+				if (amount >= tier.topupAmount) picked = tier
+			}
+			if (!picked) return null
+			bonus = Number(picked.bonusAmount.toFixed(2))
+		} else {
+			if (amount < min) return null
+			bonus = Number(reward.toFixed(2))
+		}
+	} else {
+		const rules = parseDiscoverRechargeBonusRules(params.metadataRoot ?? {})
+		let picked: DiscoverRechargeBonusRule | null = null
+		for (const rule of rules) {
+			if (rule.paymentAmount <= 0 || rule.bonusValue <= 0) continue
+			if (amount < rule.paymentAmount) continue
+			if (!picked || rule.paymentAmount > picked.paymentAmount) picked = rule
+		}
+		if (!picked) return null
+		if (picked.bonusProportional && picked.paymentAmount > 0) {
+			bonus = Number(((amount * picked.bonusValue) / picked.paymentAmount).toFixed(2))
+		} else {
+			bonus = Number(picked.bonusValue.toFixed(2))
+		}
+	}
+
+	if (bonus == null || bonus <= 0) return null
+	const principal = Number(amount.toFixed(2))
+	const total = Number((principal + bonus).toFixed(2))
+	const moneyPrefix = moneyPrefixForCurrency(params.currency)
+	return {
+		principal,
+		bonus,
+		total,
+		principalLabel: formatPromoMoneyLabel(moneyPrefix, principal),
+		bonusLabel: formatPromoMoneyLabel(moneyPrefix, bonus),
+		totalLabel: formatPromoMoneyLabel(moneyPrefix, total),
+	}
+}
+
+function formatTopupPromotionHeroSidePill(
+	promo: ShareTokenMetadataTopupPromotion,
+	currencyCode: string,
+): string {
+	if (promo.rewardType === 'percent') {
+		return `${formatBonusRuleAmount(promo.rewardValue)}% of top-up`
+	}
+	return formatDiscoverRechargeBonusSidePillText(
+		{
+			paymentAmount: promo.minimumTopupAmount,
+			bonusValue: promo.rewardValue,
+			bonusProportional: false,
+		},
+		currencyCode,
+	)
+}
+
+/** Hero image bottom-right chip — same active gate as top-up capsule. */
+export function resolveDiscoverTopupPromotionHeroSidePill(params: {
+	metadataRoot: Record<string, unknown> | null | undefined
+	currency: string
+}): string | null {
+	const unified = resolveDiscoverUnifiedTopupPromotion(params)
+	if (!unified?.active) return null
+	if (unified.source === 'topupPromotion' && unified.topupPromo) {
+		return formatTopupPromotionHeroSidePill(unified.topupPromo, params.currency)
+	}
+	if (unified.bonusRule) {
+		return formatDiscoverRechargeBonusSidePillText(unified.bonusRule, params.currency)
+	}
+	return null
+}
+
+/**
+ * Percent-only top-up welcome line for Discover panels (excludes fixed / fixedTiers).
+ * Example: `Top up CA$ 100 or more, Get 10% bonus instantly!`
+ */
+export function resolveDiscoverPercentTopupPromotionWelcomeLine(params: {
+	metadataRoot: Record<string, unknown> | null | undefined
+	currency: string
+}): string | null {
+	const unified = resolveDiscoverUnifiedTopupPromotion(params)
+	if (!unified?.active) return null
+	if (unified.source === 'topupPromotion' && unified.topupPromo) {
+		const promo = unified.topupPromo
+		if (promo.rewardType !== 'percent') return null
+		if (promo.fixedTiers && promo.fixedTiers.length > 0) return null
+		const reward = parseAmount(promo.rewardValue)
+		if (reward == null) return null
+		return formatTopupPromotionCapsuleCopy(promo, params.currency).description.trim() || null
+	}
+	if (unified.bonusRule?.bonusProportional) {
+		return formatRechargeBonusCapsuleCopy(unified.bonusRule, params.currency).description.trim() || null
+	}
+	return null
+}
+
+/**
+ * Compact green badge under Store Credits (#0) on Discover membership wallet card.
+ * Example: `Get +5% bonus on CA$ 50+`
+ */
+export function resolveDiscoverTopupPromotionStoreCreditsBadge(params: {
+	metadataRoot: Record<string, unknown> | null | undefined
+	currency: string
+}): string | null {
+	const unified = resolveDiscoverUnifiedTopupPromotion(params)
+	if (!unified?.active) return null
+	const moneyPrefix = moneyPrefixForCurrency(params.currency)
+	if (unified.source === 'topupPromotion' && unified.topupPromo) {
+		const promo = unified.topupPromo
+		const min = parseAmount(promo.minimumTopupAmount)
+		const reward = parseAmount(promo.rewardValue)
+		if (min == null || reward == null) return null
+		const minLabel = formatPromoMoneyLabel(moneyPrefix, min)
+		if (promo.rewardType === 'percent') {
+			return `Get +${formatBonusRuleAmount(reward)}% bonus on ${minLabel}+`
+		}
+		return `Get +${formatPromoMoneyLabel(moneyPrefix, reward)} on ${minLabel}+`
+	}
+	if (unified.bonusRule) {
+		const rule = unified.bonusRule
+		const minLabel = formatPromoMoneyLabel(moneyPrefix, rule.paymentAmount)
+		if (rule.bonusProportional) {
+			const pct = (rule.bonusValue / rule.paymentAmount) * 100
+			return `Get +${formatBonusRuleAmount(pct)}% bonus on ${minLabel}+`
+		}
+		return `Get +${formatPromoMoneyLabel(moneyPrefix, rule.bonusValue)} on ${minLabel}+`
+	}
+	return null
+}
+
+/** Long-form top-up copy (list cards / detail subcopy). */
+export function resolveDiscoverTopupPromotionDisplayString(params: {
+	metadataRoot: Record<string, unknown> | null | undefined
+	currency: string
+}): string | null {
+	const unified = resolveDiscoverUnifiedTopupPromotion(params)
+	if (!unified?.active) return null
+	if (unified.source === 'topupPromotion' && unified.topupPromo) {
+		return formatTopupPromotionDisplay(unified.topupPromo, params.currency)
+	}
+	if (unified.bonusRule) {
+		return formatDiscoverRechargeBonusDisplayString(unified.bonusRule, params.currency)
+	}
+	return null
+}
+
+export type DiscoverTopupPromotionPresentation = {
+	heroSidePill: string | null
+	displayString: string | null
+	capsuleCopy: DiscoverTopupPromotionCapsuleCopy | null
+	primaryRechargeBonus: DiscoverRechargeBonusRule | null
+}
+
+/** All Discover top-up surfaces (hero chip, capsule, panel) from one metadata read. */
+export function resolveDiscoverTopupPromotionPresentation(params: {
+	metadataRoot: Record<string, unknown> | null | undefined
+	currency: string
+}): DiscoverTopupPromotionPresentation {
+	const empty: DiscoverTopupPromotionPresentation = {
+		heroSidePill: null,
+		displayString: null,
+		capsuleCopy: null,
+		primaryRechargeBonus: null,
+	}
+	const unified = resolveDiscoverUnifiedTopupPromotion(params)
+	if (!unified?.active) return empty
+	const capsuleCopy = resolveDiscoverTopupPromotionCapsuleCopy(params)
+	return {
+		heroSidePill: resolveDiscoverTopupPromotionHeroSidePill(params),
+		displayString: resolveDiscoverTopupPromotionDisplayString(params),
+		capsuleCopy,
+		primaryRechargeBonus: unified.bonusRule ?? null,
+	}
+}
+
+/** Headline + body for merchant detail top-up promotion capsule (metadata-driven). */
+export function resolveDiscoverTopupPromotionCapsuleCopy(params: {
+	metadataRoot: Record<string, unknown> | null | undefined
+	currency: string
+}): DiscoverTopupPromotionCapsuleCopy | null {
+	const unified = resolveDiscoverUnifiedTopupPromotion(params)
+	if (!unified?.active) return null
+	if (unified.source === 'topupPromotion' && unified.topupPromo) {
+		return formatTopupPromotionCapsuleCopy(unified.topupPromo, params.currency)
+	}
+	if (unified.bonusRule) {
+		return formatRechargeBonusCapsuleCopy(unified.bonusRule, params.currency)
+	}
+	return null
+}
+
+function formatTopupPromotionDisplay(
+	promo: ShareTokenMetadataTopupPromotion,
+	currencyCode: string,
+): string {
+	const moneyPrefix = moneyPrefixForCurrency(currencyCode)
+	const min = parseAmount(promo.minimumTopupAmount)
+	const reward = parseAmount(promo.rewardValue)
+	if (min == null || reward == null) return 'Incomplete top-up promotion.'
+	const rewardLabel =
+		promo.rewardType === 'percent' ? `${reward}% bonus` : `${moneyPrefix}${reward.toFixed(2)} bonus`
+	const period =
+		promo.validFrom || promo.validTo ? ` (${promo.validFrom ?? '…'} – ${promo.validTo ?? '…'})` : ''
+	return `Min ${moneyPrefix}${min.toFixed(2)} → ${rewardLabel}${period}`
+}
+
+function formatCardSocialPromotionEvent(
+	key: (typeof CARD_SOCIAL_EVENT_KEYS)[number],
+	ev: SocialPromotionEvent,
+): string {
+	const parts = [formatRewardLine('User', ev.user), formatRewardLine('Referrer', ev.ref)].filter(Boolean)
+	return `${cardSocialPromotionEventLabel(key)} — ${parts.join('; ')}`
+}
+
+function formatCouponSocialPromotionEvent(
+	key: (typeof COUPON_SOCIAL_EVENT_KEYS)[number],
+	ev: SocialPromotionEvent,
+): string {
+	const parts = [formatRewardLine('User', ev.user), formatRewardLine('Referrer', ev.ref)].filter(Boolean)
+	return `${couponSocialPromotionEventLabel(key)} — ${parts.join('; ')}`
+}
+
+function readMetadataTitle(meta: Record<string, unknown> | null | undefined): string {
+	if (!meta) return 'Coupon'
+	const root = meta
+	const title = root.title ?? root.name
+	if (typeof title === 'string' && title.trim()) return title.trim()
+	const properties = root.properties
+	if (properties && typeof properties === 'object') {
+		const bc = (properties as Record<string, unknown>).beamioCoupon
+		if (bc && typeof bc === 'object') {
+			const nested = (bc as Record<string, unknown>).title ?? (bc as Record<string, unknown>).name
+			if (typeof nested === 'string' && nested.trim()) return nested.trim()
+		}
+	}
+	return 'Coupon'
+}
+
+export function collectActiveDiscoverMerchantPromotions(params: {
+	metadataRoot: Record<string, unknown> | null | undefined
+	currency: string
+	couponSeries?: Array<{ title?: string; metadata?: Record<string, unknown> | null }>
+	/** When set (including null = loaded empty), overrides metadata for card-level social rows. */
+	chainCardSocialPromotion?: ChainCardSocialPromotion | null
+}): DiscoverMerchantPromotionRow[] {
+	const rows: DiscoverMerchantPromotionRow[] = []
+	const currency = params.currency || 'CAD'
+	const meta = params.metadataRoot ?? null
+	const unified = resolveDiscoverUnifiedTopupPromotion({ metadataRoot: meta })
+	if (unified?.active) {
+		const description =
+			unified.source === 'topupPromotion' && unified.topupPromo
+				? formatTopupPromotionDisplay(unified.topupPromo, currency)
+				: unified.bonusRule
+					? formatDiscoverRechargeBonusDisplayString(unified.bonusRule, currency)
+					: ''
+		rows.push({
+			id: unified.source === 'topupPromotion' ? 'topup-promotion' : 'recharge-bonus',
+			kind: unified.source === 'topupPromotion' ? 'topup' : 'rechargeBonus',
+			title: unified.source === 'topupPromotion' ? 'Top-up promotion' : 'Recharge bonus',
+			description,
+		})
+	}
+
+	const chainLoaded = params.chainCardSocialPromotion !== undefined
+	const cardSocial: ShareTokenMetadataSocialPromotion | null = chainLoaded
+		? (params.chainCardSocialPromotion as ShareTokenMetadataSocialPromotion | null)
+		: null
+	if (cardSocial?.enabled !== false && cardSocial?.events) {
+		for (const key of CARD_SOCIAL_EVENT_KEYS) {
+			const ev = cardSocial.events[key]
+			if (!ev || !eventHasReward(ev)) continue
+			rows.push({
+				id: `card-social-${key}`,
+				kind: 'social',
+				title: 'Social promotion',
+				description: formatCardSocialPromotionEvent(key, ev),
+			})
+		}
+	}
+
+	for (const series of params.couponSeries ?? []) {
+		const couponMeta = series.metadata ?? null
+		const couponTitle = series.title?.trim() || readMetadataTitle(couponMeta)
+		const exchange = readSocialExchangeFromMetadata(couponMeta)
+		if (exchange) {
+			rows.push({
+				id: `coupon-exchange-${couponTitle}`,
+				kind: 'couponExchange',
+				title: `${couponTitle} · Exchange`,
+				description: socialExchangeSummaryLabel(exchange),
+			})
+		}
+		const couponSocial = parseCouponSocialPromotionFromMetadata(couponMeta)
+		if (couponSocial?.enabled !== false && couponSocial?.events) {
+			for (const key of COUPON_SOCIAL_EVENT_KEYS) {
+				const ev = couponSocial.events[key]
+				if (!ev || !eventHasReward(ev)) continue
+				rows.push({
+					id: `coupon-social-${couponTitle}-${key}`,
+					kind: 'couponSocial',
+					title: `${couponTitle} · Social`,
+					description: formatCouponSocialPromotionEvent(key, ev),
+				})
+			}
+		}
+	}
+
+	return rows
+}
+
+/** User-visible #13 Reward PT — exactly 2 decimal places (presentation only). */
+export function formatSocialPoints13Display(value: number | null | undefined): string {
+	if (value == null || !Number.isFinite(value)) return '—'
+	const n = Math.max(0, value)
+	return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function metadataRecord(raw: unknown): Record<string, unknown> | null {
+	return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null
+}
+
+function wholePercentFromRatioE6Raw(raw: unknown): number | null {
+	if (raw == null) return null
+	try {
+		const e6 = BigInt(String(raw).trim())
+		if (e6 <= 0n) return null
+		const v = Math.round(Number(e6) / 10_000)
+		if (!Number.isFinite(v) || v <= 0) return null
+		return Math.min(100, v)
+	} catch {
+		return null
+	}
+}
+
+function wholePercentFromBpsRaw(raw: unknown): number | null {
+	if (raw == null) return null
+	const n = typeof raw === 'number' ? raw : Number(String(raw).trim())
+	if (!Number.isFinite(n) || n <= 0) return null
+	return Math.min(100, Math.max(1, Math.round(n / 100)))
+}
+
+/** Local-first Charge / Top-up actor % from card0 metadata (until chain ratios succeed). */
+export function parseDiscoverActorRewardPercentsFromMetadata(
+	metadataRoot: Record<string, unknown> | null | undefined,
+): { chargePercent: number | null; topupPercent: number | null } {
+	const root = metadataRecord(metadataRoot)
+	if (!root) return { chargePercent: null, topupPercent: null }
+	const share = metadataRecord(root.shareTokenMetadata)
+	const unified = metadataRecord(share?.unifiedRewardPoints) ?? metadataRecord(root.unifiedRewardPoints)
+	const chargeBlock = metadataRecord(unified?.charge)
+	const topupBlock = metadataRecord(unified?.topup)
+	const ps = metadataRecord(share?.pointSystem) ?? metadataRecord(root.pointSystem)
+	const chargePercent =
+		wholePercentFromBpsRaw(chargeBlock?.actorPercentBps) ??
+		wholePercentFromRatioE6Raw(
+			ps?.chargeRewardRatioE6 ?? ps?.pointRewardRatioE6 ?? ps?.consumptionRewardRatioE6,
+		)
+	const topupPercent =
+		wholePercentFromBpsRaw(topupBlock?.actorPercentBps) ??
+		wholePercentFromRatioE6Raw(share?.topupActorRewardRatioE6 ?? root.topupActorRewardRatioE6)
+	return { chargePercent, topupPercent }
+}
+
+/** True when card metadata configures any referrer-facing Reward PT ratio. */
+export function hasDiscoverReferrerRewardSettingFromMetadata(
+	metadataRoot: Record<string, unknown> | null | undefined,
+): boolean {
+	const root = metadataRecord(metadataRoot)
+	if (!root) return false
+	const share = metadataRecord(root.shareTokenMetadata)
+	const unified = metadataRecord(share?.unifiedRewardPoints) ?? metadataRecord(root.unifiedRewardPoints)
+	const charge = metadataRecord(unified?.charge)
+	const topup = metadataRecord(unified?.topup)
+	const referrerBps = [charge?.referrerPercentBps, topup?.referrerPercentBps]
+		.some((raw) => wholePercentFromBpsRaw(raw) != null)
+	const referrerRatio = [
+		topup?.referrerRewardFromTopupAmountRatioE6,
+		share?.referrerTopupAmountRatioE6,
+		root.referrerTopupAmountRatioE6,
+	]
+		.some((raw) => wholePercentFromRatioE6Raw(raw) != null)
+	return referrerBps || referrerRatio
+}
+
+/** null = metadata not ready; boolean = consumption point system enabled flag from shareTokenMetadata.pointSystem. */
+export function consumptionPointSystemEnabledFromMetadata(
+	metadataRoot: Record<string, unknown> | null | undefined,
+): boolean | null {
+	const root = metadataRecord(metadataRoot)
+	if (!root) return null
+	const share = metadataRecord(root.shareTokenMetadata)
+	const ps = metadataRecord(share?.pointSystem) ?? metadataRecord(root.pointSystem)
+	if (!ps) return null
+	if (typeof ps.enabled === 'boolean') return ps.enabled
+	const ratio = ps.chargeRewardRatioE6 ?? ps.pointRewardRatioE6 ?? ps.consumptionRewardRatioE6
+	if (typeof ratio === 'string' && /^\d+$/.test(ratio)) {
+		try {
+			return BigInt(ratio) > 0n
+		} catch {
+			return null
+		}
+	}
+	if (typeof ratio === 'number' && Number.isFinite(ratio)) return ratio > 0
+	return null
+}
+
+/** Card / shareTokenMetadata `description` for Discover welcome body (not category subtitle). */
+export function parseDiscoverProgramDescriptionFromMetadata(
+	metadataRoot: Record<string, unknown> | null | undefined,
+): string | null {
+	const root = metadataRecord(metadataRoot)
+	if (!root) return null
+	const share = shareMetadataRoot(root)
+	const raw = share?.description ?? root.description
+	if (typeof raw !== 'string') return null
+	const text = raw.replace(/\r\n/g, '\n').trim()
+	return text || null
+}
+
+export function parseLoyaltyPointsDisplay(raw: string | number | null | undefined): number | null {
+	if (raw == null || raw === '') return null
+	const n = typeof raw === 'number' ? raw : Number(raw)
+	if (!Number.isFinite(n) || n < 0) return null
+	return Math.floor(n)
+}
+
+/** Per-event #13 points for Social Missions metric pills (linkClick / like / topup / claim / burn). */
+export type DiscoverSocialMissionMetrics = {
+	linkClick: number | null
+	like: number | null
+	topup: number | null
+	/** When true, `topup` is whole % of top-up (ratio E6), not fixed pts. */
+	topupAsPercent?: boolean
+	claim: number | null
+	burn: number | null
+}
+
+export type DiscoverActivePromotionsSocialMissions = {
+	user: DiscoverSocialMissionMetrics | null
+	referrer: DiscoverSocialMissionMetrics | null
+	userDetailText: string
+}
+
+export type DiscoverCouponSocialMissionBlock = {
+	id: string
+	title: string
+	tokenId: string
+	user: DiscoverSocialMissionMetrics | null
+	referrer: DiscoverSocialMissionMetrics | null
+	userDetailText: string
+}
+
+export const DISCOVER_COUPON_SOCIAL_MISSIONS_INITIAL = 3
+export const DISCOVER_COUPON_SOCIAL_MISSIONS_PAGE_SIZE = 10
+
+export type DiscoverActivePromotionsPanelModel = {
+	activeCount: number
+	socialMissions: DiscoverActivePromotionsSocialMissions | null
+	couponSocialMissions: DiscoverCouponSocialMissionBlock[]
+}
+
+function emptySocialMissionMetrics(): DiscoverSocialMissionMetrics {
+	return { linkClick: null, like: null, topup: null, topupAsPercent: false, claim: null, burn: null }
+}
+
+function socialMissionMetricsHasValues(metrics: DiscoverSocialMissionMetrics): boolean {
+	return (
+		metrics.linkClick != null ||
+		metrics.like != null ||
+		metrics.topup != null ||
+		metrics.claim != null ||
+		metrics.burn != null
+	)
+}
+
+function applySocialEventMetrics(
+	metrics: DiscoverSocialMissionMetrics,
+	key: (typeof CARD_SOCIAL_EVENT_KEYS)[number] | (typeof COUPON_SOCIAL_EVENT_KEYS)[number],
+	points13: number,
+	asPercent?: boolean,
+): void {
+	switch (key) {
+		case 'linkClick':
+			metrics.linkClick = points13
+			break
+		case 'like':
+			metrics.like = points13
+			break
+		case 'topup':
+			metrics.topup = points13
+			if (asPercent) metrics.topupAsPercent = true
+			break
+		case 'claim':
+			metrics.claim = points13
+			break
+		case 'burn':
+			metrics.burn = points13
+			break
+		default:
+			break
+	}
+}
+
+function buildCardSocialMissionMetrics(cardSocial: ShareTokenMetadataSocialPromotion | null): {
+	user: DiscoverSocialMissionMetrics | null
+	referrer: DiscoverSocialMissionMetrics | null
+	userDetailText: string
+} {
+	const user = emptySocialMissionMetrics()
+	const referrer = emptySocialMissionMetrics()
+	const userDetailLines: string[] = []
+	if (!cardSocial?.events) {
+		return { user: null, referrer: null, userDetailText: '' }
+	}
+	for (const key of CARD_SOCIAL_EVENT_KEYS) {
+		const ev = cardSocial.events[key]
+		if (!ev || !eventHasReward(ev)) continue
+		const userReward = rewardFromPayload(ev.user)
+		const refReward = rewardFromPayload(ev.ref)
+		if (userReward) {
+			applySocialEventMetrics(user, key, userReward.points13, userReward.asPercent)
+			userDetailLines.push(
+				userReward.asPercent
+					? `${cardSocialPromotionEventLabel(key)}: earn ${userReward.points13}% of top-up as Reward PT.`
+					: `${cardSocialPromotionEventLabel(key)}: earn ${userReward.points13} social reward point${userReward.points13 === 1 ? '' : 's'}.`,
+			)
+		}
+		if (refReward) {
+			applySocialEventMetrics(referrer, key, refReward.points13, refReward.asPercent)
+		}
+	}
+	return {
+		user: socialMissionMetricsHasValues(user) ? user : null,
+		referrer: socialMissionMetricsHasValues(referrer) ? referrer : null,
+		userDetailText: userDetailLines.join(' '),
+	}
+}
+
+function buildCouponSocialMissionMetrics(couponSocial: ShareTokenMetadataCouponSocialPromotion | null): {
+	user: DiscoverSocialMissionMetrics | null
+	referrer: DiscoverSocialMissionMetrics | null
+	userDetailText: string
+} {
+	const user = emptySocialMissionMetrics()
+	const referrer = emptySocialMissionMetrics()
+	const userDetailLines: string[] = []
+	if (!couponSocial?.events) {
+		return { user: null, referrer: null, userDetailText: '' }
+	}
+	for (const key of COUPON_SOCIAL_EVENT_KEYS) {
+		const ev = couponSocial.events[key]
+		if (!ev || !eventHasReward(ev)) continue
+		const userReward = rewardFromPayload(ev.user)
+		const refReward = rewardFromPayload(ev.ref)
+		if (userReward) {
+			applySocialEventMetrics(user, key, userReward.points13)
+			userDetailLines.push(
+				`${couponSocialPromotionEventLabel(key)}: earn ${userReward.points13} social reward point${userReward.points13 === 1 ? '' : 's'}.`,
+			)
+		}
+		if (refReward) {
+			applySocialEventMetrics(referrer, key, refReward.points13)
+		}
+	}
+	return {
+		user: socialMissionMetricsHasValues(user) ? user : null,
+		referrer: socialMissionMetricsHasValues(referrer) ? referrer : null,
+		userDetailText: userDetailLines.join(' '),
+	}
+}
+
+function compareCouponSocialMissionBlocksNewestFirst(
+	a: DiscoverCouponSocialMissionBlock,
+	b: DiscoverCouponSocialMissionBlock,
+): number {
+	try {
+		const diff = BigInt(b.tokenId) - BigInt(a.tokenId)
+		if (diff > 0n) return 1
+		if (diff < 0n) return -1
+		return 0
+	} catch {
+		return b.tokenId.localeCompare(a.tokenId)
+	}
+}
+
+function buildCouponSocialMissionBlocks(
+	couponSeries: Array<{ title?: string; metadata?: Record<string, unknown> | null; tokenId?: string }> | undefined,
+): DiscoverCouponSocialMissionBlock[] {
+	const blocks: DiscoverCouponSocialMissionBlock[] = []
+	for (const series of couponSeries ?? []) {
+		const tokenId = String(series.tokenId ?? '').trim()
+		if (!tokenId) continue
+		const couponMeta = series.metadata ?? null
+		const couponSocial = parseCouponSocialPromotionFromMetadata(couponMeta)
+		if (!couponSocial || couponSocial.enabled === false) continue
+		const { user, referrer, userDetailText } = buildCouponSocialMissionMetrics(couponSocial)
+		if (!user && !referrer) continue
+		const title = series.title?.trim() || readMetadataTitle(couponMeta)
+		blocks.push({
+			id: `coupon-social-${tokenId}`,
+			title,
+			tokenId,
+			user,
+			referrer,
+			userDetailText,
+		})
+	}
+	return blocks.sort(compareCouponSocialMissionBlocksNewestFirst)
+}
+
+/** Single coupon row in Discover detail Available Offers — social mission rewards if configured. */
+export function resolveCouponSocialMissionBlockForSeries(
+	series: { title?: string; metadata?: Record<string, unknown> | null; tokenId?: string },
+): DiscoverCouponSocialMissionBlock | null {
+	const blocks = buildCouponSocialMissionBlocks([series])
+	return blocks[0] ?? null
+}
+
+function countActivePromotionSurfaces(model: {
+	socialMissions: DiscoverActivePromotionsSocialMissions | null
+}): number {
+	let count = 0
+	if (model.socialMissions?.user) count += 1
+	if (model.socialMissions?.referrer) count += 1
+	return count
+}
+
+/** Structured Active promotions panel (L1 program card Social Missions only; L2 coupon missions live on Available Offers rows). */
+export function buildDiscoverActivePromotionsPanelModel(params: {
+	metadataRoot: Record<string, unknown> | null | undefined
+	/** When set (including null = loaded empty), overrides metadata for card-level social missions. */
+	chainCardSocialPromotion?: ShareTokenMetadataSocialPromotion | null
+	/** @deprecated L2 coupon social missions are shown per Available Offers item, not in this panel. */
+	couponSeries?: Array<{ title?: string; metadata?: Record<string, unknown> | null; tokenId?: string }>
+}): DiscoverActivePromotionsPanelModel | null {
+	const chainLoaded = params.chainCardSocialPromotion !== undefined
+	const cardSocial = chainLoaded
+		? params.chainCardSocialPromotion
+		: null
+	const { user, referrer, userDetailText } = buildCardSocialMissionMetrics(cardSocial ?? null)
+	const socialMissions =
+		user || referrer
+			? {
+					user,
+					referrer,
+					userDetailText,
+				}
+			: null
+
+	if (!socialMissions) return null
+
+	const model = {
+		activeCount: 0,
+		socialMissions,
+		couponSocialMissions: [] as DiscoverCouponSocialMissionBlock[],
+	}
+	model.activeCount = countActivePromotionSurfaces(model)
+	return model
+}

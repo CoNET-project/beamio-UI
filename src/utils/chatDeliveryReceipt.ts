@@ -1,0 +1,383 @@
+/**
+ * CoNET Chat delivery receipts:
+ * 1) Mailbox ACK — encrypt to mailbox B route PGP (`gossip_delivery_ack`)
+ * 2) Sender receipt — encrypt to sender user PGP (`beamio_chat_delivery_receipt_v1`)
+ */
+import { createMessage, encrypt, enums, readKey } from 'openpgp'
+import { isCashTreesNativeWebView, postNativePgpCiphertext } from '@/utils/cashTreesNativeNfc'
+import { ethers } from 'ethers'
+import { accountEoaFor, canSignAccount, signGossipAckMessage } from '@/services/gossipAckSign'
+import { deliveryReceipt, hasEntryPgpKey, wrapArmorToEntryRoute } from '@conet.project/chat-sdk'
+
+export const BEAMIO_CHAT_DELIVERY_RECEIPT_V1 = 'beamio_chat_delivery_receipt_v1' as const
+
+export type ChatDeliveryReceiptV1 = {
+	type: typeof BEAMIO_CHAT_DELIVERY_RECEIPT_V1
+	sendId: string
+	armorHash?: string
+	/** Milliseconds since epoch (spec `deliveryReceipt`). */
+	deliveredAt: number
+	from: string
+}
+
+const ackedArmorHashes = new Set<string>()
+const receiptedSendIds = new Set<string>()
+
+export function hashPgpArmor(pgpArmor: string): string {
+	return ethers.keccak256(ethers.toUtf8Bytes(pgpArmor))
+}
+
+/** Mailbox ACK already accepted for this armor hash (any ACK path on this page). */
+export const isMailboxAckSent = (armorHash: string): boolean =>
+	ackedArmorHashes.has(String(armorHash || '').trim().toLowerCase())
+
+/** Remember an ACK accepted outside `postMailboxDeliveryAck` (browser batch ACK). */
+export const noteMailboxAckSent = (armorHash: string): void => {
+	const hash = String(armorHash || '').trim().toLowerCase()
+	if (hash) ackedArmorHashes.add(hash)
+}
+
+/** Unwrap nested chat `text` layers; return receipt or null. */
+export function parseChatDeliveryReceiptV1(displayText: unknown): ChatDeliveryReceiptV1 | null {
+	let cur: unknown = displayText
+	for (let i = 0; i < 6; i++) {
+		if (typeof cur === 'string') {
+			const t = cur.trim()
+			if (!t) return null
+			try {
+				cur = JSON.parse(t)
+			} catch {
+				return null
+			}
+			continue
+		}
+		if (!cur || typeof cur !== 'object') return null
+		const o = cur as Record<string, unknown>
+		if (o.type === BEAMIO_CHAT_DELIVERY_RECEIPT_V1 && typeof o.sendId === 'string' && o.sendId) {
+			const from = typeof o.from === 'string' ? o.from : ''
+			const deliveredAt = Number(o.deliveredAt)
+			return {
+				type: BEAMIO_CHAT_DELIVERY_RECEIPT_V1,
+				sendId: String(o.sendId),
+				armorHash: typeof o.armorHash === 'string' ? o.armorHash : undefined,
+				deliveredAt: Number.isFinite(deliveredAt) ? deliveredAt : Date.now(),
+				from,
+			}
+		}
+		if (typeof o.text === 'string') {
+			cur = o.text
+			continue
+		}
+		return null
+	}
+	return null
+}
+
+export function extractInboundSendId(displayText: unknown): string | null {
+	let cur: unknown = displayText
+	for (let i = 0; i < 6; i++) {
+		if (typeof cur === 'string') {
+			try {
+				cur = JSON.parse(cur.trim())
+			} catch {
+				return null
+			}
+			continue
+		}
+		if (!cur || typeof cur !== 'object') return null
+		const o = cur as Record<string, unknown>
+		if (typeof o.sendId === 'string' && o.sendId && o.type !== BEAMIO_CHAT_DELIVERY_RECEIPT_V1) {
+			return o.sendId
+		}
+		if (typeof o.text === 'string') {
+			cur = o.text
+			continue
+		}
+		return null
+	}
+	return null
+}
+
+export function markMessageDeliveredBySendId(
+	chats: chatData[],
+	sendId: string,
+): { chats: chatData[]; updated: boolean } {
+	if (!sendId || !Array.isArray(chats)) return { chats, updated: false }
+	let updated = false
+	const next = chats.map(chat => {
+		if (!chat?.messages?.length) return chat
+		let touched = false
+		const messages = chat.messages.map(m => {
+			if (m.from !== 'me') return m
+			const id = m.sendId || m.id
+			if (id !== sendId) return m
+			if (m.status === 'delivered') return m
+			touched = true
+			updated = true
+			return { ...m, status: 'delivered' as const }
+		})
+		return touched ? { ...chat, messages } : chat
+	})
+	return { chats: next, updated }
+}
+
+type PostOpts = {
+	routerArmoredPublicKey: string
+	privateKeyArmor: string
+	entryNodes: nodeInfo[]
+	mailboxDomains: Set<string>
+}
+
+async function postEncryptedToMailboxRoute(
+	routerArmoredPublicKey: string,
+	entryNodes: nodeInfo[],
+	mailboxDomains: Set<string>,
+	postData: string,
+): Promise<boolean> {
+	// Entries without a PGP key cannot take the outer wrap: they are skipped (2.4).
+	const candidates = entryNodes.filter(n => !mailboxDomains.has(n.domain) && hasEntryPgpKey(n))
+	const pool = candidates.length ? candidates : entryNodes.filter(n => hasEntryPgpKey(n))
+	if (!pool.length) return false
+	if (isCashTreesNativeWebView()) {
+		const excludeIps = entryNodes
+			.filter(n => n?.ip_addr && mailboxDomains.has(n.domain))
+			.map(n => String(n.ip_addr).trim())
+			.filter(Boolean)
+		const shell = await postNativePgpCiphertext(postData, excludeIps)
+		if (shell.error !== 'no_si_roster' && shell.error !== 'bridge_missing') {
+			return shell.ok
+		}
+	}
+	// One entry at a time; the next only after a clear failure. Each entry gets its
+	// own outer wrap. A wrap that fails skips that entry: the store-list roster is
+	// never POSTed with the unwrapped armor (2.4).
+	const order = [...pool].sort(() => Math.random() - 0.5).slice(0, 4)
+	for (const node of order) {
+		const url = `https://${node.domain}.conet.network/post`
+		const ctrl = new AbortController()
+		const timer = setTimeout(() => ctrl.abort(), 8_000)
+		try {
+			const wrapped = await wrapArmorToEntryRoute(postData, node.armoredPublicKey)
+			const res = await fetch(url, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ data: wrapped }),
+				referrerPolicy: 'no-referrer',
+				signal: ctrl.signal,
+			})
+			if (!res.ok) continue
+			const answer = await res.text().catch(() => '')
+			if (/"ok"\s*:\s*false/.test(answer)) continue
+			return true
+		} catch {
+			/* next entry */
+		} finally {
+			clearTimeout(timer)
+		}
+	}
+	return false
+}
+
+/** Encrypt command to mailbox B (same shape as mining listen). */
+export async function postMailboxDeliveryAck(
+	opts: PostOpts & { armorHash: string; sendId?: string | null },
+): Promise<boolean> {
+	const { armorHash, sendId, routerArmoredPublicKey, privateKeyArmor, entryNodes, mailboxDomains } = opts
+	const hash = (armorHash || '').trim().toLowerCase()
+	if (!/^0x[0-9a-f]{64}$/.test(hash)) return false
+	if (ackedArmorHashes.has(hash)) return true
+	if (!routerArmoredPublicKey?.trim() || !canSignAccount(privateKeyArmor)) return false
+
+	try {
+		const walletAddress = accountEoaFor(privateKeyArmor)
+		const timestamp = Math.floor(Date.now() / 1000)
+		const command: Record<string, unknown> = {
+			command: 'gossip_delivery_ack',
+			walletAddress,
+			armorHash: hash,
+			timestamp,
+		}
+		if (sendId) command.sendId = sendId
+		const message = JSON.stringify(command)
+		// the signature is made in the wallet core, after the shape check.
+		const { signature: signMessage } = await signGossipAckMessage(privateKeyArmor, message)
+		const encryptionKeys = await readKey({ armoredKey: routerArmoredPublicKey })
+		const pgpMsg = await createMessage({
+			text: Buffer.from(JSON.stringify({ message, signMessage })).toString('base64'),
+		})
+		const postData = await encrypt({
+			message: pgpMsg,
+			encryptionKeys,
+			config: { preferredCompressionAlgorithm: enums.compression.zlib },
+		})
+		const armored = typeof postData === 'string' ? postData : String((postData as any)?.data ?? postData)
+		const ok = await postEncryptedToMailboxRoute(
+			routerArmoredPublicKey,
+			entryNodes,
+			mailboxDomains,
+			armored,
+		)
+		if (ok) ackedArmorHashes.add(hash)
+		return ok
+	} catch (e: any) {
+		console.warn('[postMailboxDeliveryAck]', e?.message ?? e)
+		return false
+	}
+}
+
+export type SendDeliveryReceiptArgs = {
+	senderPublicArmored: string
+	privateKeyArmor: string
+	entryNodes: nodeInfo[]
+	sendId: string
+	armorHash?: string
+	/** Caller's sendMessage implementation (avoid circular import issues). */
+	sendMessage: (
+		pgpPublic: string,
+		text: string,
+		privateKeyArmor: string,
+		entryNodes: nodeInfo[],
+		opts?: { beamioNoPush?: boolean; mailboxRoutePublicKey?: string },
+	) => Promise<boolean>
+	/** Original sender mailbox B route PGP — required for NoPush mailbox work wrap. */
+	senderMailboxRoutePublicKey?: string | null
+}
+
+/** Notify original sender; UI must treat as protocol, not a chat bubble. */
+export async function sendDeliveryReceiptToSender(args: SendDeliveryReceiptArgs): Promise<boolean> {
+	const { senderPublicArmored, privateKeyArmor, entryNodes, sendId, armorHash, sendMessage, senderMailboxRoutePublicKey } = args
+	if (!sendId || !senderPublicArmored?.trim() || !canSignAccount(privateKeyArmor) || !entryNodes?.length) {
+		return false
+	}
+	if (!senderMailboxRoutePublicKey?.trim()) {
+		console.warn('[sendDeliveryReceiptToSender] skip: missing sender mailbox route key')
+		return false
+	}
+	if (receiptedSendIds.has(sendId)) return true
+	try {
+		const walletAddress = accountEoaFor(privateKeyArmor)
+		// Same builder as the spec vectors (`builders.deliveryReceipt`); deliveredAt in ms.
+		const inner: ChatDeliveryReceiptV1 = deliveryReceipt(sendId, armorHash ?? '', Date.now(), walletAddress)
+		if (!armorHash) delete inner.armorHash
+		const receiptSendId =
+			typeof crypto !== 'undefined' && crypto.randomUUID
+				? crypto.randomUUID()
+				: `rcpt_${Date.now()}_${Math.random().toString(36).slice(2)}`
+		const payload = {
+			sendId: receiptSendId,
+			from: 'me' as const,
+			text: JSON.stringify(inner),
+			createdAt: Date.now(),
+		}
+		const ok = await sendMessage(
+			senderPublicArmored,
+			JSON.stringify(payload),
+			privateKeyArmor,
+			entryNodes,
+			{ beamioNoPush: true, mailboxRoutePublicKey: senderMailboxRoutePublicKey },
+		)
+		if (ok) receiptedSendIds.add(sendId)
+		return ok
+	} catch (e: any) {
+		console.warn('[sendDeliveryReceiptToSender]', e?.message ?? e)
+		return false
+	}
+}
+
+export type DualDeliveryReceiptArgs = {
+	armorHash?: string
+	sendId?: string | null
+	privateKeyArmor: string
+	entryNodes: nodeInfo[]
+	/** Mailbox B route PGP + entry pool (from gossip listen context). */
+	mailboxAck?: {
+		routerArmoredPublicKey: string
+		entryNodes: nodeInfo[]
+		mailboxDomains: Set<string>
+	} | null
+	senderPublicArmored?: string | null
+	senderMailboxRoutePublicKey?: string | null
+	/**
+	 * Browser page: no mailbox ACK here. The chat worker bridge ACKs after the store commit. The sender receipt is still sent.
+	 */
+	skipMailboxAck?: boolean
+	sendMessage: SendDeliveryReceiptArgs['sendMessage']
+}
+
+/**
+ * After UI ingests a chat message: **must** ACK mailbox + notify sender in parallel.
+ * Mailbox ACK cancels SI 2-heartbeat APNs; sender receipt drives Delivered UI.
+ * Callers that ingest a `beamio_chat_delivery_receipt_v1` must only mailbox-ACK
+ * (never call this with a nested receipt sendId as the original message).
+ */
+export async function emitDualChatDeliveryReceipts(args: DualDeliveryReceiptArgs): Promise<void> {
+	const {
+		armorHash,
+		sendId,
+		privateKeyArmor,
+		entryNodes,
+		mailboxAck,
+		senderPublicArmored,
+		senderMailboxRoutePublicKey,
+		sendMessage,
+	} = args
+	const hash = (armorHash || '').trim().toLowerCase()
+	const tasks: Promise<boolean>[] = []
+
+	if (hash && !args.skipMailboxAck && mailboxAck?.routerArmoredPublicKey && canSignAccount(privateKeyArmor)) {
+		const runMailbox = async (): Promise<boolean> => {
+			let ok = await postMailboxDeliveryAck({
+				armorHash: hash,
+				sendId,
+				routerArmoredPublicKey: mailboxAck.routerArmoredPublicKey,
+				privateKeyArmor,
+				entryNodes: mailboxAck.entryNodes.length ? mailboxAck.entryNodes : entryNodes,
+				mailboxDomains: mailboxAck.mailboxDomains,
+			})
+			if (!ok) {
+				await new Promise(r => setTimeout(r, 1500))
+				ok = await postMailboxDeliveryAck({
+					armorHash: hash,
+					sendId,
+					routerArmoredPublicKey: mailboxAck.routerArmoredPublicKey,
+					privateKeyArmor,
+					entryNodes: mailboxAck.entryNodes.length ? mailboxAck.entryNodes : entryNodes,
+					mailboxDomains: mailboxAck.mailboxDomains,
+				})
+			}
+			if (!ok) console.warn('[emitDualChatDeliveryReceipts] mailbox ACK failed', hash.slice(0, 12))
+			return ok
+		}
+		tasks.push(runMailbox())
+	} else if (args.skipMailboxAck) {
+		// Browser page: the batch ACK follows the store commit (chatWorkerBridge), so nothing is sent here.
+	} else if (!hash) {
+		console.warn('[emitDualChatDeliveryReceipts] skip mailbox ACK: missing armorHash')
+	} else if (!mailboxAck?.routerArmoredPublicKey) {
+		console.warn('[emitDualChatDeliveryReceipts] skip mailbox ACK: no listen/mailbox context')
+	}
+
+	if (sendId && senderPublicArmored?.trim() && canSignAccount(privateKeyArmor) && entryNodes?.length) {
+		tasks.push(
+			sendDeliveryReceiptToSender({
+				senderPublicArmored,
+				privateKeyArmor,
+				entryNodes,
+				sendId,
+				armorHash: hash || undefined,
+				senderMailboxRoutePublicKey,
+				sendMessage,
+			}).then(ok => {
+				if (!ok) console.warn('[emitDualChatDeliveryReceipts] sender receipt failed', sendId)
+				return ok
+			}),
+		)
+	} else if (sendId) {
+		console.warn('[emitDualChatDeliveryReceipts] skip sender receipt: missing sender PGP or nodes', {
+			hasPgp: !!senderPublicArmored?.trim(),
+			nodes: entryNodes?.length ?? 0,
+		})
+	}
+
+	if (tasks.length) await Promise.allSettled(tasks)
+}

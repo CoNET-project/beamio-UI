@@ -1,0 +1,388 @@
+import { createOwnRegisterBackoff, OWN_ROUTE_RECHECK_DELAYS_MS, pickRecordedMailbox, planOwnChatRoute, readOwnChainState, recheckListenRoute, REGISTER_VERIFY_DELAYS_MS, resolveCurrentMailbox, verifyRegistration } from './chatOwnRoutePlan'
+import type { OwnChainRead } from './chatOwnRoutePlan'
+import { blocksNewPgpKey } from './chatOwnRoutePlan'
+import type { OwnChainRecord, OwnMailbox, OwnPrivateBlob } from './chatOwnRoutePlan'
+
+const LOCAL = 'D153C4294B9BDB31'
+const OTHER = 'AAAAAAAAAAAAAAAA'
+const M553: OwnMailbox = { routeKeyID: 'F36E92ECD8F5FCD1', routeArmor: '-----BEGIN PGP PUBLIC KEY BLOCK-----\nM553\n-----END PGP PUBLIC KEY BLOCK-----' }
+const M458: OwnMailbox = { routeKeyID: 'B6FF020087998A06', routeArmor: '-----BEGIN PGP PUBLIC KEY BLOCK-----\nM458\n-----END PGP PUBLIC KEY BLOCK-----' }
+
+const chainOk = (over: Partial<{ userKeyID: string; mailbox: OwnMailbox | null; privateBlob: OwnPrivateBlob }> = {}) => ({
+	status: 'ok' as const,
+	userKeyID: over.userKeyID ?? LOCAL,
+	routeKeyID: over.mailbox === null ? '' : (over.mailbox ?? M553).routeKeyID,
+	routeArmor: over.mailbox === null ? '' : (over.mailbox ?? M553).routeArmor,
+	privateBlob: over.privateBlob ?? 'ok',
+})
+
+const record = (mailbox: OwnMailbox, userKeyID = LOCAL): OwnChainRecord => ({
+	userKeyID,
+	routeKeyID: mailbox.routeKeyID,
+	routeArmor: mailbox.routeArmor,
+	publicArmored: '-----BEGIN PGP PUBLIC KEY BLOCK-----\nuser\n-----END PGP PUBLIC KEY BLOCK-----',
+})
+
+describe('blocksNewPgpKey: an unreadable record blocks a new key (it would overwrite the record)', () => {
+	it('a read error blocks', () => {
+		expect(blocksNewPgpKey({ status: 'error', reason: 'rpc' })).toBe(true)
+	})
+	it('a blob that cannot be opened (undecryptable) or a failed blob read (error) blocks', () => {
+		expect(blocksNewPgpKey({ status: 'ok', userKeyID: 'K', routeKeyID: 'R', routeArmor: 'A', privateBlob: 'undecryptable' })).toBe(true)
+		expect(blocksNewPgpKey({ status: 'ok', userKeyID: 'K', routeKeyID: 'R', routeArmor: 'A', privateBlob: 'error' })).toBe(true)
+	})
+	it('an empty record, or a readable record with no blob, does not block', () => {
+		expect(blocksNewPgpKey({ status: 'empty' })).toBe(false)
+		expect(blocksNewPgpKey({ status: 'ok', userKeyID: 'K', routeKeyID: 'R', routeArmor: 'A', privateBlob: 'missing' })).toBe(false)
+		expect(blocksNewPgpKey({ status: 'ok', userKeyID: 'K', routeKeyID: 'R', routeArmor: 'A', privateBlob: 'ok' })).toBe(false)
+	})
+})
+
+describe('planOwnChatRoute', () => {
+	describe('RPC error / timeout: never registers', () => {
+		it('keeps the current mailbox (the 2026-11-02 test account case)', () => {
+			const plan = planOwnChatRoute({ read: { status: 'error', reason: 'searchKey timeout' }, localKeyID: LOCAL, current: M553, currentArmor: M553.routeArmor })
+			expect(plan).toEqual(expect.objectContaining({ action: 'keep-current', routeArmor: M553.routeArmor }))
+		})
+		it('keeps a mailbox known only by armor (node missing from the list)', () => {
+			const plan = planOwnChatRoute({ read: { status: 'error', reason: 'x' }, localKeyID: LOCAL, current: null, currentArmor: M553.routeArmor })
+			expect(plan.action).toBe('keep-current')
+		})
+		it('waits and retries when no mailbox is known', () => {
+			const plan = planOwnChatRoute({ read: { status: 'error', reason: 'x' }, localKeyID: LOCAL, current: null, currentArmor: '' })
+			expect(plan.action).toBe('wait-retry')
+		})
+	})
+
+	describe('chain empty', () => {
+		it('registers on the current mailbox', () => {
+			const plan = planOwnChatRoute({ read: { status: 'empty' }, localKeyID: LOCAL, current: M553, currentArmor: M553.routeArmor })
+			expect(plan).toEqual(expect.objectContaining({ action: 'register', target: M553 }))
+		})
+		it('uses a random mailbox only for a new account', () => {
+			const plan = planOwnChatRoute({ read: { status: 'empty' }, localKeyID: LOCAL, current: null, currentArmor: '' })
+			expect(plan).toEqual(expect.objectContaining({ action: 'register', target: 'random' }))
+		})
+	})
+
+	describe('key mismatch', () => {
+		it('registers the local key on the chain mailbox, not a random one', () => {
+			const plan = planOwnChatRoute({ read: chainOk({ userKeyID: OTHER }), localKeyID: LOCAL, current: M458, currentArmor: M458.routeArmor })
+			expect(plan).toEqual(expect.objectContaining({ action: 'register', target: M553 }))
+		})
+		it('falls back to the current mailbox when the chain has no route', () => {
+			const plan = planOwnChatRoute({ read: chainOk({ userKeyID: OTHER, mailbox: null }), localKeyID: LOCAL, current: M553, currentArmor: M553.routeArmor })
+			expect(plan).toEqual(expect.objectContaining({ action: 'register', target: M553 }))
+		})
+		it('compares key IDs case-insensitively', () => {
+			const plan = planOwnChatRoute({ read: chainOk({ userKeyID: LOCAL.toLowerCase() }), localKeyID: LOCAL, current: null, currentArmor: '' })
+			expect(plan.action).toBe('use-chain')
+		})
+	})
+
+	describe('chain record matches', () => {
+		it('uses the chain mailbox without registering', () => {
+			const plan = planOwnChatRoute({ read: chainOk(), localKeyID: LOCAL, current: M458, currentArmor: M458.routeArmor })
+			expect(plan).toEqual(expect.objectContaining({ action: 'use-chain', mailbox: M553 }))
+		})
+		it.each(['error', 'undecryptable'] as const)('private blob %s alone is not a reason to register', (blob) => {
+			const plan = planOwnChatRoute({ read: chainOk({ privateBlob: blob }), localKeyID: LOCAL, current: M553, currentArmor: M553.routeArmor })
+			expect(plan.action).toBe('use-chain')
+		})
+		it('a blob that is absent on chain is repaired on the chain mailbox', () => {
+			const plan = planOwnChatRoute({ read: chainOk({ privateBlob: 'missing' }), localKeyID: LOCAL, current: M458, currentArmor: M458.routeArmor })
+			expect(plan).toEqual(expect.objectContaining({ action: 'register', target: M553 }))
+		})
+		it('no route on chain registers on the current mailbox', () => {
+			const plan = planOwnChatRoute({ read: chainOk({ mailbox: null }), localKeyID: LOCAL, current: M553, currentArmor: M553.routeArmor })
+			expect(plan).toEqual(expect.objectContaining({ action: 'register', target: M553 }))
+		})
+		it('no route and no mailbox yet → random', () => {
+			const plan = planOwnChatRoute({ read: chainOk({ mailbox: null }), localKeyID: LOCAL, current: null, currentArmor: '' })
+			expect(plan).toEqual(expect.objectContaining({ action: 'register', target: 'random' }))
+		})
+	})
+
+	it('unreadable local key ID never overwrites the chain record', () => {
+		const plan = planOwnChatRoute({ read: chainOk({ userKeyID: OTHER }), localKeyID: '', current: M458, currentArmor: M458.routeArmor })
+		expect(plan).toEqual(expect.objectContaining({ action: 'use-chain', mailbox: M553 }))
+	})
+})
+
+describe('readOwnChainState', () => {
+	const neverBlob = () => Promise.reject(new Error('should not be asked'))
+
+	it('RPC error → error, never empty', async () => {
+		const r = await readOwnChainState({ first: null, searchKey: () => Promise.reject(new Error('could not detect network')), probeBlob: neverBlob })
+		expect(r.read).toEqual({ status: 'error', reason: 'could not detect network' })
+	})
+
+	it('RPC timeout → error', async () => {
+		const r = await readOwnChainState({ first: null, searchKey: () => new Promise(() => {}), probeBlob: neverBlob, timeoutMs: 20 })
+		expect(r.read).toEqual({ status: 'error', reason: 'searchKey timeout' })
+	})
+
+	it('chain has no record → empty', async () => {
+		const r = await readOwnChainState({ first: null, searchKey: async () => null, probeBlob: neverBlob })
+		expect(r.read).toEqual({ status: 'empty' })
+	})
+
+	it('first read failed but the second finds the record → ok, with blob probed', async () => {
+		const r = await readOwnChainState({
+			first: null,
+			searchKey: async () => record(M553),
+			probeBlob: async () => ({ state: 'ok', armored: 'PRIVATE' }),
+		})
+		expect(r.read).toEqual(chainOk())
+		expect(r.privateArmored).toBe('PRIVATE')
+	})
+
+	it('first read with private key → ok, no extra calls', async () => {
+		const r = await readOwnChainState({
+			first: { ...record(M553), privateArmored: 'PRIVATE' },
+			searchKey: () => Promise.reject(new Error('should not be asked')),
+			probeBlob: neverBlob,
+		})
+		expect(r.read).toEqual(chainOk())
+	})
+
+	it('blob RPC error or timeout → privateBlob error (record still ok)', async () => {
+		const a = await readOwnChainState({ first: record(M553), searchKey: async () => null, probeBlob: () => Promise.reject(new Error('rpc')) })
+		expect(a.read).toEqual(chainOk({ privateBlob: 'error' }))
+		const b = await readOwnChainState({ first: record(M553), searchKey: async () => null, probeBlob: () => new Promise(() => {}), timeoutMs: 20 })
+		expect(b.read).toEqual(chainOk({ privateBlob: 'error' }))
+	})
+
+	it('end to end: RPC error with a known mailbox keeps it', async () => {
+		const own = await readOwnChainState({ first: null, searchKey: () => Promise.reject(new Error('timeout')), probeBlob: neverBlob })
+		const cur = resolveCurrentMailbox(M553.routeArmor, [{ domain: M553.routeKeyID, armoredPublicKey: M553.routeArmor }], null)
+		expect(planOwnChatRoute({ read: own.read, localKeyID: LOCAL, current: cur.mailbox, currentArmor: cur.armor }).action).toBe('keep-current')
+	})
+})
+
+describe('resolveCurrentMailbox', () => {
+	const nodes = [
+		{ domain: M458.routeKeyID, armoredPublicKey: M458.routeArmor },
+		{ domain: M553.routeKeyID, armoredPublicKey: `${M553.routeArmor.replace(/\n/g, '\r\n')}\n` },
+	]
+	it('finds the route key ID by armor (ignoring CR and outer whitespace)', () => {
+		expect(resolveCurrentMailbox(M553.routeArmor, nodes, null)).toEqual({ armor: M553.routeArmor, mailbox: M553 })
+	})
+	it('armor not in the node list: armor kept, key ID from the cache if it matches', () => {
+		expect(resolveCurrentMailbox(M553.routeArmor, [], null)).toEqual({ armor: M553.routeArmor, mailbox: null })
+		expect(resolveCurrentMailbox(M553.routeArmor, [], M553)).toEqual({ armor: M553.routeArmor, mailbox: M553 })
+		expect(resolveCurrentMailbox(M553.routeArmor, [], M458)).toEqual({ armor: M553.routeArmor, mailbox: null })
+	})
+	it('no local router: uses the cache, else nothing', () => {
+		expect(resolveCurrentMailbox('', nodes, M458)).toEqual({ armor: M458.routeArmor, mailbox: M458 })
+		expect(resolveCurrentMailbox('', nodes, null)).toEqual({ armor: '', mailbox: null })
+	})
+})
+
+describe('recheckListenRoute (airplane mode, then back online)', () => {
+	// stands in for the stray mailbox of the Samsung run; the chain says.
+	const M234: OwnMailbox = { routeKeyID: 'C0FFEE0000000234', routeArmor: '-----BEGIN PGP PUBLIC KEY BLOCK-----\nM234\n-----END PGP PUBLIC KEY BLOCK-----' }
+	const offline: OwnChainRead = { status: 'error', reason: 'could not detect network' }
+
+	it('keeps the listen while offline, then ends on the chain mailbox', async () => {
+		// initChat in airplane mode: read fails → keep the mailbox it had, no register, no random.
+		let listen = planOwnChatRoute({ read: offline, localKeyID: LOCAL, current: M234, currentArmor: M234.routeArmor })
+		expect(listen).toEqual(expect.objectContaining({ action: 'keep-current', routeArmor: M234.routeArmor }))
+		let listenArmor = listen.action === 'keep-current' ? listen.routeArmor : ''
+
+		const reads: OwnChainRead[] = [offline, offline, chainOk({ mailbox: M458 })]
+		const waits: number[] = []
+		const listenWhileOffline: string[] = []
+		const r = await recheckListenRoute({
+			listenArmor: () => listenArmor,
+			read: async () => reads.shift()!,
+			localKeyID: LOCAL,
+			sleep: async (ms) => { waits.push(ms); listenWhileOffline.push(listenArmor); return true },
+		})
+		expect(waits).toEqual([5_000, 15_000])
+		expect(listenWhileOffline.every((a) => a === M234.routeArmor)).toBe(true)
+		expect(r.result).toBe('reinit')
+
+		// Back online: chat starts again with a working read → listen on the chain mailbox.
+		listen = planOwnChatRoute({ read: r.read!, localKeyID: LOCAL, current: M234, currentArmor: M234.routeArmor })
+		expect(listen).toEqual(expect.objectContaining({ action: 'use-chain', mailbox: M458 }))
+		listenArmor = listen.action === 'use-chain' ? listen.mailbox.routeArmor : ''
+		expect(listenArmor).toBe(M458.routeArmor)
+	})
+
+	it('a read that throws counts as offline, not as an empty chain', async () => {
+		let n = 0
+		const r = await recheckListenRoute({
+			listenArmor: () => M234.routeArmor,
+			read: async () => { if (n++ === 0) throw new Error('timeout'); return chainOk({ mailbox: M234 }) },
+			localKeyID: LOCAL,
+			sleep: async () => true,
+		})
+		expect(r.result).toBe('match')
+	})
+
+	it('chain names the mailbox we listen on → match, no restart', async () => {
+		const r = await recheckListenRoute({ listenArmor: () => M458.routeArmor, read: async () => chainOk({ mailbox: M458 }), localKeyID: LOCAL, sleep: async () => true })
+		expect(r.result).toBe('match')
+	})
+
+	it('chain empty or another user key → reinit (initChat registers on the current mailbox)', async () => {
+		for (const read of [{ status: 'empty' } as OwnChainRead, chainOk({ userKeyID: OTHER, mailbox: M234 })]) {
+			const r = await recheckListenRoute({ listenArmor: () => M234.routeArmor, read: async () => read, localKeyID: LOCAL, sleep: async () => true })
+			expect(r.result).toBe('reinit')
+		}
+	})
+
+	it('stops when the session is gone, and backs off up to 5 min', async () => {
+		const waits: number[] = []
+		const r = await recheckListenRoute({
+			listenArmor: () => M234.routeArmor,
+			read: async () => offline,
+			localKeyID: LOCAL,
+			sleep: async (ms) => { waits.push(ms); return waits.length < 8 },
+		})
+		expect(r.result).toBe('gone')
+		expect(waits).toEqual([5_000, 15_000, 30_000, 60_000, 120_000, 300_000, 300_000, 300_000])
+	})
+})
+
+describe('pickRecordedMailbox (new mailbox only on a node AddressPGP recorded)', () => {
+	const nodes = [{ domain: '60F7767D9F2174CA' }, { domain: '01B67C184BE19C55' }, { domain: 'B6FF020087998A06' }, { domain: 'F36E92ECD8F5FCD1' }]
+	const recorded = new Set(['B6FF020087998A06', 'F36E92ECD8F5FCD1'])
+
+	it('skips unrecorded nodes (#570, #355) and takes the first recorded one', async () => {
+		const asked: string[] = []
+		const r = await pickRecordedMailbox({ candidates: nodes, routeKeyID: (n) => n.domain, isRecorded: async (id) => { asked.push(id); return recorded.has(id) } })
+		expect(r).toEqual({ status: 'ok', node: nodes[2], skipped: ['60F7767D9F2174CA', '01B67C184BE19C55'] })
+		expect(asked).toEqual(['60F7767D9F2174CA', '01B67C184BE19C55', 'B6FF020087998A06'])
+	})
+
+	it('a failed check (RPC error) picks nothing, even if later nodes would pass', async () => {
+		const r = await pickRecordedMailbox({
+			candidates: nodes,
+			routeKeyID: (n) => n.domain,
+			isRecorded: async (id) => { if (id === '01B67C184BE19C55') throw new Error('could not detect network'); return recorded.has(id) },
+		})
+		expect(r).toEqual({ status: 'error', reason: 'could not detect network', skipped: ['60F7767D9F2174CA'] })
+	})
+
+	it('a check that hangs times out as an error', async () => {
+		const r = await pickRecordedMailbox({ candidates: nodes, routeKeyID: (n) => n.domain, isRecorded: () => new Promise(() => {}), timeoutMs: 20 })
+		expect(r.status).toBe('error')
+	})
+
+	it('none recorded within maxChecks → none (caller does not register)', async () => {
+		const r = await pickRecordedMailbox({ candidates: nodes, routeKeyID: (n) => n.domain, isRecorded: async () => false, maxChecks: 3 })
+		expect(r).toEqual({ status: 'none', skipped: ['60F7767D9F2174CA', '01B67C184BE19C55', 'B6FF020087998A06'] })
+	})
+
+	it('ignores empty and duplicate route key IDs', async () => {
+		const asked: string[] = []
+		const r = await pickRecordedMailbox({
+			candidates: ['', '60f7767d9f2174ca', '60F7767D9F2174CA', 'B6FF020087998A06'],
+			routeKeyID: (id) => id,
+			isRecorded: async (id) => { asked.push(id); return recorded.has(id) },
+		})
+		expect(r.status).toBe('ok')
+		expect(asked).toEqual(['60f7767d9f2174ca', 'B6FF020087998A06'])
+	})
+})
+
+describe('createOwnRegisterBackoff', () => {
+	it('starts open, then waits 5/15/30/60/120/300 s after each failure, capped', () => {
+		const b = createOwnRegisterBackoff()
+		expect(b.remainingMs(0)).toBe(0)
+		let now = 0
+		const waits: number[] = []
+		for (let i = 0; i < 8; i++) {
+			waits.push(b.fail(now))
+			expect(b.remainingMs(now)).toBe(waits[i])
+			expect(b.remainingMs(now + waits[i] - 1)).toBe(1)
+			now += waits[i]
+			expect(b.remainingMs(now)).toBe(0)
+		}
+		expect(waits).toEqual([...OWN_ROUTE_RECHECK_DELAYS_MS, 300_000, 300_000])
+		expect(b.failures()).toBe(8)
+	})
+
+	it('reset after a confirmed record opens it again and restarts at 5 s', () => {
+		const b = createOwnRegisterBackoff()
+		b.fail(0)
+		b.fail(5_000)
+		b.reset()
+		expect(b.failures()).toBe(0)
+		expect(b.remainingMs(5_001)).toBe(0)
+		expect(b.fail(10_000)).toBe(5_000)
+	})
+
+	it('no chain record + API refusing: registrations are spaced out, not back to back', () => {
+		// Model of initChat -> register fails -> recheck reads "no record" -> start chat again.
+		// Each round takes ~0.65 s of work, as seen in the browser (26 registrations in 25 s before).
+		const b = createOwnRegisterBackoff()
+		const ROUND_MS = 650
+		const attempts: number[] = []
+		let now = 0
+		while (now < 25_000) {
+			const wait = b.remainingMs(now)
+			if (wait > 0) {
+				now += wait // the recheck / initChat gate waits instead of registering
+				continue
+			}
+			attempts.push(now)
+			b.fail(now) // registration refused, chain still empty
+			now += ROUND_MS
+		}
+		expect(attempts).toEqual([0, 5_000, 20_000])
+		// Over an hour it settles at one try every 5 minutes.
+		while (now < 3_600_000) {
+			const wait = b.remainingMs(now)
+			if (wait > 0) { now += wait; continue }
+			attempts.push(now)
+			b.fail(now)
+			now += ROUND_MS
+		}
+		expect(attempts.length).toBeLessThanOrEqual(17)
+		const gaps = attempts.slice(1).map((t, i) => t - attempts[i])
+		expect(Math.min(...gaps)).toBeGreaterThanOrEqual(5_000)
+	})
+})
+
+
+describe('verifyRegistration (record shows a few seconds after the API reply)', () => {
+	const run = (replies: Array<string | null | 'throw'>, sleepOk = () => true) => {
+		const waits: number[] = []
+		let i = 0
+		return verifyRegistration<string>({
+			sleep: async (ms) => { waits.push(ms); return sleepOk() },
+			read: async () => {
+				const r = replies[i++]
+				if (r === 'throw') throw new Error('rpc down')
+				return r ?? null
+			},
+		}).then((out) => ({ ...out, waits }))
+	}
+
+	it('confirms on the first read when the record is already there', async () => {
+		expect(await run(['rec'])).toEqual({ record: 'rec', reads: 1, waits: [1_500] })
+	})
+
+	it('keeps reading while the chain still shows the old record', async () => {
+		expect(await run([null, 'rec'])).toEqual({ record: 'rec', reads: 2, waits: [1_500, 3_000] })
+	})
+
+	it('treats a failed read like "not yet" and tries again', async () => {
+		expect(await run(['throw', null, 'rec'])).toEqual({ record: 'rec', reads: 3, waits: [1_500, 3_000, 6_000] })
+	})
+
+	it('gives up after three reads, about 10.5 s in all', async () => {
+		const out = await run([null, null, null, 'late'])
+		expect(out).toEqual({ record: null, reads: 3, waits: [...REGISTER_VERIFY_DELAYS_MS] })
+		expect(out.waits.reduce((a, b) => a + b, 0)).toBe(10_500)
+	})
+
+	it('stops reading once the session ends', async () => {
+		let calls = 0
+		const out = await run(['rec'], () => ++calls < 1)
+		expect(out).toEqual({ record: null, reads: 0, waits: [1_500] })
+	})
+})

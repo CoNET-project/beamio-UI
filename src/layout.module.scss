@@ -1,0 +1,17 @@
+//		layout.module.scss
+
+.app {
+	height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ✅ 唯一滚动容器 */
+.body {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	-webkit-overflow-scrolling: touch;
+	padding-bottom: 96px; /* 先别 + env(safe-area-inset-bottom) */
+}

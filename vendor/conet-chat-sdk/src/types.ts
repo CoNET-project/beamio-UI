@@ -1,0 +1,525 @@
+/**
+ * Beamio Chat SDK — public types.
+ *
+ * UI-agnostic. No React, no app-specific imports. Everything the SDK needs from
+ * the host (private key material, RPC endpoints, node discovery, IPFS base URL,
+ * local persistence) is injected through {@link BeamioChatConfig}.
+ *
+ * Routing rules (do not violate — see repo rules `conet-p2p-mailbox-routing-protocol`,
+ * `beamio-conet-chat-protocol`, and `src/docs/gitbook/l0/si-developer-guide.md`):
+ *  - Send business payloads encrypted to the recipient EOA *user* PGP, POSTed to an
+ *    entry node A ≠ mailbox B.
+ *  - New Chat listen SSE is encrypted to mailbox B route key, connected via entry
+ *    C ≠ B, and uses `command: 'mailbox_listen'` with an opaque `instanceId`.
+ *    Legacy clients may use `mining` with `listenKind: 'chat'`.
+ *  - Delivery ACK is encrypted to the mailbox B route key.
+ *  - Each POST wraps that inner armor to **that entry's** route public key (peel at
+ *    the entry). Clients never set `X-CoNET-Hop-Sigs`.
+ */
+
+import type { VoiceOfferArgs } from './protocol.js'
+import type { VoiceCallV3Config } from './voice-v3.js'
+import type { AccountSignFn } from './signer.js'
+
+/** A CoNET Guardian / entry / mailbox node descriptor. Mirrors the app `nodeInfo`. */
+export interface NodeInfo {
+	region: string
+	ip_addr: string
+	armoredPublicKey: string
+	nftNumber: number
+	domain: string
+	lastEposh?: number
+	owner?: string
+}
+
+/** Signing material + capabilities the host injects. The SDK never persists private keys itself. */
+export interface ChatIdentity {
+	/** EOA address (checksummed or lower — SDK normalises). */
+	eoaAddress: string
+	/**
+	 * The account key is NOT part of the identity (2026-11-13). Signatures are asked of the host through
+	 * `BeamioChatConfig.signAccount`; the worker never receives the key.
+	 */
+	/** Armored PGP private key for this identity's chat route (decrypts inbound). */
+	pgpPrivateKeyArmored: string
+	/** Passphrase for the armored PGP private key, if any. */
+	pgpPassphrase?: string
+	/** Armored PGP public key (for regiestChatRoute / diagnostics). */
+	pgpPublicKeyArmored?: string
+	/** This identity's own mailbox route armored public key (mailbox B). */
+	ownRouteArmoredPublicKey?: string
+}
+
+/** Per-contact chat route metadata resolved from AddressPGP. */
+export interface ChatRoute {
+	/** Contact EOA address (lower-case). */
+	address: string
+	/** Recipient's user PGP public key — business payloads are encrypted to this. */
+	userPublicKeyArmored: string
+	/** Recipient mailbox B route armored public key — listen/ACK/mailbox work are encrypted to this. */
+	routerArmoredPublicKey?: string
+	routePgpKeyID?: string
+}
+
+export type VoiceCallSignalType =
+	| 'voice_call_offer_v1'
+	| 'voice_call_accept_v1'
+	| 'voice_call_reject_v1'
+	| 'voice_end_v1'
+
+export interface VoiceCallSignal {
+	type: VoiceCallSignalType
+	callId: string
+	sessionId: string
+	from: string
+	to: string
+	createdAt: number
+	expiresAt: number
+	sessionKey?: string
+	peerSessionId?: string
+	codec?: string
+	reason?: string
+}
+
+export interface VoiceFrame {
+	type: 'voice_frame_v1'
+	callId: string
+	sessionId: string
+	from: string
+	to: string
+	seq: number
+	direction?: 'uplink' | 'downlink' | 'inbound' | 'outbound'
+	timestamp: number
+	payload: string
+	frameId?: string
+	chunkIndex?: number
+	chunkCount?: number
+}
+
+export const VOICE_MAX_FRAME_B64 = 12_000
+/**
+ * Split-seq video (negotiated with `voice_media_caps_v1` video ≥ 2) uses seq
+ * ≥ this. Audio and controls count up from 1, so the ranges never meet and a
+ * lost or late video frame cannot stall the audio reorder buffer.
+ */
+export const VOICE_VIDEO_SEQ_BASE = 1_000_000_000
+export const VOICE_FRAME_TIMESTAMP_SKEW_SEC = 30
+export const VOICE_CALL_MAX_DURATION_MS = 15 * 60 * 1000
+
+/** Inbound decrypted line (still to be checkSign'd / parsed by the host). */
+export interface InboundEnvelope {
+	/**
+	 * Host-ready JSON envelope string — exactly what the app's `addNewMessage`
+	 * serial queue consumes today (outer `{ timestamp, text, from, signMessage }`
+	 * with `_beamioPgpArmorHash` attached for mailbox ACK). Host still runs
+	 * `checkSign` + business parse on this on the main thread.
+	 */
+	line: string
+	/** keccak256 of the received PGP armor (matches SI saveLocal hash for delivery ACK). */
+	armorHash?: string
+	/** True when the inbound frame was a plaintext envelope (no PGP decrypt happened). */
+	plain?: boolean
+	/** Node domain that forwarded this (diagnostic only). */
+	viaDomain?: string
+	receivedAt: number
+}
+
+export interface DeliveryReceiptEvent {
+	sendId: string
+	/** Milliseconds since epoch. */
+	deliveredAt: number
+	/** Contact EOA that acknowledged. */
+	from?: string
+	armorHash?: string
+}
+
+export interface PresenceEvent {
+	/** Map of contact address(lower) → online. Only trusted `ok:true` replies included. */
+	online: Record<string, boolean>
+}
+
+export type ChatStatus =
+	| 'idle'
+	| 'connecting'
+	| 'listening'
+	| 'reconnecting'
+	| 'paused'
+	| 'error'
+
+export interface StatusEvent {
+	status: ChatStatus
+	detail?: string
+}
+
+export interface ChatLogEvent {
+	level: 'info' | 'warn' | 'error'
+	message: string
+}
+
+/** History buffer increment fed to the UI during restore / append. */
+export interface HistoryBufferEvent {
+	/** Contact EOA (lower) this batch belongs to, or 'all' when global. */
+	peer: string
+	entries: HistoryEntry[]
+	/** True when this batch is the tail (most recent) portion. */
+	isTail?: boolean
+}
+
+/** A single stored history entry (decrypted). */
+export interface HistoryEntry {
+	seq: number
+	ts: number
+	/** Contact EOA (lower). */
+	peer: string
+	/** 'out' = sent by me, 'in' = received. */
+	dir: 'in' | 'out'
+	sendId?: string
+	/** Decrypted plaintext body (the ChatMessage JSON string as the host stored it). */
+	body: string
+}
+
+export interface ChatEventMap {
+	message: InboundEnvelope
+	delivery: DeliveryReceiptEvent
+	presence: PresenceEvent
+	status: StatusEvent
+	log: ChatLogEvent
+	historyBuffer: HistoryBufferEvent
+	voiceFrame: VoiceFrame
+	voiceGap: import('./voice-reorder.js').VoiceGapEvent
+	voiceConflict: import('./voice-reorder.js').VoiceConflictEvent
+	group: GroupInboundEvent
+}
+
+export type ChatEventName = keyof ChatEventMap
+export type ChatEventListener<K extends ChatEventName> = (payload: ChatEventMap[K]) => void
+export type Unsubscribe = () => void
+
+/**
+ * IndexedDB-like persistence adapter (host supplies; SDK stays storage-agnostic).
+ * Keys are opaque strings; values are JSON-serialisable.
+ */
+export interface PersistenceAdapter {
+	get(key: string): Promise<unknown | undefined>
+	set(key: string, value: unknown): Promise<void>
+	delete(key: string): Promise<void>
+	/** List keys under a prefix (used for local history fallback). */
+	keys?(prefix: string): Promise<string[]>
+}
+
+/** How the host wants presence probing / listen scheduled. */
+export interface ChatRuntimeOptions {
+	/** Send business payload to N entry nodes in parallel (dedupe by sendId on UI). Default 3. */
+	sendFanout?: number
+	/** Reconnect backoff base ms. Default 4000. */
+	reconnectBaseMs?: number
+	/** Max reconnect backoff ms. Default 30000. */
+	reconnectMaxMs?: number
+	/**
+	 * Locked (2.4): every `POST /post` is wrapped to the entry's route public key.
+	 * The value is accepted for wire compatibility and ignored: a failed wrap skips
+	 * that entry, and the inner armor is never sent unwrapped.
+	 */
+	outerWrap?: boolean
+}
+
+/** Options for {@link BeamioChatClient.sendMessage}. */
+export interface SendMessageOptions {
+	sendId?: string
+	/**
+	 * Skip APNs / offline push. SDK wraps the user-PGP armor as mailbox work
+	 * `{ data, NoPush: true }` encrypted to the recipient mailbox route key.
+	 * HTTP `POST /post` stays `{ data }` only.
+	 */
+	beamioNoPush?: boolean
+}
+
+export interface GroupMemberV1 {
+	eoa: string
+	pgpFingerprint: string
+	keyEpoch: number
+}
+
+export interface GroupPolicyV1 {
+	name: string
+	owner: string
+	admins: string[]
+}
+
+export interface GroupRosterV1 {
+	type: 'conet_group_roster_v1'
+	groupId: string
+	version: number
+	prevRosterHash: string | null
+	issuedAt: number
+	expiresAt: number
+	policy: GroupPolicyV1
+	members: GroupMemberV1[]
+	signer: string
+	signature: string
+}
+
+export interface GroupAdminProposalV1 {
+	type: 'conet_group_admin_proposal_v1'
+	groupId: string
+	rosterHash: string
+	proposalId: string
+	createdAt: number
+	expiresAt: number
+	action: 'add_member' | 'remove_member' | 'add_admin' | 'remove_admin' | 'rename'
+	value: Record<string, unknown>
+	signer: string
+	signature: string
+}
+
+export interface GroupTombstoneV1 {
+	type: 'conet_group_tombstone_v1'
+	groupId: string
+	removedAtVersion: number
+	previousRosterHash: string
+	issuedAt: number
+	signer: string
+	signature: string
+}
+
+export interface GroupMessageV1 {
+	type: 'conet_group_message_v1'
+	groupId: string
+	rosterHash: string
+	sendId: string
+	seq: number
+	createdAt: number
+	expiresAt: number
+	body: string
+	signer: string
+	signature: string
+}
+
+export interface GroupDeliveryPacketV1 {
+	type: 'conet_group_delivery_v1'
+	message: GroupMessageV1
+	padding: string
+}
+
+export interface GroupSendRequest {
+	roster: GroupRosterV1
+	body: string
+	seq: number
+	expiresAt: number
+	sendId?: string
+	maxMembers?: number
+	paddingBucketBytes?: number
+	maxConcurrency?: number
+	/** Member routes used for this fan-out. Mailbox B is excluded per recipient. */
+	routes: ChatRoute[]
+}
+
+export interface GroupSendResult {
+	sendId: string
+	acceptedRecipients: number
+	failedRecipients: number
+	message: GroupMessageV1
+}
+
+export interface GroupIssueRosterRequest {
+	name: string
+	/** Other members. The worker adds the signing owner. */
+	memberEoas: string[]
+	routes: ChatRoute[]
+	expiresAt: number
+	groupId?: string
+	previous?: GroupRosterV1 | null
+	nextMemberEoas?: string[]
+	nextAdmins?: string[]
+}
+
+export interface GroupIssueRosterResult {
+	roster: GroupRosterV1
+	acceptedRecipients: number
+	failedRecipients: number
+}
+
+export interface GroupIssueTombstoneRequest {
+	roster: GroupRosterV1
+	routes: ChatRoute[]
+}
+
+export interface GroupIssueTombstoneResult {
+	tombstone: GroupTombstoneV1
+	acceptedRecipients: number
+	failedRecipients: number
+}
+
+export interface GroupInboundEvent {
+	kind: 'roster' | 'proposal' | 'tombstone' | 'message'
+	recoveredFrom: string
+	receivedAt: number
+	roster?: GroupRosterV1
+	proposal?: GroupAdminProposalV1
+	tombstone?: GroupTombstoneV1
+	message?: GroupMessageV1
+}
+
+export interface BeamioChatConfig {
+	identity: ChatIdentity
+	/**
+	 * Host signer for every account signature (EIP-191 and EIP-712). The SDK and the worker never see the key. A host that
+	 * refuses returns a rejected promise; the operation then fails and nothing is sent.
+	 */
+	signAccount: AccountSignFn
+	/** CoNET DePIN RPC endpoint (read AddressPGP etc.). */
+	conetRpcUrl: string
+	/** AddressPGP contract address. */
+	addressPgpContractAddress: string
+	/**
+	 * Returns the current healthy CoNET node list. Host owns discovery/caching so the
+	 * SDK never couples to a specific contract-read implementation.
+	 */
+	getNodes: () => Promise<NodeInfo[]>
+	/** IPFS fragment gateway base, e.g. `https://ipfs.conet.network/api`. */
+	ipfsBaseUrl: string
+	/** Optional IPFS write base (defaults to `ipfsBaseUrl`). */
+	ipfsWriteBaseUrl?: string
+	/** Local persistence (IndexedDB adapter). Optional; history still works in-memory without it. */
+	persistence?: PersistenceAdapter
+	runtime?: ChatRuntimeOptions
+	/** Chain id used in history master derivation domain string. Default 224422 (CoNET L1). */
+	chainId?: number
+	/**
+	 * ChatIndexRegistry proxy (CoNET 224422) — on-chain head pointer to the encrypted
+	 * history index (IPFS content hash). Read via RPC `getPointer(eoa)`; write via the
+	 * gasless relay ({@link apiBaseUrl}/setChatIndexPointer). Default = canonical proxy.
+	 */
+	chatIndexRegistryAddress?: string
+	/**
+	 * Cluster API base for the gasless index-pointer relay, e.g. `https://beamio.ca`.
+	 * When absent, history still persists to IPFS + local mirror, but the on-chain head
+	 * pointer is not updated (fresh-device recovery would be unavailable).
+	 */
+	apiBaseUrl?: string
+}
+
+/** History load options. */
+export interface HistoryLoadOptions {
+	/** Restore for a single contact, or all known contacts. */
+	peer?: string
+	/** How many most-recent entries to decrypt eagerly (the "last 2 screens"). Default 60. */
+	tailCount?: number
+	/** When true, skip network and only read the local IndexedDB mirror (instant open). */
+	localOnly?: boolean
+	/**
+	 * `all` replays every decrypted entry to `historyBuffer`.
+	 * `fresh` emits only entries that were not already in the local plaintext corpus.
+	 * Default `fresh` so a later sync does not re-deliver the corpus.
+	 */
+	emit?: 'all' | 'fresh'
+}
+
+/**
+ * Read the chat module's local decrypted history. Already-decrypted entries come
+ * from the worker corpus and are not fetched from IPFS again.
+ */
+export interface HistoryReadOptions {
+	/** Contact EOA. Omit to read every peer. */
+	peer?: string
+	/** Calling site, for the `historyRead.unbounded` log. */
+	caller?: string
+	/**
+	 * Full-text query over extracted message text (body, call status, file name).
+	 * Whitespace-separated terms are AND-matched, case-insensitive.
+	 */
+	query?: string
+	/** Keep the newest matches when set. */
+	limit?: number
+}
+
+export type LocalViewport = import('./local/types.js').Viewport
+export type LocalPageResult = import('./local/types.js').PageResult
+
+export interface BeamioChatHistory {
+	/**
+	 * Restore encrypted history: read the on-chain head pointer (RPC `getPointer(eoa)`) or the
+	 * local IndexedDB mirror → fetch + decrypt the index → eagerly decrypt the tail → backfill
+	 * older entries in the background. Emits `historyBuffer` increments as they become available.
+	 */
+	load(options?: HistoryLoadOptions): Promise<void>
+	/** Append (persist) a new sent/received entry to encrypted history + local mirror. */
+	append(entry: Omit<HistoryEntry, 'seq'>): Promise<void>
+	/**
+	 * Global read of the decrypted corpus. UI must use this instead of fetching
+	 * fragments itself. A `query` runs full-text search over the whole local history.
+	 */
+	read(options?: HistoryReadOptions): Promise<HistoryEntry[]>
+	/** Subscribe to incremental buffer batches during restore/append. */
+	onBuffer(cb: (batch: HistoryBufferEvent) => void): Unsubscribe
+	/** Local library first screen. Local only; never waits for sync. */
+	openConversation(convKey: string, viewport: LocalViewport): Promise<LocalPageResult>
+	/** Older page strictly before `cursor`. Throws `cursor_invalid` for stale cursors. */
+	loadOlder(convKey: string, cursor: string, viewport: LocalViewport): Promise<LocalPageResult>
+	/** Store a real measured bubble size. */
+	reportLayout(convKey: string, stableId: string, viewport: LocalViewport, wPt: number, hPt: number): Promise<{ written: boolean }>
+	/** Clear the local cache. Unsent rows are kept and reported as pendingKept. */
+	clearLocalCache(scope: 'conversation' | 'account', convKey?: string): Promise<{ removed: number; pendingKept: number }>
+	/** Full sync into the local library (background, single writer). */
+	syncLocal(): Promise<void>
+	/** Migration state: none, running, complete, switched or purged. */
+	migrationState(): Promise<string>
+	/**switch the UI to the library (requires complete). */
+	switchLocal(): Promise<boolean>
+	/**  worker part: delete plaintext plain: keys (requires switched). */
+	purgeLocalPlain(): Promise<number>
+	/** Logout: lock the library and zero the keys. */
+	lockLocal(): Promise<void>
+	/** Subkeys from the wallet layer (K_id, K_idx, DEK, hex). Never P or R_db (spec r1 ). */
+	unlockLocal(keys: { kIdHex: string; kIdxHex: string; dekHex: string }): Promise<void>
+	/** One-time migration of PWA-A plaintext copies. */
+	migrateLocal(extra: Array<{ peer: string; dir: 'in' | 'out'; ts: number; sendId?: string; body: string; pending?: boolean }>): Promise<{ verified: boolean; conversations: number }>
+}
+
+export interface BeamioChatClient {
+	init(): Promise<void>
+	/**
+	 * Protocol v1 `hello`: the daemon's protocol version, SDK version and
+	 * capabilities. Null when the daemon predates v1 (no answer) or is not running.
+	 * Decide by capability (`negotiateChatDaemon` / `hasCapability`), never by
+	 * whether a method exists.
+	 */
+	hello(): Promise<import('./protocol.js').ChatDaemonHello | null>
+	/** Encrypt & send a business payload to a contact via entry A ≠ mailbox B. */
+	sendMessage(to: ChatRoute, payload: string, opts?: SendMessageOptions): Promise<{ sendId: string }>
+	/**
+	 * Deliver a V1 group message as independent single-recipient user-PGP armors.
+	 * This never creates multi-recipient OpenPGP armor.
+	 */
+	sendGroupMessage(request: GroupSendRequest): Promise<GroupSendResult>
+	/** Owner-sign a roster and fan it out one armor per other member. */
+	issueGroupRoster(request: GroupIssueRosterRequest): Promise<GroupIssueRosterResult>
+	/** Owner-sign a tombstone and fan it out. Local state is the host's job. */
+	issueGroupTombstone(request: GroupIssueTombstoneRequest): Promise<GroupIssueTombstoneResult>
+	/** Encrypt a mailbox command (e.g. gossip_delivery_ack) to route B and POST via entry C ≠ B. */
+	postMailboxCommand(
+		routerArmoredPublicKey: string,
+		command: Record<string, unknown>,
+	): Promise<boolean>
+	postOwnMailboxCommand(command: Record<string, unknown>): Promise<boolean>
+	sendVoiceFrame(routerArmoredPublicKey: string, frame: Record<string, unknown>): Promise<boolean>
+	/**
+	 * Voice protocol v3: open this side's paid voice + video channels. With
+	 * `call` a new call starts; without it the same call's channels reopen.
+	 */
+	startVoiceListen(sessionId: string, call?: VoiceCallV3Config): Promise<boolean>
+	/** Caller's offer to the callee mailbox (`voice_offer_store`, `push: 1`). Browser worker only. */
+	sendVoiceOffer?(offer: VoiceOfferArgs): Promise<{ ok: boolean; pushed: boolean }>
+	stopVoiceListen(sessionId: string): Promise<boolean>
+	on<K extends ChatEventName>(event: K, cb: ChatEventListener<K>): Unsubscribe
+	/** Probe mailbox listen-pool presence for the given contacts. */
+	queryPresence(contacts: ChatRoute[]): Promise<Record<string, boolean>>
+	/** Trusted native-wake answer, or null when the mailbox lookup failed. */
+	queryNativeWake(contact: ChatRoute): Promise<boolean | null>
+	/** Update the set of contacts to listen for and probe. */
+	setRoutes(routes: ChatRoute[]): void
+	history: BeamioChatHistory
+	pause(): void
+	resume(): void
+	destroy(): void
+}

@@ -1,0 +1,170 @@
+import { lookupRecipientRecord } from '@/services/chat'
+import { resolveRecipientForSend } from '@/utils/recipientPublicKey'
+import { ethers } from 'ethers'
+import {
+	createMerchantGiftRedeemCard,
+	initMessage,
+	sendMessage,
+} from '@/services/chat'
+import { mirrorChatMessageToHistory } from '@/services/chatHistoryMirror'
+import { storeSystemData } from '@/services/beamio'
+import { CoNET_Data, setCoNET_Data } from '@/utils/globals'
+
+export type SendMerchantGiftRedeemChatParams = {
+	profiles: profile[]
+	setProfiles: React.Dispatch<React.SetStateAction<profile[]>>
+	allNodes: nodeInfo[]
+	friend: searchResult
+	privateKeyArmor: string
+	amount: number
+	currency: ICurrency
+	merchantTitle: string
+	claimUrl: string
+	/** Tier background selected by the purchaser */
+	imageUrl?: string | null
+	/** Optional personalized note sent as a normal text bubble before the gift card */
+	note?: string
+}
+
+/**
+ * After a successful gift purchase with Direct @BeamioTag delivery:
+ * ensure chat session, optionally send note, then send merchantGift paymentCard.
+ * Encrypts to the friend's EOA user PGP (exact BeamioTag profile).
+ */
+export async function sendMerchantGiftRedeemChat(
+	params: SendMerchantGiftRedeemChatParams,
+): Promise<{ ok: boolean; error?: string }> {
+	const {
+		profiles,
+		setProfiles,
+		allNodes,
+		friend,
+		privateKeyArmor,
+		amount,
+		currency,
+		merchantTitle,
+		claimUrl,
+		imageUrl,
+		note,
+	} = params
+
+	const friendAddress = (friend.address ?? '').trim()
+	if (!friendAddress || !ethers.isAddress(friendAddress)) {
+		return { ok: false, error: 'Friend address is missing.' }
+	}
+	if (!privateKeyArmor?.trim()) {
+		return { ok: false, error: 'Wallet signing key is unavailable.' }
+	}
+	if (!claimUrl.trim()) {
+		return { ok: false, error: 'Claim link is missing.' }
+	}
+	if (!allNodes?.length) {
+		return { ok: false, error: 'CoNET nodes are not ready. Gift was purchased; notify your friend with the claim link.' }
+	}
+	if (!profiles?.length) {
+		return { ok: false, error: 'Profile is not loaded.' }
+	}
+
+	const profile = profiles[0]
+	const pk = privateKeyArmor.trim()
+	profile.privateKeyArmor = pk
+
+	const chat = await initMessage(profile, friend)
+	const recipientKey = await resolveRecipientForSend(chat, lookupRecipientRecord)
+	if (!chat || !recipientKey.ok) {
+		return {
+			ok: false,
+			error: `Could not open chat with this friend (${recipientKey.ok ? 'no_chat' : recipientKey.code}). Share the claim link instead.`,
+		}
+	}
+
+	const now = Date.now()
+	const outbound: ChatMessage[] = []
+
+	const noteText = (note ?? '').trim()
+	if (noteText) {
+		const sendId =
+			typeof crypto !== 'undefined' && crypto.randomUUID
+				? crypto.randomUUID()
+				: `note_${now}_${Math.random().toString(36).slice(2)}`
+		const noteMsg: ChatMessage = {
+			id: sendId,
+			sendId,
+			from: 'me',
+			text: noteText,
+			createdAt: now,
+			status: 'sent',
+		}
+		outbound.push(noteMsg)
+	}
+
+	const giftCard = createMerchantGiftRedeemCard({
+		amount,
+		currency,
+		merchantTitle,
+		claimUrl: claimUrl.trim(),
+		imageUrl: imageUrl?.trim() || undefined,
+		memo: noteText || undefined,
+		usdcAmount: amount,
+	})
+	// Distinct from optional note so timestamp-only fallbacks never collide.
+	giftCard.createdAt = now + 1
+	if (giftCard.paymentCard) {
+		giftCard.paymentCard.timeStamp = now + 1
+	}
+	outbound.push(giftCard)
+
+	for (const msg of outbound) {
+		chat.messages.push(msg)
+	}
+
+	setProfiles([...profiles])
+	const temp = CoNET_Data
+	if (temp) {
+		temp.profiles = profiles
+		setCoNET_Data(temp)
+	}
+
+	try {
+		await storeSystemData()
+	} catch {
+		/* best-effort local persist */
+	}
+
+	const peer = (friendAddress || chat.address || '').toLowerCase()
+
+	for (const msg of outbound) {
+		const payload =
+			msg.paymentCard != null
+				? JSON.stringify(msg)
+				: JSON.stringify({
+						sendId: msg.sendId,
+						from: 'me' as const,
+						text: msg.text,
+						createdAt: msg.createdAt,
+					})
+		try {
+			const ok = await sendMessage(recipientKey.publicArmored, payload, pk, allNodes)
+			if (!ok) {
+				return {
+					ok: false,
+					error: 'Gift purchased, but chat delivery failed. Share the claim link with your friend.',
+				}
+			}
+			mirrorChatMessageToHistory(peer, msg, 'out')
+		} catch {
+			return {
+				ok: false,
+				error: 'Gift purchased, but chat delivery failed. Share the claim link with your friend.',
+			}
+		}
+	}
+
+	try {
+		await storeSystemData()
+	} catch {
+		/* ignore */
+	}
+
+	return { ok: true }
+}

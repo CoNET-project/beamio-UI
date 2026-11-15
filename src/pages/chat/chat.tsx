@@ -1,0 +1,9563 @@
+import { resolveRecipientForSend, isHeldRouteCode, resolveTrustedRoute, refreshRecipient, sendWithFreshRoute, sendViaCachedRoute, sendWithPinnedRoute, type HeldKey, RECIPIENT_REFRESH_PERIOD_MS, RECIPIENT_ROUTE_RETRY_DELAYS_MS } from "@/utils/recipientPublicKey"
+import { chatHeldBannerText, chatHeldLabelText, callHeldText, sendFailedDetailText } from "@/services/recipientCopy"
+import { formatFingerprintForCompare, readStoredKeyFingerprint, storedKeyFingerprint } from "@/utils/pgpFingerprint"
+import { oneTimeVerifyPromptDue } from "@/services/verifyPrompt"
+import React, { useEffect, useMemo, useRef, useState, useLayoutEffect, useCallback, startTransition } from "react"
+import { isShellContext } from '@/services/shellContext'
+import { probeHasSigner } from '@/services/mailboxProbeSigning'
+import { CHAT_WINDOW_INITIAL, anchoredScrollTop, hiddenCount, nextWindowCount, shouldExpandWindow, viewportForScroller, windowTail } from "@/utils/chatWindow"
+import { flushSync } from "react-dom"
+import { BeamioAddressCapsule } from '@/components/BeamioAddressCapsule'
+import { localCallerAvatarDataUri } from '@/utils/callerAvatar'
+import { chatComposerAutofillProps } from '@/utils/chatComposerAutofill'
+import { useNavigate } from "react-router-dom"
+import { CoNET_Data, setCoNET_Data } from '@/utils/globals'
+import { motion, AnimatePresence } from "framer-motion"
+import { ethers } from "ethers"
+import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf"
+import { checkSign, emitReactionAsNewMessage, createMembershipActivatedCard, sendVoiceCallOffer } from '@/services/chat'
+import { backfillChatMessagesToHistory, mergeHistoryEntriesIntoMessages, mirrorChatMessageToHistory } from '@/services/chatHistoryMirror'
+import { IpfsImg } from '@/components/IpfsImg'
+import { publishMinimizedVoiceCallWindow } from '@/utils/minimizedVoiceCallWindow'
+import {
+  ArrowUp,
+  ChevronDown,
+  ChevronLeft,
+  ChevronUp,
+  Info,
+  Phone,
+  PhoneOff,
+  Video,
+  CheckCheck,
+  Plus,
+  Mic,
+  MicOff,
+  VideoOff,
+  AlertTriangle,
+  Camera,
+  ImageIcon,
+  Clock,
+  BarChart3,
+  Sticker,
+  DollarSign,
+  Gift,
+  MoreHorizontal,
+  Copy,
+  Loader2,
+  CheckCircle2,
+  Play,
+  Pause,
+  Volume2,
+  VolumeX,
+  Download,
+  ZoomIn,
+  ZoomOut,
+  Gauge,
+  Check,
+  FileText,
+  ExternalLink,
+  X,
+  CornerUpLeft,
+  Trash2,
+  Paperclip,
+  UserRound,
+  Wallet,
+} from "lucide-react"
+import { ChatHeaderIOS } from "./components/ChatHeaderIOS"
+import BeamioContactProfilePreview from "@/components/Home/BeamioContactProfilePreview"
+import { useScrollCapsuleOpacity } from "@/hooks/useScrollCapsuleOpacity"
+import { useVisualViewportFrame } from "@/hooks/useVisualViewportFrame"
+import { isRecipientReadError } from "@/services/recipientRecord"
+import {
+	initBeamioPGPKeys,
+	getKeysFromCoNETPGPSC,
+	lookupRecipientRecord,
+	sendMessage,
+	makeMessage,
+	refreshChatMailboxPresence,
+	refreshPeerNativeWakeable,
+	alignLiveGossipRouteToChain,
+	mailboxAlignErrorMessage,
+} from '@/services/chat'
+import { nativeDialerCancelOutcome } from '@/utils/dialerCancelHandoff'
+import {
+	claimChatOnlineQuery,
+	releaseChatOnlineQuery,
+	rememberPeerOnline,
+	rememberPeerNativeWakeable,
+} from '@/services/beamioTagMailboxRefresh'
+import { startNetworkAwareLoop } from '@/services/chatNetworkGate'
+import {
+	startWorkerVoiceListen,
+	stopWorkerVoiceListen,
+	sendWorkerVoiceFrame,
+	onVoiceFrame,
+	localChatMigrationState,
+	openLocalChatPage,
+} from '@/services/chatWorkerBridge'
+import { PlusActionMenu } from "./components/PlusActionMenu"
+import { useDaemonContext } from "@/providers/DaemonProvider"
+import { storeSystemData, AuthorizationSign } from '@/services/beamio'
+import { useBeamioTagDatabase } from '@/providers/BeamioTagDatabaseProvider'
+import { fiatPrefix } from '@/services/currency'
+import { beginCallTiming, markCallTiming, timeCallStep } from '@/utils/callTiming'
+import { cachedWallet, prewarmDialKeys } from '@/utils/dialKeyCache'
+import { createDialStateGate } from '@/utils/dialPathHelpers'
+import { VOICE_LINK, newVoiceLinkState, noteVoiceLinkRx, tickVoiceLink, type VoiceLinkState } from '@/utils/voiceLinkPolicy'
+import { androidShellOwnsCallAudio, dispatchNativeSystemCallAction, nativeSaveFileAvailable, getCashTreesNativeNfcHost, isCashTreesNativeWebView, nativeShellAcksDialer, notifyNativeVoiceMicReady, openExternalUrl, requestNativeCameraCapture, requestNativePhotoPicker, saveFileToNative } from '@/utils/cashTreesNativeNfc'
+import { androidMicPrewarmMaxMs, shouldPrewarmAndroidMic, shouldReleaseAndroidMicPrewarm } from '@/utils/androidMicPrewarm'
+import { NATIVE_DIALER_ACK_MS, nativeDialerAckOverdue } from '@/utils/nativeDialerAck'
+import { MessageSendReceiveCard } from "./components/messageSendReceiveCard"
+import { AaMultisigChatRequestCard } from '@/components/chat/AaMultisigChatRequestCard'
+import { ChatShareLinkPreviewCard } from '@/components/chat/ChatShareLinkPreviewCard'
+import { ChatGenericLinkPreviewCard } from '@/components/chat/ChatGenericLinkPreviewCard'
+import { parseAaMultisigChatPreview } from '@/utils/aaMultisigChatPreview'
+import {
+	findBeamioShareUrlInText,
+	isPrimarilyBeamioShareLinkMessage,
+	resolveBeamioShareInAppNavigation,
+} from '@/utils/chatShareLinkPreview'
+import {
+	findHttpUrlInText,
+	isPrimarilyHttpUrlMessage,
+} from '@/utils/chatGenericLinkPreview'
+import { ingestAaMultisigFromChat } from '@/utils/aaMultisigIngest'
+import { noteNativeCallAnswered as noteCallAnsweredHere } from '@/utils/voiceCallSession'
+import { getAaMultisigTaskAny } from '@/utils/aaMultisigLocalStore'
+import {
+	formatMultisigSignatureProgress,
+	multisigHistorySummary,
+	multisigPendingSecondaryMessage,
+	multisigTaskDeepLinkTab,
+	viewerNeedsToSignMultisigTask,
+} from '@/utils/aaMultisigTaskUi'
+import type { AaMultisigChatPreview } from '@/utils/aaMultisigChatPreview'
+import { tu } from '@/locale/beamioLocale'
+import { getPgpMigrationState, subscribePgpMigrationState } from '@/services/pgpMigrationRunner'
+import {
+	decryptVoiceFragment,
+	encryptVoiceBlob,
+	uploadEncryptedVoiceDataUrl,
+	VOICE_MAX_AUDIO_BYTES,
+	type VoiceMessageManifest,
+} from '@/utils/voiceMessage'
+import {
+	decryptVoiceFrame,
+	encryptVoiceFrame,
+	registerBrowserVoiceCallProbe,
+	claimIncomingVoiceCallReport,
+	applyNativeIncomingVoiceOfferFromLine,
+	reportNativeIncomingSystemCall,
+	hasReportedIncomingVoiceCall,
+	isVoiceCallProtocolMessage,
+	claimedVoiceCallerAddress,
+	claimedVoiceCallerTag,
+	formatLookedUpBeamioTag,
+	isVoiceCallOfferActive,
+	isVoiceCallOfferRinging,
+	parseVoiceCallSignal,
+	randomVoiceId,
+	recoverVoiceCallOfferSigner,
+	lookupIncomingVoiceOffer,
+	INCOMING_CALL_RING_TIMEOUT_MS,
+	VOICE_PEER_WAKE_TIMEOUT_MS,
+	VOICE_PEER_UNREACHABLE_MS,
+	VOICE_PEER_UNREACHABLE_NOTICE_MS,
+	type VoicePeerWake,
+	voicePeerWakeAfterReceipt,
+	voicePeerWakeAfterTimer,
+	mergePhoneCallRecord,
+	isPhoneCallTerminalStatus,
+	phoneCallStampMs,
+	phoneCallIdsOverlap,
+	findPhoneCallByIds,
+	phoneCallWasAnswered,
+	voiceRingTimeoutApplies,
+	VOICE_CALL_MAX_DURATION_MS,
+	replacePhoneCallInRows,
+	normalizeVoiceTimestampMs,
+	markVoiceCallTerminal,
+	forgetIncomingVoiceOffer,
+	nativeIncomingSystemCallPayload,
+	rememberIncomingVoiceOffer,
+	VOICE_CALL_IDENTITY_WARNING,
+	voiceCallClaimMismatchesKey,
+	makeVoiceCallSignal,
+	type VoiceCallSignal,
+	withSettledIncomingOutcome,
+	askShellWhichIncomingCallsRang,
+	voicePeerRingingMatches,
+	wasVoicePeerRinging,
+	pageEndsSystemCall,
+	endHintTargetsOtherCall,
+	callWindowHoldMs,
+	sameCallId,
+} from '@/utils/voiceCallSession'
+import {
+	acceptPeerFrame,
+	applyPeerVideoControl,
+	isStalePeerFrame,
+	newPeerVideoGate,
+	VIDEO_OFF_REPEAT_MS,
+} from '@/services/voicePeerVideoGate'
+import {
+	decodeBjpgFrame,
+	encodeBjp2Frame,
+	encodeBjpgFrame,
+	hasBjpgMagic,
+	VOICE_LOCAL_VIDEO_CAPS,
+	VOICE_VIDEO_SEQ_BASE,
+	type BjpgDecodedFrame,
+	isLikelyVoiceMediaPlain,
+	startAndroidNativeMicCapture,
+	startVoiceCapture,
+	VoicePlaybackBuffer,
+	voiceCaptureConstraints,
+	voiceLevelFromPcmBytes,
+} from '@/services/voiceCallMedia'
+import { CallTonePlayer } from '@/utils/callTones'
+import {
+	createVoiceCallController,
+	declineIncomingVoiceOffer,
+	resolvePeerVoiceMaterialAsync,
+	timeoutIncomingVoiceOffer,
+	type VoiceCallController,
+} from '@/services/voiceCallController'
+import { useReliableTapHandler, RELIABLE_TAP_BUTTON_CLASS } from '@/utils/reliableTap'
+import { isCallToolsPanelBackgroundTap } from '@/utils/callToolsPanelTap'
+import {
+	createChatFileArchive,
+	decryptChatFileManifest,
+	encryptChatFiles,
+	uploadEncryptedChatFileDataUrl,
+	type ChatFileMessageManifest,
+} from '@/utils/chatFileMessage'
+import { toggleMediaPlayback, useStableMediaManifest, playbackErrorMessage, startVideoFromTap } from '@/utils/mediaPlaybackControl'
+
+const VOICE_RELAY_UNAVAILABLE = 'Voice audio relay is unavailable. Please try the call again.'
+
+const aptEndpoint = 'https://api.settleonbase.xyz'
+const baseExplorerTxUrl = (hash: string) => `https://basescan.org/tx/${hash}`
+GlobalWorkerOptions.workerSrc = `${process.env.PUBLIC_URL || '/app'}/pdf.worker.min.js`
+
+const REACTIONS = [
+  { key: "love", label: "❤️" },
+  { key: "like", label: "👍" },
+  { key: "bad", label: "👎" },
+  { key: "laugh", label: "😂" },
+  { key: "exclamation", label: "❗️" },
+  { key: "question", label: "❓" },
+  { key: "sweat", label: "😅" },
+  { key: "ok", label: "👌" },
+] as const
+
+type ReactionKey = typeof REACTIONS[number]["key"]
+
+/** The message status of a send that was not made: the three held states, otherwise failed. */
+const statusOfUnsentCode = (code?: string): ChatMessage["status"] =>
+  code === "route_unconfirmed" || code === "fingerprint_changed" || code === "first_fetch_pending" ? code : "failed"
+/** The visible copy of a refresh or lookup result that is not sent (the three results stay apart; locale keys, ⑤). */
+function recipientRefreshErrorText(code: string): string {
+	return chatHeldBannerText(code)
+}
+function recipientKeyErrorText(code: string): string {
+	return chatHeldBannerText(code)
+}
+
+function formatVoiceDuration(durationMs: number): string {
+	const totalSeconds = Math.max(0, Math.round(durationMs / 1000))
+	return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, '0')}`
+}
+
+function formatVoiceBytes(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+	return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+	let binary = ''
+	for (let i = 0; i < bytes.length; i += 0x8000) {
+		binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+	}
+	return btoa(binary)
+}
+
+function base64ToBytes(value: string): Uint8Array {
+	const binary = atob(value)
+	const bytes = new Uint8Array(binary.length)
+	for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+	return bytes
+}
+
+async function localFileManifestKey(privateKey: string, usage: KeyUsage[]): Promise<CryptoKey> {
+	const keyMaterial = ethers.getBytes(ethers.keccak256(ethers.toUtf8Bytes(privateKey)))
+	return crypto.subtle.importKey('raw', keyMaterial, 'AES-GCM', false, usage)
+}
+
+async function encryptLocalFileManifest(manifest: ChatFileMessageManifest, privateKey: string): Promise<string> {
+	const iv = crypto.getRandomValues(new Uint8Array(12))
+	const key = await localFileManifestKey(privateKey, ['encrypt'])
+	const cipher = new Uint8Array(await crypto.subtle.encrypt(
+		{ name: 'AES-GCM', iv },
+		key,
+		new TextEncoder().encode(JSON.stringify(manifest)),
+	))
+	return `${bytesToBase64(iv)}.${bytesToBase64(cipher)}`
+}
+
+async function decryptLocalFileManifest(
+	cipherText: string,
+	privateKey: string,
+): Promise<ChatFileMessageManifest | null> {
+	try {
+		const [ivB64, cipherB64] = cipherText.split('.')
+		if (!ivB64 || !cipherB64) return null
+		const key = await localFileManifestKey(privateKey, ['decrypt'])
+		const plain = await crypto.subtle.decrypt(
+			{ name: 'AES-GCM', iv: base64ToBytes(ivB64) },
+			key,
+			base64ToBytes(cipherB64),
+		)
+		return JSON.parse(new TextDecoder().decode(plain)) as ChatFileMessageManifest
+	} catch {
+		return null
+	}
+}
+
+type ChatFileJob = {
+	id: string
+	files: File[]
+	name: string
+	progress: number
+	status: 'uploading' | 'ready' | 'failed' | 'cancelled'
+	error?: string
+	manifest?: ChatFileMessageManifest
+	thumbnailUrl?: string
+}
+
+const SKIP_DROP_FILE_NAMES = new Set(['.ds_store', 'thumbs.db', 'desktop.ini'])
+
+function isJunkDropFileName(name: string): boolean {
+	const base = (name.split('/').pop() || name).trim()
+	if (!base) return true
+	const lower = base.toLowerCase()
+	return SKIP_DROP_FILE_NAMES.has(lower) || base.startsWith('._')
+}
+
+function fileNameStem(name: string): string {
+	const lastDot = name.lastIndexOf('.')
+	return lastDot > 0 ? name.slice(0, lastDot) : name
+}
+
+const IMAGE_LIKE_FOLDER_EXT = /\.(png|jpe?g|gif|webp|bmp|heic|heif|tiff?)$/i
+
+function folderDisplayName(name: string): string {
+	const trimmed = name.trim()
+	if (!trimmed) return trimmed
+	// Chrome/macOS type-sniffs a dropped folder as `folder.png`.
+	return IMAGE_LIKE_FOLDER_EXT.test(trimmed) ? fileNameStem(trimmed) : trimmed
+}
+
+function isTopLevelDroppedFile(file: File): boolean {
+	const name = file.name
+	const stem = fileNameStem(name)
+	const rel = (file.webkitRelativePath || '').replace(/\/+$/, '')
+	return !rel || rel === name || rel === stem
+}
+
+function isNotFoundReadError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : ''
+	return (error instanceof DOMException && error.name === 'NotFoundError')
+		|| /could not be found at the time an operation was processed/i.test(message)
+}
+
+function markDroppedDirectoryName(directoryNames: Set<string>, name: string): void {
+	const trimmed = name.trim()
+	if (!trimmed) return
+	directoryNames.add(trimmed)
+	directoryNames.add(fileNameStem(trimmed))
+}
+
+function extraDirectoryNamesFromHint(hint?: string | null): Set<string> | undefined {
+	if (!hint?.trim()) return undefined
+	const names = new Set<string>()
+	markDroppedDirectoryName(names, hint.trim())
+	return names
+}
+
+function looksLikeDirectoryStub(file: File, directoryNames: Set<string>): boolean {
+	if (!isTopLevelDroppedFile(file)) return false
+	const name = file.name
+	const stem = fileNameStem(name)
+	if (directoryNames.has(name) || directoryNames.has(stem)) return true
+	// Chrome/macOS type-sniffs a dropped folder as a 0-byte File, often
+	// `folder.png` / image/png. The stub is not a real child.
+	if (file.size === 0) return true
+	return false
+}
+
+function cloneFileWithBytes(file: File, bytes: ArrayBuffer): File {
+	const next = new File([bytes], file.name, { type: file.type, lastModified: file.lastModified })
+	const rel = file.webkitRelativePath
+	if (rel) Object.defineProperty(next, 'webkitRelativePath', { value: rel, configurable: true })
+	return next
+}
+
+function folderNameFromDroppedFiles(files: File[]): string | null {
+	const prefixes = new Set<string>()
+	for (const file of files) {
+		const rel = file.webkitRelativePath || ''
+		if (!rel.includes('/')) continue
+		const top = rel.split('/').find(Boolean)
+		if (top) prefixes.add(top)
+	}
+	if (prefixes.size === 1) return folderDisplayName([...prefixes][0] || '') || null
+	return null
+}
+
+function folderNameFromStubNames(stubNames: string[]): string | null {
+	const stems = [...new Set(stubNames.map(name => folderDisplayName(name).trim()).filter(Boolean))]
+	return stems.length === 1 ? stems[0] : null
+}
+
+function inferDroppedDirectoryNames(files: File[], extraNames?: Set<string>): Set<string> {
+	const names = extraNames ? new Set(extraNames) : new Set<string>()
+	for (const file of files) {
+		const rel = file.webkitRelativePath || ''
+		const top = rel.split('/').find(Boolean)
+		if (top) names.add(top)
+		if (isTopLevelDroppedFile(file) && file.size === 0) {
+			names.add(file.name)
+			names.add(fileNameStem(file.name))
+		}
+	}
+	return names
+}
+
+function sanitizeDroppedChatFiles(files: File[], directoryNames?: Set<string>): File[] {
+	const names = inferDroppedDirectoryNames(files, directoryNames)
+	return files.filter(file => (
+		!isJunkDropFileName(file.name)
+		&& !isJunkDropFileName(file.webkitRelativePath || '')
+		&& !looksLikeDirectoryStub(file, names)
+	))
+}
+
+async function materializeDroppedChatFiles(
+	files: File[],
+	directoryNames?: Set<string>,
+): Promise<{ files: File[]; stubNames: string[] }> {
+	const names = inferDroppedDirectoryNames(files, directoryNames)
+	const kept: File[] = []
+	const stubNames: string[] = []
+	for (const file of files) {
+		if (looksLikeDirectoryStub(file, names)) {
+			stubNames.push(file.name)
+			continue
+		}
+		try {
+			const bytes = await file.arrayBuffer()
+			// Chrome folder stubs can report size > 0, then yield 0 readable bytes
+			// without throwing. Keep those out of the composer file list.
+			if (bytes.byteLength === 0 && isTopLevelDroppedFile(file) && files.length > 1) {
+				stubNames.push(file.name)
+				continue
+			}
+			kept.push(cloneFileWithBytes(file, bytes))
+		} catch (error) {
+			if (isNotFoundReadError(error)) {
+				stubNames.push(file.name)
+				continue
+			}
+			throw error
+		}
+	}
+	return { files: kept, stubNames }
+}
+
+async function materializePickedChatFiles(files: File[]): Promise<File[]> {
+	const output: File[] = []
+	for (const file of files) {
+		const bytes = await file.arrayBuffer()
+		if (bytes.byteLength === 0) {
+			throw new Error('The selected file is empty or unavailable. Please choose it again.')
+		}
+		output.push(cloneFileWithBytes(file, bytes))
+	}
+	return output
+}
+
+function resolveDropFolderHint(opts: {
+	files: File[]
+	stubNames: string[]
+	directoryNames?: Set<string>
+	singleItemManyFiles?: boolean
+	firstDirectName?: string
+}): string | null {
+	const fromPaths = folderNameFromDroppedFiles(opts.files)
+	if (fromPaths) return fromPaths
+	const fromStubs = folderNameFromStubNames(opts.stubNames)
+	if (fromStubs) return fromStubs
+	if (opts.directoryNames && opts.directoryNames.size > 0) {
+		const stems = [...new Set(
+			[...opts.directoryNames].map(name => folderDisplayName(name).trim()).filter(Boolean),
+		)]
+		if (stems.length === 1) return stems[0]
+	}
+	if (opts.singleItemManyFiles && opts.firstDirectName) {
+		return folderDisplayName(opts.firstDirectName) || null
+	}
+	return null
+}
+
+function chatFileBundleDisplayName(files: File[], folderHint?: string | null): string {
+	const folder = folderDisplayName(folderHint || folderNameFromDroppedFiles(files) || '')
+	if (folder) return folder
+	if (files.length <= 1) return files[0]?.name || 'File'
+	return `${files.length} files`
+}
+
+function chatFileReadErrorMessage(error: unknown): string {
+	if (isNotFoundReadError(error)) return 'This folder could not be read. Drop the files inside it, or try again.'
+	const message = error instanceof Error ? error.message : ''
+	return message || 'Those files could not be added.'
+}
+
+async function createVideoThumbnail(videoFile: File): Promise<Blob> {
+	const url = URL.createObjectURL(videoFile)
+	try {
+		const video = document.createElement('video')
+		video.preload = 'metadata'
+		video.muted = true
+		video.src = url
+		await new Promise<void>((resolve, reject) => {
+			const timeout = window.setTimeout(() => reject(new Error('Video thumbnail timed out; continuing upload.')), 8_000)
+			video.onloadeddata = () => {
+				window.clearTimeout(timeout)
+				resolve()
+			}
+			video.onerror = () => {
+				window.clearTimeout(timeout)
+				reject(new Error('Video thumbnail could not be created.'))
+			}
+		})
+		video.currentTime = Math.min(0.1, Number.isFinite(video.duration) ? Math.max(0, video.duration / 10) : 0)
+		await new Promise<void>(resolve => { video.onseeked = () => resolve(); window.setTimeout(resolve, 250) })
+		const canvas = document.createElement('canvas')
+		canvas.width = 512
+		canvas.height = 288
+		const context = canvas.getContext('2d')
+		if (!context) throw new Error('Video thumbnail could not be created.')
+		context.drawImage(video, 0, 0, canvas.width, canvas.height)
+		return await new Promise<Blob>((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Video thumbnail could not be created.')), 'image/jpeg', 0.82))
+	} finally {
+		URL.revokeObjectURL(url)
+	}
+}
+
+async function readMediaDimensions(file: File): Promise<{ width: number; height: number } | undefined> {
+	if (file.type.startsWith('image/')) {
+		const url = URL.createObjectURL(file)
+		try {
+			const image = new Image()
+			const dimensions = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+				image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight })
+				image.onerror = () => reject(new Error('Image dimensions could not be read.'))
+				image.src = url
+			})
+			return dimensions.width > 0 && dimensions.height > 0 ? dimensions : undefined
+		} finally {
+			URL.revokeObjectURL(url)
+		}
+	}
+	if (file.type.startsWith('video/')) {
+		const url = URL.createObjectURL(file)
+		try {
+			const video = document.createElement('video')
+			video.preload = 'metadata'
+			video.src = url
+			const dimensions = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+				video.onloadedmetadata = () => resolve({ width: video.videoWidth, height: video.videoHeight })
+				video.onerror = () => reject(new Error('Video dimensions could not be read.'))
+			})
+			return dimensions.width > 0 && dimensions.height > 0 ? dimensions : undefined
+		} finally {
+			URL.revokeObjectURL(url)
+		}
+	}
+	return undefined
+}
+
+type DataTransferItemWithHandle = DataTransferItem & {
+	getAsFileSystemHandle?: () => Promise<FileSystemHandle | null>
+}
+
+type WalkableDirectoryHandle = FileSystemDirectoryHandle & {
+	values(): AsyncIterableIterator<FileSystemHandle>
+}
+
+function snapshotFileSystemHandle(item: DataTransferItem): Promise<FileSystemHandle | null> {
+	const withHandle = item as DataTransferItemWithHandle
+	if (typeof withHandle.getAsFileSystemHandle !== 'function') return Promise.resolve(null)
+	try {
+		return Promise.resolve(withHandle.getAsFileSystemHandle()).catch(() => null)
+	} catch {
+		return Promise.resolve(null)
+	}
+}
+
+/**
+ * Collect files from a drop. Critical: call getAsFileSystemHandle() /
+ * webkitGetAsEntry() / getAsFile() for EVERY item synchronously before any
+ * await — browsers invalidate later items once the first async entry.file() runs.
+ *
+ * Chrome/macOS may report a folder named `rrrr.png` as a FILE (image/png).
+ * FileSystemDirectoryHandle is the only reliable way to walk that folder.
+ *
+ * For plain multi-file drops (no folders), prefer the sync `dataTransfer.files`
+ * list — it is the most reliable multi-file source across Chrome / Safari / Firefox.
+ */
+async function filesFromDropItems(items: DataTransferItemList): Promise<{
+	files: File[]
+	hasDirectory: boolean
+	directoryNames: Set<string>
+}> {
+	const output: File[] = []
+	type Snapshot =
+		| { kind: 'entry'; entry: FileSystemEntry; handlePromise: Promise<FileSystemHandle | null> }
+		| { kind: 'file'; file: File; handlePromise: Promise<FileSystemHandle | null> }
+	const snapshots: Snapshot[] = []
+	const directoryNames = new Set<string>()
+	let hasDirectory = false
+	for (let i = 0; i < items.length; i += 1) {
+		const item = items[i]
+		if (!item) continue
+		const handlePromise = snapshotFileSystemHandle(item)
+		const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null
+		if (entry) {
+			if (entry.isDirectory) {
+				hasDirectory = true
+				markDroppedDirectoryName(directoryNames, entry.name)
+			}
+			snapshots.push({ kind: 'entry', entry, handlePromise })
+			continue
+		}
+		const file = item.getAsFile()
+		if (file) snapshots.push({ kind: 'file', file, handlePromise })
+	}
+
+	const markImageNamedFolder = (name: string): void => {
+		hasDirectory = true
+		markDroppedDirectoryName(directoryNames, name)
+	}
+
+	const readDirectoryHandle = async (handle: FileSystemDirectoryHandle, prefix = ''): Promise<void> => {
+		hasDirectory = true
+		markDroppedDirectoryName(directoryNames, handle.name)
+		try {
+			const walker = handle as FileSystemDirectoryHandle & {
+				values: () => AsyncIterableIterator<FileSystemHandle>
+			}
+			for await (const child of walker.values()) {
+				if (child.kind === 'directory') {
+					await readDirectoryHandle(child as FileSystemDirectoryHandle, `${prefix}${handle.name}/`)
+					continue
+				}
+				if (child.kind !== 'file') continue
+				try {
+					const file = await (child as FileSystemFileHandle).getFile()
+					if (isJunkDropFileName(file.name)) continue
+					Object.defineProperty(file, 'webkitRelativePath', {
+						value: `${prefix}${handle.name}/${file.name}`,
+						configurable: true,
+					})
+					output.push(file)
+				} catch {
+					// Child vanished — skip that file only.
+				}
+			}
+		} catch {
+			// Directory listing failed — skip this folder, keep siblings.
+		}
+	}
+
+	const treatUnreadableImageNamedAsFolder = async (name: string, file?: File): Promise<boolean> => {
+		if (!IMAGE_LIKE_FOLDER_EXT.test(name)) return false
+		if (file) {
+			try {
+				const bytes = await file.arrayBuffer()
+				if (bytes.byteLength > 0) return false
+			} catch (error) {
+				if (!isNotFoundReadError(error)) return false
+			}
+		}
+		markImageNamedFolder(name)
+		return true
+	}
+
+	const readEntry = async (entry: FileSystemEntry, prefix = ''): Promise<void> => {
+		if (entry.isFile) {
+			try {
+				const file = await new Promise<File>((resolve, reject) => {
+					;(entry as FileSystemFileEntry).file(resolve, reject)
+				})
+				if (isJunkDropFileName(file.name)) return
+				if (!prefix && await treatUnreadableImageNamedAsFolder(file.name, file)) return
+				Object.defineProperty(file, 'webkitRelativePath', {
+					value: `${prefix}${file.name}`,
+					configurable: true,
+				})
+				output.push(file)
+			} catch {
+				if (!prefix && IMAGE_LIKE_FOLDER_EXT.test(entry.name)) markImageNamedFolder(entry.name)
+			}
+			return
+		}
+		if (entry.isDirectory) {
+			markDroppedDirectoryName(directoryNames, entry.name)
+			try {
+				const reader = (entry as FileSystemDirectoryEntry).createReader()
+				while (true) {
+					const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => {
+						reader.readEntries(resolve, reject)
+					})
+					if (!batch.length) break
+					for (const child of batch) {
+						await readEntry(child, `${prefix}${entry.name}/`)
+					}
+				}
+			} catch {
+				// Directory listing failed — skip this folder, keep siblings.
+			}
+		}
+	}
+
+	for (const snapshot of snapshots) {
+		const handle = await snapshot.handlePromise
+		if (handle?.kind === 'directory') {
+			await readDirectoryHandle(handle as FileSystemDirectoryHandle)
+			continue
+		}
+		if (handle?.kind === 'file') {
+			try {
+				const file = await (handle as FileSystemFileHandle).getFile()
+				if (await treatUnreadableImageNamedAsFolder(file.name, file)) {
+					if (snapshot.kind === 'entry') await readEntry(snapshot.entry)
+					continue
+				}
+				if (isJunkDropFileName(file.name) || looksLikeDirectoryStub(file, directoryNames)) continue
+				if (snapshot.kind === 'entry' && snapshot.entry.isDirectory) {
+					await readEntry(snapshot.entry)
+					continue
+				}
+				output.push(file)
+			} catch {
+				if (IMAGE_LIKE_FOLDER_EXT.test(handle.name)) {
+					markImageNamedFolder(handle.name)
+				} else if (snapshot.kind === 'entry') {
+					await readEntry(snapshot.entry)
+				}
+			}
+			continue
+		}
+		if (snapshot.kind === 'file') {
+			if (!isJunkDropFileName(snapshot.file.name) && !looksLikeDirectoryStub(snapshot.file, directoryNames)) {
+				if (await treatUnreadableImageNamedAsFolder(snapshot.file.name, snapshot.file)) continue
+				output.push(snapshot.file)
+			}
+			continue
+		}
+		await readEntry(snapshot.entry)
+	}
+	return { files: output, hasDirectory, directoryNames }
+}
+
+async function filesFromDropTransfer(
+	dataTransfer: DataTransfer,
+	directFiles: File[] = Array.from(dataTransfer.files),
+): Promise<{ files: File[]; folderHint: string | null }> {
+	// Chrome invalidates FileList File objects after the first await in the
+	// drop handler. Start arrayBuffer() in this same turn so a FileList
+	// fallback stays readable if FileSystemDirectoryHandle walk fails.
+	const eagerDirectReads = directFiles.map(file =>
+		file.arrayBuffer()
+			.then((bytes): { file: File; bytes: ArrayBuffer } => ({ file, bytes }))
+			.catch((error: unknown): { file: File; error: unknown } => ({ file, error })),
+	)
+	const fromItems = await filesFromDropItems(dataTransfer.items)
+	const directoryNames = inferDroppedDirectoryNames(directFiles, fromItems.directoryNames)
+	const itemsHaveChildren = fromItems.files.some(file => (file.webkitRelativePath || '').includes('/'))
+	const directLooksLikeFolder = fromItems.hasDirectory
+		|| itemsHaveChildren
+		|| directFiles.some(file => looksLikeDirectoryStub(file, directoryNames))
+	let source: File[]
+	if (directLooksLikeFolder) {
+		if (fromItems.files.length > 0) {
+			source = fromItems.files
+		} else {
+			const eagerly = await Promise.all(eagerDirectReads)
+			const fromEager: File[] = []
+			for (const result of eagerly) {
+				if ('error' in result) {
+					if (isNotFoundReadError(result.error) || looksLikeDirectoryStub(result.file, directoryNames)) {
+						markDroppedDirectoryName(directoryNames, result.file.name)
+						continue
+					}
+					throw result.error
+				}
+				if (result.bytes.byteLength === 0 && isTopLevelDroppedFile(result.file)) {
+					markDroppedDirectoryName(directoryNames, result.file.name)
+					continue
+				}
+				if (isJunkDropFileName(result.file.name) || looksLikeDirectoryStub(result.file, directoryNames)) continue
+				fromEager.push(cloneFileWithBytes(result.file, result.bytes))
+			}
+			source = fromEager
+		}
+	} else {
+		source = directFiles.length > 0 ? directFiles : fromItems.files
+	}
+	const seen = new Set<string>()
+	const unique = sanitizeDroppedChatFiles(source, directoryNames).filter(file => {
+		const key = `${file.name}:${file.size}:${file.lastModified}:${file.webkitRelativePath || ''}`
+		if (seen.has(key)) return false
+		seen.add(key)
+		return true
+	})
+	const materialized = await materializeDroppedChatFiles(unique, directoryNames)
+	const folderHint = resolveDropFolderHint({
+		files: materialized.files,
+		stubNames: materialized.stubNames,
+		directoryNames,
+		singleItemManyFiles: fromItems.hasDirectory || directLooksLikeFolder,
+		firstDirectName: fromItems.hasDirectory
+			? ([...fromItems.directoryNames][0] || [...directoryNames][0])
+			: (directFiles[0]?.name),
+	})
+	return { files: materialized.files, folderHint }
+}
+
+function voiceWaveformPath(samples: number[]): string {
+	if (samples.length === 0) return 'M 0 16 L 240 16'
+	const upper = samples.map((sample, index) => {
+		const x = (index / Math.max(1, samples.length - 1)) * 240
+		const amplitude = Math.max(1.5, Math.min(14, sample * 14))
+		return `${x.toFixed(2)} ${(16 - amplitude).toFixed(2)}`
+	})
+	const lower = [...samples].reverse().map((sample, reverseIndex) => {
+		const index = samples.length - 1 - reverseIndex
+		const x = (index / Math.max(1, samples.length - 1)) * 240
+		const amplitude = Math.max(1.5, Math.min(14, sample * 14))
+		return `${x.toFixed(2)} ${(16 + amplitude).toFixed(2)}`
+	})
+	return `M ${upper.join(' L ')} L ${lower.join(' L ')} Z`
+}
+
+/**
+ * Dual call waveform: UPPER = local capture meter, LOWER = peer inbound PCM level.
+ * Empty / silent sides pad with 0 (near-flat). Do NOT pad with 0.04 — that drew a
+ * fake “alive” peer lobe while only the dialer mic (or air bleed from Android
+ * loudspeaker music) was moving.
+ */
+function voiceCallDualWaveformPath(localSamples: number[], remoteSamples: number[]): string {
+	const count = 64
+	const take = (samples: number[]) => {
+		const slice = (samples.length ? samples : [0]).slice(-count)
+		while (slice.length < count) slice.unshift(0)
+		return slice
+	}
+	const lobe = (sample: number) => {
+		if (sample <= 0.02) return 0.35
+		return Math.max(1.5, Math.min(14, sample * 14))
+	}
+	const local = take(localSamples)
+	const remote = take(remoteSamples)
+	const upper = local.map((sample, index) => {
+		const x = (index / (count - 1)) * 240
+		const amplitude = lobe(sample)
+		return `${x.toFixed(2)} ${(16 - amplitude).toFixed(2)}`
+	})
+	const lower = [...remote].reverse().map((sample, reverseIndex) => {
+		const index = count - 1 - reverseIndex
+		const x = (index / (count - 1)) * 240
+		const amplitude = lobe(sample)
+		return `${x.toFixed(2)} ${(16 + amplitude).toFixed(2)}`
+	})
+	return `M ${upper.join(' L ')} L ${lower.join(' L ')} Z`
+}
+
+function VoiceMessagePlayer({ manifest: manifestProp, isMe }: { manifest: VoiceMessageManifest; isMe: boolean }) {
+	// Same object until the fragment changes: a profile refresh must not re-download or stop playback.
+	const manifest = useStableMediaManifest(manifestProp)
+	const [url, setUrl] = useState<string | null>(null)
+	const [error, setError] = useState<string | null>(null)
+	const [loading, setLoading] = useState(false)
+	const [playing, setPlaying] = useState(false)
+	const [volume, setVolume] = useState(1)
+	const [volumeOpen, setVolumeOpen] = useState(false)
+	const [menuOpen, setMenuOpen] = useState(false)
+	const [playbackRate, setPlaybackRate] = useState(1)
+	const audioRef = useRef<HTMLAudioElement | null>(null)
+	const voiceControlsRef = useRef<HTMLDivElement | null>(null)
+	useEffect(() => {
+		let cancelled = false
+		const controller = new AbortController()
+		setUrl(null)
+		setError(null)
+		setLoading(true)
+		void decryptVoiceFragment(manifest, controller.signal)
+			.then(blob => {
+				if (cancelled) return
+				setUrl(URL.createObjectURL(blob))
+			})
+			.catch(error => {
+				if (!cancelled) setError(error?.name === 'TimeoutError' ? error.message : 'Voice message is unavailable')
+			})
+			.finally(() => {
+				if (!cancelled) setLoading(false)
+			})
+		return () => {
+			cancelled = true
+			controller.abort()
+			setPlaying(false)
+			setUrl(previous => {
+				if (previous) URL.revokeObjectURL(previous)
+				return null
+			})
+		}
+	}, [manifest])
+	useEffect(() => {
+		const audio = audioRef.current
+		if (!audio) return
+		audio.volume = volume
+		audio.playbackRate = playbackRate
+	}, [volume, playbackRate, url])
+	useEffect(() => {
+		if (!volumeOpen) return
+		const timer = window.setTimeout(() => setVolumeOpen(false), 3000)
+		return () => window.clearTimeout(timer)
+	}, [volumeOpen, volume])
+	useEffect(() => {
+		if (!volumeOpen && !menuOpen) return
+		const closeOnOutsideAction = (event: PointerEvent) => {
+			const target = event.target
+			if (target instanceof Node && voiceControlsRef.current?.contains(target)) return
+			setVolumeOpen(false)
+			setMenuOpen(false)
+		}
+		document.addEventListener('pointerdown', closeOnOutsideAction, true)
+		return () => document.removeEventListener('pointerdown', closeOnOutsideAction, true)
+	}, [menuOpen, volumeOpen])
+
+	const togglePlayback = () => {
+		const audio = audioRef.current
+		if (!audio || !url) return
+		setError(null)
+		void toggleMediaPlayback(audio, 'voice').then(result => {
+			if (result.state === 'error') setError(result.message)
+			else setPlaying(result.state === 'playing')
+		})
+	}
+
+	const downloadVoice = () => {
+		if (!url) return
+		const anchor = document.createElement('a')
+		anchor.href = url
+		anchor.download = `voice-message-${manifest.durationMs}.webm`
+		anchor.click()
+		setMenuOpen(false)
+	}
+
+	return (
+		<div ref={voiceControlsRef} className="relative min-w-[230px] text-slate-900">
+			{loading ? <div className="text-[13px] text-slate-500">Preparing voice message…</div> : null}
+			{error ? <div role="alert" className="text-[13px] text-rose-600">{error}</div> : null}
+			{url ? (
+				<div
+					className={[
+						'flex items-center gap-1.5 rounded-full p-1.5 backdrop-blur-2xl shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_8px_20px_rgba(15,23,42,0.08)] ring-1 ring-white/70',
+						isMe ? 'bg-[#dceaff]/45' : 'bg-white/45',
+					].join(' ')}
+				>
+					<audio
+						ref={audioRef}
+						preload="metadata"
+						src={url}
+						className="hidden"
+						onPlay={() => setPlaying(true)}
+						onPause={() => setPlaying(false)}
+						onEnded={() => setPlaying(false)}
+						onError={() => setError(playbackErrorMessage('voice', audioRef.current?.error?.code === 4 ? { name: 'NotSupportedError' } : null))}
+					/>
+					<button
+						type="button"
+						onClick={togglePlayback}
+						aria-label={playing ? 'Pause voice message' : 'Play voice message'}
+						className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/55 text-[#424655]/85 shadow-[0_2px_8px_rgba(15,23,42,0.12)] ring-1 ring-white/80 backdrop-blur-md transition active:scale-95"
+					>
+						{playing ? <Pause className="h-4 w-4 fill-current" /> : <Play className="ml-0.5 h-4 w-4 fill-current" />}
+					</button>
+					<span className="min-w-0 flex-1 text-center text-[13px] font-semibold text-[#424655]/80">
+						{formatVoiceDuration(manifest.durationMs)}
+					</span>
+					<div className="relative">
+						<button
+							type="button"
+							onClick={() => {
+								setVolumeOpen(previous => !previous)
+								setMenuOpen(false)
+							}}
+							aria-label="Adjust volume"
+							className="grid h-9 w-9 place-items-center rounded-full text-[#424655]/80 transition hover:bg-white/35 active:scale-95"
+						>
+							{volume === 0 ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+						</button>
+						{volumeOpen ? (
+							<div className="absolute bottom-full right-0 z-20 mb-2 flex h-28 w-10 items-center justify-center rounded-2xl bg-white p-1 shadow-xl ring-1 ring-black/10">
+								<input
+									type="range"
+									min={0}
+									max={1}
+									step={0.01}
+									value={volume}
+									onChange={event => setVolume(Number(event.target.value))}
+									className="h-20 w-4 accent-[#1652f0] [writing-mode:vertical-lr] [direction:rtl]"
+									aria-label={`Volume ${Math.round(volume * 100)} percent`}
+								/>
+							</div>
+						) : null}
+					</div>
+					<div className="relative">
+						<button
+							type="button"
+							onClick={() => {
+								setMenuOpen(previous => !previous)
+								setVolumeOpen(false)
+							}}
+							aria-label="Voice message options"
+							className="grid h-9 w-9 place-items-center rounded-full text-[#424655]/80 transition hover:bg-white/35 active:scale-95"
+						>
+							<Gauge className="h-4 w-4" />
+						</button>
+						{menuOpen ? (
+							<div className="absolute bottom-full right-0 z-20 mb-2 w-36 rounded-2xl bg-white p-1.5 shadow-xl ring-1 ring-black/10">
+								<button type="button" onClick={downloadVoice} className="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-100">
+									<Download className="h-3.5 w-3.5" /> Download
+								</button>
+								<p className="px-2.5 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wide text-slate-400">Playback speed</p>
+								{[1, 1.5, 2].map(rate => (
+									<button
+										key={rate}
+										type="button"
+										onClick={() => {
+											setPlaybackRate(rate)
+											setMenuOpen(false)
+										}}
+										className={`flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-left text-xs font-semibold hover:bg-slate-100 ${playbackRate === rate ? 'text-[#1652f0]' : 'text-slate-700'}`}
+									>
+										<span>{rate}x</span>
+										{playbackRate === rate ? <Check className="h-3.5 w-3.5" /> : null}
+									</button>
+								))}
+							</div>
+						) : null}
+					</div>
+				</div>
+			) : null}
+		</div>
+	)
+}
+
+const CHAT_IMAGE_PREVIEW_MIN_SCALE = 1
+const CHAT_IMAGE_PREVIEW_MAX_SCALE = 5
+
+function touchPairDistance(touches: TouchList | React.TouchList): number {
+	if (touches.length < 2) return 0
+	const dx = touches[0].clientX - touches[1].clientX
+	const dy = touches[0].clientY - touches[1].clientY
+	return Math.hypot(dx, dy)
+}
+
+function ChatImageFullscreenPreview({
+	src,
+	onClose,
+	onDownload,
+	canDownload,
+}: {
+	src: string
+	onClose: () => void
+	onDownload: () => void
+	canDownload: boolean
+}) {
+	const [scale, setScale] = useState(1)
+	const [pan, setPan] = useState({ x: 0, y: 0 })
+	const viewportRef = useRef<HTMLDivElement>(null)
+	const pinchRef = useRef<{ dist: number; scale: number } | null>(null)
+	const panDragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null)
+
+	const clampScale = useCallback((value: number) => clamp(value, CHAT_IMAGE_PREVIEW_MIN_SCALE, CHAT_IMAGE_PREVIEW_MAX_SCALE), [])
+
+	const setScaleClamped = useCallback(
+		(next: number | ((prev: number) => number)) => {
+			setScale(prev => {
+				const raw = typeof next === 'function' ? next(prev) : next
+				const s = clampScale(raw)
+				if (s <= 1) setPan({ x: 0, y: 0 })
+				return s
+			})
+		},
+		[clampScale]
+	)
+
+	useEffect(() => {
+		const el = viewportRef.current
+		if (!el) return
+		const onWheel = (event: WheelEvent) => {
+			event.preventDefault()
+			const delta = event.deltaY > 0 ? -0.12 : 0.12
+			setScaleClamped(prev => prev + delta)
+		}
+		el.addEventListener('wheel', onWheel, { passive: false })
+		return () => el.removeEventListener('wheel', onWheel)
+	}, [setScaleClamped])
+
+	const zoomIn = () => setScaleClamped(prev => prev + 0.35)
+	const zoomOut = () => setScaleClamped(prev => prev - 0.35)
+
+	const onTouchStart = (event: React.TouchEvent) => {
+		if (event.touches.length === 2) {
+			pinchRef.current = { dist: touchPairDistance(event.touches), scale }
+			panDragRef.current = null
+			return
+		}
+		if (event.touches.length === 1 && scale > 1) {
+			panDragRef.current = {
+				startX: event.touches[0].clientX,
+				startY: event.touches[0].clientY,
+				panX: pan.x,
+				panY: pan.y,
+			}
+		}
+	}
+
+	const onTouchMove = (event: React.TouchEvent) => {
+		if (event.touches.length === 2 && pinchRef.current) {
+			event.preventDefault()
+			const dist = touchPairDistance(event.touches)
+			if (pinchRef.current.dist <= 0) return
+			const ratio = dist / pinchRef.current.dist
+			const base = pinchRef.current.scale
+			setScaleClamped(base * ratio)
+			return
+		}
+		if (event.touches.length === 1 && panDragRef.current && scale > 1) {
+			event.preventDefault()
+			const dx = event.touches[0].clientX - panDragRef.current.startX
+			const dy = event.touches[0].clientY - panDragRef.current.startY
+			setPan({ x: panDragRef.current.panX + dx, y: panDragRef.current.panY + dy })
+		}
+	}
+
+	const endPanOrPinch = () => {
+		pinchRef.current = null
+		panDragRef.current = null
+	}
+
+	const onMouseDown = (event: React.MouseEvent) => {
+		if (scale <= 1 || event.button !== 0) return
+		panDragRef.current = {
+			startX: event.clientX,
+			startY: event.clientY,
+			panX: pan.x,
+			panY: pan.y,
+		}
+	}
+
+	const onMouseMove = (event: React.MouseEvent) => {
+		if (!panDragRef.current || scale <= 1) return
+		const dx = event.clientX - panDragRef.current.startX
+		const dy = event.clientY - panDragRef.current.startY
+		setPan({ x: panDragRef.current.panX + dx, y: panDragRef.current.panY + dy })
+	}
+
+	const chromeBtn =
+		'pointer-events-auto grid h-11 w-11 place-items-center rounded-full border border-white/35 bg-white/20 text-white/90 shadow-[0_2px_10px_rgba(0,0,0,0.35)] backdrop-blur-md transition hover:bg-white/30 disabled:opacity-40'
+
+	return (
+		<div
+			className="fixed inset-0 z-[120] flex flex-col bg-black/95"
+			role="dialog"
+			aria-modal="true"
+			aria-label="Image preview"
+		>
+			<div
+				className="pointer-events-none fixed inset-x-0 top-0 z-10 flex items-center justify-between gap-2 px-4 pt-[max(1rem,env(safe-area-inset-top,0px))]"
+			>
+				<button type="button" tabIndex={-1} onClick={onClose} aria-label="Back" className={chromeBtn}>
+					<ChevronLeft className="h-5 w-5" strokeWidth={2.5} aria-hidden />
+				</button>
+				<div className="pointer-events-auto flex items-center gap-2">
+					<button
+						type="button"
+						tabIndex={-1}
+						onClick={zoomOut}
+						disabled={scale <= CHAT_IMAGE_PREVIEW_MIN_SCALE}
+						aria-label="Zoom out"
+						className={chromeBtn}
+					>
+						<ZoomOut className="h-5 w-5" aria-hidden />
+					</button>
+					<button
+						type="button"
+						tabIndex={-1}
+						onClick={zoomIn}
+						disabled={scale >= CHAT_IMAGE_PREVIEW_MAX_SCALE}
+						aria-label="Zoom in"
+						className={chromeBtn}
+					>
+						<ZoomIn className="h-5 w-5" aria-hidden />
+					</button>
+				</div>
+				{canDownload ? (
+					<button type="button" tabIndex={-1} onClick={onDownload} aria-label="Download image" className={chromeBtn}>
+						<Download className="h-5 w-5" aria-hidden />
+					</button>
+				) : (
+					<span className="h-11 w-11 shrink-0" aria-hidden />
+				)}
+			</div>
+			<div
+				ref={viewportRef}
+				className="min-h-0 flex-1 touch-none overflow-hidden pt-[calc(max(1rem,env(safe-area-inset-top,0px))+3.25rem)] pb-[env(safe-area-inset-bottom,0px)]"
+				onTouchStart={onTouchStart}
+				onTouchMove={onTouchMove}
+				onTouchEnd={endPanOrPinch}
+				onTouchCancel={endPanOrPinch}
+				onMouseDown={onMouseDown}
+				onMouseMove={onMouseMove}
+				onMouseUp={endPanOrPinch}
+				onMouseLeave={endPanOrPinch}
+			>
+				<div className="flex h-full w-full items-center justify-center px-2">
+					<img
+						src={src}
+						alt=""
+						draggable={false}
+						onDoubleClick={() => setScaleClamped(prev => (prev > 1 ? 1 : 2.5))}
+						className="max-h-full max-w-full select-none object-contain"
+						style={{
+							transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
+							transformOrigin: 'center center',
+							cursor: scale > 1 ? 'grab' : 'zoom-in',
+						}}
+					/>
+				</div>
+			</div>
+		</div>
+	)
+}
+
+function ChatPdfFullscreenPreview({
+	src,
+	onClose,
+	onDownload,
+}: {
+	src: Blob
+	onClose: () => void
+	onDownload: () => void
+}) {
+	const [pageCount, setPageCount] = useState(0)
+	const [error, setError] = useState<string | null>(null)
+	const [fallbackUrl, setFallbackUrl] = useState<string | null>(null)
+	const pdfRef = useRef<any>(null)
+	const canvasRefs = useRef<HTMLCanvasElement[]>([])
+	const pagesRef = useRef<HTMLDivElement | null>(null)
+
+	useEffect(() => {
+		const url = URL.createObjectURL(src)
+		setFallbackUrl(url)
+		return () => {
+			URL.revokeObjectURL(url)
+			setFallbackUrl(null)
+		}
+	}, [src])
+
+	useEffect(() => {
+		let cancelled = false
+		setPageCount(0)
+		setError(null)
+		canvasRefs.current = []
+		void (async () => {
+			try {
+				const data = new Uint8Array(await src.arrayBuffer())
+				const pdf = await getDocument({ data } as any).promise
+				if (cancelled) {
+					await pdf.destroy()
+					return
+				}
+				pdfRef.current = pdf
+				setPageCount(pdf.numPages)
+			} catch (reason) {
+				if (!cancelled) setError(reason instanceof Error ? reason.message : 'PDF could not be opened.')
+			}
+		})()
+		return () => {
+			cancelled = true
+			const pdf = pdfRef.current
+			pdfRef.current = null
+			if (pdf) void pdf.destroy()
+		}
+	}, [src])
+
+	useEffect(() => {
+		const pdf = pdfRef.current
+		const container = pagesRef.current
+		if (!pdf || !container || !pageCount) return
+		let cancelled = false
+		void (async () => {
+			try {
+				for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+					if (cancelled) return
+					const canvas = canvasRefs.current[pageNumber - 1]
+					if (!canvas) continue
+					const page = await pdf.getPage(pageNumber)
+					const baseViewport = page.getViewport({ scale: 1 })
+					const availableWidth = Math.max(280, container.clientWidth - 24)
+					const scale = Math.min(1.6, availableWidth / baseViewport.width)
+					const viewport = page.getViewport({ scale })
+					const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
+					canvas.width = Math.ceil(viewport.width * pixelRatio)
+					canvas.height = Math.ceil(viewport.height * pixelRatio)
+					canvas.style.width = `${viewport.width}px`
+					canvas.style.height = `${viewport.height}px`
+					const context = canvas.getContext('2d')
+					if (!context) continue
+					context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
+					await page.render({ canvasContext: context, viewport }).promise
+				}
+			} catch (reason) {
+				if (!cancelled) setError(reason instanceof Error ? reason.message : 'PDF page could not be rendered.')
+			}
+		})()
+		return () => { cancelled = true }
+	}, [pageCount])
+
+	const chromeBtn =
+		'pointer-events-auto grid h-11 w-11 place-items-center rounded-full border border-white/35 bg-white/20 text-white/90 shadow-[0_2px_10px_rgba(0,0,0,0.35)] backdrop-blur-md transition hover:bg-white/30'
+
+	return (
+		<div className="fixed inset-0 z-[120] flex flex-col bg-slate-950/95" role="dialog" aria-modal="true" aria-label="PDF preview">
+			<div className="pointer-events-none fixed inset-x-0 top-0 z-10 flex items-center justify-between gap-2 px-4 pt-[max(1rem,env(safe-area-inset-top,0px))]">
+				<button type="button" tabIndex={-1} onClick={onClose} aria-label="Back" className={chromeBtn}>
+					<ChevronLeft className="h-5 w-5" strokeWidth={2.5} aria-hidden />
+				</button>
+				<button type="button" tabIndex={-1} onClick={onDownload} aria-label="Download PDF" className={chromeBtn}>
+					<Download className="h-5 w-5" aria-hidden />
+				</button>
+			</div>
+			<div ref={pagesRef} className="min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-auto px-2 pb-[env(safe-area-inset-bottom,0px)] pt-[calc(max(1rem,env(safe-area-inset-top,0px))+3.25rem)]">
+				<div className="mx-auto flex min-h-full w-full min-w-0 max-w-3xl flex-col items-center gap-3 rounded-xl bg-slate-700/50 py-3 shadow-2xl">
+					{Array.from({ length: pageCount }, (_, index) => (
+						<canvas
+							key={index}
+							ref={canvas => { if (canvas) canvasRefs.current[index] = canvas }}
+							className="block h-auto max-w-full bg-white shadow-md"
+							aria-label={`PDF page ${index + 1}`}
+						/>
+					))}
+					{!error && !pageCount ? <Loader2 className="my-10 h-6 w-6 animate-spin text-white/75" aria-label="Loading PDF" /> : null}
+					{error && fallbackUrl ? (
+						<iframe
+							src={fallbackUrl}
+							title="PDF preview"
+							className="h-[calc(100dvh-8rem)] w-full min-w-0 bg-white"
+						/>
+					) : null}
+					{error && !fallbackUrl ? <div role="alert" className="m-4 rounded-xl bg-rose-950/70 px-4 py-3 text-sm text-rose-100">{error}</div> : null}
+				</div>
+			</div>
+		</div>
+	)
+}
+
+function ChatFileMessagePlayer({ manifest: manifestProp, isMe }: { manifest: ChatFileMessageManifest; isMe: boolean }) {
+	// Chat decrypts file manifests again on every profile refresh (new object, same fragment).
+	const manifest = useStableMediaManifest(manifestProp)
+	const [files, setFiles] = useState<Map<string, Blob> | null>(null)
+	const [error, setError] = useState<string | null>(null)
+	const [loading, setLoading] = useState(false)
+	const [playing, setPlaying] = useState(false)
+	const [videoUrl, setVideoUrl] = useState<string | null>(null)
+	const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+	const [previewLoadFailed, setPreviewLoadFailed] = useState(false)
+	const [fullImageUrl, setFullImageUrl] = useState<string | null>(null)
+	const [pdfUrl, setPdfUrl] = useState<string | null>(null)
+	const [imageFullscreen, setImageFullscreen] = useState(false)
+	const [pdfFullscreen, setPdfFullscreen] = useState(false)
+	const videoRef = useRef<HTMLVideoElement | null>(null)
+	const [videoBlob, setVideoBlob] = useState<Blob | null>(null)
+	/** Hide poster after first play so short clips don't look like they never played. */
+	const [showVideoPoster, setShowVideoPoster] = useState(true)
+	const [imageBlob, setImageBlob] = useState<Blob | null>(null)
+	const [pdfBlob, setPdfBlob] = useState<Blob | null>(null)
+	const [archiveBlob, setArchiveBlob] = useState<Blob | null>(null)
+	const previewBlob = files && manifest.previewName ? files.get(manifest.previewName) ?? null : null
+	const downloadImageBlob = imageBlob ?? previewBlob
+	useEffect(() => {
+		const controller = new AbortController()
+		setLoading(true)
+		setError(null)
+		setFiles(null)
+		setVideoUrl(null)
+		setShowVideoPoster(true)
+		setPlaying(false)
+		setPreviewUrl(null)
+		setPreviewLoadFailed(false)
+		setFullImageUrl(null)
+		setPdfUrl(null)
+		setVideoBlob(null)
+		setImageBlob(null)
+		setPdfBlob(null)
+		setArchiveBlob(null)
+		setImageFullscreen(false)
+		setPdfFullscreen(false)
+		void decryptChatFileManifest(manifest, controller.signal)
+			.then(result => {
+				setFiles(result)
+				if (manifest.isArchive) {
+					void createChatFileArchive(result, manifest)
+						.then(setArchiveBlob)
+						.catch(() => setError('ZIP bundle could not be prepared.'))
+				}
+				if (manifest.mediaKind === 'video' || manifest.mediaKind === 'image' || manifest.mediaKind === 'pdf') {
+					const mainEntryName = manifest.files[0]?.name
+					const mainBlob = mainEntryName ? result.get(mainEntryName) : undefined
+					const videoEntry = Array.from(result.entries()).find(([name]) => name !== manifest.previewName)?.[1]
+					const preview = manifest.previewName ? result.get(manifest.previewName) : undefined
+					if (manifest.mediaKind === 'video' && videoEntry) {
+						setVideoBlob(videoEntry)
+						setVideoUrl(URL.createObjectURL(videoEntry))
+					}
+					if (manifest.mediaKind === 'image') {
+						const fullImage = mainBlob ?? videoEntry
+						if (fullImage) {
+							setImageBlob(fullImage)
+							setFullImageUrl(URL.createObjectURL(fullImage))
+						}
+						const thumbSource = preview ?? fullImage
+						if (thumbSource) setPreviewUrl(URL.createObjectURL(thumbSource))
+					} else if (preview) {
+						setPreviewUrl(URL.createObjectURL(preview))
+					}
+					if (manifest.mediaKind === 'pdf' && mainBlob) {
+						setPdfBlob(mainBlob)
+						setPdfUrl(URL.createObjectURL(mainBlob))
+					}
+				}
+			})
+			.catch(error => {
+				if (error?.name !== 'AbortError') setError(error instanceof Error ? error.message : 'File attachment is unavailable.')
+			})
+			.finally(() => setLoading(false))
+		return () => {
+			controller.abort()
+			setVideoUrl(previous => { if (previous) URL.revokeObjectURL(previous); return null })
+			setPreviewUrl(previous => { if (previous) URL.revokeObjectURL(previous); return null })
+			setFullImageUrl(previous => { if (previous) URL.revokeObjectURL(previous); return null })
+			setPdfUrl(previous => { if (previous) URL.revokeObjectURL(previous); return null })
+		}
+	}, [manifest])
+	const download = async (name: string, blob: Blob) => {
+		const url = URL.createObjectURL(blob)
+		if (nativeSaveFileAvailable()) {
+			const dataUrl = await new Promise<string>((resolve, reject) => {
+				const reader = new FileReader()
+				reader.onload = () => resolve(String(reader.result || ''))
+				reader.onerror = () => reject(reader.error || new Error('File could not be prepared.'))
+				reader.readAsDataURL(blob)
+			})
+			try {
+				const saved = saveFileToNative({
+					dataUrl,
+					filename: name.split('/').pop() || 'download',
+					mimeType: blob.type || 'application/octet-stream',
+					requestId: crypto.randomUUID(),
+				})
+				if (saved) {
+					URL.revokeObjectURL(url)
+					return
+				}
+			} catch {
+				// Fall back to the browser download path.
+			}
+		}
+		const anchor = document.createElement('a')
+		anchor.href = url
+		anchor.download = name.split('/').pop() || 'download'
+		anchor.click()
+		window.setTimeout(() => URL.revokeObjectURL(url), 0)
+	}
+	const isImageMessage = manifest.mediaKind === 'image'
+	const isPdfMessage = manifest.mediaKind === 'pdf'
+	const mediaAspectRatio =
+		manifest.width && manifest.height && manifest.width > 0 && manifest.height > 0
+			? `${manifest.width} / ${manifest.height}`
+			: '4 / 3'
+	const imageBubbleWidth =
+		isImageMessage && manifest.width && manifest.width > 0
+			? `min(78vw, 280px, ${Math.round(manifest.width)}px)`
+			: undefined
+	return (
+		<div
+			className={[
+				isPdfMessage
+					? 'min-w-0 bg-transparent p-0 ring-0'
+					: isImageMessage
+					? 'max-w-[min(78vw,280px)] overflow-hidden rounded-2xl p-0 ring-1 ring-black/5'
+					: 'min-w-[220px] rounded-2xl px-3 py-2 ring-1 ring-black/5',
+				isPdfMessage ? '' : isMe ? 'bg-[#dceaff]/70' : 'bg-white/70',
+			].join(' ')}
+			// Fix the image bubble width from the manifest so the placeholder and
+			// the decoded image have identical height. Previously the pulse
+			// placeholder was min 200px wide and grew to up to 280px once the image
+			// decoded, pushing the newest bubble under the composer.
+			style={imageBubbleWidth ? { width: imageBubbleWidth } : undefined}
+		>
+			{manifest.mediaKind === 'video' ? (
+				<div className="relative mb-2 w-full overflow-hidden rounded-xl bg-slate-900" style={{ aspectRatio: mediaAspectRatio }}>
+					{videoUrl ? (
+						<video
+							ref={videoRef}
+							src={videoUrl}
+							className="absolute inset-0 block h-full w-full object-contain"
+							playsInline
+							preload="auto"
+							onPlay={() => {
+								setPlaying(true)
+								setShowVideoPoster(false)
+							}}
+							onPause={() => setPlaying(false)}
+							onEnded={() => {
+								// Keep the last frame. Seeking to 0 + re-showing the poster makes
+								// sub-second Android/WebView clips look like play never started.
+								setPlaying(false)
+							}}
+							onError={() => setError(playbackErrorMessage('video', videoRef.current?.error?.code === 4 ? { name: 'NotSupportedError' } : null))}
+							controls={false}
+						/>
+					) : (
+						<div className="absolute inset-0 animate-pulse bg-slate-800/70" aria-hidden />
+					)}
+					{videoUrl && playing ? (
+						// Tap the playing video to pause; the play button below resumes.
+						<button
+							type="button"
+							onClick={() => videoRef.current?.pause()}
+							aria-label="Pause video"
+							className="absolute inset-0"
+						/>
+					) : null}
+					{previewUrl && !previewLoadFailed ? (
+						<img
+							src={previewUrl}
+							alt="Video thumbnail"
+							className="absolute inset-0 h-full w-full object-cover transition-opacity"
+							style={{ opacity: showVideoPoster && !playing ? 1 : 0 }}
+							onError={() => {
+								setPreviewLoadFailed(true)
+								setPreviewUrl(previous => {
+									if (previous) URL.revokeObjectURL(previous)
+									return null
+								})
+							}}
+						/>
+					) : null}
+					{videoUrl && !playing ? (
+						<button type="button" onClick={() => {
+							const video = videoRef.current
+							if (!video) return
+							setShowVideoPoster(false)
+							setError(null)
+							startVideoFromTap(video, message => setError(message))
+						}} aria-label="Play video" className="absolute inset-0 grid place-items-center">
+							<span className="grid h-12 w-12 place-items-center rounded-full bg-black/60 text-white shadow-lg"><Play className="ml-1 h-6 w-6 fill-current" /></span>
+						</button>
+					) : null}
+				</div>
+			) : null}
+			{isPdfMessage ? (
+				<button
+					type="button"
+					disabled={!pdfUrl}
+					onClick={() => setPdfFullscreen(true)}
+					className={[
+						'flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition disabled:cursor-wait',
+						isMe ? 'bg-[#dceaff]/70 hover:bg-[#dceaff]' : 'bg-white/70 hover:bg-white',
+					].join(' ')}
+					aria-label="Open PDF fullscreen"
+				>
+					<span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-rose-100 text-rose-600" aria-hidden>
+						<FileText className="h-5 w-5" />
+					</span>
+					<span className="min-w-0 flex-1">
+						<span className="block truncate text-[13px] font-semibold text-slate-700">{manifest.name}</span>
+						<span className="mt-0.5 block text-[11px] font-medium text-slate-500">PDF · Tap to preview</span>
+					</span>
+					<span className="text-[11px] font-semibold text-[#1652f0]">Open</span>
+				</button>
+			) : manifest.mediaKind === 'image' ? (
+				<button
+					type="button"
+					disabled={!previewUrl}
+					onClick={() => setImageFullscreen(true)}
+					className="block w-full text-left disabled:cursor-wait"
+					aria-label="Open image fullscreen"
+				>
+					{previewUrl ? (
+						<img src={previewUrl} alt="" className="block h-full w-full object-cover" style={{ aspectRatio: mediaAspectRatio }} />
+					) : (
+						<div className={imageBubbleWidth ? 'w-full animate-pulse bg-slate-200/80' : 'min-w-[200px] animate-pulse bg-slate-200/80'} style={{ aspectRatio: mediaAspectRatio }} aria-hidden />
+					)}
+				</button>
+			) : manifest.mediaKind === 'video' ? (
+				<div className="flex items-center justify-end gap-2 px-3 py-2 text-[12px] font-semibold text-slate-700">
+					<span>{manifest.count} file{manifest.count === 1 ? '' : 's'} · {formatVoiceBytes(manifest.sizeBytes)}</span>
+					{videoBlob ? (
+						<button
+							type="button"
+							onClick={() => download(manifest.name, videoBlob)}
+							aria-label="Download video"
+							className="grid h-7 w-7 place-items-center rounded-full text-[#1652f0] transition hover:bg-[#1652f0]/10"
+						>
+							<Download className="h-4 w-4" aria-hidden />
+						</button>
+					) : null}
+				</div>
+			) : (
+				<div className="text-[12px] font-semibold text-slate-700">{manifest.count} file{manifest.count === 1 ? '' : 's'} · {formatVoiceBytes(manifest.sizeBytes)}</div>
+			)}
+			{loading && !isImageMessage ? <div className="mt-1 text-[12px] text-slate-500">Preparing files…</div> : null}
+			{error ? (
+				<div role="alert" className={isImageMessage ? 'px-3 py-2 text-[12px] text-rose-600' : 'mt-1 text-[12px] text-rose-600'}>
+					{error}
+				</div>
+			) : null}
+			{manifest.isArchive ? (
+				<div className="mt-1 flex items-center justify-between gap-2 text-[12px] font-semibold text-slate-700">
+					<span>{manifest.count} files · ZIP bundle · {formatVoiceBytes(manifest.sizeBytes)}</span>
+					{archiveBlob ? (
+						<button
+							type="button"
+							onClick={() => void download(manifest.archiveName || 'Files.zip', archiveBlob)}
+							aria-label="Download ZIP bundle"
+							className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-[#1652f0] transition hover:bg-[#1652f0]/10"
+						>
+							<Download className="h-4 w-4" aria-hidden />
+						</button>
+					) : <Loader2 className="h-4 w-4 animate-spin text-slate-400" aria-label="Preparing ZIP bundle" />}
+				</div>
+			) : files && !manifest.mediaKind ? <div className="mt-1 space-y-1">{Array.from(files.entries()).map(([name, blob]) => (
+				name === manifest.previewName ? null :
+				<div key={name} className="flex items-center gap-2 text-[12px]">
+					<span className="min-w-0 flex-1 truncate text-slate-600">{name}</span>
+					<button
+						type="button"
+						onClick={() => download(name, blob)}
+						aria-label={`Download ${name}`}
+						title="Download file"
+						className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-[#1652f0] transition hover:bg-[#1652f0]/10"
+					>
+						<Download className="h-4 w-4" aria-hidden />
+					</button>
+				</div>
+			))}</div> : null}
+			{manifest.mediaKind === 'image' && imageFullscreen && (fullImageUrl || previewUrl) ? (
+				<ChatImageFullscreenPreview
+					src={fullImageUrl ?? previewUrl ?? ''}
+					onClose={() => setImageFullscreen(false)}
+					canDownload={Boolean(downloadImageBlob)}
+					onDownload={() => void download(manifest.files[0]?.name ?? manifest.name, downloadImageBlob!)}
+				/>
+			) : null}
+			{isPdfMessage && pdfFullscreen && pdfBlob ? (
+				<ChatPdfFullscreenPreview
+					src={pdfBlob}
+					onClose={() => setPdfFullscreen(false)}
+					onDownload={() => { if (pdfBlob) void download(manifest.name, pdfBlob) }}
+				/>
+			) : null}
+		</div>
+	)
+}
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n))
+}
+
+const getImg = (avatarSeed: string) =>
+	`https://api.dicebear.com/8.x/fun-emoji/svg?seed=${encodeURIComponent(avatarSeed).toString()}`
+
+function enrichMultisigChatPreview(
+	preview: AaMultisigChatPreview,
+	stored: NonNullable<ReturnType<typeof getAaMultisigTaskAny>>,
+	viewerEoa: string
+): AaMultisigChatPreview {
+	const historySummary = multisigHistorySummary(stored)
+	const needsSign = viewerNeedsToSignMultisigTask(stored, viewerEoa)
+	const waitingLine = multisigPendingSecondaryMessage(stored, viewerEoa)
+	const progressLabel =
+		stored.status === 'expired'
+			? 'Expired — create a new request'
+			: stored.status === 'completed'
+				? 'Completed'
+				: formatMultisigSignatureProgress(stored)
+
+	let ctaLabel = preview.ctaLabel
+	if (stored.status === 'completed' || stored.status === 'expired') ctaLabel = 'View in history'
+	else if (stored.status === 'ready') ctaLabel = 'Submit transfer'
+	else if (needsSign) ctaLabel = 'Review & sign'
+	else ctaLabel = 'View progress'
+
+	return {
+		...preview,
+		threshold: stored.threshold,
+		signatureCount: stored.signatures.length,
+		progressLabel,
+		statusLine:
+			historySummary ??
+			(stored.status === 'ready'
+				? 'All signatures collected — ready to submit'
+				: needsSign
+					? progressLabel
+					: waitingLine ?? progressLabel),
+		ctaLabel,
+	}
+}
+
+const unknowAcc = (address: string):searchResult => {
+	const ret: searchResult = {
+		address,
+		created_at: 0,
+		first_name: '',
+		last_name: '',
+		follow_count: '',
+		follower_count: '',
+		username: '未知',
+		image: ''
+	}
+	return ret
+}
+
+
+type ChatSection = {
+	key: string
+	title: string
+	kind: "day" | "month" | "year"
+	items: ChatMessage[]
+  }
+  
+  function startOfDay(d: Date) {
+	return new Date(d.getFullYear(), d.getMonth(), d.getDate())
+  }
+  
+  function dayDiff(today0: Date, d0: Date) {
+	return Math.floor((today0.getTime() - d0.getTime()) / 86_400_000)
+  }
+  
+  function fmtMonthYear(d: Date) {
+	return d.toLocaleDateString("en-US", { month: "long", year: "numeric" }).toUpperCase()
+  }
+  
+  function fmtWeekday(d: Date) {
+	return d.toLocaleDateString("en-US", { weekday: "long" }).toUpperCase()
+  }
+  
+  function getMsgTs(m: ChatMessage) {
+	const ts = Number(m?.paymentCard?.timeStamp || m?.createdAt || 0)
+	return isFinite(ts) ? ts : 0
+  }
+
+  function formatTimeLabel(ts: number): string {
+	const t = typeof ts === "number" && ts > 0 && ts < 1e12 ? ts * 1000 : ts
+	const d = new Date(t)
+	if (!isFinite(d.getTime())) return tu('just_now')
+	const now = Date.now()
+	if (now - t < 60 * 1000) return tu('just_now')
+	const h = d.getHours()
+	const m = d.getMinutes()
+	const ampm = h >= 12 ? "p.m." : "a.m."
+	const h12 = h % 12 || 12
+	return `${h12}:${String(m).padStart(2, "0")} ${ampm}`
+  }
+  
+  function groupChatMessages(items: ChatMessage[], now = new Date()): ChatSection[] {
+	const today0 = startOfDay(now)
+	const currentYear = now.getFullYear()
+  
+	// ✅ Chat 建议升序显示（旧 -> 新），但分组标题从旧到新/新到旧都可以
+	// 这里用升序，配合你 UI 最底部显示更自然
+	const sorted = [...items].sort((a, b) => getMsgTs(a) - getMsgTs(b))
+  
+	const map = new Map<string, ChatSection>()
+  
+	for (const m of sorted) {
+	  const ts = getMsgTs(m)
+	  const d = new Date(ts)
+	  const d0 = startOfDay(d)
+	  const diff = dayDiff(today0, d0)
+  
+	  // 1) 一周内：按天
+	  if (diff >= 0 && diff <= 6) {
+		let title = fmtWeekday(d0)
+		if (diff === 0) title = "TODAY"
+		if (diff === 1) title = "YESTERDAY"
+  
+		const key = `day:${d0.getFullYear()}-${d0.getMonth()}-${d0.getDate()}`
+		let sec = map.get(key)
+		if (!sec) {
+		  sec = { key, title, kind: "day", items: [] }
+		  map.set(key, sec)
+		}
+		sec.items.push(m)
+		continue
+	  }
+  
+	  // 2) 超过一周：今年内按月
+	  if (d.getFullYear() === currentYear) {
+		const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+		const key = `month:${ym}`
+		const title = fmtMonthYear(new Date(d.getFullYear(), d.getMonth(), 1))
+  
+		let sec = map.get(key)
+		if (!sec) {
+		  sec = { key, title, kind: "month", items: [] }
+		  map.set(key, sec)
+		}
+		sec.items.push(m)
+		continue
+	  }
+  
+	  // 3) 跨年：按年
+	  {
+		const y = String(d.getFullYear())
+		const key = `year:${y}`
+		const title = y
+  
+		let sec = map.get(key)
+		if (!sec) {
+		  sec = { key, title, kind: "year", items: [] }
+		  map.set(key, sec)
+		}
+		sec.items.push(m)
+	  }
+	}
+  
+	// ✅ sections 顺序：跟你显示方向一致
+	// 这里用 “按最早消息时间升序” 排（老分组在上，新分组在下）
+	const sections = Array.from(map.values())
+	sections.sort((a, b) => (getMsgTs(a.items[0]) || 0) - (getMsgTs(b.items[0]) || 0))
+	return sections
+  }
+  
+  function ChatSectionHeader({ title }: { title: string }) {
+	return (
+	  <div className="px-1 pt-3 pb-2">
+		<div className="text-[11px] tracking-[0.22em] font-extrabold text-slate-300 text-center">
+		  {title}
+		</div>
+	  </div>
+	)
+  }
+
+
+type ChatProps = {
+	onBack?: () => void
+	allNodes: nodeInfo[]
+	chatData: chatData
+	privateKey: string
+	autoVoiceCallAction?: 'accept' | 'reject' | null
+	onAutoVoiceCallActionHandled?: () => void
+	/** An auto "reject" has been sent (or there was nothing to reject). */
+	onAutoVoiceRejectDone?: () => void
+	onVoiceCallActive?: (active: boolean) => void
+	onShowThread?: () => void
+	threadHidden?: boolean
+}
+
+function fmtTime(ts: number) {
+  const d = new Date(ts)
+  if (!isFinite(d.getTime())) return ""
+  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+}
+
+function BubbleCornerStatus({
+  status,
+  onRetry
+}: {
+  status?: "sending" | "sent" | "delivered" | "failed" | "route_unconfirmed" | "fingerprint_changed" | "first_fetch_pending"
+  onRetry?: () => void
+}) {
+  if (!status) return null
+
+  // 容器：右下角小胶囊点
+  const shell = [
+    "absolute -bottom-1 -right-1",
+    "h-4 w-4 rounded-full",
+    "bg-white/75 backdrop-blur",
+    "ring-1 ring-black/5",
+    "grid place-items-center",
+    "shadow-[0_6px_16px_rgba(15,23,42,0.12)]"
+  ].join(" ")
+
+  if (status === "sending") {
+    return (
+      <span className={shell} aria-label="Sending">
+        <motion.span
+          className="block h-3 w-3 rounded-full border-2 border-slate-300 border-t-[#1652f0]"
+          animate={{ rotate: 360 }}
+          transition={{ duration: 0.9, repeat: Infinity, ease: "linear" }}
+        />
+      </span>
+    )
+  }
+
+  if (status === "delivered") {
+    return (
+      <span className={shell} aria-label="Delivered">
+        <CheckCheck className="h-3 w-3 text-[#1652f0]" strokeWidth={2.8} />
+      </span>
+    )
+  }
+
+  if (status === "sent") {
+    return null
+  }
+
+  // failed：可点
+  return (
+    <button
+      type="button"
+      onClick={onRetry}
+      className={[
+        shell,
+        "cursor-pointer",
+        "bg-white/80",
+        "ring-1 ring-rose-200",
+        "active:scale-[0.96] transition"
+      ].join(" ")}
+      aria-label="Failed, tap to retry"
+      title="Failed · Tap to retry"
+    >
+      <AlertTriangle className="h-3 w-3 text-rose-600" strokeWidth={2.8} />
+    </button>
+  )
+}
+
+
+
+// ---------- Your existing Chat messages render (patched) ----------
+type ChatListProps = {
+	messages: ChatMessage[]
+	pressTimerRef: React.MutableRefObject<number | null>
+	openReactionBarForElement: (id: string, el: HTMLElement) => void
+	setText: (t: string) => void
+	setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>
+	BubbleCornerStatus: React.FC<{ status?: "sending" | "sent" | "delivered" | "failed" | "route_unconfirmed" | "fingerprint_changed" | "first_fetch_pending"; onRetry: () => void }>
+}
+
+
+
+
+const VOICE_RELAY_OPEN_ERROR = 'Voice call could not open a temporary relay.'
+
+/** Soft video: same limits as the native shells (SI rejects payloads over 12 000 base64 chars). */
+const SOFT_VIDEO_LONG_EDGE = 320
+const SOFT_VIDEO_MAX_JPEG_BYTES = 8_800
+const SOFT_VIDEO_QUALITY_STEPS = [0.5, 0.4, 0.32, 0.25, 0.18]
+/** Remote video is shown this long after its fastest observed transit (≈ audio delay). */
+const REMOTE_VIDEO_PLAYOUT_DELAY_MS = 300
+/** Video posts allowed on the way at once; a new frame is skipped beyond this. */
+const SOFT_VIDEO_MAX_IN_FLIGHT = 3
+/**
+ * When to send `voice_media_caps_v1` after the call connects or video starts.
+ * Control frames share the audio seq, and a late one is dropped by the reorder
+ * buffer, so a single announcement was often lost.
+ */
+const MEDIA_CAPS_BURST_MS = [0, 1500, 4000, 8000]
+
+/** Browser counterpart of the shells' `[VideoStats]` 2 s window. */
+function newSoftVideoStats() {
+	return {
+		windowStart: Date.now(),
+		txCap: 0,
+		txSent: 0,
+		txFail: 0,
+		txJpegBytes: 0,
+		txEncodeMs: 0,
+		txSendMs: 0,
+		txOversize: 0,
+		txBusy: 0,
+		rxIn: 0,
+		rxShown: 0,
+		rxSuperseded: 0,
+		rxBytes: 0,
+		rxLatSum: 0,
+		rxLatN: 0,
+	}
+}
+
+function flushSoftVideoStats(stats: ReturnType<typeof newSoftVideoStats>, peerCaps: number): ReturnType<typeof newSoftVideoStats> {
+	const now = Date.now()
+	const seconds = (now - stats.windowStart) / 1000
+	if (seconds < 2) return stats
+	if (stats.txCap > 0 || stats.rxIn > 0) {
+		const avg = (sum: number, n: number) => (n > 0 ? Math.round(sum / n) : 0)
+		const fps = (n: number) => (n / Math.max(seconds, 0.1)).toFixed(1)
+		console.info([
+			`[VideoStats] mode=${peerCaps >= 2 ? 'v2' : 'v1'} peerCaps=${peerCaps}`,
+			`tx cap=${stats.txCap} sent=${stats.txSent} fail=${stats.txFail} oversize=${stats.txOversize} busy=${stats.txBusy} fps=${fps(stats.txSent)}`,
+			`jpegAvg=${avg(stats.txJpegBytes, stats.txSent)}B encAvg=${avg(stats.txEncodeMs, stats.txCap)}ms sendAvg=${avg(stats.txSendMs, stats.txSent + stats.txFail)}ms`,
+			`| rx in=${stats.rxIn} shown=${stats.rxShown} superseded=${stats.rxSuperseded} fps=${fps(stats.rxShown)} bytesAvg=${avg(stats.rxBytes, stats.rxIn)}B`,
+			`latAvg=${avg(stats.rxLatSum, stats.rxLatN)}ms`,
+		].join(' '))
+	}
+	return newSoftVideoStats()
+}
+
+/**
+ * Draw the camera frame with its long edge at most SOFT_VIDEO_LONG_EDGE and
+ * step JPEG quality (then size) down until it fits the relay limit.
+ */
+async function encodeSoftVideoJpeg(
+	source: HTMLVideoElement,
+	canvas: HTMLCanvasElement,
+	ctx: CanvasRenderingContext2D,
+): Promise<{ jpeg: Uint8Array; w: number; h: number } | null> {
+	const srcW = source.videoWidth
+	const srcH = source.videoHeight
+	if (srcW < 2 || srcH < 2) return null
+	let scale = Math.min(1, SOFT_VIDEO_LONG_EDGE / Math.max(srcW, srcH))
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		const w = Math.max(16, Math.round(srcW * scale))
+		const h = Math.max(16, Math.round(srcH * scale))
+		if (canvas.width !== w || canvas.height !== h) {
+			canvas.width = w
+			canvas.height = h
+		}
+		ctx.drawImage(source, 0, 0, w, h)
+		for (const quality of SOFT_VIDEO_QUALITY_STEPS) {
+			const blob = await new Promise<Blob | null>((resolve) => {
+				canvas.toBlob((b) => resolve(b), 'image/jpeg', quality)
+			})
+			if (blob && blob.size > 64 && blob.size < SOFT_VIDEO_MAX_JPEG_BYTES) {
+				return { jpeg: new Uint8Array(await blob.arrayBuffer()), w, h }
+			}
+		}
+		scale *= 0.8
+	}
+	return null
+}
+
+export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction, onAutoVoiceCallActionHandled, onAutoVoiceRejectDone, onVoiceCallActive, onShowThread, threadHidden = false }: ChatProps) {
+	const navigate = useNavigate()
+	const [text, setText] = useState("")
+	 
+  	const {
+		profiles,
+		setProfiles,
+		setShowFooter,
+		allNodes,
+		setGossip,
+		gossip,
+		charts,
+		currencyData = {} as Record<string, number>,
+		usdcbalance = 0,
+		setScanData,
+	} = useDaemonContext()
+	const { resolvePeerSearchResult, ensureProfilesForAddresses, searchRemoteAndIngest, lookupByAddress, avatarImgUrl } = useBeamioTagDatabase()
+	
+
+
+	const [messages, setMessages] = useState<ChatMessage[]>(chatData.messages)
+	//logout clears the rendered conversation (lockChatLocalOnLogout dispatches this event).
+	useEffect(() => {
+		const onLocked = () => setMessages([])
+		window.addEventListener("beamio:chat-locked", onLocked)
+		return () => window.removeEventListener("beamio:chat-locked", onLocked)
+	}, [])
+	// Local library first screen (spec r1, r3): once the library serves reads (migration switched or purged), the
+	// newest text rows are merged into the list. Media rows are not in the library response; they stay with the list.
+	const [libraryOlderPending, setLibraryOlderPending] = useState(false)
+	useEffect(() => {
+		let cancelled = false
+		const address = chatData.address
+		if (!address) return
+		void (async () => {
+			const state = await localChatMigrationState()
+			if (cancelled || (state !== 'switched' && state !== 'purged')) return
+			const el = scrollRef.current
+			const viewport = viewportForScroller({
+				clientWidth: el?.clientWidth ?? 0,
+				clientHeight: el?.clientHeight ?? 0,
+				rootFontSizePx: parseFloat(getComputedStyle(document.documentElement).fontSize) || 16,
+				innerWidth: window.innerWidth,
+				innerHeight: window.innerHeight,
+			})
+			const page = await openLocalChatPage(address, viewport)
+			if (cancelled || !page || page.source !== 'local') return
+			setLibraryOlderPending(page.olderState === 'pending')
+			const entries = page.items
+				.filter((it) => it.kind === 'text' && typeof it.body === 'string')
+				.map((it) => ({ seq: 0, ts: it.sortTs, peer: address, dir: it.dir, body: it.body as string }))
+			if (entries.length) setMessages((prev) => mergeHistoryEntriesIntoMessages(prev, entries).messages)
+		})()
+		return () => {
+			cancelled = true
+		}
+	}, [chatData.address])
+
+	const scrollRef = useRef<HTMLDivElement | null>(null)
+	const {
+		setRef: setHeaderScrollRef,
+		setLayerRef: setHeaderLayerRef,
+		showCapsuleNow,
+	} = useScrollCapsuleOpacity(true)
+	const setChatScrollRef = useCallback((node: HTMLDivElement | null) => {
+		scrollRef.current = node
+		setHeaderScrollRef(node)
+	}, [setHeaderScrollRef])
+	const inputRef = useRef<HTMLTextAreaElement | null>(null)
+	/** CJK / non-Latin IME: Enter confirms candidates — must not send while composing. */
+	const imeComposingRef = useRef(false)
+	/** After send, ignore compositionend / onChange / beforeinput echoes that re-fill the cleared textarea. */
+	const suppressImeEchoRef = useRef(false)
+	const suppressImeEchoTimerRef = useRef<number | null>(null)
+	/** Remount textarea after send so WebKit/IME cannot keep composing into a cleared controlled value. */
+	const [inputSession, setInputSession] = useState(0)
+	/** Guard rapid double-tap / IME echo re-send of the same body. */
+	const lastSentGuardRef = useRef<{ text: string; at: number }>({ text: '', at: 0 })
+	const recorderRef = useRef<MediaRecorder | null>(null)
+	const recordingStartedAtRef = useRef(0)
+	const recordingChunksRef = useRef<Blob[]>([])
+	const recordingTimerRef = useRef<number | null>(null)
+	const voiceLevelRafRef = useRef<number | null>(null)
+	const voiceAnalyserRef = useRef<AnalyserNode | null>(null)
+	const voiceAudioContextRef = useRef<AudioContext | null>(null)
+	const remoteVoiceAnalyserRef = useRef<AnalyserNode | null>(null)
+	const remoteVoiceAudioContextRef = useRef<AudioContext | null>(null)
+	const [isRecordingVoice, setIsRecordingVoice] = useState(false)
+	const [voiceDurationMs, setVoiceDurationMs] = useState(0)
+	const [voiceRecordedBytes, setVoiceRecordedBytes] = useState(0)
+	const [voiceLevelSamples, setVoiceLevelSamples] = useState<number[]>([])
+	const [remoteVoiceLevelSamples, setRemoteVoiceLevelSamples] = useState<number[]>([])
+	const [voiceCallMinimized, setVoiceCallMinimized] = useState(false)
+	const [voiceSpeakerOn, setVoiceSpeakerOn] = useState(true)
+	const [voiceInCallToolsExpanded, setVoiceInCallToolsExpanded] = useState(true)
+	const [voiceInCallElapsedMs, setVoiceInCallElapsedMs] = useState(0)
+	const [voiceVideoNote, setVoiceVideoNote] = useState<string | null>(null)
+	/** Soft remote FaceTime surface — object URL of last BJPG JPEG (not soft-seed). */
+	const [remoteVoiceVideoUrl, setRemoteVoiceVideoUrl] = useState<string | null>(null)
+	const [peerVoiceVideoEnabled, setPeerVoiceVideoEnabled] = useState(false)
+	const [softLocalVideoOn, setSoftLocalVideoOn] = useState(false)
+	const [voiceDraftBlob, setVoiceDraftBlob] = useState<Blob | null>(null)
+	const [voiceSending, setVoiceSending] = useState(false)
+	const [voiceError, setVoiceError] = useState<string | null>(null)
+	const [voiceCallState, setVoiceCallState] = useState<'idle' | 'outgoing' | 'ended'>('idle')
+	const [voiceCallMuted, setVoiceCallMuted] = useState(false)
+	const [incomingVoiceAction, setIncomingVoiceAction] = useState<'idle' | 'accepting' | 'declining'>('idle')
+
+	// Safety net: permanent "No microphone" must never stick inside CashTrees shell
+	// (Telecom NotFound / empty enumerate). Rewrite to the temporary banner.
+	useEffect(() => {
+		if (
+			voiceError === 'No microphone was found on this device.' &&
+			isCashTreesNativeWebView()
+		) {
+			setVoiceError('Microphone is temporarily unavailable. End the call and try again.')
+		}
+	}, [voiceError])
+	const voiceCallSessionRef = useRef<string | null>(null)
+	const voiceCallOfferRef = useRef<{
+		callId: string
+		/** Ring ID of the call (v3): offer index, push handle, call record key. */
+		sessionId: string
+		/** Caller EOA on inbound offers; used as the hangup peer. */
+		from?: string
+		timestamp?: number
+		expiresAt?: number
+	} | null>(null)
+	const locallyEndedVoiceSessionsRef = useRef<Set<string>>(new Set())
+	// iOS shell: our dial waits for the shell's `callDialerStarted` (utils/nativeDialerAck.ts).
+	const nativeDialerAckRef = useRef<{
+		callId: string
+		sessionId: string
+		peerAddress: string
+		dispatchedAt: number
+	} | null>(null)
+	const nativeDialerAckTimerRef = useRef<number | null>(null)
+	// Browser dialer: the call window stays up while the busy tone plays, then closes.
+	const busyHoldTimerRef = useRef<number | null>(null)
+	const pageVisibleSinceRef = useRef(0)
+	useEffect(() => {
+		const onVisibility = () => {
+			if (document.visibilityState === 'visible') pageVisibleSinceRef.current = Date.now()
+		}
+		document.addEventListener('visibilitychange', onVisibility)
+		return () => {
+			document.removeEventListener('visibilitychange', onVisibility)
+			if (nativeDialerAckTimerRef.current !== null) window.clearTimeout(nativeDialerAckTimerRef.current)
+			if (busyHoldTimerRef.current !== null) window.clearTimeout(busyHoldTimerRef.current)
+		}
+	}, [])
+	const clearNativeDialerAck = useCallback(() => {
+		nativeDialerAckRef.current = null
+		if (nativeDialerAckTimerRef.current !== null) {
+			window.clearTimeout(nativeDialerAckTimerRef.current)
+			nativeDialerAckTimerRef.current = null
+		}
+	}, [])
+	// The native dialer did not start, so nothing native will cancel or time out
+	// the offer: cancel it from the page (the callee would ring a full minute).
+	// endVoiceCall skips its own cancel when the shell already posted one.
+	const cancelDialWithoutNativeDialer = useCallback((
+		reason: string,
+		ids: { callId: string; sessionId: string; peerAddress: string },
+	) => {
+		clearNativeDialerAck()
+		console.info(`[voiceCall] native dialer ${reason}; page cancels callId=${ids.callId.slice(0, 8)}`)
+		void endVoiceCallRef.current?.('cancelled', true, {
+			callId: ids.callId,
+			sessionId: ids.sessionId,
+			peerAddress: ids.peerAddress,
+		})
+	}, [clearNativeDialerAck])
+	const checkNativeDialerAck = useCallback(function check() {
+		nativeDialerAckTimerRef.current = null
+		const pending = nativeDialerAckRef.current
+		if (!pending) return
+		// The call already ended or another one started.
+		if (!sameCallId(voiceCallOfferRef.current?.callId, pending.callId)) {
+			nativeDialerAckRef.current = null
+			return
+		}
+		const { overdue, waitMs } = nativeDialerAckOverdue({
+			dispatchedAt: pending.dispatchedAt,
+			visibleSince: pageVisibleSinceRef.current,
+			now: Date.now(),
+			hidden: document.visibilityState === 'hidden',
+		})
+		if (overdue) {
+			cancelDialWithoutNativeDialer('did not answer', pending)
+			return
+		}
+		nativeDialerAckTimerRef.current = window.setTimeout(check, waitMs)
+	}, [cancelDialWithoutNativeDialer])
+	const voiceAcceptHandledRef = useRef<Set<string>>(new Set())
+	const [liveVoiceSessionId, setLiveVoiceSessionId] = useState('')
+	/**
+	 * The peer accepted (or we accepted) and media may flow. The call screen label
+	 * must follow this, not only the persisted phone-call record: the record is
+	 * written by a separate state update, and the label used to read nothing else,
+	 * so any delay or failure in that write left "Ringing" up for a live call.
+	 */
+	const [voiceCallAnswered, setVoiceCallAnswered] = useState(false)
+	/** Same as `voiceCallAnswered`, for timers that fire after the render they were set in. */
+	const voiceCallAnsweredRef = useRef(false)
+	voiceCallAnsweredRef.current = voiceCallAnswered
+	/** Browser call: the media SSE went quiet and is being reopened. */
+	const [voiceReconnecting, setVoiceReconnecting] = useState(false)
+	/** Browser call link health (see the watchdog effect below). */
+	const voiceLinkRef = useRef<VoiceLinkState>(newVoiceLinkState(0))
+	const voiceCallKeyRef = useRef<Uint8Array | null>(null)
+	const voiceCallPeerSessionRef = useRef<string | null>(null)
+	const voicePeerRouteRef = useRef<string>('')
+	/** Verified peer EOA for frame metadata (`to`); dialer = page address, callee = recovered caller. */
+	const voicePeerWalletRef = useRef<string>('')
+	const voiceCaptureStopRef = useRef<(() => void) | null>(null)
+	const softVideoCaptureStopRef = useRef<(() => void) | null>(null)
+	const softLocalVideoStreamRef = useRef<MediaStream | null>(null)
+	const softLocalVideoElRef = useRef<HTMLVideoElement | null>(null)
+	const softVideoFrameIdRef = useRef(0)
+	/** Peer camera on/off + late-frame filter (see voicePeerVideoGate). */
+	const peerVideoGateRef = useRef(newPeerVideoGate())
+	/** Bumped on every local camera on/off, so a pending "off" repeat stops once the camera is back on. */
+	const softVideoToggleGenRef = useRef(0)
+	const remoteVideoBlobUrlRef = useRef<string | null>(null)
+	/** Peer's announced video capability (`voice_media_caps_v1`); 0 = older peer. */
+	const peerVideoCapsRef = useRef(0)
+	/** Next split-seq video number (offset from VOICE_VIDEO_SEQ_BASE). */
+	const softVideoSeqRef = useRef(0)
+	/** Remote frame pacing: capture time of the newest frame shown, fastest transit seen. */
+	const remoteVideoShownCaptureRef = useRef(0)
+	const remoteVideoMinDeltaRef = useRef<number | null>(null)
+	/** Remote frames go straight to this element; only the first frame touches React state. */
+	const remoteVideoImgRef = useRef<HTMLImageElement | null>(null)
+	const remoteVideoHasFrameRef = useRef(false)
+	const sendMediaCapsRef = useRef<(reason: string) => void>(() => {})
+	/** Sends the caps several times (MEDIA_CAPS_BURST_MS) while this call stays live. */
+	const announceMediaCapsRef = useRef<(reason: string) => void>(() => {})
+	/** callId whose connect announcement already went out. */
+	const mediaCapsAnnouncedCallRef = useRef('')
+	const softVideoStatsRef = useRef(newSoftVideoStats())
+	const voiceCallStreamRef = useRef<MediaStream | null>(null)
+	/** Android: open mic while Telecom is still RINGING (MODE_RINGTONE). */
+	const androidIncomingMicPrewarmRef = useRef<MediaStream | null>(null)
+	const androidIncomingMicPrewarmSessionRef = useRef<string | null>(null)
+	const voicePlaybackRef = useRef<VoicePlaybackBuffer | null>(null)
+	const voiceFrameSeqRef = useRef(0)
+	const voiceFrameSendFailuresRef = useRef(0)
+	const voiceReceiveSessionRef = useRef<string | null>(null)
+	const voiceReceivedSeqRef = useRef(-1)
+	const voiceReceivedSeqsRef = useRef<Set<number>>(new Set())
+	const voiceControllerRef = useRef<VoiceCallController | null>(null)
+	const voiceCallStartingRef = useRef(false)
+	/**
+	 * Bumped by every `endVoiceCall`. A call that is still being set up (route lookup,
+	 * offer, mailbox listen) compares it after each await: pressing Cancel before the
+	 * offer was posted must stop the setup, and pressing it while the offer is being
+	 * posted must still tell the callee, or their phone rings for a call the caller
+	 * has already abandoned.
+	 */
+	const voiceStartTokenRef = useRef(0)
+	const voiceMediaStartingRef = useRef(false)
+	const voiceCallLiveRef = useRef(false)
+	/** Desktop: open the mic on the Call click, not when the peer answers. */
+	const outgoingMicPreopenRef = useRef<MediaStream | null>(null)
+	const [voiceCallConnecting, setVoiceCallConnecting] = useState(false)
+	/** Browser: a dial failed before ringing; the call window shows why until End. */
+	const [voiceDialFailed, setVoiceDialFailed] = useState(false)
+	/** Browser call window ringback / busy tone (the native shells play their own). */
+	const callTonesRef = useRef<CallTonePlayer | null>(null)
+	const ensureCallTones = useCallback((): CallTonePlayer => {
+		if (!callTonesRef.current) callTonesRef.current = new CallTonePlayer()
+		return callTonesRef.current
+	}, [])
+	useEffect(() => () => {
+		callTonesRef.current?.destroy()
+		callTonesRef.current = null
+	}, [])
+
+	const stopAndroidIncomingMicPrewarm = useCallback((onlySessionId?: string | null) => {
+		const session = androidIncomingMicPrewarmSessionRef.current
+		if (onlySessionId && session && !sameCallId(session, onlySessionId)) return
+		const stream = androidIncomingMicPrewarmRef.current
+		androidIncomingMicPrewarmRef.current = null
+		androidIncomingMicPrewarmSessionRef.current = null
+		stream?.getTracks().forEach((track) => {
+			try {
+				track.stop()
+			} catch {
+				/* ignore */
+			}
+		})
+	}, [])
+
+	const takeAndroidIncomingMicPrewarm = useCallback((sessionId: string): MediaStream | null => {
+		const stream = androidIncomingMicPrewarmRef.current
+		const live =
+			sameCallId(androidIncomingMicPrewarmSessionRef.current, sessionId) &&
+			Boolean(stream?.getAudioTracks().some((t) => t.readyState === 'live'))
+		if (!live || !stream) return null
+		androidIncomingMicPrewarmRef.current = null
+		androidIncomingMicPrewarmSessionRef.current = null
+		return stream
+	}, [])
+
+	useEffect(() => {
+		onVoiceCallActive?.(voiceCallState === 'outgoing')
+	}, [onVoiceCallActive, voiceCallState])
+
+	// The call surface is owned by this mounted Chat instance.  Do not infer
+	// "minimized" from a transient thread/router state: opening the call can
+	// update the parent chat state before the relay has finished, which used to
+	// hide the PWA call surface and leave only the "Calling" bubble visible.
+	// Minimize is now changed only by the explicit minimize/reveal actions.
+
+	const pendingShowActiveCallRef = useRef(false)
+	// Must be declared before any effect that closes over it — TDZ crash blanked
+	// the soft-dial chat thread (`Cannot access 'incomingVoiceOffer' before initialization`).
+	const [incomingVoiceOffer, setIncomingVoiceOffer] = useState<Record<string, any> | null>(null)
+	const [incomingCaller, setIncomingCaller] = useState<{
+		address: string
+		tag: string
+		claimedTag: string
+		claimedAddress: string
+		identityWarning: string
+	} | null>(null)
+	const revealActiveVoiceCall = useCallback(() => {
+		onShowThread?.()
+		setVoiceCallMinimized(false)
+		navigate('/chat')
+	}, [navigate, onShowThread])
+	useEffect(() => {
+		const onShowActiveCall = (event: Event) => {
+			const detail = (event as CustomEvent<{ action?: string }>).detail
+			if (detail?.action !== 'showActiveVoiceCall') return
+			// After Hang Up, ignore shell "show active" until a real new call starts.
+			// Queuing while idle reopened the full-screen dialer on a late callAnswered.
+			if (voiceCallState !== 'outgoing') {
+				const hasLiveOffer = Boolean(
+					voiceCallOfferRef.current?.sessionId ||
+					voiceCallSessionRef.current ||
+					incomingVoiceOffer?.sessionId,
+				)
+				if (!hasLiveOffer) return
+				pendingShowActiveCallRef.current = true
+				return
+			}
+			revealActiveVoiceCall()
+		}
+		window.addEventListener('cashtreesandroid', onShowActiveCall)
+		window.addEventListener('cashtreesios', onShowActiveCall)
+		return () => {
+			window.removeEventListener('cashtreesandroid', onShowActiveCall)
+			window.removeEventListener('cashtreesios', onShowActiveCall)
+		}
+	}, [incomingVoiceOffer, revealActiveVoiceCall, voiceCallState])
+	useEffect(() => {
+		if (voiceCallState !== 'outgoing' || !pendingShowActiveCallRef.current) return
+		pendingShowActiveCallRef.current = false
+		revealActiveVoiceCall()
+	}, [revealActiveVoiceCall, voiceCallState])
+	const [fileJobs, setFileJobs] = useState<ChatFileJob[]>([])
+	const fileControllersRef = useRef(new Map<string, AbortController>())
+	const storageDataRef = useRef<(() => Promise<void>) | null>(null)
+	const fileInputRef = useRef<HTMLInputElement | null>(null)
+	const photoInputRef = useRef<HTMLInputElement | null>(null)
+	const cameraInputRef = useRef<HTMLInputElement | null>(null)
+	const cameraRequestIdRef = useRef<string | null>(null)
+	const nativeCameraChunksRef = useRef<{ requestId: string; mimeType: string; chunks: string[] } | null>(null)
+	const nativePhotoChunksRef = useRef<{ requestId: string; mimeType: string; filename?: string; chunks: string[] } | null>(null)
+	const addChatFilesRef = useRef<((incoming: File[], dropFolderHint?: string | null, source?: 'drop' | 'picker' | 'camera') => void | Promise<void>) | null>(null)
+	const [fileError, setFileError] = useState<string | null>(null)
+	const [nativeCameraProcessing, setNativeCameraProcessing] = useState(false)
+	const [fileDropActive, setFileDropActive] = useState(false)
+	/** Nested dragenter/leave depth on the chat shell — avoids clearing the overlay when React remounts children under the cursor (relatedTarget often null). */
+	const fileDragDepthRef = useRef(0)
+	const [cameraStream, setCameraStream] = useState<MediaStream | null>(null)
+	const [cameraRecording, setCameraRecording] = useState(false)
+	const cameraRecorderRef = useRef<MediaRecorder | null>(null)
+	const cameraChunksRef = useRef<Blob[]>([])
+	const cameraPreviewRef = useRef<HTMLVideoElement | null>(null)
+	const [chatError, setChatError] = useState<string | null>(null)
+	// the migration retry notice (approved copy) shows only in the retryable state of the shell's background run.
+	const [pgpMigrationRetry, setPgpMigrationRetry] = useState(() => getPgpMigrationState() === 'retryable')
+	const [pgpMigrationRetryDismissed, setPgpMigrationRetryDismissed] = useState(false)
+	useEffect(() => subscribePgpMigrationState((st) => {
+		setPgpMigrationRetry(st === 'retryable')
+		if (st === 'retryable') setPgpMigrationRetryDismissed(false)
+	}), [])
+
+	const upsertPhoneCallRecord = useCallback((patch: PhoneCallRecord) => {
+		// Also remember the answer in memory: an older copy of the profile can still be
+		// written over this row, and the hang-up must then read "Call ended", not "Call cancelled".
+		if (patch.status === 'answered') noteCallAnsweredHere(patch.callId, patch.sessionId, Number(patch.answeredAt) || Date.now())
+		// Prefer CoNET_Data — React `profiles` can be stale when reject lands after quiet disconnect.
+		const dataProfiles = CoNET_Data?.profiles
+		const currentProfiles = Array.isArray(dataProfiles) && dataProfiles.length
+			? dataProfiles
+			: (Array.isArray(profiles) ? profiles : [])
+		if (!currentProfiles.length) return
+		const current: PhoneCallRecord[] = Array.isArray(currentProfiles[0].phoneCalls) ? currentProfiles[0].phoneCalls : []
+		const previous = findPhoneCallByIds(current, patch)
+		const mergedRow = mergePhoneCallRecord(previous, {
+			...patch,
+			createdAt: previous?.createdAt ?? patch.createdAt,
+		})
+		if (!mergedRow) return
+		// A replayed offer for a call the shell already ended must not ring the record.
+		const merged = withSettledIncomingOutcome(mergedRow)
+		const nextProfiles = currentProfiles.slice()
+		nextProfiles[0] = {
+			...currentProfiles[0],
+			phoneCalls: replacePhoneCallInRows(current, merged)
+				.sort((a, b) => b.createdAt - a.createdAt)
+				.slice(0, 200),
+		}
+		setProfiles(nextProfiles)
+		if (CoNET_Data) {
+			CoNET_Data.profiles = nextProfiles
+			setCoNET_Data(CoNET_Data)
+		}
+		void storeSystemData()
+		askShellWhichIncomingCallsRang(nextProfiles[0].phoneCalls)
+		// Patch live chat bubbles in place so "Calling" upgrades even before phoneCalls re-merge.
+		setMessages(prev => {
+			let changed = false
+			const next = prev.map(message => {
+				if (!message.callRecord || !phoneCallIdsOverlap(message.callRecord, merged)) return message
+				const nextRecord = mergePhoneCallRecord(message.callRecord, merged)
+				if (!nextRecord || nextRecord === message.callRecord) return message
+				if (nextRecord.status === message.callRecord.status && nextRecord.endedAt === message.callRecord.endedAt) {
+					return message
+				}
+				changed = true
+				return { ...message, callRecord: nextRecord }
+			})
+			if (changed) chatData.messages = next
+			return changed ? next : prev
+		})
+		mirrorChatMessageToHistory(chatData.address, {
+			id: `phone_${merged.sessionId || merged.callId}_${merged.status}_${Date.now()}`,
+			sendId: `phone:${merged.sessionId || merged.callId}:${merged.status}`,
+			from: merged.direction === 'incoming' ? 'them' : 'me',
+			text: '',
+			createdAt: Date.now(),
+			callRecord: merged,
+		}, merged.direction === 'incoming' ? 'in' : 'out')
+	}, [chatData, profiles, setProfiles])
+
+	useEffect(() => {
+		const addCapturedMedia = (dataUrl: string, mimeType?: string, filename?: string) => {
+			// A previous folder/drop failure must not remain visible after the
+			// user successfully starts a new camera capture.
+			setFileError(null)
+			if (!dataUrl) {
+				setNativeCameraProcessing(false)
+				setFileError('Camera returned no video. Please try again.')
+				return
+			}
+			void fetch(dataUrl)
+				.then(response => response.blob())
+				.then(blob => {
+					if (!blob.size) throw new Error('empty_camera_video')
+					const resolvedMime = mimeType || blob.type || 'application/octet-stream'
+					const file = new File([blob], filename || `camera-${Date.now()}.${resolvedMime.split('/')[1] || 'bin'}`, { type: resolvedMime })
+					// iOS camera recordings can use a codec that WKWebView can
+					// upload but cannot decode for a local thumbnail. Keep the
+					// upload path intact and skip only the optional thumbnail.
+					void addChatFilesRef.current?.([file], null, 'camera')
+				})
+				.catch(() => {
+					setNativeCameraProcessing(false)
+					setFileError('The captured video could not be read. Please try again.')
+				})
+		}
+		const handleNativeCameraResult = (event: Event) => {
+			const detail = (event as CustomEvent<{
+				action?: string
+				ok?: boolean
+				requestId?: string
+				dataUrl?: string
+				data?: string
+				mimeType?: string
+				filename?: string
+				error?: string
+			}>).detail
+			if (!detail?.action?.startsWith('cameraCapture') && !detail?.action?.startsWith('photoPicker')) return
+			if (cameraRequestIdRef.current && detail.requestId && detail.requestId !== cameraRequestIdRef.current) return
+			if (detail.action === 'cameraCaptureStart') {
+				setFileError(null)
+				setNativeCameraProcessing(true)
+				nativeCameraChunksRef.current = {
+					requestId: detail.requestId || cameraRequestIdRef.current || '',
+					mimeType: detail.mimeType || 'video/mp4',
+					chunks: [],
+				}
+				return
+			}
+			if (detail.action === 'photoPickerStart') {
+				setFileError(null)
+				setNativeCameraProcessing(true)
+				nativePhotoChunksRef.current = {
+					requestId: detail.requestId || cameraRequestIdRef.current || '',
+					mimeType: detail.mimeType || 'application/octet-stream',
+					filename: detail.filename,
+					chunks: [],
+				}
+				return
+			}
+			if (detail.action === 'cameraCaptureChunk') {
+				const transfer = nativeCameraChunksRef.current
+				if (transfer && transfer.requestId === (detail.requestId || transfer.requestId)) {
+					transfer.chunks.push(detail.data || '')
+				}
+				return
+			}
+			if (detail.action === 'photoPickerChunk') {
+				const transfer = nativePhotoChunksRef.current
+				if (transfer && transfer.requestId === (detail.requestId || transfer.requestId)) {
+					transfer.chunks.push(detail.data || '')
+				}
+				return
+			}
+			if (detail.action === 'cameraCaptureEnd') {
+				const transfer = nativeCameraChunksRef.current
+				nativeCameraChunksRef.current = null
+				cameraRequestIdRef.current = null
+				if (transfer) addCapturedMedia(`data:${transfer.mimeType};base64,${transfer.chunks.join('')}`, transfer.mimeType)
+				else {
+					setNativeCameraProcessing(false)
+					setFileError('Camera returned no video. Please try again.')
+				}
+				return
+			}
+			if (detail.action === 'photoPickerEnd') {
+				const transfer = nativePhotoChunksRef.current
+				nativePhotoChunksRef.current = null
+				if (transfer) addCapturedMedia(`data:${transfer.mimeType};base64,${transfer.chunks.join('')}`, transfer.mimeType, transfer.filename)
+				else {
+					setNativeCameraProcessing(false)
+					setFileError('The selected photo or video could not be read. Please try again.')
+				}
+				return
+			}
+			cameraRequestIdRef.current = null
+			if (!detail.ok) {
+				setNativeCameraProcessing(false)
+				setFileError(detail.error === 'cancelled' ? 'Camera capture was cancelled.' : 'Camera capture failed. Please try again.')
+				return
+			}
+			addCapturedMedia(detail.dataUrl || '', detail.mimeType)
+		}
+		window.addEventListener('cashtreesandroid', handleNativeCameraResult)
+		window.addEventListener('cashtreesios', handleNativeCameraResult)
+		return () => {
+			window.removeEventListener('cashtreesandroid', handleNativeCameraResult)
+			window.removeEventListener('cashtreesios', handleNativeCameraResult)
+		}
+	}, [])
+
+	const toAddress = chatData.address
+	const walletEoa = (profiles[0]?.keyID ?? '').trim()
+
+	const startVoiceMedia = useCallback(async (preopenedStream?: MediaStream | null) => {
+		const logMicDiag = (phase: string, detail: Record<string, unknown>) => {
+			// Production CRA drops console.* (craco drop_console). Always push to
+			// native CashTrees logcat bridges so Android mirror can diagnose mic.
+			const line = `[voice-mic] ${phase} ${JSON.stringify(detail)}`
+			try {
+				console.warn(`[voice-mic] ${phase}`, detail)
+			} catch {
+				/* ignore */
+			}
+			try {
+				const w = window as Window & {
+					CashTreesAndroid?: { debugLog?: (level: string, message: string) => void }
+					CashTreesWebConsole?: { relay?: (level: string, message: string) => void }
+				}
+				w.CashTreesWebConsole?.relay?.('warn', line)
+				w.CashTreesAndroid?.debugLog?.('warn', line)
+			} catch {
+				/* ignore */
+			}
+		}
+		// Play the other side even when this device has no microphone.
+		void remoteVoiceAudioContextRef.current?.resume().catch(() => {})
+		if (voiceCaptureStopRef.current) {
+			try { voiceCaptureStopRef.current() } catch { /* already stopped */ }
+			voiceCaptureStopRef.current = null
+		}
+		if (!voiceCallKeyRef.current || !voiceCallPeerSessionRef.current || !voiceCallSessionRef.current) {
+			logMicDiag('skip_missing_session', {
+				hasCaptureStop: false,
+				hasKey: Boolean(voiceCallKeyRef.current),
+				hasPeerSession: Boolean(voiceCallPeerSessionRef.current),
+				hasLocalSession: Boolean(voiceCallSessionRef.current),
+			})
+			preopenedStream?.getTracks().forEach((track) => track.stop())
+			return
+		}
+		if (voiceMediaStartingRef.current) {
+			logMicDiag('skip_already_starting', {})
+			preopenedStream?.getTracks().forEach((track) => track.stop())
+			return
+		}
+		if (!navigator.mediaDevices?.getUserMedia) {
+			setVoiceError('Voice calling is not supported by this browser.')
+			preopenedStream?.getTracks().forEach((track) => track.stop())
+			return
+		}
+		const route = voicePeerRouteRef.current || chatData.chatData?.routersArmoreds?.trim() || ''
+		if (!route) {
+			setVoiceError('Voice audio relay is unavailable. Please try the call again.')
+			preopenedStream?.getTracks().forEach((track) => track.stop())
+			return
+		}
+		voiceMediaStartingRef.current = true
+		// Tell the peer once per call that this page takes split-seq video, even if
+		// neither side turns video on first (the peer otherwise sends the old format).
+		const connectedCallId = voiceCallOfferRef.current?.callId || ''
+		if (connectedCallId && !sameCallId(mediaCapsAnnouncedCallRef.current, connectedCallId)) {
+			mediaCapsAnnouncedCallRef.current = connectedCallId
+			announceMediaCapsRef.current('connected')
+		}
+		const sleepMs = (ms: number) =>
+			new Promise<void>((resolve) => {
+				window.setTimeout(resolve, ms)
+			})
+		const isTransientMicError = (error: unknown): boolean => {
+			const name = error instanceof DOMException ? error.name : ''
+			return (
+				name === 'NotFoundError' ||
+				name === 'DevicesNotFoundError' ||
+				name === 'NotReadableError' ||
+				name === 'TrackStartError' ||
+				name === 'OverconstrainedError' ||
+				name === 'ConstraintNotSatisfiedError' ||
+				name === 'AbortError'
+			)
+		}
+		const summarizeMicDevices = async (): Promise<string> => {
+			try {
+				const devices = await navigator.mediaDevices.enumerateDevices()
+				return devices
+					.map((d) => `${d.kind}:${d.label ? 'labeled' : 'blank'}:${d.deviceId ? 'id' : 'noId'}`)
+					.join(',')
+			} catch {
+				return 'enumerate_failed'
+			}
+		}
+		const openMicStreamOnce = async (): Promise<MediaStream> => {
+			const androidShell = getCashTreesNativeNfcHost() === 'android'
+			const preferred = voiceCaptureConstraints(false)
+			const plain: MediaStreamConstraints = voiceCaptureConstraints(true)
+			// Android WebView + Telecom MODE_IN_COMMUNICATION often maps
+			// enabled AEC/NS/AGC to NotFoundError. The uplink also writes
+			// silence to the speaker, so AEC must stay off or it erases the mic.
+			const primary = androidShell ? plain : preferred
+			const secondary = androidShell ? preferred : plain
+			try {
+				logMicDiag('getUserMedia_primary', { androidShell, primary: androidShell ? 'plain' : 'preferred' })
+				return await navigator.mediaDevices.getUserMedia(primary)
+			} catch (primaryError) {
+				const name = primaryError instanceof DOMException ? primaryError.name : ''
+				const message = primaryError instanceof Error ? primaryError.message : String(primaryError)
+				const retryable = isTransientMicError(primaryError)
+				logMicDiag('primary_getUserMedia_failed', {
+					name,
+					message,
+					retryable,
+					androidShell,
+					deviceSummary: await summarizeMicDevices(),
+				})
+				if (!retryable) throw primaryError
+				logMicDiag('fallback_getUserMedia_secondary', {
+					secondary: androidShell ? 'preferred' : 'plain',
+				})
+				return await navigator.mediaDevices.getUserMedia(secondary)
+			}
+		}
+		const openMicStream = async (): Promise<MediaStream> => {
+			const warmed = outgoingMicPreopenRef.current
+			if (warmed?.getAudioTracks().some((track) => track.readyState === 'live')) {
+				outgoingMicPreopenRef.current = null
+				logMicDiag('reuse_dial_mic', {
+					tracks: warmed.getAudioTracks().map((t) => t.label || t.id).join(',') || '0',
+				})
+				return warmed
+			}
+			warmed?.getTracks().forEach((track) => track.stop())
+			outgoingMicPreopenRef.current = null
+			const livePreopened = preopenedStream?.getAudioTracks().some((t) => t.readyState === 'live')
+				? preopenedStream
+				: null
+			if (livePreopened) {
+				logMicDiag('reuse_preopened_stream', {
+					tracks: livePreopened.getAudioTracks().map((t) => t.label || t.id).join(',') || '0',
+				})
+				return livePreopened
+			}
+			preopenedStream?.getTracks().forEach((track) => track.stop())
+			// Self-managed Telecom Answer flips MODE_IN_COMMUNICATION a few
+			// hundred ms before WebView getUserMedia is stable. First attempts
+			// often surface as NotFound/NotReadable even though a mic exists.
+			const androidShell = getCashTreesNativeNfcHost() === 'android'
+			const maxAttempts = androidShell ? 10 : 2
+			// Android ConnectionServiceFocus flips MODE_IN_COMMUNICATION ~3.4s after
+			// Answer even when setActive is deferred 12s. Retries must span past that.
+			const delaysMs = androidShell
+				? [0, 150, 350, 700, 1200, 2000, 3200, 4500, 6000, 8000]
+				: [0, 400]
+			let lastError: unknown
+			for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+				const delay = delaysMs[attempt] ?? 400
+				if (delay > 0) await sleepMs(delay)
+				try {
+					logMicDiag('getUserMedia_attempt', { attempt: attempt + 1, maxAttempts, delay, androidShell })
+					return await openMicStreamOnce()
+				} catch (error) {
+					lastError = error
+					const name = error instanceof DOMException ? error.name : ''
+					const message = error instanceof Error ? error.message : String(error)
+					const canRetry = isTransientMicError(error) && attempt + 1 < maxAttempts
+					logMicDiag('getUserMedia_attempt_failed', {
+						attempt: attempt + 1,
+						name,
+						message,
+						canRetry,
+						deviceSummary: await summarizeMicDevices(),
+					})
+					if (!canRetry) throw error
+				}
+			}
+			throw lastError instanceof Error ? lastError : new Error('getUserMedia_failed')
+		}
+		try {
+			void voicePlaybackRef.current?.resume()
+			let stream = await openMicStream()
+			logMicDiag('getUserMedia_ok', {
+				tracks: stream.getAudioTracks().map((t) => t.label || t.id).join(',') || '0',
+			})
+			// A prior attempt (or concurrent peer-accept path) may have already
+			// painted the NotFound banner; clear it once the mic is open.
+			setVoiceError(null)
+			const key = voiceCallKeyRef.current
+			const targetSessionId = voiceCallPeerSessionRef.current
+			const callId = voiceCallOfferRef.current?.callId || ''
+			if (!key || !targetSessionId) {
+				stream.getTracks().forEach((track) => track.stop())
+				return
+			}
+			// Promote Android Telecom to ACTIVE only after mic is live — not after
+			// early GUM alone (route/acceptIncoming can still be in flight).
+			const notified = notifyNativeVoiceMicReady({
+				callId,
+				sessionId: voiceCallSessionRef.current || targetSessionId,
+			})
+			logMicDiag('notify_voice_mic_ready', {
+				notified,
+				callId: callId ? 'set' : '',
+				sessionId: voiceCallSessionRef.current ? 'local' : 'peer',
+			})
+			let loggedSentFrame = false
+			const sendEncryptedVoiceFrame = async (payload: string) => {
+				const frameRoute = voicePeerRouteRef.current || chatData.chatData?.routersArmoreds?.trim() || ''
+				const localSessionId = voiceCallSessionRef.current?.trim() || ''
+				// Prefer verified peer EOA from dial/accept; SI routes by targetSessionId
+				// so an empty `to` must not block send when route+sessions are ready.
+				const peerWallet =
+					voicePeerWalletRef.current.trim() ||
+					(typeof toAddress === 'string' ? toAddress.trim() : '')
+				if (!frameRoute || !callId || !targetSessionId || !localSessionId) {
+					if (voiceFrameSendFailuresRef.current < 3) {
+						voiceFrameSendFailuresRef.current += 1
+						logMicDiag('frame_not_sent', {
+							route: Boolean(frameRoute),
+							callId: Boolean(callId),
+							targetSession: Boolean(targetSessionId),
+							localSession: Boolean(localSessionId),
+							peer: Boolean(peerWallet),
+						})
+					}
+					return
+				}
+				const sent = await sendWorkerVoiceFrame(frameRoute, {
+					type: 'voice_frame_v1',
+					callId,
+					sessionId: localSessionId,
+					targetSessionId,
+					...(peerWallet ? { to: peerWallet } : {}),
+					seq: voiceFrameSeqRef.current++,
+					timestamp: Math.floor(Date.now() / 1000),
+					payload,
+				})
+				if (!sent) {
+					// Not accepted: before the peer's relay is known, or while its channel
+					// reopens. Warn only once nothing has gone through for a while; the
+					// link watchdog ends the call after 25 s without frames either way.
+					const link = voiceLinkRef.current
+					const since = Math.max(link.lastTxOkAt, link.mediaStartedAt)
+					if (voiceFrameSendFailuresRef.current < 3 && since > 0 && Date.now() - since >= VOICE_LINK.rxStaleMs) {
+						voiceFrameSendFailuresRef.current += 1
+						setVoiceError(VOICE_RELAY_UNAVAILABLE)
+					}
+				} else {
+					if (voiceFrameSendFailuresRef.current > 0) {
+						setVoiceError((prev) => (prev === VOICE_RELAY_UNAVAILABLE ? null : prev))
+					}
+					voiceFrameSendFailuresRef.current = 0
+					voiceLinkRef.current.lastTxOkAt = Date.now()
+					if (!loggedSentFrame) {
+						loggedSentFrame = true
+						logMicDiag('frame_sent', { seq: voiceFrameSeqRef.current })
+					}
+				}
+			}
+			// WebView getUserMedia is digital silence in MODE_IN_COMMUNICATION.
+			// Release those tracks, then record with the app AudioRecord.
+			if (getCashTreesNativeNfcHost() === 'android') {
+				androidIncomingMicPrewarmRef.current?.getTracks().forEach((track) => track.stop())
+				androidIncomingMicPrewarmRef.current = null
+				androidIncomingMicPrewarmSessionRef.current = null
+				voiceCallStreamRef.current?.getTracks().forEach((track) => track.stop())
+				stream.getTracks().forEach((track) => track.stop())
+				await sleepMs(200)
+				const stopNative = await startAndroidNativeMicCapture(
+					key,
+					sendEncryptedVoiceFrame,
+					(level) => {
+						setVoiceLevelSamples((previous) => [...previous.slice(-119), level])
+					},
+					logMicDiag,
+				)
+				if (stopNative) {
+					voiceCaptureStopRef.current = stopNative
+					voiceCallStreamRef.current = null
+					setVoiceCallMuted(false)
+					setVoiceLevelSamples([])
+					setRemoteVoiceLevelSamples([])
+					setVoiceCallMinimized(false)
+					void remoteVoiceAudioContextRef.current?.resume().catch(() => {})
+					voiceFrameSeqRef.current = 0
+					voiceFrameSendFailuresRef.current = 0
+					const receiveSessionId = voiceCallPeerSessionRef.current
+					if (!sameCallId(voiceReceiveSessionRef.current, receiveSessionId)) {
+						voiceReceiveSessionRef.current = receiveSessionId
+						voiceReceivedSeqRef.current = -1
+						voiceReceivedSeqsRef.current.clear()
+					}
+					return
+				}
+			}
+			// setActive switches the phone into communication mode and silences
+			// a microphone track that was opened while the call was still ringing.
+			// Open a new track after that switch; keep the old one if the new
+			// open is rejected.
+			if (getCashTreesNativeNfcHost() === 'android') {
+				await sleepMs(600)
+				try {
+					const fresh = await navigator.mediaDevices.getUserMedia(voiceCaptureConstraints(true))
+					const previous = stream
+					stream = fresh
+					previous.getTracks().forEach((track) => track.stop())
+					const track = fresh.getAudioTracks()[0]
+					logMicDiag('reopen_after_active', {
+						tracks: track?.label || track?.id || '0',
+						muted: track?.muted ?? null,
+						ready: track?.readyState || '',
+					})
+				} catch (error) {
+					const name = error instanceof DOMException ? error.name : ''
+					const message = error instanceof Error ? error.message : ''
+					logMicDiag('reopen_after_active_failed', { name, message })
+				}
+			}
+			voiceCallStreamRef.current = stream
+			setVoiceCallMuted(false)
+			setVoiceLevelSamples([])
+			setRemoteVoiceLevelSamples([])
+			setVoiceCallMinimized(false)
+			void remoteVoiceAudioContextRef.current?.resume().catch(() => {})
+			const AudioContextCtor =
+				window.AudioContext ||
+				(window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+			let captureGraph: { context: AudioContext; source: MediaStreamAudioSourceNode } | undefined
+			if (AudioContextCtor) {
+				const audioContext = new AudioContextCtor()
+				void audioContext.resume().catch(() => {})
+				const source = audioContext.createMediaStreamSource(stream)
+				const analyser = audioContext.createAnalyser()
+				analyser.fftSize = 256
+				// Same source feeds the visible meter and the uplink. A second
+				// AudioContext on this MediaStream gets silence on Android WebView.
+				source.connect(analyser)
+				voiceAudioContextRef.current = audioContext
+				voiceAnalyserRef.current = analyser
+				voiceLevelRafRef.current = window.requestAnimationFrame(sampleVoiceLevel)
+				captureGraph = { context: audioContext, source }
+			}
+			voiceFrameSeqRef.current = 0
+			voiceFrameSendFailuresRef.current = 0
+			const receiveSessionId = voiceCallPeerSessionRef.current
+			if (!sameCallId(voiceReceiveSessionRef.current, receiveSessionId)) {
+				voiceReceiveSessionRef.current = receiveSessionId
+				voiceReceivedSeqRef.current = -1
+				voiceReceivedSeqsRef.current.clear()
+			}
+			voiceCaptureStopRef.current = await startVoiceCapture(
+				stream,
+				key,
+				sendEncryptedVoiceFrame,
+				captureGraph,
+				logMicDiag,
+			)
+		} catch (error) {
+			const name = error instanceof DOMException ? error.name : ''
+			const message = error instanceof Error ? error.message : ''
+			let deviceSummary = ''
+			try {
+				deviceSummary = await summarizeMicDevices()
+			} catch {
+				deviceSummary = 'enumerate_failed'
+			}
+			logMicDiag('getUserMedia_fatal', { name, message, deviceSummary })
+			if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+				setVoiceError('Microphone access was denied. Allow microphone access and try again.')
+			} else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+				// Android/iOS WebView: enumerateDevices is often empty / enumerate_failed
+				// until the first successful GUM, and Telecom MODE_IN_COMMUNICATION
+				// maps to NotFound even when hardware exists. Never show the permanent
+				// "No microphone" banner inside any CashTrees native shell.
+				const nativeShell = isCashTreesNativeWebView()
+				const hasAudioInput =
+					deviceSummary.includes('audioinput:') || deviceSummary === 'enumerate_failed'
+				const useTemporary = nativeShell || hasAudioInput
+				logMicDiag('not_found_banner', {
+					nativeShell,
+					hasAudioInput,
+					useTemporary,
+					deviceSummary,
+				})
+				setVoiceError(
+					useTemporary
+						? 'Microphone is temporarily unavailable. End the call and try again.'
+						: 'No microphone was found on this device.',
+				)
+			} else if (name === 'NotReadableError' || name === 'TrackStartError') {
+				setVoiceError('Microphone is already in use by another app.')
+			} else if (message === 'voice_media_recorder_unsupported') {
+				setVoiceError('Voice capture is not supported by this browser.')
+			} else {
+				setVoiceError('Microphone access was denied or unavailable.')
+			}
+		} finally {
+			voiceMediaStartingRef.current = false
+		}
+	}, [chatData.chatData, toAddress])
+
+	const armVoicePlayback = useCallback(() => {
+		const playback = voicePlaybackRef.current
+		if (!playback) return
+		playback.armOutput()
+		remoteVoiceAudioContextRef.current = playback.context
+		remoteVoiceAnalyserRef.current = playback.analyser
+	}, [])
+
+	const startVoiceCall = useCallback(async (event?: { timeStamp?: number }) => {
+		if (voiceCallStartingRef.current || voiceCallState !== 'idle') return
+		const timing = beginCallTiming(event?.timeStamp)
+		// The call screen covers the chat: close the keyboard. In the iOS shell an
+		// open keyboard during a lock hung the app snapshot and got the dial killed.
+		if (typeof document !== 'undefined') (document.activeElement as HTMLElement | null)?.blur?.()
+		// Inside the shell, show the native call screen ("Connecting") before
+		// anything else runs on this tap: creating the audio context and the
+		// mic request below can each take a frame or more. Route lookup and the
+		// offer take seconds; startSystemCall later attaches the real call to
+		// this screen with the same prepareId. Older shells without this action
+		// keep the call-button spinner instead.
+		const prepareId = isCashTreesNativeWebView()
+			? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+			: ''
+		const nativePrepared = prepareId
+			? dispatchNativeSystemCallAction('prepareSystemCall', {
+					prepareId,
+					peerAddress: typeof toAddress === 'string' ? toAddress.trim() : '',
+					dialId: timing.dialId,
+					tapAt: timing.tapAt,
+				})
+			: false
+		markCallTiming('prepare-dispatched', `native=${nativePrepared ? 1 : 0}`)
+		voiceCallLiveRef.current = true
+		let audioPrewarmed = false
+		const prewarmAudio = () => {
+			if (audioPrewarmed || !voiceCallLiveRef.current) return
+			audioPrewarmed = true
+			armVoicePlayback()
+			if (getCashTreesNativeNfcHost() !== 'android' && navigator.mediaDevices?.getUserMedia) {
+				void navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+					if (!voiceCallLiveRef.current) {
+						stream.getTracks().forEach((track) => track.stop())
+						return
+					}
+					const previous = outgoingMicPreopenRef.current
+					outgoingMicPreopenRef.current = stream
+					previous?.getTracks().forEach((track) => track.stop())
+				}).catch(() => { /* answer-time open is the fallback */ })
+			}
+		}
+		if (nativePrepared) {
+			// The shell plays and records the dialed call natively. In WKWebView
+			// the audio context and mic request switch the app's audio session
+			// on the shell's main thread, which held the call screen's first
+			// frame back; run them once the offer is with the shell (or after
+			// 1.5 s), so they stay off the tap-to-offer path.
+			window.setTimeout(prewarmAudio, 1500)
+		} else {
+			// Must run before any await so the browser unlocks the speaker.
+			if (!isCashTreesNativeWebView()) ensureCallTones().unlock()
+			prewarmAudio()
+		}
+		voiceCallStartingRef.current = true
+		const startToken = ++voiceStartTokenRef.current
+		const cancelledWhileStarting = () => voiceStartTokenRef.current !== startToken
+		let nativeStarted = false
+		// `error` keeps the native screen up with the reason (End closes it);
+		// without it the screen closes at once (cancel). Older shells ignore it.
+		const closePreparedScreen = (error?: string) => {
+			if (nativePrepared && !nativeStarted) {
+				nativeStarted = true
+				dispatchNativeSystemCallAction('cancelPreparedSystemCall', {
+					prepareId,
+					...(error ? { error } : {}),
+				})
+			}
+		}
+		// The dial could not be placed. The reason stays on the call page:
+		// the native screen inside the shell, the in-page call window in a
+		// browser (End closes it). The chat banner keeps it afterwards.
+		const failDial = (message: string) => {
+			markCallTiming('dial-failed')
+			closePreparedScreen(message)
+			setVoiceError(message)
+			setVoiceCallConnecting(false)
+			voiceCallStartingRef.current = false
+			voiceCallLiveRef.current = false
+			outgoingMicPreopenRef.current?.getTracks().forEach((track) => track.stop())
+			outgoingMicPreopenRef.current = null
+			if (isCashTreesNativeWebView()) {
+				setVoiceCallState('idle')
+			} else {
+				setVoiceDialFailed(true)
+			}
+		}
+		const applyDialState = () => {
+			setVoiceDialFailed(false)
+			setVoiceError(null)
+			setVoiceVideoNote(null)
+			setVoiceCallMinimized(false)
+			setVoiceSpeakerOn(true)
+			setVoiceCallConnecting(true)
+			setVoiceCallState('outgoing')
+		}
+		// The native screen already shows the call: re-rendering the chat page here
+		// held the offer's last encryption back (1.3–3.8 s). Inside the
+		// shell the page state waits until the offer is handed to the native side.
+		const dialState = createDialStateGate(
+			() => (nativePrepared ? startTransition(applyDialState) : applyDialState()),
+			nativePrepared,
+		)
+		let route = chatData.chatData?.routersArmoreds?.trim() || ''
+		let recipientPgp = chatData.chatData?.publicArmored?.trim() || ''
+		// ChatList refreshes peer routes in the background. A call can be
+		// started before that refresh finishes, so resolve the peer's current
+		// trusted AddressPGP record once at the action boundary instead of
+				// treating the stale local mirror as authoritative.
+		// the peer's current key and route are read at every call start, not only when a value is missing. A failed read is shown with its
+		// fixed code; the last values are used for this call only and nothing is written from an untrusted read.
+		// a call is a send to the contact: the same trust rule decides whether it starts. A held call is not dialled.
+		let callHeldCode: string | undefined
+		try {
+			markCallTiming('route-refresh-start')
+			const trust = await resolveTrustedRoute(chatData, lookupRecipientRecord)
+			if (trust.ok) {
+				route = trust.routersArmoreds?.trim() || route
+				recipientPgp = trust.publicArmored?.trim() || recipientPgp
+			} else {
+				callHeldCode = trust.code
+			}
+		} catch {
+			// network_error (a thrown read): shown as a network error, the call does not start.
+			callHeldCode = 'route_unconfirmed'
+		}
+		if (cancelledWhileStarting()) {
+			voiceCallStartingRef.current = false
+			closePreparedScreen()
+			return
+		}
+		if (callHeldCode) {
+			failDial(callHeldText("start"))
+			return
+		}
+		if (!route || !recipientPgp) {
+			failDial(
+				!recipientPgp
+					? 'Voice calling requires the contact to register Chat encryption first.'
+					: 'Voice calling could not resolve the contact mailbox route. Please try again.',
+			)
+			return
+		}
+		voicePeerRouteRef.current = route
+		voicePeerWalletRef.current = typeof toAddress === 'string' ? toAddress.trim() : ''
+		markCallTiming('route-ready')
+		try {
+			const mailboxAligned = await timeCallStep('mailbox-aligned', () =>
+				alignLiveGossipRouteToChain(privateKey, allNodes))
+			if (cancelledWhileStarting()) return
+			if (!mailboxAligned) {
+				failDial(mailboxAlignErrorMessage())
+				return
+			}
+			const callerWallet = cachedWallet(privateKey).address
+			const callerCallId = String(
+				CoNET_Data?.beamio?.accountName ||
+				callerWallet,
+			).trim() || callerWallet
+			const controller = createVoiceCallController({
+				privateKey,
+				localCallId: callerCallId,
+				peerEoa: toAddress,
+				peerPgp: recipientPgp,
+				peerRoute: route,
+				allNodes,
+				onOfferHanded: dialState.offerHanded,
+			})
+			const channel = await timeCallStep('offer-ready', () => controller.startOutgoing())
+			if (channel && !cancelledWhileStarting()) dialState.settle()
+			if (nativePrepared) window.setTimeout(prewarmAudio, 0)
+			if (cancelledWhileStarting()) {
+				// Cancel was pressed while the offer was being posted. The callee's
+				// phone may already be ringing, so end the call properly: it tells
+				// the callee, stops the mailbox listen, and records the attempt.
+				if (channel) {
+					const endedAt = Date.now()
+					upsertPhoneCallRecord({
+						callId: channel.signal.callId,
+						sessionId: channel.sessionId,
+						peerAddress: toAddress,
+						direction: 'outgoing',
+						status: 'cancelled',
+						createdAt: endedAt,
+						endedAt,
+					})
+				}
+				void controller.end(true)
+				return
+			}
+			if (!channel) {
+				failDial(VOICE_RELAY_OPEN_ERROR)
+				return
+			}
+			voiceControllerRef.current = controller
+			const sessionId = channel.sessionId
+			const key = channel.sessionKey
+			voiceCallSessionRef.current = sessionId
+			voiceCallPeerSessionRef.current = null
+			voiceCallKeyRef.current = key
+			voiceReceivedSeqRef.current = -1
+			voiceReceivedSeqsRef.current.clear()
+			setVoiceCallMuted(false)
+			setVoiceLevelSamples([])
+			const signal = channel.signal
+			voiceCallOfferRef.current = {
+				callId: signal.callId,
+				sessionId,
+				timestamp: signal.timestamp,
+				expiresAt: signal.expiresAt,
+			}
+			setLiveVoiceSessionId(sessionId)
+			setVoiceCallAnswered(false)
+			upsertPhoneCallRecord({
+				callId: signal.callId,
+				sessionId,
+				peerAddress: toAddress,
+				direction: 'outgoing',
+				status: 'ringing',
+				createdAt: Date.now(),
+				expiresAt: signal.expiresAt,
+			})
+			nativeStarted = true
+			markCallTiming('start-dispatch')
+			if (nativeShellAcksDialer()) {
+				// Armed before the dispatch: the shell's answer may come back at once.
+				clearNativeDialerAck()
+				nativeDialerAckRef.current = {
+					callId: signal.callId,
+					sessionId,
+					peerAddress: typeof toAddress === 'string' ? toAddress.trim() : '',
+					dispatchedAt: Date.now(),
+				}
+				nativeDialerAckTimerRef.current = window.setTimeout(checkNativeDialerAck, NATIVE_DIALER_ACK_MS)
+			}
+			dispatchNativeSystemCallAction('startSystemCall', {
+				prepareId,
+				dialId: timing.dialId,
+				callId: signal.callId,
+				sessionId,
+				peerAddress: toAddress,
+				displayName: chatData.beamio?.username || toAddress,
+				// A dial (not an in-page answer): the shell opens no channel now and
+				// waits for the callee's accept on our mailbox.
+				dialerProto: 3,
+				// The ring window starts here; the shell times the call out natively.
+				offerCreatedAt: Number(signal.createdAt) || Date.now(),
+			})
+			// Native shell owns dialer voice_listen + VoIP wake (offerArmor never
+			// started on the worker — do not stopWorkerVoiceListen / no conflict).
+			if (isCashTreesNativeWebView()) {
+				voiceControllerRef.current = null
+			}
+			setVoiceCallConnecting(false)
+		} catch (error) {
+			if (cancelledWhileStarting()) return
+			failDial(error instanceof Error ? error.message : 'Voice call could not start.')
+		} finally {
+			// Any exit without startSystemCall (error, cancel) closes the prepared screen.
+			closePreparedScreen()
+			voiceCallStartingRef.current = false
+		}
+	}, [allNodes, armVoicePlayback, chatData, checkNativeDialerAck, clearNativeDialerAck, ensureCallTones, privateKey, toAddress, upsertPhoneCallRecord, voiceCallState])
+
+	// Browser PWA: first paint of the in-page call screen after a dial.
+	useEffect(() => {
+		if (voiceCallState !== 'outgoing' || isCashTreesNativeWebView()) return
+		if (!voiceCallStartingRef.current) return // answered call, not a dial
+		markCallTiming('pwa-call-page-mounted')
+		const raf = requestAnimationFrame(() => markCallTiming('pwa-call-page-painted'))
+		return () => cancelAnimationFrame(raf)
+	}, [voiceCallState])
+
+	const clearSoftRemoteVideo = useCallback(() => {
+		const prev = remoteVideoBlobUrlRef.current
+		remoteVideoBlobUrlRef.current = null
+		if (prev) {
+			try { URL.revokeObjectURL(prev) } catch { /* ignore */ }
+		}
+		remoteVideoHasFrameRef.current = false
+		remoteVideoShownCaptureRef.current = 0
+		remoteVideoMinDeltaRef.current = null
+		setRemoteVoiceVideoUrl(null)
+		setPeerVoiceVideoEnabled(false)
+	}, [])
+
+	/** The remote `<img>` takes its first frame from the ref when it mounts. */
+	const attachRemoteVideoImg = useCallback((el: HTMLImageElement | null) => {
+		remoteVideoImgRef.current = el
+		if (el && remoteVideoBlobUrlRef.current) el.src = remoteVideoBlobUrlRef.current
+	}, [])
+
+	/**
+	 * Show one remote frame. Frames with a capture time (BJP2) keep the sender's
+	 * cadence: each is shown at capture + fastest transit + a fixed delay, and a
+	 * frame older than one already shown is dropped. Only the first frame goes
+	 * through React state; later ones swap the `<img>` source directly, so the
+	 * chat page does not re-render on every frame.
+	 */
+	const showRemoteVideoFrame = useCallback((decoded: BjpgDecodedFrame) => {
+		const stats = softVideoStatsRef.current
+		const noteLateDrop = () => {
+			const host = window as Window & { __voicePeerVideo?: Record<string, unknown> }
+			const prev = host.__voicePeerVideo || {}
+			host.__voicePeerVideo = { ...prev, lateDropped: Number(prev.lateDropped || 0) + 1 }
+		}
+		// Captured before the peer turned its camera off: never bring the picture back.
+		if (!acceptPeerFrame(peerVideoGateRef.current, decoded.captureMs)) {
+			noteLateDrop()
+			return
+		}
+		const display = () => {
+			// The camera may have gone off while this frame waited for its slot.
+			if (isStalePeerFrame(peerVideoGateRef.current, decoded.captureMs)) {
+				noteLateDrop()
+				return
+			}
+			if (decoded.captureMs > 0) {
+				if (decoded.captureMs < remoteVideoShownCaptureRef.current) {
+					stats.rxSuperseded += 1
+					return
+				}
+				remoteVideoShownCaptureRef.current = decoded.captureMs
+			}
+			const url = URL.createObjectURL(new Blob([decoded.jpeg], { type: 'image/jpeg' }))
+			const prev = remoteVideoBlobUrlRef.current
+			remoteVideoBlobUrlRef.current = url
+			const img = remoteVideoImgRef.current
+			if (img) img.src = url
+			if (!remoteVideoHasFrameRef.current) {
+				remoteVideoHasFrameRef.current = true
+				setPeerVoiceVideoEnabled(true)
+				setRemoteVoiceVideoUrl(url)
+			}
+			if (prev) {
+				try { URL.revokeObjectURL(prev) } catch { /* ignore */ }
+			}
+			stats.rxShown += 1
+		}
+		if (decoded.captureMs <= 0) {
+			display()
+			return
+		}
+		const now = Date.now()
+		const delta = now - decoded.captureMs
+		stats.rxLatSum += delta
+		stats.rxLatN += 1
+		// Track the fastest transit; relax slowly so a slower path is adopted.
+		const prevMin = remoteVideoMinDeltaRef.current
+		const minDelta = prevMin === null ? delta : Math.min(delta, prevMin + 2)
+		remoteVideoMinDeltaRef.current = minDelta
+		const waitMs = Math.max(0, decoded.captureMs + minDelta + REMOTE_VIDEO_PLAYOUT_DELAY_MS - now)
+		if (waitMs <= 0) display()
+		else setTimeout(display, waitMs)
+	}, [])
+
+	// Soft local PiP mounts only when softLocalVideoOn — bind stream after paint.
+	useEffect(() => {
+		if (!softLocalVideoOn) return
+		const el = softLocalVideoElRef.current
+		const stream = softLocalVideoStreamRef.current
+		if (!el || !stream) return
+		el.srcObject = stream
+		el.muted = true
+		el.playsInline = true
+		void el.play().catch(() => {})
+	}, [softLocalVideoOn])
+
+	const stopSoftLocalVideo = useCallback(() => {
+		try { softVideoCaptureStopRef.current?.() } catch { /* already stopped */ }
+		softVideoCaptureStopRef.current = null
+		softLocalVideoStreamRef.current?.getTracks().forEach((track) => track.stop())
+		softLocalVideoStreamRef.current = null
+		if (softLocalVideoElRef.current) {
+			softLocalVideoElRef.current.srcObject = null
+		}
+		setSoftLocalVideoOn(false)
+		setVoiceVideoNote(null)
+	}, [])
+
+	/**
+	 * Soft BJPG / control uplink. Controls and old-style BJPG share seq with PCM;
+	 * split-seq video (peer announced video ≥ 2) passes its own `seqOverride`.
+	 */
+	const sendSoftVoiceUplink = useCallback(async (
+		plain: Uint8Array,
+		mediaKind?: 'video',
+		seqOverride?: number,
+	): Promise<boolean> => {
+		const key = voiceCallKeyRef.current
+		const targetSessionId = voiceCallPeerSessionRef.current
+		const localSessionId = voiceCallSessionRef.current?.trim() || ''
+		const callId = voiceCallOfferRef.current?.callId || ''
+		const frameRoute =
+			voicePeerRouteRef.current || chatData.chatData?.routersArmoreds?.trim() || ''
+		const peerWallet =
+			voicePeerWalletRef.current.trim()
+			|| (typeof toAddress === 'string' ? toAddress.trim() : '')
+		if (
+			!(key instanceof Uint8Array)
+			|| key.length !== 32
+			|| !frameRoute
+			|| !callId
+			|| !targetSessionId
+			|| !localSessionId
+		) {
+			return false
+		}
+		const payload = await encryptVoiceFrame(key, plain)
+		return sendWorkerVoiceFrame(frameRoute, {
+			type: 'voice_frame_v1',
+			callId,
+			sessionId: localSessionId,
+			targetSessionId,
+			...(peerWallet ? { to: peerWallet } : {}),
+			seq: seqOverride ?? voiceFrameSeqRef.current++,
+			timestamp: Math.floor(Date.now() / 1000),
+			...(mediaKind ? { mediaKind } : {}),
+			payload,
+		})
+	}, [chatData, toAddress])
+
+	/**
+	 * Announce what this page can receive (`voice_media_caps_v1`, AES control).
+	 * Only when the page itself carries the call media (not inside a native shell).
+	 */
+	sendMediaCapsRef.current = (reason: string) => {
+		if (isCashTreesNativeWebView()) return
+		const callId = voiceCallOfferRef.current?.callId || ''
+		const localSessionId = voiceCallSessionRef.current?.trim() || ''
+		if (!callId || !localSessionId) return
+		const body = new TextEncoder().encode(JSON.stringify({
+			type: 'voice_media_caps_v1',
+			callId,
+			sessionId: localSessionId,
+			video: VOICE_LOCAL_VIDEO_CAPS,
+			timestamp: Date.now(),
+		}))
+		void sendSoftVoiceUplink(body)
+		console.info('[voice-video] media caps sent', reason)
+	}
+
+	announceMediaCapsRef.current = (reason: string) => {
+		const callId = voiceCallOfferRef.current?.callId || ''
+		if (!callId) return
+		for (const delay of MEDIA_CAPS_BURST_MS) {
+			window.setTimeout(() => {
+				if (!voiceCallLiveRef.current || !sameCallId(voiceCallOfferRef.current?.callId, callId)) return
+				sendMediaCapsRef.current(`${reason}+${delay}`)
+			}, delay)
+		}
+	}
+
+	const toggleSoftLocalVideo = useCallback(async () => {
+		if (softLocalVideoOn) {
+			const callId = voiceCallOfferRef.current?.callId || ''
+			const localSessionId = voiceCallSessionRef.current?.trim() || ''
+			stopSoftLocalVideo()
+			const gen = ++softVideoToggleGenRef.current
+			if (callId && localSessionId) {
+				// One "off" time for every repeat, so the peer can order it against a later "on".
+				const body = new TextEncoder().encode(JSON.stringify({
+					type: 'voice_video_disable_v1',
+					callId,
+					sessionId: localSessionId,
+					timestamp: Date.now(),
+				}))
+				// A single control frame can be dropped on the way; repeat it until
+				// the camera comes back on or the call ends.
+				for (const delay of VIDEO_OFF_REPEAT_MS) {
+					window.setTimeout(() => {
+						if (softVideoToggleGenRef.current !== gen) return
+						if (!voiceCallLiveRef.current || !sameCallId(voiceCallOfferRef.current?.callId, callId)) return
+						void sendSoftVoiceUplink(body)
+					}, delay)
+				}
+			}
+			return
+		}
+		softVideoToggleGenRef.current += 1
+		if (voiceCallState !== 'outgoing' || !voiceCallLiveRef.current) {
+			setVoiceVideoNote('Answer the call before starting video.')
+			return
+		}
+		if (!navigator.mediaDevices?.getUserMedia) {
+			setVoiceVideoNote('Camera is not available in this browser.')
+			return
+		}
+		try {
+			const stream = await navigator.mediaDevices.getUserMedia({
+				video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+				audio: false,
+			})
+			softLocalVideoStreamRef.current = stream
+			setSoftLocalVideoOn(true)
+			setVoiceVideoNote(null)
+			const el = softLocalVideoElRef.current
+			if (el) {
+				el.srcObject = stream
+				el.muted = true
+				el.playsInline = true
+				void el.play().catch(() => {})
+			}
+			const callId = voiceCallOfferRef.current?.callId || ''
+			const localSessionId = voiceCallSessionRef.current?.trim() || ''
+			if (callId && localSessionId) {
+				const body = new TextEncoder().encode(JSON.stringify({
+					type: 'voice_video_enable_v1',
+					callId,
+					sessionId: localSessionId,
+					// The peer learns our capability even if a caps frame was lost.
+					video: VOICE_LOCAL_VIDEO_CAPS,
+					timestamp: Date.now(),
+				}))
+				void sendSoftVoiceUplink(body)
+				// The enable above can be dropped like any late control frame.
+				announceMediaCapsRef.current('video-on')
+			}
+			const canvas = document.createElement('canvas')
+			const ctx = canvas.getContext('2d')
+			const probe = document.createElement('video')
+			probe.muted = true
+			probe.playsInline = true
+			probe.srcObject = stream
+			await probe.play().catch(() => {})
+			let cancelled = false
+			let timer: ReturnType<typeof setTimeout> | undefined
+			let videoInFlight = 0
+			const stop = () => {
+				// Cancel capture only — Soft PiP / MediaStream lifecycle is owned by
+				// stopSoftLocalVideo (do not stop tracks here or Soft preview dies early).
+				cancelled = true
+				if (timer !== undefined) clearTimeout(timer)
+				timer = undefined
+				try { probe.pause() } catch { /* ignore */ }
+				probe.srcObject = null
+			}
+			softVideoCaptureStopRef.current = stop
+			const notePeerVideo = (patch: Record<string, unknown>) => {
+				const host = window as Window & { __voicePeerVideo?: Record<string, unknown> }
+				host.__voicePeerVideo = { ...(host.__voicePeerVideo || {}), ...patch, at: Date.now() }
+			}
+			const schedule = () => {
+				timer = setTimeout(() => {
+					void (async () => {
+						if (cancelled) return
+						try {
+							if (!ctx) return
+							const stats = softVideoStatsRef.current
+							// Enough frames on the way: skip this one (no seq used), so a slow
+							// path costs frame rate instead of piling up stale frames.
+							if (videoInFlight >= SOFT_VIDEO_MAX_IN_FLIGHT) {
+								stats.txBusy += 1
+								return
+							}
+							const captureMs = Date.now()
+							stats.txCap += 1
+							// 320 px long edge and ≤ 8.8 KB, like the shells: the relay
+							// rejects larger payloads, so full 640×480 frames never arrived.
+							const encoded = await encodeSoftVideoJpeg(probe, canvas, ctx)
+							stats.txEncodeMs += Date.now() - captureMs
+							if (!encoded) {
+								stats.txOversize += 1
+								return
+							}
+							if (cancelled) return
+							const { jpeg, w, h } = encoded
+							softVideoFrameIdRef.current += 1
+							// Split seq + capture time only for peers that announced it.
+							const split = peerVideoCapsRef.current >= 2
+							const framed = split
+								? encodeBjp2Frame(jpeg, w, h, softVideoFrameIdRef.current, captureMs)
+								: encodeBjpgFrame(jpeg, w, h, softVideoFrameIdRef.current)
+							const seqOverride = split ? VOICE_VIDEO_SEQ_BASE + (++softVideoSeqRef.current) : undefined
+							const frameId = softVideoFrameIdRef.current
+							const sendStarted = Date.now()
+							// Do not wait for the post: it takes about half a second, and
+							// waiting held the camera to under 1.5 frames per second.
+							videoInFlight += 1
+							void sendSoftVoiceUplink(framed, 'video', seqOverride)
+								.catch(() => false)
+								.then((sent) => {
+									const done = softVideoStatsRef.current
+									done.txSendMs += Date.now() - sendStarted
+									if (sent) {
+										done.txSent += 1
+										done.txJpegBytes += jpeg.length
+									} else {
+										done.txFail += 1
+									}
+									softVideoStatsRef.current = flushSoftVideoStats(done, peerVideoCapsRef.current)
+									notePeerVideo({ localSent: sent, frameId, w, h, jpegBytes: jpeg.length })
+								})
+								.finally(() => {
+									videoInFlight -= 1
+								})
+						} catch (error) {
+							notePeerVideo({
+								localCaptureFail: error instanceof Error ? error.message : String(error),
+							})
+						} finally {
+							if (!cancelled) schedule()
+						}
+					})()
+				}, 200)
+			}
+			schedule()
+		} catch (error) {
+			setSoftLocalVideoOn(false)
+			setVoiceVideoNote(
+				error instanceof Error && /Permission|NotAllowed/i.test(error.message)
+					? 'Camera permission was denied.'
+					: 'Camera could not start.',
+			)
+		}
+	}, [sendSoftVoiceUplink, softLocalVideoOn, stopSoftLocalVideo, voiceCallState])
+
+	const detachLocalVoiceCall = useCallback(() => {
+		voiceCallLiveRef.current = false
+		const offer = voiceCallOfferRef.current
+		const localSession = voiceCallSessionRef.current
+		const peerSession = voiceCallPeerSessionRef.current
+		if (offer?.sessionId) locallyEndedVoiceSessionsRef.current.add(offer.sessionId)
+		if (offer?.callId) locallyEndedVoiceSessionsRef.current.add(offer.callId)
+		if (localSession) locallyEndedVoiceSessionsRef.current.add(localSession)
+		if (peerSession) locallyEndedVoiceSessionsRef.current.add(peerSession)
+		if (offer?.callId && offer.sessionId) markVoiceCallTerminal(offer.callId, offer.sessionId)
+		voiceCallOfferRef.current = null
+		voiceCallSessionRef.current = null
+		voiceCallPeerSessionRef.current = null
+		voiceCallKeyRef.current = null
+		voicePeerRouteRef.current = ''
+		voicePeerWalletRef.current = ''
+		voiceReceiveSessionRef.current = null
+		voiceReceivedSeqRef.current = -1
+		voiceReceivedSeqsRef.current.clear()
+		voiceMediaStartingRef.current = false
+		peerVideoCapsRef.current = 0
+		peerVideoGateRef.current = newPeerVideoGate()
+		softVideoToggleGenRef.current += 1
+		softVideoSeqRef.current = 0
+		softVideoStatsRef.current = newSoftVideoStats()
+		const controller = voiceControllerRef.current
+		voiceControllerRef.current = null
+		try { voiceCaptureStopRef.current?.() } catch { /* already stopped */ }
+		voiceCaptureStopRef.current = null
+		stopSoftLocalVideo()
+		clearSoftRemoteVideo()
+		outgoingMicPreopenRef.current?.getTracks().forEach((track) => track.stop())
+		outgoingMicPreopenRef.current = null
+		voiceCallStreamRef.current?.getTracks().forEach((track) => track.stop())
+		voiceCallStreamRef.current = null
+		voicePlaybackRef.current?.reset()
+		setVoiceCallConnecting(false)
+		setVoiceCallMinimized(false)
+		setLiveVoiceSessionId('')
+		setVoiceCallAnswered(false)
+		setVoiceCallState('idle')
+		if (controller) void controller.end(false)
+		else if (localSession) void stopWorkerVoiceListen(localSession)
+	}, [clearSoftRemoteVideo, stopSoftLocalVideo])
+
+	useEffect(() => {
+		const inboundMessages = messages.filter((message) => message.from === 'them' && message.text)
+		if (inboundMessages.length === 0) return
+		let newestActiveOffer: VoiceCallSignal | null = null
+		for (const message of inboundMessages) {
+			const signal = parseVoiceCallSignal(message.text)
+			if (signal?.type !== 'voice_call_offer_v1' || !isVoiceCallOfferActive(signal)) continue
+			const timestamp = normalizeVoiceTimestampMs(signal.timestamp || signal.createdAt)
+			const previousTimestamp = newestActiveOffer
+				? normalizeVoiceTimestampMs(newestActiveOffer.timestamp || newestActiveOffer.createdAt)
+				: 0
+			if (!newestActiveOffer || timestamp >= previousTimestamp) newestActiveOffer = signal
+		}
+		if (newestActiveOffer) {
+			const liveSessions = new Set([
+				voiceCallOfferRef.current?.sessionId || '',
+				voiceCallPeerSessionRef.current || '',
+				voiceCallSessionRef.current || '',
+			].filter(Boolean))
+			const replacesLiveCall = liveSessions.size > 0 && !liveSessions.has(newestActiveOffer.sessionId)
+			if (replacesLiveCall) detachLocalVoiceCall()
+		}
+		for (const latest of inboundMessages) {
+			try {
+			const signal = parseVoiceCallSignal(latest.text)
+			if (!signal) continue
+			const callerEoa = recoverVoiceCallOfferSigner(signal)
+			if (
+				signal.type === 'voice_call_offer_v1' &&
+				(callerEoa || claimedVoiceCallerTag(signal) || claimedVoiceCallerAddress(signal)) &&
+				typeof signal.callId === 'string' && signal.callId.length > 0 &&
+				typeof signal.sessionId === 'string' && signal.sessionId.length > 0 &&
+				Number(signal.proto) === 3 &&
+				isVoiceCallOfferRinging(signal)
+			) {
+				const persistedPhoneCalls = Array.isArray(profiles?.[0]?.phoneCalls)
+					? profiles[0].phoneCalls
+					: []
+				const previousCall = persistedPhoneCalls.find(
+					(item: any) => sameCallId(item.sessionId, signal.sessionId),
+				)
+				const terminalCallStatuses = new Set(['declined', 'ended', 'answered', 'missed', 'timed_out'])
+				if (terminalCallStatuses.has(String(previousCall?.status || ''))) {
+					continue
+				}
+				setIncomingVoiceOffer(previous => sameCallId(previous?.sessionId, signal.sessionId) ? previous : signal)
+				rememberIncomingVoiceOffer(signal)
+				const provenAddress = callerEoa || ''
+				const localTag = provenAddress
+					? formatLookedUpBeamioTag(resolvePeerSearchResult(provenAddress)?.username)
+					: ''
+				const mismatch = voiceCallClaimMismatchesKey(signal, provenAddress || null, localTag)
+				const claim = {
+					claimedTag: mismatch ? claimedVoiceCallerTag(signal) : '',
+					claimedAddress: mismatch ? claimedVoiceCallerAddress(signal) : '',
+					identityWarning: mismatch ? VOICE_CALL_IDENTITY_WARNING : '',
+				}
+				setIncomingCaller({ address: provenAddress, tag: localTag, ...claim })
+				void (async () => {
+					if (!provenAddress) return
+					await ensureProfilesForAddresses([provenAddress])
+					let username = resolvePeerSearchResult(provenAddress)?.username
+					if (!username) {
+						const res = await searchRemoteAndIngest(provenAddress)
+						const rows = res && typeof res === 'object' && Array.isArray((res as { results?: unknown }).results)
+							? (res as { results: { address?: string; username?: string }[] }).results
+							: []
+						username = rows.find((row) => (row.address || '').toLowerCase() === provenAddress)?.username
+					}
+					const tag = formatLookedUpBeamioTag(username)
+					const nextMismatch = voiceCallClaimMismatchesKey(signal, provenAddress, tag, true)
+					const nextClaim = {
+						claimedTag: nextMismatch ? claimedVoiceCallerTag(signal) : '',
+						claimedAddress: nextMismatch ? claimedVoiceCallerAddress(signal) : '',
+						identityWarning: nextMismatch ? VOICE_CALL_IDENTITY_WARNING : '',
+					}
+					setIncomingCaller({ address: provenAddress, tag, ...nextClaim })
+					reportNativeIncomingSystemCall(
+							nativeIncomingSystemCallPayload({
+							callId: signal.callId,
+							sessionId: signal.sessionId,
+							peerAddress: provenAddress,
+							// Never send EOA as CallKit title — dual EOA/@tag collapses bottom chrome.
+							displayName: tag || 'Beamio',
+							...nextClaim,
+							signal,
+						}),
+					)
+				})()
+				const alreadyReported = hasReportedIncomingVoiceCall(signal.callId, signal.sessionId)
+				if (!alreadyReported) {
+					claimIncomingVoiceCallReport(signal.callId, signal.sessionId)
+					upsertPhoneCallRecord({
+						callId: signal.callId,
+						sessionId: signal.sessionId,
+						peerAddress: provenAddress || claimedVoiceCallerAddress(signal),
+						direction: 'incoming',
+						status: 'ringing',
+						createdAt: Date.now(),
+						expiresAt: signal.expiresAt,
+					})
+					applyNativeIncomingVoiceOfferFromLine(latest.text)
+					reportNativeIncomingSystemCall(
+							nativeIncomingSystemCallPayload({
+							callId: signal.callId,
+							sessionId: signal.sessionId,
+							peerAddress: provenAddress,
+							displayName: localTag || 'Beamio',
+							...claim,
+							signal,
+						}),
+					)
+				}
+			}
+			if (
+				signal.type === 'voice_call_accept_v1' &&
+				Number(signal.proto) === 3 &&
+				sameCallId(voiceCallOfferRef.current?.callId, signal.callId) &&
+				sameCallId(voiceCallOfferRef.current?.sessionId, signal.sessionId) &&
+				!voiceAcceptHandledRef.current.has(signal.callId) &&
+				!locallyEndedVoiceSessionsRef.current.has(signal.callId) &&
+				!locallyEndedVoiceSessionsRef.current.has(signal.sessionId)
+			) {
+				// v3: the accept carries our two channels. The shell opens them itself
+				// (its chat module sees the same message); the browser opens them here.
+				voiceAcceptHandledRef.current.add(signal.callId)
+				voiceCallLiveRef.current = true
+				setVoiceCallAnswered(true)
+				setVoiceCallMinimized(false)
+				setVoiceCallState('outgoing')
+				void voicePlaybackRef.current?.resume()
+				upsertPhoneCallRecord({
+					callId: signal.callId,
+					sessionId: signal.sessionId,
+					peerAddress: toAddress,
+					direction: 'outgoing',
+					status: 'answered',
+					createdAt: Date.now(),
+					answeredAt: Date.now(),
+				})
+				const controller = voiceControllerRef.current
+				if (!isCashTreesNativeWebView() && controller) {
+					const accepted = signal
+					void (async () => {
+						const opened = await controller.applyAccept(accepted)
+						if (!opened) {
+							setVoiceError(VOICE_RELAY_OPEN_ERROR)
+							void endVoiceCallRef.current?.('ended')
+							return
+						}
+						voiceCallSessionRef.current = opened.sessionId
+						voiceCallPeerSessionRef.current = opened.peerSessionId
+						void startVoiceMedia()
+					})()
+				}
+				continue
+			}
+						} catch {
+				/* ordinary Chat text */
+			}
+		}
+		if (newestActiveOffer) {
+			const incomingOffer = newestActiveOffer
+			setIncomingVoiceOffer(previous => sameCallId(previous?.sessionId, incomingOffer.sessionId) ? previous : incomingOffer)
+			rememberIncomingVoiceOffer(incomingOffer)
+		}
+	}, [chatData, detachLocalVoiceCall, messages, profiles, startVoiceMedia, toAddress, upsertPhoneCallRecord])
+
+	const acceptVoiceCall = useCallback(async (offerOverride?: VoiceCallSignal | null) => {
+		const offer = offerOverride || incomingVoiceOffer
+		const callerEoa = recoverVoiceCallOfferSigner(offer as VoiceCallSignal | null)
+		if (!offer || !callerEoa || incomingVoiceAction !== 'idle') return
+		armVoicePlayback()
+		setIncomingVoiceAction('accepting')
+		setVoiceError(null)
+		setVoiceCallMinimized(false)
+		setVoiceCallConnecting(true)
+		setVoiceCallState('outgoing')
+		// Android: prefer mic opened while Telecom was still RINGING (prewarm).
+		// Otherwise open ASAP before route/PGP work. ConnectionServiceFocus may
+		// flip MODE_IN_COMMUNICATION ~3.4s after Answer even with deferred setActive.
+		let earlyMicStream: MediaStream | null = null
+		if (getCashTreesNativeNfcHost() === 'android' && navigator.mediaDevices?.getUserMedia) {
+			const relayEarly = (line: string) => {
+				try {
+					const w = window as Window & {
+						CashTreesAndroid?: { debugLog?: (level: string, message: string) => void }
+						CashTreesWebConsole?: { relay?: (level: string, message: string) => void }
+					}
+					w.CashTreesWebConsole?.relay?.('warn', line)
+					w.CashTreesAndroid?.debugLog?.('warn', line)
+				} catch {
+					/* ignore */
+				}
+			}
+			const sleepEarly = (ms: number) =>
+				new Promise<void>((resolve) => {
+					window.setTimeout(resolve, ms)
+				})
+			const isTransientEarly = (error: unknown): boolean => {
+				const name = error instanceof DOMException ? error.name : ''
+				return (
+					name === 'NotFoundError' ||
+					name === 'DevicesNotFoundError' ||
+					name === 'NotReadableError' ||
+					name === 'TrackStartError' ||
+					name === 'AbortError'
+				)
+			}
+			const offerSessionId = String(offer.sessionId || '')
+			const prewarmed = takeAndroidIncomingMicPrewarm(offerSessionId)
+			if (prewarmed) {
+				earlyMicStream = prewarmed
+				voiceCallStreamRef.current = earlyMicStream
+				relayEarly(
+					`[voice-mic] early_reuse_prewarm ${JSON.stringify({
+						tracks:
+							earlyMicStream.getAudioTracks().map((t) => t.label || t.id).join(',') || '0',
+					})}`,
+				)
+			} else {
+				relayEarly(`[voice-mic] early_getUserMedia_begin ${JSON.stringify({ host: 'android' })}`)
+				const earlyDelaysMs = [0, 200, 500, 1000, 2000, 3500, 5000]
+				for (let attempt = 0; attempt < earlyDelaysMs.length; attempt += 1) {
+					const delay = earlyDelaysMs[attempt] ?? 0
+					if (delay > 0) await sleepEarly(delay)
+					try {
+						earlyMicStream = await navigator.mediaDevices.getUserMedia(voiceCaptureConstraints(true))
+						voiceCallStreamRef.current = earlyMicStream
+						relayEarly(
+							`[voice-mic] early_getUserMedia_ok ${JSON.stringify({
+								attempt: attempt + 1,
+								tracks:
+									earlyMicStream.getAudioTracks().map((t) => t.label || t.id).join(',') || '0',
+							})}`,
+						)
+						break
+					} catch (earlyError) {
+						const name = earlyError instanceof DOMException ? earlyError.name : ''
+						const message = earlyError instanceof Error ? earlyError.message : String(earlyError)
+						const canRetry = isTransientEarly(earlyError) && attempt + 1 < earlyDelaysMs.length
+						relayEarly(
+							`[voice-mic] early_getUserMedia_failed ${JSON.stringify({
+								attempt: attempt + 1,
+								name,
+								message,
+								canRetry,
+							})}`,
+						)
+						earlyMicStream = null
+						if (!canRetry) break
+					}
+				}
+			}
+		}
+		// the answer goes to the CALLER's verified key and route, read from the caller's own chat record. The open chat is
+		// not the caller's record, so its copy is never used here. A caller without a verified key gets no answer (held).
+		let route = ''
+		let recipientPgp = ''
+		let routeReadFailed = false
+		let answerHeldCode: string | undefined
+		const callerPeer = await resolvePeerVoiceMaterialAsync(profiles?.[0]?.chats, callerEoa, privateKey)
+		if (callerPeer.peerPgp && callerPeer.peerRoute) {
+			route = callerPeer.peerRoute
+			recipientPgp = callerPeer.peerPgp
+		} else {
+			answerHeldCode = 'caller_not_verified'
+		}
+		if (answerHeldCode) {
+			earlyMicStream?.getTracks().forEach((track) => track.stop())
+			setVoiceError(callHeldText("answer"))
+			setVoiceCallConnecting(false)
+			setVoiceCallState('idle')
+			setIncomingVoiceAction('idle')
+			return
+		}
+		if (!route || !recipientPgp) {
+			earlyMicStream?.getTracks().forEach((track) => track.stop())
+			setVoiceError(
+				!recipientPgp && !routeReadFailed
+					? 'Voice calling requires the contact to register Chat encryption first.'
+					: 'Voice calling could not resolve the contact mailbox route. Please try again.',
+			)
+			setVoiceCallConnecting(false)
+			setVoiceCallState('idle')
+			setIncomingVoiceAction('idle')
+			return
+		}
+		voicePeerRouteRef.current = route
+		voicePeerWalletRef.current = callerEoa
+		try {
+			const mailboxAligned = await alignLiveGossipRouteToChain(privateKey, allNodes)
+			if (!mailboxAligned) {
+				earlyMicStream?.getTracks().forEach((track) => track.stop())
+				setVoiceError(mailboxAlignErrorMessage())
+				setVoiceCallConnecting(false)
+				setVoiceCallState('idle')
+				return
+			}
+			const localWallet = new ethers.Wallet(privateKey).address
+			const controller = createVoiceCallController({
+				privateKey,
+				localCallId: String(CoNET_Data?.beamio?.accountName || localWallet).trim() || localWallet,
+				peerEoa: callerEoa,
+				peerPgp: recipientPgp,
+				peerRoute: route,
+				allNodes,
+			})
+			const channel = await controller.acceptIncoming(offer as VoiceCallSignal)
+			const nativeShellOwnsAccept = isCashTreesNativeWebView() && !channel
+			if (!channel && !nativeShellOwnsAccept) {
+				earlyMicStream?.getTracks().forEach((track) => track.stop())
+				setVoiceError(VOICE_RELAY_OPEN_ERROR)
+				setVoiceCallConnecting(false)
+				setIncomingVoiceOffer(null)
+				setVoiceCallState('idle')
+				return
+			}
+			voiceControllerRef.current = controller
+			const dialerSessionId = String(offer.sessionId || '').trim()
+			const localSessionId = channel?.sessionId || dialerSessionId
+			voiceCallKeyRef.current = channel?.sessionKey || null
+			setVoiceCallMuted(false)
+			setVoiceLevelSamples([])
+			voiceCallSessionRef.current = localSessionId
+			// Callee: frames go to the caller's voice channel (created by us in the accept).
+			voiceCallPeerSessionRef.current = channel?.peerSessionId || dialerSessionId
+			voiceCallLiveRef.current = true
+			voiceCallOfferRef.current = {
+				callId: channel?.callId || offer.callId,
+				sessionId: dialerSessionId,
+				from: offer.from,
+				timestamp: offer.timestamp,
+				expiresAt: offer.expiresAt,
+			}
+			setLiveVoiceSessionId(dialerSessionId)
+			setVoiceCallAnswered(true)
+			setIncomingVoiceOffer(null)
+			setVoiceCallState('outgoing')
+			upsertPhoneCallRecord({
+				callId: offer.callId,
+				sessionId: dialerSessionId,
+				peerAddress: offer.from,
+				direction: 'incoming',
+				status: 'answered',
+				createdAt: Number(offer.createdAt) || Date.now(),
+				answeredAt: Date.now(),
+			})
+			markVoiceCallTerminal(offer.callId, offer.sessionId)
+			// Android Answer already set the incoming Telecom connection active and
+			// removed the system card. placeCall here would open another system call.
+			if (getCashTreesNativeNfcHost() !== 'android') {
+				dispatchNativeSystemCallAction('startSystemCall', {
+					callId: offer.callId,
+					sessionId: offer.sessionId,
+					peerAddress: offer.from,
+					// Opaque title only — EOA as CallKit name collapses bottom chrome.
+					displayName: 'Beamio',
+				})
+			}
+			if (!nativeShellOwnsAccept) {
+				await startVoiceMedia(earlyMicStream)
+			} else {
+				// Shell owns mic uplink + AES Accept; stop unused WebView GUM.
+				earlyMicStream?.getTracks().forEach((track) => track.stop())
+			}
+			earlyMicStream = null
+			setVoiceCallConnecting(false)
+			setVoiceCallMinimized(false)
+		} catch {
+			earlyMicStream?.getTracks().forEach((track) => track.stop())
+			setVoiceError('This voice call request is invalid or expired.')
+			setVoiceCallConnecting(false)
+			setVoiceCallState('idle')
+		} finally {
+			setIncomingVoiceAction('idle')
+		}
+	}, [
+		allNodes,
+		chatData.chatData,
+		incomingVoiceAction,
+		incomingVoiceOffer,
+		privateKey,
+		armVoicePlayback,
+		startVoiceMedia,
+		takeAndroidIncomingMicPrewarm,
+		upsertPhoneCallRecord,
+	])
+
+	// Android: open mic while Telecom is still RINGING (MODE_RINGTONE). Answer
+	// later flips MODE_IN_COMMUNICATION (~3.4s) and WebView getUserMedia NotFounds.
+	// Not in shells with the native voice channel: they record and end calls
+	// themselves, and the stream stayed open after the call (camera blocked).
+	useEffect(() => {
+		const sessionId = typeof incomingVoiceOffer?.sessionId === 'string' ? incomingVoiceOffer.sessionId : ''
+		if (
+			!shouldPrewarmAndroidMic({
+				host: getCashTreesNativeNfcHost(),
+				shellOwnsCallAudio: androidShellOwnsCallAudio(),
+				sessionId,
+				hasGetUserMedia: Boolean(navigator.mediaDevices?.getUserMedia),
+			})
+		) {
+			return
+		}
+		const liveSameSession =
+			sameCallId(androidIncomingMicPrewarmSessionRef.current, sessionId) &&
+			Boolean(androidIncomingMicPrewarmRef.current?.getAudioTracks().some((t) => t.readyState === 'live'))
+		if (liveSameSession) return
+
+		let cancelled = false
+		let expiry: number | undefined
+		const relay = (line: string) => {
+			try {
+				const w = window as Window & {
+					CashTreesAndroid?: { debugLog?: (level: string, message: string) => void }
+					CashTreesWebConsole?: { relay?: (level: string, message: string) => void }
+				}
+				w.CashTreesWebConsole?.relay?.('warn', line)
+				w.CashTreesAndroid?.debugLog?.('warn', line)
+			} catch {
+				/* ignore */
+			}
+		}
+		relay(`[voice-mic] prewarm_begin ${JSON.stringify({ sessionId: 'set' })}`)
+		void (async () => {
+			try {
+				const stream = await navigator.mediaDevices.getUserMedia(voiceCaptureConstraints(true))
+				if (cancelled) {
+					stream.getTracks().forEach((track) => {
+						try {
+							track.stop()
+						} catch {
+							/* ignore */
+						}
+					})
+					return
+				}
+				stopAndroidIncomingMicPrewarm()
+				androidIncomingMicPrewarmRef.current = stream
+				androidIncomingMicPrewarmSessionRef.current = sessionId
+				// Never outlive the ring window, whatever happens to the offer.
+				expiry = window.setTimeout(() => {
+					if (!sameCallId(androidIncomingMicPrewarmSessionRef.current, sessionId)) return
+					relay(`[voice-mic] prewarm_expired ${JSON.stringify({ sessionId: 'set' })}`)
+					stopAndroidIncomingMicPrewarm(sessionId)
+				}, androidMicPrewarmMaxMs(INCOMING_CALL_RING_TIMEOUT_MS))
+				relay(
+					`[voice-mic] prewarm_ok ${JSON.stringify({
+						tracks: stream.getAudioTracks().map((t) => t.label || t.id).join(',') || '0',
+					})}`,
+				)
+			} catch (error) {
+				const name = error instanceof DOMException ? error.name : ''
+				const message = error instanceof Error ? error.message : String(error)
+				relay(`[voice-mic] prewarm_failed ${JSON.stringify({ name, message })}`)
+			}
+		})()
+		return () => {
+			cancelled = true
+			if (expiry !== undefined) window.clearTimeout(expiry)
+			// Offer cleared or replaced: an untaken stream for it is not needed.
+			// Answer takes it first (takeAndroidIncomingMicPrewarm), so this is a no-op then.
+			stopAndroidIncomingMicPrewarm(sessionId)
+		}
+	}, [incomingVoiceOffer?.sessionId, stopAndroidIncomingMicPrewarm])
+
+	// Page hidden with no ringing offer and no call: nothing will use the prewarm.
+	useEffect(() => {
+		if (getCashTreesNativeNfcHost() !== 'android') return
+		const releaseIfIdle = () => {
+			if (
+				shouldReleaseAndroidMicPrewarm({
+					pageHidden: document.visibilityState === 'hidden',
+					hasIncomingOffer: Boolean(incomingVoiceOffer?.sessionId),
+					callIdle: voiceCallState !== 'outgoing',
+				})
+			) {
+				stopAndroidIncomingMicPrewarm()
+			}
+		}
+		releaseIfIdle()
+		document.addEventListener('visibilitychange', releaseIfIdle)
+		return () => document.removeEventListener('visibilitychange', releaseIfIdle)
+	}, [incomingVoiceOffer?.sessionId, voiceCallState, stopAndroidIncomingMicPrewarm])
+
+	const rejectVoiceCall = useCallback(async (offerOverride?: VoiceCallSignal | null) => {
+		const offer = offerOverride || incomingVoiceOffer
+		if (!offer || incomingVoiceAction !== 'idle') return
+		stopAndroidIncomingMicPrewarm(String(offer.sessionId || ''))
+		setIncomingVoiceAction('declining')
+		const localWallet = new ethers.Wallet(privateKey).address
+		try {
+			// Always resolve materials for offer.from — never the open Chat thread.
+			const chats = (profiles?.[0]?.chats || []) as Array<{
+				address?: string
+				chatData?: { publicArmored?: string; routersArmoreds?: string }
+			}>
+			const { peerPgp, peerRoute } = await resolvePeerVoiceMaterialAsync(
+				chats,
+				String(offer.from || ''),
+				privateKey,
+			)
+			await declineIncomingVoiceOffer({
+				privateKey,
+				localCallId: String(CoNET_Data?.beamio?.accountName || localWallet).trim() || localWallet,
+				peerEoa: offer.from,
+				peerPgp,
+				peerRoute,
+				allNodes,
+			}, offer as VoiceCallSignal)
+			upsertPhoneCallRecord({
+				callId: offer.callId,
+				sessionId: offer.sessionId,
+				peerAddress: offer.from,
+				direction: 'incoming',
+				status: 'declined',
+				createdAt: Number(offer.createdAt) || Date.now(),
+				endedAt: Date.now(),
+			})
+			markVoiceCallTerminal(offer.callId, offer.sessionId)
+			dispatchNativeSystemCallAction('endSystemCall', { callId: offer.callId })
+			setIncomingVoiceOffer(null)
+		} finally {
+			setIncomingVoiceAction('idle')
+		}
+	}, [
+		allNodes,
+		incomingVoiceAction,
+		incomingVoiceOffer,
+		privateKey,
+		profiles,
+		stopAndroidIncomingMicPrewarm,
+		upsertPhoneCallRecord,
+	])
+
+	const acceptVoiceCallTap = useReliableTapHandler(() => {
+		void acceptVoiceCall()
+	})
+	const rejectVoiceCallTap = useReliableTapHandler(() => {
+		void rejectVoiceCall()
+	})
+
+	const endVoiceCall = useCallback(async (
+		requestedStatus?: PhoneCallRecord['status'],
+		notifyPeer = true,
+		idHint?: { callId?: string; sessionId?: string; peerAddress?: string },
+	) => {
+		// An end that names another call (a replayed cancel of an older incoming
+		// offer, a shell action for a call that is not ours) closes only that
+		// call's record, offer and system call. The current call, above all a
+		// dial that is still ringing, keeps going. A current call whose record
+		// already ended is stale state: the end then tears it down as before.
+		const currentOffer = voiceCallOfferRef.current
+		const callRows: PhoneCallRecord[] = Array.isArray(CoNET_Data?.profiles?.[0]?.phoneCalls)
+			? CoNET_Data!.profiles[0].phoneCalls
+			: (Array.isArray(profiles?.[0]?.phoneCalls) ? profiles[0].phoneCalls : [])
+		const currentRow = currentOffer ? findPhoneCallByIds(callRows, currentOffer) : undefined
+		const currentIds = isPhoneCallTerminalStatus(currentRow?.status)
+			? []
+			: [
+				currentOffer?.callId,
+				currentOffer?.sessionId,
+				voiceCallSessionRef.current,
+				voiceCallPeerSessionRef.current,
+			]
+		if (endHintTargetsOtherCall(idHint, currentIds, voiceCallStartingRef.current)) {
+			const otherCallId = String(idHint?.callId || '').trim()
+			const otherSessionId = String(idHint?.sessionId || '').trim()
+			// the row keeps the ids as the shell sent them; the trimmed ones stay for matching and control.
+			const otherCallIdRaw = String(idHint?.callId ?? '')
+			const otherSessionIdRaw = String(idHint?.sessionId ?? '')
+			const otherRow = findPhoneCallByIds(callRows, { callId: otherCallId, sessionId: otherSessionId })
+			const otherOffer = lookupIncomingVoiceOffer(otherCallId, otherSessionId)
+			console.info('[voice-end] other call, current call kept', {
+				callId: otherCallId.slice(0, 8),
+				status: requestedStatus || '',
+			})
+			if (otherSessionId) locallyEndedVoiceSessionsRef.current.add(otherSessionId)
+			if (otherCallId) locallyEndedVoiceSessionsRef.current.add(otherCallId)
+			markVoiceCallTerminal(otherCallId || otherSessionId, otherSessionId || otherCallId)
+			forgetIncomingVoiceOffer(otherCallId || otherSessionId, otherSessionId || otherCallId)
+			setIncomingVoiceOffer(previous =>
+				previous && phoneCallIdsOverlap(previous, { callId: otherCallId, sessionId: otherSessionId })
+					? null
+					: previous)
+			if (otherRow || otherOffer) {
+				const endedAt = Date.now()
+				const status = isPhoneCallTerminalStatus(otherRow?.status)
+					? otherRow!.status
+					: (requestedStatus || (otherRow?.status === 'answered' ? 'ended' : 'cancelled'))
+				upsertPhoneCallRecord({
+					callId: otherRow?.callId || otherCallIdRaw || '',
+					sessionId: otherRow?.sessionId || otherSessionIdRaw || '',
+					peerAddress: otherRow?.peerAddress || otherOffer?.from || String(idHint?.peerAddress || '').trim(),
+					direction: otherRow?.direction || 'incoming',
+					status,
+					createdAt: otherRow?.createdAt || Number(otherOffer?.createdAt) || endedAt,
+					endedAt: isPhoneCallTerminalStatus(otherRow?.status) ? otherRow?.endedAt : endedAt,
+					durationMs: otherRow?.durationMs,
+				})
+			}
+			if (pageEndsSystemCall(requestedStatus, isCashTreesNativeWebView())) {
+				dispatchNativeSystemCallAction('endSystemCall', {
+					callId: otherCallId || otherSessionId,
+					sessionId: otherSessionId || otherCallId,
+				})
+			}
+			return
+		}
+		// Hang-up during a busy hold (or the hold's own end): no second close.
+		if (busyHoldTimerRef.current !== null) {
+			window.clearTimeout(busyHoldTimerRef.current)
+			busyHoldTimerRef.current = null
+		}
+		voiceCallLiveRef.current = false
+		setVoiceDialFailed(false)
+		// Invalidate a call that is still being set up (see voiceStartTokenRef).
+		voiceStartTokenRef.current += 1
+		outgoingMicPreopenRef.current?.getTracks().forEach((track) => track.stop())
+		outgoingMicPreopenRef.current = null
+		// Capture IDs before clearing — quiet disconnect may already have wiped refs
+		// when callRejected arrives; idHint keeps the chat bubble updateable.
+		const sessionId = String(idHint?.sessionId || voiceCallSessionRef.current || '').trim()
+		// the row keeps the ids as the shell sent them (untrimmed); the trimmed ids stay for matching and control.
+		const sessionIdRaw = String(idHint?.sessionId || voiceCallSessionRef.current || '')
+		const callIdRaw = String(idHint?.callId || voiceCallOfferRef.current?.callId || '')
+		const callSessionIdRaw = String(idHint?.sessionId || voiceCallOfferRef.current?.sessionId || voiceCallSessionRef.current || '')
+		const callId = String(idHint?.callId || voiceCallOfferRef.current?.callId || '').trim()
+		const callSessionId = String(
+			idHint?.sessionId ||
+			voiceCallOfferRef.current?.sessionId ||
+			sessionId ||
+			'',
+		).trim()
+		const peerSessionId = voiceCallPeerSessionRef.current || ''
+		const hintPeer = String(idHint?.peerAddress || '').trim()
+		const rowsSource = Array.isArray(CoNET_Data?.profiles?.[0]?.phoneCalls)
+			? CoNET_Data!.profiles[0].phoneCalls
+			: (Array.isArray(profiles?.[0]?.phoneCalls) ? profiles[0].phoneCalls : [])
+		// Without ids, fall back to this peer's open call from the last 15 minutes
+		// (a call never runs longer). With a callId the record must match it: an
+		// older open row of the same peer is another call, never this one.
+		const fallbackSince = Date.now() - VOICE_CALL_MAX_DURATION_MS
+		const previous = findPhoneCallByIds(rowsSource, { callId, sessionId: callSessionId || sessionId })
+			|| (!callId && (hintPeer || toAddress)
+				? [...rowsSource]
+					.filter((item: PhoneCallRecord) =>
+						(item.direction === 'outgoing' || item.direction === 'incoming') &&
+						(item.status === 'ringing' || item.status === 'answered') &&
+						phoneCallStampMs(item.createdAt) >= fallbackSince &&
+						String(item.peerAddress || '').toLowerCase() === String(hintPeer || toAddress).toLowerCase())
+					.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))[0]
+				: undefined)
+		const upsertCallId = callId || previous?.callId || ''
+		const upsertSessionId = callSessionId || sessionId || previous?.sessionId || ''
+		const endRowCallId = callIdRaw || previous?.callId || ''
+		const endRowSessionId = callSessionIdRaw || sessionIdRaw || previous?.sessionId || ''
+		const upsertId = String(upsertCallId || upsertSessionId || '').trim()
+		if (upsertSessionId) locallyEndedVoiceSessionsRef.current.add(upsertSessionId)
+		if (upsertCallId) locallyEndedVoiceSessionsRef.current.add(upsertCallId)
+		if (sessionId) locallyEndedVoiceSessionsRef.current.add(sessionId)
+		if (peerSessionId) locallyEndedVoiceSessionsRef.current.add(peerSessionId)
+		if (upsertCallId && upsertSessionId) markVoiceCallTerminal(upsertCallId, upsertSessionId)
+		else if (upsertSessionId) markVoiceCallTerminal(upsertSessionId, upsertSessionId)
+		if (upsertCallId || upsertSessionId) {
+			forgetIncomingVoiceOffer(upsertCallId || upsertSessionId, upsertSessionId || upsertCallId)
+		}
+		// Never reopen the call surface after Hang Up (native showActiveVoiceCall race).
+		pendingShowActiveCallRef.current = false
+		// Write terminal status BEFORE idle / clearing refs so "Calling" cannot stick
+		// after dialer already hid.
+		if (upsertId) {
+			const terminalAlready = isPhoneCallTerminalStatus(previous?.status)
+			// No row yet for a known call: the page never dialed it, so it is an
+			// incoming call whose offer the page has not read yet (the shell rang
+			// and ended it natively). Record it as incoming; never borrow the
+			// direction, start or duration of another call.
+			const unseenIncoming = !previous && Boolean(callId) && voiceCallState !== 'outgoing'
+			const unseenAnswered = unseenIncoming &&
+				phoneCallWasAnswered({ callId: upsertCallId, sessionId: upsertSessionId } as PhoneCallRecord)
+			const status = terminalAlready && (!requestedStatus || requestedStatus === 'ended' || requestedStatus === 'cancelled')
+				? previous!.status
+				: (requestedStatus
+					|| (unseenIncoming ? (unseenAnswered ? 'ended' : 'cancelled')
+						: previous?.status === 'ringing' ? 'cancelled' : previous?.status === 'missed' ? 'missed' : 'ended'))
+			const endedAt = Date.now()
+			upsertPhoneCallRecord({
+				callId: endRowCallId,
+				sessionId: endRowSessionId,
+				peerAddress: previous?.peerAddress || hintPeer || (unseenIncoming ? '' : toAddress),
+				direction: previous?.direction || (unseenIncoming ? 'incoming' : 'outgoing'),
+				status,
+				createdAt: previous?.createdAt || endedAt,
+				endedAt,
+				durationMs: previous?.answeredAt ? Math.max(0, endedAt - previous.answeredAt) : previous?.durationMs,
+			})
+			// Busy in the shell: its dialer shows "On another call", plays the busy
+			// tone and ends the system call itself about 3 s later.
+			if (pageEndsSystemCall(status, isCashTreesNativeWebView())) {
+				dispatchNativeSystemCallAction('endSystemCall', {
+					callId: upsertCallId || upsertId,
+					sessionId: upsertSessionId || upsertId,
+				})
+			}
+		}
+		// Snapshot before clearing — native Accept never creates a controller, so
+		// hangup must still reach the dialer via AES + Chat when notifyPeer.
+		const offerForHangup = voiceCallOfferRef.current
+		const peerRouteForHangup = String(voicePeerRouteRef.current || '').trim()
+		voiceCallOfferRef.current = null
+		voiceCallSessionRef.current = null
+		voiceCallPeerSessionRef.current = null
+		const controller = voiceControllerRef.current
+		voiceControllerRef.current = null
+		setVoiceError(null)
+		setVoiceCallConnecting(false)
+		setVoiceCallMinimized(false)
+		setLiveVoiceSessionId('')
+		setVoiceCallAnswered(false)
+		setIncomingVoiceOffer(null)
+		setVoiceCallState('idle')
+		if (controller) {
+			if (requestedStatus === 'timed_out' && notifyPeer) {
+				await controller.notifyRingTimeout()
+				await controller.end(false)
+			} else {
+				await controller.end(notifyPeer)
+			}
+		} else {
+			if (notifyPeer && offerForHangup?.callId && privateKey) {
+				const hangupPeer = String(
+					offerForHangup.from || hintPeer || toAddress || '',
+				).trim()
+				if (hangupPeer) {
+					void (async () => {
+						try {
+							// The shell (iOS / Android) sends the ringing cancel itself.
+							const shellCancel = nativeDialerCancelOutcome(offerForHangup.callId)
+							if (shellCancel !== 'none') return
+							const chats = (profiles?.[0]?.chats || []) as Array<{
+								address?: string
+								chatData?: { publicArmored?: string; routersArmoreds?: string }
+							}>
+							const { peerPgp, peerRoute } = await resolvePeerVoiceMaterialAsync(
+								chats,
+								hangupPeer,
+								privateKey,
+							)
+							const route = peerRoute || peerRouteForHangup
+							const selfAddress = new ethers.Wallet(privateKey).address
+							if (peerPgp) {
+								const signal = makeVoiceCallSignal({
+									type: 'voice_end_v1',
+									callId: offerForHangup.callId,
+									sessionId:
+										offerForHangup.sessionId ||
+										upsertSessionId ||
+										sessionId,
+									from: selfAddress,
+									to: hangupPeer,
+								})
+								await sendMessage(
+									peerPgp,
+									JSON.stringify(signal),
+									privateKey,
+									allNodes,
+								)
+							}
+						} catch {
+							/* best-effort peer hangup */
+						}
+					})()
+				}
+			}
+			if (sessionId) await stopWorkerVoiceListen(sessionId)
+		}
+		voiceCaptureStopRef.current?.()
+		voiceCaptureStopRef.current = null
+		stopSoftLocalVideo()
+		clearSoftRemoteVideo()
+		voiceCallStreamRef.current = null
+		if (voiceLevelRafRef.current !== null) {
+			window.cancelAnimationFrame(voiceLevelRafRef.current)
+			voiceLevelRafRef.current = null
+		}
+		voiceAnalyserRef.current = null
+		const voiceAudioContext = voiceAudioContextRef.current
+		voiceAudioContextRef.current = null
+		if (voiceAudioContext) void voiceAudioContext.close().catch(() => {})
+		setVoiceLevelSamples([])
+		setRemoteVoiceLevelSamples([])
+		setVoiceSpeakerOn(true)
+		setVoiceVideoNote(null)
+		setVoiceCallMuted(false)
+		voicePlaybackRef.current?.reset()
+		voiceCallKeyRef.current = null
+		voiceCallPeerSessionRef.current = null
+		voiceCallSessionRef.current = null
+		voicePeerRouteRef.current = ''
+		voicePeerWalletRef.current = ''
+		voiceReceiveSessionRef.current = null
+		voiceReceivedSeqRef.current = -1
+		voiceReceivedSeqsRef.current.clear()
+		setLiveVoiceSessionId('')
+		setVoiceCallAnswered(false)
+		setVoiceCallState('idle')
+	}, [allNodes, clearSoftRemoteVideo, privateKey, profiles, stopSoftLocalVideo, toAddress, upsertPhoneCallRecord])
+
+	// Browser call link watchdog. The worker's media SSE is not reopened when
+	// it drops mid-call, so audio stopped while both sides showed the call.
+	// Once media runs: 8 s without a peer frame reopens voice_listen for the same
+	// session (backoff 1/2/4/8 s; voice_unlisten first from the 2nd try, since
+	// the mailbox answers session_conflict while it still holds the old socket).
+	// No wake fields, no wallet: the session id is the only capability used.
+	// No peer frame AND no accepted uplink for 25 s ends the call.
+	useEffect(() => {
+		if (isCashTreesNativeWebView()) return
+		if (voiceCallState !== 'outgoing' || !voiceCallAnswered) return
+		const sessionId = voiceCallSessionRef.current?.trim() || ''
+		if (!sessionId) return
+		const link = newVoiceLinkState(Date.now())
+		voiceLinkRef.current = link
+		setVoiceReconnecting(false)
+		let disposed = false
+		const timer = window.setInterval(() => {
+			if (disposed) return
+			const decision = tickVoiceLink(link, Date.now())
+			if (decision.kind === 'none') return
+			if (decision.kind === 'lost') {
+				setVoiceReconnecting(false)
+				console.warn('[voice-link] connection lost', { attempts: link.attempt })
+				// endVoiceCall clears voiceError; show the reason once it is done.
+				void endVoiceCall('ended').finally(() => setVoiceError('Call ended: connection lost'))
+				return
+			}
+			if (decision.startedReconnecting) setVoiceReconnecting(true)
+			if (decision.kind !== 'reconnect') return
+			link.inFlight = true
+			void (async () => {
+				try {
+					// v3 caller: our own channel is known only after the accept, so
+					// read it now rather than when this effect started.
+					const current = voiceCallSessionRef.current?.trim() || sessionId
+					if (decision.unlistenFirst) {
+						await stopWorkerVoiceListen(current)
+						await new Promise((done) => setTimeout(done, 1_500))
+					}
+					if (disposed) return
+					const ok = await startWorkerVoiceListen(current)
+					console.info('[voice-link] reopen', { attempt: decision.attempt, ok })
+				} finally {
+					link.inFlight = false
+				}
+			})()
+		}, 1_000)
+		return () => {
+			disposed = true
+			window.clearInterval(timer)
+		}
+	}, [endVoiceCall, voiceCallAnswered, voiceCallState])
+
+	// A failed browser dial has no call to end: just close the call window.
+	const endOrDismissVoiceCall = useCallback(() => {
+		if (voiceDialFailed && !voiceCallSessionRef.current) {
+			setVoiceDialFailed(false)
+			setVoiceCallState('idle')
+			return
+		}
+		void endVoiceCall()
+	}, [endVoiceCall, voiceDialFailed])
+
+	useEffect(() => {
+		const latest = [...messages].reverse().find((message) => message.from === 'them' && message.text)
+		if (!latest?.text || !incomingVoiceOffer) return
+		const signal = parseVoiceCallSignal(latest.text)
+		if (
+			signal?.type === 'voice_end_v1' &&
+			sameCallId(signal.sessionId, incomingVoiceOffer.sessionId)
+		) {
+			// The caller cancelled this incoming call. End only that call (its ids
+			// below): a call this page dialed meanwhile must keep ringing.
+			markVoiceCallTerminal(signal.callId, signal.sessionId)
+			setIncomingVoiceOffer(null)
+			void endVoiceCall('cancelled', false, {
+				callId: signal.callId || incomingVoiceOffer.callId,
+				sessionId: signal.sessionId,
+				peerAddress: incomingVoiceOffer.from,
+			})
+		}
+	}, [endVoiceCall, incomingVoiceOffer, messages])
+
+	const toggleVoiceCallMute = useCallback(() => {
+		const nextMuted = !voiceCallMuted
+		voiceCallStreamRef.current?.getAudioTracks().forEach(track => {
+			track.enabled = !nextMuted
+		})
+		setVoiceCallMuted(nextMuted)
+	}, [voiceCallMuted])
+
+	const autoVoiceCallActionHandledRef = useRef<string | null>(null)
+	const remoteRejectHandledRef = useRef<string | null>(null)
+	const remoteEndHandledRef = useRef<string | null>(null)
+	useEffect(() => {
+		const offer = incomingVoiceOffer
+		if (!autoVoiceCallAction || !offer?.sessionId) return
+		const ended =
+			locallyEndedVoiceSessionsRef.current.has(String(offer.sessionId)) ||
+			(offer.callId ? locallyEndedVoiceSessionsRef.current.has(String(offer.callId)) : false)
+		if (ended) {
+			onAutoVoiceCallActionHandled?.()
+			if (autoVoiceCallAction === 'reject') onAutoVoiceRejectDone?.()
+			return
+		}
+		const key = `${offer.sessionId}:${autoVoiceCallAction}`
+		if (autoVoiceCallActionHandledRef.current === key) return
+		autoVoiceCallActionHandledRef.current = key
+		onAutoVoiceCallActionHandled?.()
+		if (autoVoiceCallAction === 'accept') {
+			void acceptVoiceCall()
+		} else {
+			// Decline from the call list card or the global window: the thread stays
+			// hidden; tell the parent once the reject is out so it can close it.
+			void rejectVoiceCall().finally(() => onAutoVoiceRejectDone?.())
+		}
+	}, [acceptVoiceCall, autoVoiceCallAction, incomingVoiceOffer, onAutoVoiceCallActionHandled, onAutoVoiceRejectDone, rejectVoiceCall])
+
+	useEffect(() => {
+		if (voiceCallState !== 'outgoing') return
+		const offer = voiceCallOfferRef.current
+		if (!offer) return
+		for (let index = messages.length - 1; index >= 0; index -= 1) {
+			const message = messages[index]
+			if (message.from !== 'them' || !message.text) continue
+			const signal = parseVoiceCallSignal(message.text)
+			const peerStatus = signal?.type === 'voice_call_reject_v1'
+				? 'declined'
+				: signal?.type === 'voice_call_timeout_v1'
+					? 'timed_out'
+					: null
+			if (
+				!peerStatus ||
+				!signal ||
+				!sameCallId(signal.callId, offer.callId) ||
+				!sameCallId(signal.sessionId, offer.sessionId)
+			) continue
+			const mark = Number(signal.timestamp || signal.createdAt)
+			if (
+				!Number.isFinite(mark) ||
+				mark <= Number(offer.timestamp || 0) ||
+				mark > Date.now() + 60_000 ||
+				sameCallId(remoteRejectHandledRef.current, signal.sessionId)
+			) continue
+			remoteRejectHandledRef.current = signal.sessionId
+			void endVoiceCall(peerStatus, false, { callId: offer.callId, sessionId: offer.sessionId })
+			return
+		}
+	}, [endVoiceCall, messages, voiceCallState])
+
+	// Peer Hang Up on a live call, Chat copy. The peer's `end()` sends
+	// `voice_end_v1` over the user-PGP Chat path, and its `sessionId` is the
+	// peer's own session, so the call is matched by callId (unique per call).
+	// Without this the call screen stayed up after the other side hung up.
+	useEffect(() => {
+		if (voiceCallState !== 'outgoing') return
+		const offer = voiceCallOfferRef.current
+		if (!offer?.callId) return
+		for (let index = messages.length - 1; index >= 0; index -= 1) {
+			const message = messages[index]
+			if (message.from !== 'them' || !message.text) continue
+			const signal = parseVoiceCallSignal(message.text)
+			if (signal?.type !== 'voice_end_v1' || !sameCallId(signal.callId, offer.callId)) continue
+			const mark = Number(signal.timestamp || signal.createdAt)
+			if (
+				!Number.isFinite(mark) ||
+				mark <= Number(offer.timestamp || 0) ||
+				mark > Date.now() + 60_000 ||
+				sameCallId(remoteEndHandledRef.current, offer.callId)
+			) continue
+			remoteEndHandledRef.current = offer.callId
+			void endVoiceCall('ended', false, { callId: offer.callId, sessionId: offer.sessionId })
+			return
+		}
+	}, [endVoiceCall, messages, voiceCallState])
+
+	const endVoiceCallRef = useRef(endVoiceCall)
+	endVoiceCallRef.current = endVoiceCall
+	// Browser busy: a new offer while this page has a call up is answered "busy" (App.tsx).
+	useEffect(() => {
+		registerBrowserVoiceCallProbe(() => ({
+			live: voiceCallLiveRef.current || voiceCallStartingRef.current,
+			callId: voiceCallOfferRef.current?.callId,
+			sessionId: voiceCallOfferRef.current?.sessionId,
+		}))
+		return () => registerBrowserVoiceCallProbe(null)
+	}, [])
+	// Nobody answered yet? Also reads the call record and the shell's answered
+	// mark: inside the shell the accept can reach the shell before this page.
+	const ringTimeoutStillApplies = (offer: { callId?: string; sessionId?: string }): boolean => {
+		const rows = Array.isArray(CoNET_Data?.profiles?.[0]?.phoneCalls)
+			? CoNET_Data!.profiles[0].phoneCalls
+			: (Array.isArray(profiles?.[0]?.phoneCalls) ? profiles[0].phoneCalls : [])
+		return voiceRingTimeoutApplies({
+			answered: voiceCallAnsweredRef.current,
+			callId: offer.callId,
+			sessionId: offer.sessionId,
+			record: findPhoneCallByIds(rows, offer),
+		})
+	}
+	const ringTimeoutStillAppliesRef = useRef(ringTimeoutStillApplies)
+	ringTimeoutStillAppliesRef.current = ringTimeoutStillApplies
+	useEffect(() => {
+		// Answered: the ring window is over; the cleanup below drops the timer.
+		if (voiceCallState !== 'outgoing' || voiceCallAnswered) return
+		const offer = voiceCallOfferRef.current
+		if (!offer?.sessionId) return
+		const started = Number(offer.timestamp || Date.now())
+		// The caller owns the ring window: time out exactly at its end. Inside the
+		// iOS / Android shell the shell times out first (it sends the timeout and
+		// tells us `callTimedOut`); this page timer is only the fallback there.
+		// The callee's page answers with the caller's offer, so it runs this too.
+		const shellSlackMs = isCashTreesNativeWebView() ? 10_000 : 0
+		const delay = Math.max(0, started + INCOMING_CALL_RING_TIMEOUT_MS + shellSlackMs - Date.now())
+		const timer = window.setTimeout(() => {
+			if (!sameCallId(voiceCallOfferRef.current?.sessionId, offer.sessionId)) return
+			if (sameCallId(remoteRejectHandledRef.current, offer.sessionId)) return
+			if (!ringTimeoutStillAppliesRef.current(offer)) {
+				console.info(`[voiceCall] ring window over, call answered; no timeout callId=${String(offer.callId || '').slice(0, 8)}`)
+				return
+			}
+			remoteRejectHandledRef.current = offer.sessionId
+			void endVoiceCallRef.current('timed_out', true)
+		}, delay)
+		return () => window.clearTimeout(timer)
+	}, [voiceCallState, voiceCallAnswered])
+
+	/**
+	 * Browser dialer wake receipt. The callee's device sends `voice_call_ringing_v1`
+	 * as soon as it rings: "Ringing", then the normal accept / decline / 60 s
+	 * timeout. Nothing within 8 s: the push may not have woken their phone
+	 * (Samsung deep sleep, force stop), say so and keep ringing. Nothing after
+	 * five rings (`VOICE_PEER_UNREACHABLE_MS`): "Unreachable", the ringback stops,
+	 * the call is recorded `unreachable` and ends with the cancel (`voice_end_v1`).
+	 * A receipt after that is ignored. Inside the iOS / Android shell the shell
+	 * runs this itself and tells the page `callUnreachable`.
+	 */
+	const [voicePeerWake, setVoicePeerWake] = useState<VoicePeerWake>('waiting')
+	const voicePeerWakeCallRef = useRef('')
+	const upsertPhoneCallRecordRef = useRef(upsertPhoneCallRecord)
+	upsertPhoneCallRecordRef.current = upsertPhoneCallRecord
+	// Runs again when the dial's session id is set: the offer (callId) only exists
+	// after startOutgoing() returns, well after the state turned 'outgoing'.
+	useEffect(() => {
+		if (voiceCallState !== 'outgoing' || voiceCallAnswered) {
+			if (voiceCallState !== 'outgoing') {
+				voicePeerWakeCallRef.current = ''
+				setVoicePeerWake('waiting')
+			}
+			return
+		}
+		const offer = voiceCallOfferRef.current
+		if (!offer?.callId) {
+			voicePeerWakeCallRef.current = ''
+			setVoicePeerWake('waiting')
+			return
+		}
+		if (!sameCallId(voicePeerWakeCallRef.current, offer.callId)) {
+			voicePeerWakeCallRef.current = offer.callId
+			setVoicePeerWake('waiting')
+		}
+		// The receipt may have come before this effect subscribed.
+		if (wasVoicePeerRinging(offer)) setVoicePeerWake(voicePeerWakeAfterReceipt)
+		const onRinging = (event: Event) => {
+			const detail = (event as CustomEvent<{ callId?: string; sessionId?: string }>).detail
+			if (voicePeerRingingMatches(detail, offer)) setVoicePeerWake(voicePeerWakeAfterReceipt)
+		}
+		window.addEventListener('beamio-voice-peer-ringing', onRinging)
+		const started = Number(offer.timestamp || Date.now())
+		const restrictedTimer = window.setTimeout(() => {
+			setVoicePeerWake((current) => voicePeerWakeAfterTimer(current, 'restricted'))
+		}, Math.max(0, started + VOICE_PEER_WAKE_TIMEOUT_MS - Date.now()))
+		const timers = [restrictedTimer]
+		if (!isCashTreesNativeWebView()) {
+			timers.push(window.setTimeout(() => {
+				const current = voiceCallOfferRef.current
+				if (!sameCallId(current?.callId, offer.callId)) return
+				// Read the receipt map too: a receipt in the same tick has not rendered yet.
+				if (wasVoicePeerRinging(offer)) return
+				// An accept in the same tick has not rendered yet either.
+				if (!ringTimeoutStillAppliesRef.current(offer)) return
+				setVoicePeerWake((wake) => voicePeerWakeAfterTimer(wake, 'unreachable'))
+				// Record now (stops the ringback, survives a hang-up during the notice).
+				upsertPhoneCallRecordRef.current({
+					callId: offer.callId,
+					sessionId: offer.sessionId,
+					peerAddress: toAddress,
+					direction: 'outgoing',
+					status: 'unreachable',
+					createdAt: started,
+					endedAt: Date.now(),
+				})
+				timers.push(window.setTimeout(() => {
+					if (!sameCallId(voiceCallOfferRef.current?.callId, offer.callId)) return
+					if (!ringTimeoutStillAppliesRef.current(offer)) return
+					void endVoiceCallRef.current('unreachable', true)
+				}, VOICE_PEER_UNREACHABLE_NOTICE_MS))
+			}, Math.max(0, started + VOICE_PEER_UNREACHABLE_MS - Date.now())))
+		}
+		return () => {
+			window.removeEventListener('beamio-voice-peer-ringing', onRinging)
+			timers.forEach((timer) => window.clearTimeout(timer))
+		}
+	}, [voiceCallState, voiceCallAnswered, liveVoiceSessionId])
+
+	useEffect(() => {
+		const currentProfiles = Array.isArray(profiles) ? profiles : []
+		if (!currentProfiles.length) return
+		const rows: PhoneCallRecord[] = Array.isArray(currentProfiles[0].phoneCalls) ? currentProfiles[0].phoneCalls : []
+		const cutoff = Date.now() - INCOMING_CALL_RING_TIMEOUT_MS - 15_000
+		let changed = false
+		const nextRows = rows.map(item => {
+			const started = phoneCallStampMs(item.createdAt)
+			if (item.status !== 'ringing' || (started > 0 && started > cutoff)) return item
+			changed = true
+			return { ...item, status: 'timed_out' as const, endedAt: item.endedAt || Date.now() }
+		})
+		if (!changed) return
+		const nextProfiles = currentProfiles.slice()
+		nextProfiles[0] = { ...currentProfiles[0], phoneCalls: nextRows }
+		setProfiles(nextProfiles)
+		if (CoNET_Data) {
+			CoNET_Data.profiles = nextProfiles
+			setCoNET_Data(CoNET_Data)
+		}
+		void storeSystemData()
+	}, [profiles, setProfiles])
+
+	useEffect(() => {
+		const onPeerStopped = (stopped: 'declined' | 'timed_out') => (event: Event) => {
+			const detail = (event as CustomEvent<{ callId?: string; sessionId?: string; reason?: string }>).detail
+			// A decline with reason "busy": the callee is in another call.
+			const status: 'declined' | 'timed_out' | 'busy' = stopped === 'declined' && detail?.reason === 'busy' ? 'busy' : stopped
+			const sessionId = String(detail?.sessionId || '').trim()
+			const callId = String(detail?.callId || '').trim()
+			// a row keeps the ids as the shell sent them, never the other field's value.
+			const rowCallId = String(detail?.callId ?? '')
+			const rowSessionId = String(detail?.sessionId ?? '')
+			const rows: PhoneCallRecord[] = Array.isArray(CoNET_Data?.profiles?.[0]?.phoneCalls)
+				? CoNET_Data!.profiles[0].phoneCalls
+				: (Array.isArray(profiles?.[0]?.phoneCalls) ? profiles[0].phoneCalls : [])
+			const previous = findPhoneCallByIds(rows, { callId, sessionId })
+				|| [...rows]
+					.filter(item => item.direction === 'outgoing' && (item.status === 'ringing' || item.status === 'answered'))
+					.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))[0]
+			const offer = voiceCallOfferRef.current
+			const idsMatchOffer = Boolean(offer) && (
+				(sessionId && sameCallId(offer?.sessionId, sessionId)) ||
+				(callId && sameCallId(offer?.callId, callId)) ||
+				(!sessionId && !callId)
+			)
+			const handledKey = sessionId || callId || offer?.sessionId || ''
+			if (handledKey && remoteRejectHandledRef.current === handledKey) return
+			if (handledKey) remoteRejectHandledRef.current = handledKey
+			const peerAddress = previous?.peerAddress || toAddress
+			// Browser dialer still ringing and the callee declined (or is busy):
+			// a short busy tone, like a phone, while the window closes.
+			if (status === 'declined' || status === 'busy') callTonesRef.current?.busyIfRinging()
+			if (previous || callId || sessionId) {
+				upsertPhoneCallRecord({
+					callId: rowCallId || previous?.callId || '',
+					sessionId: rowSessionId || previous?.sessionId || '',
+					peerAddress,
+					direction: previous?.direction || 'outgoing',
+					status,
+					createdAt: previous?.createdAt || Date.now(),
+					endedAt: Date.now(),
+				})
+			}
+			if (idsMatchOffer || voiceCallState === 'outgoing' || previous?.direction === 'outgoing') {
+				const closeCall = () => void endVoiceCall(status, false, {
+					callId: callId || previous?.callId || offer?.callId,
+					sessionId: sessionId || previous?.sessionId || offer?.sessionId,
+					peerAddress,
+				})
+				// Busy: keep the window up with "On another call" while the busy tone
+				// plays; hang-up during the hold closes it at once (endVoiceCall).
+				const holdMs = callWindowHoldMs(status, isCashTreesNativeWebView())
+				if (holdMs > 0) {
+					if (busyHoldTimerRef.current !== null) window.clearTimeout(busyHoldTimerRef.current)
+					busyHoldTimerRef.current = window.setTimeout(() => {
+						busyHoldTimerRef.current = null
+						closeCall()
+					}, holdMs)
+				} else {
+					closeCall()
+				}
+			}
+		}
+		const onPeerDeclined = onPeerStopped('declined')
+		const onPeerTimedOut = onPeerStopped('timed_out')
+		window.addEventListener('beamio-voice-peer-declined', onPeerDeclined)
+		window.addEventListener('beamio-voice-peer-timed-out', onPeerTimedOut)
+		return () => {
+			window.removeEventListener('beamio-voice-peer-declined', onPeerDeclined)
+			window.removeEventListener('beamio-voice-peer-timed-out', onPeerTimedOut)
+		}
+	}, [endVoiceCall, profiles, toAddress, upsertPhoneCallRecord, voiceCallState])
+
+	useEffect(() => {
+		const onNativeCallAction = (event: Event) => {
+			const detail = (event as CustomEvent<{
+				action?: string
+				callId?: string
+				sessionId?: string
+			}>).detail
+			if (!detail?.action || (!detail.callId && !detail.sessionId)) return
+			// The shell ended or refused the call: drop any prewarmed WebView mic.
+			if (
+				detail.action === 'callEnded' ||
+				detail.action === 'callRejected' ||
+				detail.action === 'callTimedOut' ||
+				detail.action === 'callBusy' ||
+				detail.action === 'callUnreachable'
+			) {
+				stopAndroidIncomingMicPrewarm()
+			}
+			const nativeShell = isCashTreesNativeWebView()
+			const nativeOffer = incomingVoiceOffer || lookupIncomingVoiceOffer(detail.callId || '', detail.sessionId || '')
+			const matchesIncoming =
+				Boolean(nativeOffer) &&
+				((detail.sessionId && sameCallId(nativeOffer?.sessionId, detail.sessionId)) ||
+					(detail.callId && sameCallId(nativeOffer?.callId, detail.callId)))
+			const matchesOutgoing =
+				Boolean(voiceCallOfferRef.current) &&
+				((detail.sessionId && sameCallId(voiceCallOfferRef.current?.sessionId, detail.sessionId)) ||
+					(detail.callId && sameCallId(voiceCallOfferRef.current?.callId, detail.callId)))
+			if (detail.action === 'callDialerStarted' || detail.action === 'callDialerFailed') {
+				const dialCallId = String(detail.callId || '').trim()
+				const pending = nativeDialerAckRef.current
+				const pendingMatch = Boolean(pending && sameCallId(pending.callId, dialCallId))
+				if (detail.action === 'callDialerStarted') {
+					if (pendingMatch) clearNativeDialerAck()
+					return
+				}
+				// Failed: before the answer (attach) or later (CallKit refused the call).
+				if (!pendingMatch && !matchesOutgoing) return
+				cancelDialWithoutNativeDialer('failed to start', {
+					callId: dialCallId || voiceCallOfferRef.current?.callId || '',
+					sessionId: String(detail.sessionId || '').trim()
+						|| pending?.sessionId
+						|| voiceCallOfferRef.current?.sessionId
+						|| '',
+					peerAddress: pending?.peerAddress
+						|| voicePeerWalletRef.current
+						|| (typeof toAddress === 'string' ? toAddress.trim() : ''),
+				})
+				return
+			}
+			if (detail.action === 'callAnswered') {
+				const answeredCallId = String(detail.callId || '').trim()
+				const answeredSessionId = String(detail.sessionId || '').trim()
+				if (
+					(answeredSessionId && locallyEndedVoiceSessionsRef.current.has(answeredSessionId)) ||
+					(answeredCallId && locallyEndedVoiceSessionsRef.current.has(answeredCallId))
+				) {
+					return
+				}
+				if (matchesIncoming) {
+					// Shell already sent Accept + owns temporary media — UI sync only.
+					// Still bind peerSession/key/live so PWA RX (Accept AES / video / __voicePeerRx)
+					// is not stuck on no_peer_session when Chat was already mounted.
+					if (nativeShell) {
+						const offer = nativeOffer as VoiceCallSignal
+						const dialerSessionId = String(offer.sessionId || '').trim()
+						const acceptSessionId = String(detail.sessionId || '').trim() || dialerSessionId
+						voiceCallOfferRef.current = {
+							callId: offer.callId,
+							sessionId: dialerSessionId,
+							from: offer.from,
+							timestamp: offer.timestamp,
+							expiresAt: offer.expiresAt,
+						}
+						// Callee: frames from dialer use offer.sessionId as the peer media id.
+						voiceCallPeerSessionRef.current = dialerSessionId
+						voiceCallSessionRef.current = acceptSessionId
+						voiceCallLiveRef.current = true
+						voicePeerWalletRef.current = String(offer.from || '').trim()
+						forgetIncomingVoiceOffer(offer.callId, offer.sessionId)
+						setIncomingVoiceOffer(null)
+						setLiveVoiceSessionId(dialerSessionId)
+						setVoiceCallAnswered(true)
+						upsertPhoneCallRecord({
+							callId: offer.callId,
+							sessionId: dialerSessionId,
+							peerAddress: offer.from,
+							direction: 'incoming',
+							status: 'answered',
+							createdAt: Number(offer.createdAt) || Date.now(),
+							answeredAt: Date.now(),
+						})
+						markVoiceCallTerminal(offer.callId, offer.sessionId)
+						setVoiceCallState('outgoing')
+						setVoiceCallConnecting(false)
+						setVoiceCallMinimized(false)
+						return
+					}
+					void acceptVoiceCall(nativeOffer as VoiceCallSignal)
+					return
+				}
+				if (matchesOutgoing || voiceCallState === 'outgoing') {
+					// Dialer: shell enableMedia after remote accept — no PWA startVoiceMedia.
+					// detail.sessionId is THIS dialer's listenSessionId (shell), NOT the
+					// callee accept session — peerSession must come from AES accept frame.
+					const offer = voiceCallOfferRef.current
+					if (offer?.sessionId) {
+						voiceAcceptHandledRef.current.add(String(detail.sessionId || offer.sessionId))
+						voiceCallLiveRef.current = true
+						setLiveVoiceSessionId(offer.sessionId)
+						setVoiceCallAnswered(true)
+						upsertPhoneCallRecord({
+							callId: offer.callId,
+							sessionId: offer.sessionId,
+							peerAddress: toAddress,
+							direction: 'outgoing',
+							status: 'answered',
+							createdAt: Date.now(),
+							answeredAt: Date.now(),
+						})
+					}
+					setVoiceCallConnecting(false)
+					setVoiceCallMinimized(false)
+					setVoiceCallState('outgoing')
+				}
+			} else if (detail.action === 'callRejected') {
+				// Dialer reject always carries the outbound callId/sessionId. Prefer
+				// treating that as outgoing so a stale incomingVoiceOffer cannot steal
+				// the event and leave the chat bubble stuck on "Calling".
+				const detailCallId = String(detail.callId || '').trim()
+				const detailSessionId = String(detail.sessionId || '').trim()
+				const rowsForReject: PhoneCallRecord[] = Array.isArray(CoNET_Data?.profiles?.[0]?.phoneCalls)
+					? CoNET_Data!.profiles[0].phoneCalls
+					: (Array.isArray(profiles?.[0]?.phoneCalls) ? profiles[0].phoneCalls : [])
+				const matchedByIds = findPhoneCallByIds(rowsForReject, {
+					callId: detailCallId,
+					sessionId: detailSessionId,
+				})
+				// Ids that name the incoming offer and not our call are that incoming
+				// call (callIds are unique), even while a dial or call is on: declining
+				// a waiting call must not record or end our own call.
+				const treatAsOutgoing = Boolean(
+					matchesOutgoing
+					|| matchedByIds?.direction === 'outgoing'
+					|| (!matchesIncoming && (
+						voiceCallState === 'outgoing'
+						|| voiceCallOfferRef.current
+						|| detailCallId
+						|| detailSessionId
+					)),
+				)
+				if (matchesIncoming && !treatAsOutgoing) {
+					if (nativeShell) {
+						const offer = nativeOffer as VoiceCallSignal
+						forgetIncomingVoiceOffer(offer.callId, offer.sessionId)
+						setIncomingVoiceOffer(null)
+						upsertPhoneCallRecord({
+							callId: offer.callId,
+							sessionId: offer.sessionId,
+							peerAddress: offer.from,
+							direction: 'incoming',
+							status: 'declined',
+							createdAt: Number(offer.createdAt) || Date.now(),
+							endedAt: Date.now(),
+						})
+						markVoiceCallTerminal(offer.callId, offer.sessionId)
+						// Must clear full-screen call UI — terminal phoneCalls alone
+						// used to leave voiceCallState stuck on outgoing.
+						void endVoiceCall('declined', false, {
+							callId: offer.callId,
+							sessionId: offer.sessionId,
+							peerAddress: offer.from,
+						})
+						return
+					}
+					void rejectVoiceCall(nativeOffer as VoiceCallSignal)
+					return
+				}
+				// Always force declined onto the outbound bubble — dialer may already
+				// have quiet-disconnected (refs idle / matchesOutgoing false).
+				const previousOutgoing = (matchedByIds?.direction === 'outgoing' ? matchedByIds : undefined)
+					|| findPhoneCallByIds(rowsForReject, {
+						callId: detailCallId,
+						sessionId: detailSessionId,
+					})
+					|| [...rowsForReject]
+						.filter(item =>
+							item.direction === 'outgoing' &&
+							(item.status === 'ringing' || item.status === 'answered') &&
+							(!toAddress || String(item.peerAddress || '').toLowerCase() === String(toAddress).toLowerCase()))
+						.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))[0]
+				const offer = voiceCallOfferRef.current
+				const declineCallId = detailCallId || previousOutgoing?.callId || offer?.callId || ''
+				const declineSessionId = detailSessionId || previousOutgoing?.sessionId || offer?.sessionId || ''
+				// the row keeps the ids as the shell sent them; the trimmed ones stay for matching and control.
+				const declineCallIdRaw = String(detail.callId ?? '') || previousOutgoing?.callId || offer?.callId || ''
+				const declineSessionIdRaw = String(detail.sessionId ?? '') || previousOutgoing?.sessionId || offer?.sessionId || ''
+				const peerAddress = previousOutgoing?.peerAddress || toAddress
+				if (declineCallId || declineSessionId) {
+					upsertPhoneCallRecord({
+						callId: declineCallIdRaw,
+						sessionId: declineSessionIdRaw,
+						peerAddress,
+						direction: 'outgoing',
+						status: 'declined',
+						createdAt: previousOutgoing?.createdAt || Date.now(),
+						endedAt: Date.now(),
+					})
+					markVoiceCallTerminal(declineCallId || declineSessionId, declineSessionId || declineCallId)
+				}
+				void endVoiceCall('declined', false, {
+					callId: declineCallId,
+					sessionId: declineSessionId,
+					peerAddress,
+				})
+			} else if (detail.action === 'callTimedOut' && matchesIncoming && nativeOffer) {
+				const offer = nativeOffer as VoiceCallSignal
+				if (nativeShell) {
+					forgetIncomingVoiceOffer(offer.callId, offer.sessionId)
+					upsertPhoneCallRecord({
+						callId: offer.callId,
+						sessionId: offer.sessionId,
+						peerAddress: offer.from,
+						direction: 'incoming',
+						status: 'timed_out',
+						createdAt: Number(offer.createdAt) || Date.now(),
+						endedAt: Date.now(),
+					})
+					markVoiceCallTerminal(offer.callId, offer.sessionId)
+					setIncomingVoiceOffer(null)
+					void endVoiceCall('timed_out', false, {
+						callId: offer.callId,
+						sessionId: offer.sessionId,
+						peerAddress: offer.from,
+					})
+					return
+				}
+				if (!privateKey) return
+				const localWallet = new ethers.Wallet(privateKey).address
+				void (async () => {
+					const chats = (profiles?.[0]?.chats || []) as Array<{
+						address?: string
+						chatData?: { publicArmored?: string; routersArmoreds?: string }
+					}>
+					const { peerPgp, peerRoute } = await resolvePeerVoiceMaterialAsync(
+						chats,
+						String(offer.from || ''),
+						privateKey,
+					)
+					await timeoutIncomingVoiceOffer({
+						privateKey,
+						localCallId: String(CoNET_Data?.beamio?.accountName || localWallet).trim() || localWallet,
+						peerEoa: offer.from,
+						peerPgp,
+						peerRoute,
+						allNodes,
+					}, offer)
+				})()
+				upsertPhoneCallRecord({
+					callId: offer.callId,
+					sessionId: offer.sessionId,
+					peerAddress: offer.from,
+					direction: 'incoming',
+					status: 'timed_out',
+					createdAt: Number(offer.createdAt) || Date.now(),
+					endedAt: Date.now(),
+				})
+				setIncomingVoiceOffer(null)
+			} else if (detail.action === 'callTimedOut' && (matchesOutgoing || voiceCallState === 'outgoing')) {
+				// Our dial rang out: tell the callee (ring timeout), so their phone
+				// stops ringing even when the shell's own cancel did not get out.
+				void endVoiceCall('timed_out', true, {
+					callId: String(detail.callId || '').trim() || voiceCallOfferRef.current?.callId,
+					sessionId: String(detail.sessionId || '').trim() || voiceCallOfferRef.current?.sessionId,
+				})
+			} else if (detail.action === 'callUnreachable' && (matchesOutgoing || voiceCallState === 'outgoing')) {
+				// No ringing receipt after five rings: the shell shows "Unreachable" and
+				// posts its ready cancel (`dialerCancelPosting` came first). The page
+				// sends its own cancel only when no shell took it.
+				void endVoiceCall('unreachable', true, {
+					callId: String(detail.callId || '').trim() || voiceCallOfferRef.current?.callId,
+					sessionId: String(detail.sessionId || '').trim() || voiceCallOfferRef.current?.sessionId,
+				})
+			} else if (detail.action === 'callBusy' && (matchesOutgoing || voiceCallState === 'outgoing' || voiceCallOfferRef.current)) {
+				// The shell's dialer got the callee's busy reject and plays the busy tone itself.
+				void endVoiceCall('busy', false, {
+					callId: String(detail.callId || '').trim() || voiceCallOfferRef.current?.callId,
+					sessionId: String(detail.sessionId || '').trim() || voiceCallOfferRef.current?.sessionId,
+				})
+			} else if (detail.action === 'callEnded') {
+				const endCallId = String(detail.callId || '').trim()
+				const endSessionId = String(detail.sessionId || '').trim()
+				if (matchesIncoming || endCallId || endSessionId) {
+					forgetIncomingVoiceOffer(endCallId || endSessionId, endSessionId || endCallId)
+					setIncomingVoiceOffer(null)
+				}
+				// Always tear down the full-screen call UI. When the call was live,
+				// notifyPeer so the remote dialer gets voice_end_v1 (AES + Chat);
+				// native sendHangup may race forgetOffer — PWA backup must still fire.
+				// voiceCallState is only 'idle' | 'outgoing' | 'ended' (incoming is offer-driven).
+				const wasLive =
+					voiceCallLiveRef.current ||
+					voiceCallAnswered ||
+					voiceCallState === 'outgoing' ||
+					Boolean(voiceCallOfferRef.current?.sessionId) ||
+					Boolean(nativeOffer?.sessionId)
+				void endVoiceCall(undefined, wasLive, {
+					callId: endCallId || voiceCallOfferRef.current?.callId || nativeOffer?.callId,
+					sessionId: endSessionId || voiceCallOfferRef.current?.sessionId || nativeOffer?.sessionId,
+					// The open chat is the peer only for the call this page dialed.
+					peerAddress: String(nativeOffer?.from || (matchesOutgoing ? toAddress : '') || '').trim() || undefined,
+				})
+			}
+		}
+		window.addEventListener('cashtreesios', onNativeCallAction)
+		window.addEventListener('cashtreesandroid', onNativeCallAction)
+		return () => {
+			window.removeEventListener('cashtreesios', onNativeCallAction)
+			window.removeEventListener('cashtreesandroid', onNativeCallAction)
+		}
+	}, [
+		acceptVoiceCall,
+		allNodes,
+		cancelDialWithoutNativeDialer,
+		clearNativeDialerAck,
+		stopAndroidIncomingMicPrewarm,
+		endVoiceCall,
+		incomingVoiceOffer,
+		privateKey,
+		profiles,
+		rejectVoiceCall,
+		toAddress,
+		upsertPhoneCallRecord,
+		voiceCallAnswered,
+		voiceCallState,
+	])
+
+	// Turn an unanswered offer into an explicit chat record instead of leaving
+	// the protocol message as an empty bubble.
+	useEffect(() => {
+		const incoming = incomingVoiceOffer
+		const outgoing = voiceCallState === 'outgoing' ? voiceCallOfferRef.current : null
+		const expiresAt = Number(incoming?.expiresAt || outgoing?.expiresAt || 0)
+		if (!expiresAt || expiresAt <= Date.now()) return
+
+		const timer = window.setTimeout(() => {
+			if (incoming?.callId) {
+				const current = (Array.isArray(profiles?.[0]?.phoneCalls) ? profiles[0].phoneCalls : [])
+					.find((item: PhoneCallRecord) => sameCallId(item.sessionId, incoming.sessionId))
+				if (current?.status === 'ringing') {
+					const localWallet = new ethers.Wallet(privateKey).address
+					void (async () => {
+						const chats = (profiles?.[0]?.chats || []) as Array<{
+							address?: string
+							chatData?: { publicArmored?: string; routersArmoreds?: string }
+						}>
+						const { peerPgp, peerRoute } = await resolvePeerVoiceMaterialAsync(
+							chats,
+							String(incoming.from || ''),
+							privateKey,
+						)
+						await timeoutIncomingVoiceOffer({
+							privateKey,
+							localCallId: String(CoNET_Data?.beamio?.accountName || localWallet).trim() || localWallet,
+							peerEoa: incoming.from,
+							peerPgp,
+							peerRoute,
+							allNodes,
+						}, incoming as VoiceCallSignal)
+					})()
+					upsertPhoneCallRecord({
+						...current,
+						status: 'timed_out',
+						endedAt: Date.now(),
+					})
+					dispatchNativeSystemCallAction('endSystemCall', {
+						callId: incoming.callId,
+						sessionId: incoming.sessionId,
+					})
+					setIncomingVoiceOffer(null)
+				}
+				return
+			}
+
+			const callId = outgoing?.callId
+			if (!callId) return
+			const current = (Array.isArray(profiles?.[0]?.phoneCalls) ? profiles[0].phoneCalls : [])
+				.find((item: PhoneCallRecord) => sameCallId(item.sessionId, outgoing?.sessionId))
+			// A row can still say "ringing" after the shell took the accept.
+			// Our own dial rang out: tell the callee (ring timeout), never end it quietly.
+			if (current?.status === 'ringing' && ringTimeoutStillAppliesRef.current(outgoing!)) {
+				void endVoiceCall('timed_out', true, { callId, sessionId: outgoing?.sessionId })
+			}
+		}, Math.max(0, expiresAt - Date.now()))
+
+		return () => window.clearTimeout(timer)
+	}, [allNodes, endVoiceCall, incomingVoiceOffer, privateKey, profiles, upsertPhoneCallRecord, voiceCallState])
+
+	useEffect(() => {
+		const playback = new VoicePlaybackBuffer()
+		voicePlaybackRef.current = playback
+		remoteVoiceAudioContextRef.current = playback.context
+		remoteVoiceAnalyserRef.current = playback.analyser
+		return () => {
+			playback.destroy()
+			if (voicePlaybackRef.current === playback) voicePlaybackRef.current = null
+			remoteVoiceAnalyserRef.current = null
+			remoteVoiceAudioContextRef.current = null
+		}
+	}, [])
+
+	useEffect(() => onVoiceFrame((frame) => {
+		if (
+			voiceCallState !== 'outgoing' ||
+			frame.type !== 'voice_frame_v1' ||
+			typeof frame.payload !== 'string' ||
+			!sameCallId(frame.callId, voiceCallOfferRef.current?.callId)
+		) {
+			if (frame?.type === 'voice_frame_v1') {
+				console.warn('[voice-rx] drop', {
+					state: voiceCallState,
+					call: sameCallId(frame.callId, voiceCallOfferRef.current?.callId),
+					session: frame.sessionId,
+					peer: voiceCallPeerSessionRef.current,
+				})
+			}
+			return
+		}
+		const peerSession = voiceCallPeerSessionRef.current
+		const offerSession = voiceCallOfferRef.current?.sessionId
+		// During Ringing the dialer has no peerSession yet (accept sets it).
+		// Callee Decline arrives as a temp-relay frame with callId matched and
+		// sessionId either equal to our ring offer or a fresh envelope id —
+		// requiring peerSession here dropped every reject and left desktop
+		// stuck on Ringing.
+		const sessionOk =
+			!peerSession ||
+			sameCallId(frame.sessionId, peerSession) ||
+			(!!offerSession && sameCallId(frame.sessionId, offerSession))
+		if (!sessionOk) {
+			console.warn('[voice-rx] drop', {
+				state: voiceCallState,
+				call: true,
+				session: frame.sessionId,
+				peer: peerSession,
+				offer: offerSession,
+			})
+			return
+		}
+		console.warn('[voice-rx] take', frame.seq)
+		if (noteVoiceLinkRx(voiceLinkRef.current, Date.now())) setVoiceReconnecting(false)
+		const notePeerRx = (patch: Record<string, unknown>) => {
+			const host = window as Window & { __voicePeerRx?: Record<string, unknown> }
+			host.__voicePeerRx = { ...(host.__voicePeerRx || {}), ...patch, at: Date.now() }
+		}
+		void (async () => {
+			try {
+				const key = voiceCallKeyRef.current
+				if (!(key instanceof Uint8Array) || key.length !== 32) {
+					console.warn('[voice-rx] drop_no_key')
+					notePeerRx({ drop: 'no_key', seq: frame.seq })
+					return
+				}
+				const plain = await decryptVoiceFrame(
+					key,
+					frame.payload as string,
+				)
+				notePeerRx({
+					seq: frame.seq,
+					decrypt: 'ok',
+					plainBytes: plain.byteLength,
+					likelyMedia: isLikelyVoiceMediaPlain(plain),
+				})
+				let control: { type?: string; callId?: string; sessionId?: string; timestamp?: number; createdAt?: number } | null = null
+				// Android native uplink is raw PCM (no BPCM). Never JSON.parse those
+				// bytes — a rare '{' first byte would discard inbound audio as "control".
+				if (!isLikelyVoiceMediaPlain(plain)) {
+					try {
+						control = JSON.parse(new TextDecoder().decode(plain)) as {
+							type?: string
+							callId?: string
+							sessionId?: string
+							timestamp?: number
+							createdAt?: number
+						}
+					} catch {
+						// Audio frames are binary; only JSON payloads are control frames.
+					}
+				}
+				if (control?.type === 'voice_end_v1') {
+					// Hang Up from a native-shell peer arrives on the temporary AES relay.
+					// The frame is authenticated with the call's session key, so the
+					// callId is enough to know it belongs to this call.
+					const endedCallId = String(control.callId || '')
+					const liveCallId = voiceCallOfferRef.current?.callId || ''
+					if (!endedCallId || !sameCallId(endedCallId, liveCallId) || sameCallId(remoteEndHandledRef.current, liveCallId)) {
+						return
+					}
+					remoteEndHandledRef.current = liveCallId
+					void endVoiceCall('ended', false, {
+						callId: liveCallId,
+						sessionId: voiceCallOfferRef.current?.sessionId,
+					})
+					return
+				}
+				if (control?.type === 'voice_media_caps_v1') {
+					const video = Number((control as { video?: unknown }).video || 0)
+					if (video > 0) {
+						const first = peerVideoCapsRef.current === 0
+						peerVideoCapsRef.current = video
+						console.info('[voice-video] peer media caps', video)
+						// Reply once so both sides know even if our first announcement was lost.
+						if (first) sendMediaCapsRef.current('reply')
+					}
+					return
+				}
+				if (control?.type === 'voice_video_enable_v1') {
+					const video = Number((control as { video?: unknown }).video || 0)
+					if (video > 0) peerVideoCapsRef.current = video
+					// Older than an "off" already applied: the camera is off now.
+					if (!applyPeerVideoControl(peerVideoGateRef.current, 'enable', (control as { timestamp?: unknown }).timestamp)) return
+					// The peer is about to send video: make sure it knows what we can receive.
+					sendMediaCapsRef.current('peer-video-on')
+					setPeerVoiceVideoEnabled(true)
+					const host = window as Window & { __voicePeerVideo?: Record<string, unknown> }
+					host.__voicePeerVideo = {
+						...(host.__voicePeerVideo || {}),
+						peerEnable: true,
+						at: Date.now(),
+					}
+					return
+				}
+				if (control?.type === 'voice_video_disable_v1') {
+					// A repeated "off" older than a later "on": the camera is on again.
+					if (!applyPeerVideoControl(peerVideoGateRef.current, 'disable', (control as { timestamp?: unknown }).timestamp)) return
+					// Take the picture down at once (last frame included) and show the
+					// audio-call background; late frames are dropped by the gate.
+					clearSoftRemoteVideo()
+					const host = window as Window & { __voicePeerVideo?: Record<string, unknown> }
+					host.__voicePeerVideo = {
+						...(host.__voicePeerVideo || {}),
+						peerEnable: false,
+						at: Date.now(),
+					}
+					return
+				}
+				// Any other JSON control frame is not audio. Never decode it as PCM:
+				// that raised "could not be decoded" for control types this build
+				// does not know yet.
+				if (control && typeof control.type === 'string') return
+				// Media only after Accept. Re-read ref — Accept may have landed mid-await.
+				const livePeer = voiceCallPeerSessionRef.current
+				if (!livePeer) {
+					notePeerRx({ drop: 'no_peer_session', seq: frame.seq })
+					return
+				}
+				// Media is flowing: the ringback must be gone even if the accept was missed.
+				callTonesRef.current?.stopRingback()
+				const seq = Number(frame.seq)
+				if (!Number.isSafeInteger(seq) || seq < 0) return
+				// Split-seq video: its own seq range, never mixed into the audio seq
+				// bookkeeping below (the worker already dropped duplicates).
+				if (seq >= VOICE_VIDEO_SEQ_BASE) {
+					const decoded = decodeBjpgFrame(plain)
+					const stats = softVideoStatsRef.current
+					if (!decoded) {
+						notePeerRx({ rxFail: 'video_decode', seq })
+						return
+					}
+					stats.rxIn += 1
+					stats.rxBytes += plain.length
+					showRemoteVideoFrame(decoded)
+					softVideoStatsRef.current = flushSoftVideoStats(stats, peerVideoCapsRef.current)
+					return
+				}
+				// Fan-out through multiple entry nodes can deliver the same frame more
+				// than once. Never enqueue duplicates or old frames into the PCM player.
+				if (
+					voiceReceivedSeqsRef.current.has(seq) ||
+					seq <= voiceReceivedSeqRef.current
+				) return
+				voiceReceivedSeqsRef.current.add(seq)
+				voiceReceivedSeqRef.current = seq
+				if (voiceReceivedSeqsRef.current.size > 256) {
+					const floor = seq - 128
+					for (const seen of voiceReceivedSeqsRef.current) {
+						if (seen < floor) voiceReceivedSeqsRef.current.delete(seen)
+					}
+				}
+				const frameMediaKind = String(
+					(frame as { mediaKind?: string }).mediaKind || '',
+				).toLowerCase()
+				// BJPG / voice video — before PCM. Independent of __voicePeerRx audio gate.
+				if (hasBjpgMagic(plain) || frameMediaKind === 'video') {
+					const decoded = decodeBjpgFrame(plain)
+					const host = window as Window & { __voicePeerVideo?: Record<string, unknown> }
+					if (!decoded) {
+						host.__voicePeerVideo = {
+							...(host.__voicePeerVideo || {}),
+							rxFail: 'bjpg_decode',
+							seq,
+							plainBytes: plain.length,
+							at: Date.now(),
+						}
+						return
+					}
+					softVideoStatsRef.current.rxIn += 1
+					softVideoStatsRef.current.rxBytes += plain.length
+					showRemoteVideoFrame(decoded)
+					softVideoStatsRef.current = flushSoftVideoStats(softVideoStatsRef.current, peerVideoCapsRef.current)
+					host.__voicePeerVideo = {
+						...(host.__voicePeerVideo || {}),
+						rxOk: true,
+						seq,
+						frameId: decoded.frameId,
+						w: decoded.width,
+						h: decoded.height,
+						jpegBytes: decoded.jpeg.length,
+						source: 'wire_bjpg',
+						at: Date.now(),
+					}
+					return
+				}
+				const level = voiceLevelFromPcmBytes(plain)
+				if (level !== null) {
+					setRemoteVoiceLevelSamples(previous => [...previous.slice(-119), level])
+				}
+				notePeerRx({
+					seq,
+					decode: level === null ? 'level_null' : 'ok',
+					level,
+					peerSession: livePeer,
+					inbound: 'peer',
+					plainBytes: plain.length,
+				})
+				const playback = voicePlaybackRef.current
+				playback?.setKey(voiceCallKeyRef.current || new Uint8Array())
+				// Soft resume before push — Dial armed the graph; Accept must not remount.
+				void playback?.resume()
+				await playback?.push(frame.payload as string)
+				const playFail = (window as Window & { __voicePlayFail?: Record<string, unknown> }).__voicePlayFail
+				notePeerRx({
+					seq,
+					play: playFail && Number(playFail.at || 0) > Date.now() - 2000 ? 'fail' : 'queued',
+					level,
+					playFail: playFail || null,
+				})
+				setVoiceError(null)
+			} catch (error) {
+				const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+				;(window as Window & { __voiceDecodeFail?: string }).__voiceDecodeFail = message
+				notePeerRx({ decodeFail: message, seq: frame.seq })
+				console.warn('[voice-rx] decode_fail', message)
+				setVoiceError('Incoming voice audio could not be decoded.')
+			}
+		})()
+	}), [clearSoftRemoteVideo, endVoiceCall, showRemoteVideoFrame, voiceCallState])
+
+	const openMultisigFromChat = useCallback(
+		(messageText: string, isMeMessage: boolean, taskId: string, aaAccount?: string) => {
+			const fromEoa = isMeMessage ? walletEoa : toAddress
+			if (walletEoa && fromEoa) {
+				try {
+					ingestAaMultisigFromChat({ displayText: messageText, fromEoa, walletEoa })
+				} catch {
+					/* multisig ingest must not break chat navigation */
+				}
+			}
+			// Expired / completed tasks only appear under History — never hardcode Pending.
+			let tab: 'pending' | 'history' = 'pending'
+			let resolvedAa = (aaAccount ?? '').trim()
+			if (walletEoa && taskId) {
+				const stored = getAaMultisigTaskAny(walletEoa, taskId)
+				if (stored) {
+					tab = multisigTaskDeepLinkTab(stored)
+					if (!resolvedAa && stored.aaAccount) resolvedAa = stored.aaAccount
+				}
+			}
+			const params = new URLSearchParams({ tab, taskId })
+			if (resolvedAa) params.set('aaAccount', resolvedAa)
+			navigate(`/wallet/aa-multisig?${params.toString()}`)
+		},
+		[navigate, walletEoa, toAddress]
+	)
+	const pressTimerRef = useRef<number | null>(null)
+	const messagesRef = useRef<ChatMessage[]>(chatData.messages || [])
+	const liveFileMessagesRef = useRef(new Map<string, ChatMessage>())
+	const skipNextReflashdataRef = useRef(false)
+	const [showContactProfile, setShowContactProfile] = useState(false)
+	const [plusOpen, setPlusOpen] = useState(false)
+	const plusBtnRef = useRef<HTMLButtonElement | null>(null)
+	const [reactionUI, setReactionUI] = useState<{
+		open: boolean
+		messageId?: string
+		x: number
+		y: number
+		placement: "top"
+		/** 被长按气泡的视口矩形，用于在气泡下方定位 iOS 风格上下文菜单 */
+		rect?: { top: number; left: number; width: number; height: number; bottom: number }
+		isMe?: boolean
+		text?: string
+		hasCard?: boolean
+		createdAt?: number
+	}>(() => ({ open: false, x: 0, y: 0, placement: "top" }))
+	/** 引用回复草稿：用户点 Reply 后在输入框上方显示，发送时随 quote 一起发出 */
+	const [replyTo, setReplyTo] = useState<{ id: string; text: string; from: "me" | "them" } | null>(null)
+	/** 长按底部消息时，为让菜单完整显示而临时增加的底部占位高度（无法继续滚动时上提） */
+	const [menuBottomSpacer, setMenuBottomSpacer] = useState(0)
+	/** 接收方点击 Pay 后，在卡片内显示确认（该条消息的 sendId 或 id） */
+	const [payConfirmForSendId, setPayConfirmForSendId] = useState<string | null>(null)
+	/** 正在执行 Payment Request 转账的 sendId（显示 loading） */
+	const [payTransferLoading, setPayTransferLoading] = useState<string | null>(null)
+	const [payTransferError, setPayTransferError] = useState<string | null>(null)
+	/** 正在发送 Decline 的 sendId（防止重复点击） */
+	const [declineLoadingForSendId, setDeclineLoadingForSendId] = useState<string | null>(null)
+
+	/** 仅展示“正文”消息（含文字或 paymentCard）；带 reply 的 reaction 消息不单独成行，用于在目标消息上显示 icon */
+	const displayableMessages = useMemo(() => {
+		const allPhoneCalls: PhoneCallRecord[] = Array.isArray(profiles?.[0]?.phoneCalls) ? profiles[0].phoneCalls : []
+		const peerLower = String(chatData.address || '').toLowerCase()
+		const currentChatCalls = allPhoneCalls.filter((record: PhoneCallRecord) =>
+			!peerLower || String(record.peerAddress || '').toLowerCase() === peerLower || !record.peerAddress)
+		// Match by callId/sessionId across all rows — peer filter alone can miss a
+		// declined write whose peerAddress was blank during the quiet-disconnect race.
+		const findLiveCall = (sessionId?: string, callId?: string): PhoneCallRecord | undefined => {
+			const byId = findPhoneCallByIds(allPhoneCalls, { callId, sessionId })
+			if (!byId) return undefined
+			if (!peerLower) return byId
+			const byPeer = String(byId.peerAddress || '').toLowerCase()
+			if (!byPeer || byPeer === peerLower) return byId
+			return findPhoneCallByIds(currentChatCalls, { callId, sessionId }) || byId
+		}
+		const callDedupeKey = (record: PhoneCallRecord | undefined): string => {
+			const sid = String(record?.sessionId || '').trim()
+			if (sid) return `s:${sid}`
+			const cid = String(record?.callId || '').trim()
+			return cid ? `c:${cid}` : ''
+		}
+		const seenCallKeys = new Set<string>()
+		const mergedMessages: ChatMessage[] = []
+
+		for (const message of messages || []) {
+			const callRecord = message.callRecord
+			const sessionId = String(callRecord?.sessionId || '').trim()
+			const callId = String(callRecord?.callId || '').trim()
+			if (!sessionId && !callId) {
+				mergedMessages.push(message)
+				continue
+			}
+
+			// Prefer the live phoneCalls row (may already be declined) over a stale
+			// ringing mirror still sitting on the history message.
+			const currentRecord = findLiveCall(sessionId, callId)
+			const bestRecord = mergePhoneCallRecord(callRecord, currentRecord) || currentRecord || callRecord
+			const key = callDedupeKey(bestRecord) || callDedupeKey(callRecord)
+			if (!key) {
+				mergedMessages.push(message)
+				continue
+			}
+			if (seenCallKeys.has(key)) {
+				const existingIndex = mergedMessages.findIndex(item => callDedupeKey(item.callRecord) === key)
+				if (existingIndex >= 0) {
+					const kept = mergePhoneCallRecord(mergedMessages[existingIndex].callRecord, bestRecord) || bestRecord
+					if (kept) {
+						mergedMessages[existingIndex] = {
+							...mergedMessages[existingIndex],
+							from: kept.direction === 'outgoing' ? 'me' : 'them',
+							callRecord: kept,
+						}
+					}
+				}
+				continue
+			}
+			seenCallKeys.add(key)
+			if (!bestRecord) {
+				mergedMessages.push(message)
+				continue
+			}
+			const bubbleId = sessionId || callId
+			mergedMessages.push({
+				...message,
+				id: `phone_${bubbleId}`,
+				sendId: `phone:${bubbleId}`,
+				from: bestRecord.direction === 'outgoing' ? 'me' : 'them',
+				callRecord: bestRecord,
+			})
+		}
+
+		for (const record of currentChatCalls) {
+			const key = callDedupeKey(record)
+			if (!key) continue
+			// Prefer terminal status when ringing+declined duplicates share a key.
+			const bestSynthetic = findPhoneCallByIds(currentChatCalls, {
+				callId: record.callId,
+				sessionId: record.sessionId,
+			}) || record
+			if (seenCallKeys.has(key)) {
+				const existingIndex = mergedMessages.findIndex(item => callDedupeKey(item.callRecord) === key)
+				if (existingIndex >= 0) {
+					const kept = mergePhoneCallRecord(mergedMessages[existingIndex].callRecord, bestSynthetic) || bestSynthetic
+					if (kept) {
+						mergedMessages[existingIndex] = {
+							...mergedMessages[existingIndex],
+							from: kept.direction === 'outgoing' ? 'me' : 'them',
+							callRecord: kept,
+						}
+					}
+				}
+				continue
+			}
+			seenCallKeys.add(key)
+			const bubbleId = bestSynthetic.sessionId || bestSynthetic.callId
+			mergedMessages.push({
+				id: `phone_${bubbleId}`,
+				sendId: `phone:${bubbleId}`,
+				from: bestSynthetic.direction === 'outgoing' ? 'me' : 'them',
+				text: '',
+				createdAt: bestSynthetic.createdAt,
+				callRecord: bestSynthetic,
+			} satisfies ChatMessage)
+		}
+
+		return mergedMessages.filter(m => {
+			if (m.text) {
+				if (isVoiceCallProtocolMessage(m.text)) return false
+			}
+			return !m.reply || !!m.text || !!m.paymentCard || !!m.voiceMessage || !!m.fileMessage || !!m.callRecord
+		})
+	}, [chatData.address, messages, profiles])
+
+	/**
+	 * Render window (D7): only the newest `historyWindowCount` messages are grouped
+	 * and rendered. Scrolling near the top adds one older page and keeps the visible content in place.
+	 */
+	const [historyWindowCount, setHistoryWindowCount] = useState(CHAT_WINDOW_INITIAL)
+	const historyAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
+	const renderedMessages = useMemo(() => windowTail(displayableMessages, historyWindowCount), [displayableMessages, historyWindowCount])
+	const sections = useMemo(() => {
+		return groupChatMessages(renderedMessages, new Date())
+	}, [renderedMessages])
+	useEffect(() => {
+		setHistoryWindowCount(CHAT_WINDOW_INITIAL)
+		historyAnchorRef.current = null
+	}, [chatData.address])
+	const expandHistoryWindowIfNeeded = useCallback(() => {
+		const sc = scrollRef.current
+		if (!sc) return
+		const total = displayableMessages.length
+		const hidden = hiddenCount(total, historyWindowCount)
+		if (!shouldExpandWindow({ scrollTop: sc.scrollTop, scrollHeight: sc.scrollHeight, clientHeight: sc.clientHeight, hidden })) return
+		historyAnchorRef.current = { scrollTop: sc.scrollTop, scrollHeight: sc.scrollHeight }
+		setHistoryWindowCount(count => nextWindowCount(count, total))
+	}, [displayableMessages.length, historyWindowCount])
+	// Keep the content the user is reading in place after older rows were added above it.
+	useLayoutEffect(() => {
+		const sc = scrollRef.current
+		const anchor = historyAnchorRef.current
+		if (!sc || !anchor) return
+		historyAnchorRef.current = null
+		sc.scrollTop = anchoredScrollTop(anchor, sc.scrollHeight)
+	}, [historyWindowCount])
+	// Short content never scrolls, so no scroll event would load older rows: fill the window here.
+	useEffect(() => {
+		expandHistoryWindowIfNeeded()
+	}, [displayableMessages.length, historyWindowCount, expandHistoryWindowIfNeeded])
+
+	/** messageId（或时间戳字符串）-> 该条消息收到的 reaction 列表。paymentRequestCancel / paymentRequestPaid 不计入 reaction。 */
+	const reactionsByMessageId = useMemo(() => {
+		const map = new Map<string, { reactionKey: string; from: 'me' | 'them' }[]>()
+		for (const m of messages || []) {
+			if (!m.reply) continue
+			if (m.reply.replyType === 'paymentRequestCancel' || m.reply.replyType === 'paymentRequestPaid') continue
+			if (!m.reply.reactionKey) continue
+			const list = map.get(m.reply.messageId) || []
+			list.push({ reactionKey: m.reply.reactionKey, from: m.from })
+			map.set(m.reply.messageId, list)
+		}
+		return map
+	}, [messages])
+
+	/** 已被取消的 Payment Request：sendId -> 取消消息的 createdAt（用于显示取消时间） */
+	const cancelledPaymentRequestMap = useMemo(() => {
+		const map = new Map<string, number>()
+		for (const m of messages || []) {
+			if (m.reply?.replyType === 'paymentRequestCancel' && m.reply.messageId != null && m.createdAt != null) {
+				// 若同一条 request 被多次 cancel，保留第一次的 timestamp
+				if (!map.has(m.reply.messageId)) map.set(m.reply.messageId, m.createdAt)
+			}
+		}
+		return map
+	}, [messages])
+	const cancelledPaymentRequestSendIds = useMemo(() => new Set(cancelledPaymentRequestMap.keys()), [cancelledPaymentRequestMap])
+
+	/** 已支付的 Payment Request：sendId -> { hash, createdAt }（用于卡片显示绿色 check + hash） */
+	const paidPaymentRequestMap = useMemo(() => {
+		const map = new Map<string, { hash: string; createdAt: number }>()
+		for (const m of messages || []) {
+			if (m.reply?.replyType === 'paymentRequestPaid' && m.reply.messageId != null && m.reply.paymentHash && m.createdAt != null) {
+				if (!map.has(m.reply.messageId)) map.set(m.reply.messageId, { hash: m.reply.paymentHash, createdAt: m.createdAt })
+			}
+		}
+		return map
+	}, [messages])
+
+	/** 1 USDC = ? in given currency (for converting fiat amount to USDC at Pay click) */
+	function fxRateUSDCToCurrency(currency: ICurrency): number {
+		const usdcToUSD = Number((currencyData as Record<string, number>)?.USDC ?? 1)
+		if (currency === 'USD') return usdcToUSD
+		const usdToCurrency = Number((currencyData as Record<string, number>)?.[currency] ?? 1)
+		return usdcToUSD * usdToCurrency
+	}
+
+	/** 取某条消息对应的 reaction 列表：优先 sendId（reply 必须指向 sendId），再 id/createdAt/时间戳容差（兼容旧数据） */
+	const getReactionsForMessage = useCallback(
+		(m: ChatMessage) => {
+			if (m.sendId) {
+				const bySendId = reactionsByMessageId.get(m.sendId)
+				if (bySendId?.length) return bySendId
+			}
+			const byId = reactionsByMessageId.get(m.id ?? '')
+			if (byId?.length) return byId
+			const byCreated = reactionsByMessageId.get(String(m.createdAt ?? ''))
+			if (byCreated?.length) return byCreated
+			const ts = Number(m.createdAt)
+			if (!Number.isFinite(ts)) return undefined
+			const tolerance = 15000
+			for (const [key, list] of reactionsByMessageId) {
+				const keyNum = Number(key)
+				if (Number.isFinite(keyNum) && Math.abs(keyNum - ts) <= tolerance) return list
+			}
+			return undefined
+		},
+		[reactionsByMessageId]
+	)
+
+
+	// Bump after mutating chatData.chatData so hasRoute / presence re-read props
+	// (open-thread chatData is a frozen reference from index.tsx, not live-bound to profiles).
+	const [routeHydrateGen, setRouteHydrateGen] = useState(0)
+	void routeHydrateGen
+	const hasRoute = !!(chatData.chatData?.routersArmoreds?.trim())
+	const peerTag = lookupByAddress(chatData.address)
+	const [peerOnline, setPeerOnline] = useState(
+		typeof peerTag?.online === 'boolean' ? peerTag.online : !!chatData.chatData?.online,
+	)
+	const [peerNativeWakeable, setPeerNativeWakeable] = useState(
+		typeof peerTag?.nativeWakeable === 'boolean' ? peerTag.nativeWakeable : !!chatData.chatData?.nativeWakeable,
+	)
+
+	useEffect(() => {
+		if (typeof peerTag?.online === 'boolean') {
+			setPeerOnline(current => (current === peerTag.online ? current : !!peerTag.online))
+		}
+		if (typeof peerTag?.nativeWakeable === 'boolean') {
+			setPeerNativeWakeable(current => (current === peerTag.nativeWakeable ? current : !!peerTag.nativeWakeable))
+		}
+	}, [peerTag?.online, peerTag?.nativeWakeable, peerTag?.onlineAt, peerTag?.nativeWakeAt])
+
+	// Parse the wallet and the peer's two keys once the chat is open, so a dial
+	// does not pay for them after the native call screen covers the page.
+	useEffect(() => {
+		const peerPgp = chatData.chatData?.publicArmored
+		const peerRoute = chatData.chatData?.routersArmoreds
+		const timer = window.setTimeout(() => prewarmDialKeys(privateKey, [peerPgp, peerRoute]), 300)
+		return () => window.clearTimeout(timer)
+	}, [privateKey, chatData.chatData?.publicArmored, chatData.chatData?.routersArmoreds])
+
+	// the peer's key and mailbox route are re-read from AddressPGP (public data, no page key) on open, on a fixed period while
+	// the chat is open, and after a failed send. A failed re-read is shown as an error; the old values are not kept silently.
+	const chatDataRef = useRef(chatData)
+	chatDataRef.current = chatData
+	/** the code of the last send that was not made, so the failed bubble can show it (undefined after a delivered send). */
+	const lastSendCodeRef = useRef<string | undefined>(undefined)
+	/** the fingerprint read with the last held send (shown for the comparison; undefined when sent). */
+	const lastSendHeldRef = useRef<HeldKey | undefined>(undefined)
+	/**held sends (route_unconfirmed) by message id: the text, the number of retries so far, and the timer of the next retry. */
+	const heldSendsRef = useRef(new Map<string, { text: string; attempt: number; timer?: number; pinned?: HeldKey }>())
+	useEffect(() => () => {
+		heldSendsRef.current.forEach((h) => { if (h.timer !== undefined) window.clearTimeout(h.timer) })
+	}, [])
+
+	useEffect(() => {
+		let cancelled = false
+		const run = async () => {
+			const r = await refreshPeerRoute()
+			if (cancelled) return
+			if (!r.ok) setChatError(recipientRefreshErrorText(r.code))
+			else if (r.fingerprintChanged) setChatError(chatHeldBannerText("fingerprint_changed"))
+		}
+		void run()
+		const timer = window.setInterval(() => { void run() }, RECIPIENT_REFRESH_PERIOD_MS)
+		return () => {
+			cancelled = true
+			window.clearInterval(timer)
+		}
+	}, [chatData.address])
+
+	/** the one-time verification prompt for this contact, shown on the first open of an existing contact that has no verified key. */
+	const [verifyPrompt, setVerifyPrompt] = useState<HeldKey | null>(null)
+	useEffect(() => {
+		let cancelled = false
+		const current = chatDataRef.current
+		if (!oneTimeVerifyPromptDue(current)) {
+			setVerifyPrompt(null)
+			return
+		}
+		void (async () => {
+			const trust = await resolveTrustedRoute(current, lookupRecipientRecord)
+			if (cancelled) return
+			// Only a first fetch with a key shows the prompt; a failed read or a missing record does not (no prompt on a guess).
+			setVerifyPrompt(!trust.ok && trust.code === 'first_fetch_pending' && trust.held ? trust.held : null)
+		})()
+		return () => {
+			cancelled = true
+		}
+	}, [chatData.address])
+
+	/** "Verified, continue": the key on screen is written as verified (with its fingerprint), and the prompt is not shown again for this contact. */
+	function confirmVerifyPrompt() {
+		const held = verifyPrompt
+		setVerifyPrompt(null)
+		if (!held) return
+		const current = chatDataRef.current
+		applyPeerRoute(current, held, true)
+		patchStoredChatRow(current.address, { verifyPromptSeen: true })
+	}
+
+	/** "Later": the prompt is not shown again for this contact (persisted per contact). */
+	function dismissVerifyPrompt() {
+		setVerifyPrompt(null)
+		patchStoredChatRow(chatDataRef.current.address, { verifyPromptSeen: true })
+	}
+
+	/** Writes a field of this contact's stored record (the profile state and the stored copy), as applyPeerRoute does. */
+	function patchStoredChatRow(address: string, patch: { verifyPromptSeen?: boolean }) {
+		const addrLower = (address || '').trim().toLowerCase()
+		const apply = (chats: chatData[]): { next: chatData[]; changed: boolean } => {
+			let changed = false
+			const next = chats.map(row => {
+				if (String(row?.address || '').toLowerCase() !== addrLower) return row
+				if (row.verifyPromptSeen === patch.verifyPromptSeen) return row
+				changed = true
+				return { ...row, ...patch }
+			})
+			return { next, changed }
+		}
+		setProfiles(prev => {
+			if (!prev?.length) return prev
+			const cur = prev[0]
+			const { next, changed } = apply(Array.isArray(cur?.chats) ? cur.chats : [])
+			if (!changed) return prev
+			const nextProfiles = [...prev]
+			nextProfiles[0] = { ...cur, chats: next }
+			return nextProfiles
+		})
+		const stored = CoNET_Data
+		if (stored?.profiles?.length) {
+			const cur = stored.profiles[0]
+			const { next, changed } = apply(Array.isArray(cur?.chats) ? cur.chats : [])
+			if (changed) {
+				const nextProfiles = [...stored.profiles]
+				nextProfiles[0] = { ...cur, chats: next }
+				stored.profiles = nextProfiles
+				setCoNET_Data(stored)
+				void storeSystemData()
+			}
+		}
+		const current = chatDataRef.current
+		if (current && (current.address || '').trim().toLowerCase() === addrLower) current.verifyPromptSeen = patch.verifyPromptSeen
+	}
+
+	/** Re-reads the peer's key and route; a change is written to the chat copy, the profile state and the stored record. */
+	async function refreshPeerRoute(): Promise<{ ok: true; fingerprintChanged: boolean } | { ok: false; code: 'recipient_no_record' | 'network_error' | 'recipient_key_unavailable' | 'recipient_key_invalid' }> {
+		const current = chatDataRef.current
+		const r = await refreshRecipient(current, lookupRecipientRecord)
+		if (!r.ok) return { ok: false, code: r.code }
+		// A changed fingerprint is not written here: the held send asks the user to accept the new key.
+		if (r.fingerprintChanged) return { ok: true, fingerprintChanged: true }
+		if (r.changed || !readStoredKeyFingerprint(current.chatData?.keyFingerprint)) applyPeerRoute(current, r)
+		return { ok: true, fingerprintChanged: false }
+	}
+
+	/** Writes a refreshed key and route to the chat copy, the profile state and the stored record. */
+	function applyPeerRoute(current: chatData, r: { publicArmored: string; routersArmoreds: string; routePgpKeyID?: string; fingerprint?: string }, trusted = false) {
+		const addr = (current.address || '').trim()
+		const addrLower = addr.toLowerCase()
+		if (!current.chatData) {
+			current.chatData = { publicArmored: '', routersArmoreds: '', online: false, routePgpKeyID: '' }
+		}
+		const cd = current.chatData
+		cd.publicArmored = r.publicArmored
+		cd.routersArmoreds = r.routersArmoreds
+		if (r.routePgpKeyID) cd.routePgpKeyID = r.routePgpKeyID
+		if (r.fingerprint) cd.keyFingerprint = storedKeyFingerprint(r.fingerprint)
+		// only the user's own verification (trusted) writes the verified fingerprint.
+		if (trusted && r.fingerprint) cd.verifiedFingerprint = storedKeyFingerprint(r.fingerprint)
+		setRouteHydrateGen(g => g + 1)
+		const apply = (chats: chatData[]): { next: chatData[]; changed: boolean } => {
+			let changed = false
+			const next = chats.map(row => {
+				if (String(row?.address || '').toLowerCase() !== addrLower) return row
+				const old = row.chatData
+				if (
+					old?.routersArmoreds === cd.routersArmoreds &&
+					old?.publicArmored === cd.publicArmored &&
+					old?.routePgpKeyID === cd.routePgpKeyID &&
+						old?.keyFingerprint === cd.keyFingerprint &&
+						old?.verifiedFingerprint === cd.verifiedFingerprint
+				) {
+					return row
+				}
+				changed = true
+				return {
+					...row,
+					chatData: {
+						...(old || { publicArmored: '', routersArmoreds: '', online: false, routePgpKeyID: '' }),
+						routersArmoreds: cd.routersArmoreds,
+						publicArmored: cd.publicArmored,
+						routePgpKeyID: cd.routePgpKeyID || old?.routePgpKeyID || '',
+							// the fingerprints are stored with the copy, so a reload keeps the comparison baseline and the verified key.
+							keyFingerprint: cd.keyFingerprint ?? old?.keyFingerprint,
+							verifiedFingerprint: cd.verifiedFingerprint ?? old?.verifiedFingerprint,
+					},
+				}
+			})
+			return { next, changed }
+		}
+		setProfiles(prev => {
+			if (!prev?.length) return prev
+			const cur = prev[0]
+			const chats = Array.isArray(cur?.chats) ? cur.chats : []
+			const { next, changed } = apply(chats)
+			if (!changed) return prev
+			const nextProfiles = [...prev]
+			nextProfiles[0] = { ...cur, chats: next }
+			return nextProfiles
+		})
+		const stored = CoNET_Data
+		if (stored?.profiles?.length) {
+			const cur = stored.profiles[0]
+			const chats = Array.isArray(cur?.chats) ? cur.chats : []
+			const { next, changed } = apply(chats)
+			if (changed) {
+				const nextProfiles = [...stored.profiles]
+				nextProfiles[0] = { ...cur, chats: next }
+				stored.profiles = nextProfiles
+				setCoNET_Data(stored)
+				void storeSystemData()
+			}
+		}
+	}
+
+	/** the send to the chat's recipient. The key comes from the chat copy or AddressPGP; a failed send re-reads the key and route once. */
+	async function sendChatToRecipient(text: string, opts?: { viaCachedRoute?: boolean; pinned?: HeldKey }): Promise<boolean> {
+		const current = chatDataRef.current
+		const send = (pgp: string, body: string, pk: string, nodes: typeof allNodes) => sendMessage(pgp, body, pk, nodes ?? [])
+		//every send fetches the recipient's key and route first; a network error holds the send.: a key the user has not verified is held
+		// (first_fetch_pending), or another key is held (fingerprint_changed). The user's verification or acceptance sends the key on screen (pinned,
+		// no fetch).
+		const result = opts?.pinned
+			? await sendWithPinnedRoute(text, privateKey, allNodes ?? [], {
+				pinned: opts.pinned,
+				send,
+				onAccepted: (pinned) => applyPeerRoute(current, pinned, true),
+			})
+			: opts?.viaCachedRoute
+				? await sendViaCachedRoute(current, text, privateKey, allNodes ?? [], { send })
+				: await sendWithFreshRoute(current, text, privateKey, allNodes ?? [], {
+					fetchKeys: lookupRecipientRecord,
+					send,
+					onRefreshed: (r) => applyPeerRoute(current, r),
+				})
+		lastSendHeldRef.current = result.ok ? undefined : result.held
+		if (result.ok) {
+			lastSendCodeRef.current = undefined
+			return true
+		}
+		lastSendCodeRef.current = result.code
+		console.warn(`[chat] send not delivered: ${result.code}`)
+		if (result.code !== 'send_failed') setChatError(chatHeldBannerText(result.code))
+		return false
+	}
+
+	/**  /.5a: a held send is tried again after 30 s, 2 min and 10 min; after that only the user's choice moves it. */
+	function scheduleHeldSend(tempId: string) {
+		const held = heldSendsRef.current.get(tempId)
+		if (!held) return
+		const delay = RECIPIENT_ROUTE_RETRY_DELAYS_MS[held.attempt]
+		if (delay === undefined) return
+		held.timer = window.setTimeout(() => { void retryHeldSend(tempId, 'fresh') }, delay)
+	}
+
+	/**
+	 * a send that is not text (file, voice, reaction, payment receipt or cancel). A held send keeps its message with the held status
+	 * and the retry buttons, not a banner only: the wire text and the key that was read are kept for the retry, and a route_unconfirmed hold is
+	 * retried on the 30 s, 2 min, 10 min ladder. Returns the status the message takes.
+	 */
+	function settleSendStatus(tempId: string, wire: string, ok: boolean): ChatMessage['status'] {
+		if (ok) {
+			heldSendsRef.current.delete(tempId)
+			return 'sent'
+		}
+		const code = lastSendCodeRef.current
+		if (isHeldRouteCode(code)) {
+			const prev = heldSendsRef.current.get(tempId)
+			if (prev?.timer !== undefined) window.clearTimeout(prev.timer)
+			heldSendsRef.current.set(tempId, { text: wire, attempt: 0, pinned: lastSendHeldRef.current })
+			if (code === 'route_unconfirmed') scheduleHeldSend(tempId)
+		}
+		return statusOfUnsentCode(code)
+	}
+
+	/**
+	 * Sends a held message again. `verify` and `accept` send the key the user saw on screen (no new fetch); `fresh` reads the route again;
+	 * `cached` sends on the chat copy and marks it as an unconfirmed route (send anyway).
+	 */
+	async function retryHeldSend(tempId: string, mode: 'fresh' | 'cached' | 'accept' | 'verify') {
+		const held = heldSendsRef.current.get(tempId)
+		if (!held) {
+			// The held record is in memory only: after a restart the key and text are gone, so the user sends again (visible, not silent).
+			setChatError(tu('chat.held.lost'))
+			return
+		}
+		if (held.timer !== undefined) window.clearTimeout(held.timer)
+		held.timer = undefined
+		const pinned = mode === 'verify' || mode === 'accept' ? held.pinned : undefined
+		if ((mode === 'verify' || mode === 'accept') && !pinned) {
+			setChatError(tu('chat.held.lost'))
+			return
+		}
+		const ok = await sendChatToRecipient(held.text, { viaCachedRoute: mode === 'cached', pinned })
+		const code = lastSendCodeRef.current
+		const heldKey = lastSendHeldRef.current
+		const next: ChatMessage[] = (messagesRef.current || []).map(m => {
+			if (m.id !== tempId) return m
+			if (ok) return { ...m, status: 'sent' as const, sendError: undefined, sendFingerprint: undefined, sentViaUnconfirmedRoute: mode === 'cached' ? true : m.sentViaUnconfirmedRoute }
+			return { ...m, status: statusOfUnsentCode(code), sendError: code, sendFingerprint: heldKey?.fingerprint }
+		})
+		messagesRef.current = next
+		setMessages(next)
+		chatData.messages = next
+		await storageData()
+		if (ok) {
+			heldSendsRef.current.delete(tempId)
+			return
+		}
+		if (code === 'route_unconfirmed') {
+			held.attempt += 1
+			held.pinned = undefined
+			scheduleHeldSend(tempId)
+		} else if (isHeldRouteCode(code)) {
+			// Held again on the key read now: the user acts on that key (the one shown next).
+			held.pinned = heldKey
+		} else {
+			heldSendsRef.current.delete(tempId)
+		}
+	}
+
+	// Open thread owns this peer's online + native-shell wake queries (every 6s).
+	// Protocol: green dot = online only; call button = online || nativeWakeable
+	// (iOS/Android native shell can be dialed while listen SSE is offline).
+	// No queries while offline; failed rounds back off to 60 s (chatNetworkGate.ts).
+	useEffect(() => {
+		const addr = (chatData.address || '').trim().toLowerCase()
+		const route = chatData.chatData?.routersArmoreds?.trim() || ''
+		const key = (privateKey || CoNET_Data?.profiles?.[0]?.privateKeyArmor || '').trim()
+		// (a), a shell has no page key; its probe goes through mailboxProbeSign, not the page.
+		if (!addr || !route || !probeHasSigner(isShellContext(), key)) return
+		claimChatOnlineQuery(addr)
+		let cancelled = false
+		const PRESENCE_MS = 6_000
+
+		const persistPresence = (patch: { online?: boolean; nativeWakeable?: boolean }) => {
+			const apply = (chats: chatData[]): { next: chatData[]; changed: boolean } => {
+				let changed = false
+				const next = chats.map(row => {
+					if (String(row?.address || '').toLowerCase() !== addr) return row
+					let rowChanged = false
+					const nextChat = { ...row.chatData }
+					if (typeof patch.online === 'boolean' && (row.chatData?.online ?? false) !== patch.online) {
+						nextChat.online = patch.online
+						rowChanged = true
+					}
+					if (
+						typeof patch.nativeWakeable === 'boolean' &&
+						(row.chatData?.nativeWakeable ?? false) !== patch.nativeWakeable
+					) {
+						nextChat.nativeWakeable = patch.nativeWakeable
+						rowChanged = true
+					}
+					if (!rowChanged) return row
+					changed = true
+					return { ...row, chatData: nextChat }
+				})
+				return { next, changed }
+			}
+			setProfiles(prev => {
+				if (!prev?.length) return prev
+				const cur = prev[0]
+				const chats = Array.isArray(cur?.chats) ? cur.chats : []
+				const { next, changed } = apply(chats)
+				if (!changed) return prev
+				const nextProfiles = [...prev]
+				nextProfiles[0] = { ...cur, chats: next }
+				return nextProfiles
+			})
+			const stored = CoNET_Data
+			if (!stored?.profiles?.length) return
+			const cur = stored.profiles[0]
+			const chats = Array.isArray(cur?.chats) ? cur.chats : []
+			const { next, changed } = apply(chats)
+			if (!changed) return
+			const nextProfiles = [...stored.profiles]
+			nextProfiles[0] = { ...cur, chats: next }
+			stored.profiles = nextProfiles
+			setCoNET_Data(stored)
+			void storeSystemData()
+		}
+
+		// True when at least one trusted reply came back.
+		const tick = async (): Promise<boolean> => {
+			if (cancelled) return false
+			let gotReply = false
+			try {
+				const onlineByAddr = await refreshChatMailboxPresence(
+					[{ address: addr, chatData: { ...chatData.chatData, routersArmoreds: route } } as chatData],
+					key,
+				)
+				if (onlineByAddr.has(addr)) gotReply = true
+				if (!cancelled && onlineByAddr.has(addr)) {
+					const online = onlineByAddr.get(addr)!
+					setPeerOnline(current => (current === online ? current : online))
+					persistPresence({ online })
+					void rememberPeerOnline(addr, online)
+				}
+				// After online (or if online failed): still probe native wake so
+				// offline iOS/Android shells keep the call button enabled.
+				if (cancelled) return gotReply
+				const wake = await refreshPeerNativeWakeable(addr, route, key)
+				if (wake?.ok) gotReply = true
+				if (!cancelled && wake?.ok) {
+					setPeerNativeWakeable(current =>
+						current === wake.nativeWakeable ? current : wake.nativeWakeable,
+					)
+					persistPresence({ nativeWakeable: wake.nativeWakeable })
+					void rememberPeerNativeWakeable(addr, wake.nativeWakeable)
+				}
+			} catch {
+				// Counted as a failed round below.
+			}
+			return gotReply
+		}
+		const stopLoop = startNetworkAwareLoop({
+			probe: tick,
+			intervalMs: PRESENCE_MS,
+			maxBackoffMs: 60_000,
+			recoveryMinMs: 500,
+			recoveryMaxMs: 3_000,
+			onPause: () => console.info('[Chat] presence paused: no network'),
+			onResume: (ms) => console.info(`[Chat] presence resumes in ${ms} ms`),
+		})
+		return () => {
+			cancelled = true
+			releaseChatOnlineQuery(addr)
+			stopLoop()
+		}
+	}, [chatData.address, chatData.chatData?.routersArmoreds, privateKey, setProfiles])
+
+	const canSend = useMemo(() => {
+		return !!toAddress && !!hasRoute && (text.trim().length > 0 || !!voiceDraftBlob || fileJobs.some(job => job.status === 'ready'))
+	}, [toAddress, hasRoute, text, voiceDraftBlob, fileJobs])
+
+	const runningRef = useRef(false)
+
+	const addChatFiles = useCallback(async (
+		incoming: File[],
+		dropFolderHint?: string | null,
+		source: 'drop' | 'picker' | 'camera' = 'drop',
+	) => {
+		if (!hasRoute || !incoming.length) return
+		// A later successful drop must not leave the previous folder-read alert
+		// attached to the composer. Failed jobs are also stale for this new
+		// user action; keeping them would continue rendering their alert <p>.
+		setFileError(null)
+		const extraDirectoryNames = extraDirectoryNamesFromHint(dropFolderHint)
+		let readable: { files: File[]; stubNames: string[] }
+		try {
+			if (source === 'camera') {
+				// Native camera already returns a materialized File. Do not send
+				// it through the dropped-folder reader, which can classify the
+				// camera result as an unreadable directory in WebViews.
+				readable = {
+					files: incoming,
+					stubNames: [],
+				}
+			} else if (source === 'picker') {
+				readable = {
+					files: await materializePickedChatFiles(incoming),
+					stubNames: [],
+				}
+			} else {
+				readable = await materializeDroppedChatFiles(
+					sanitizeDroppedChatFiles(incoming, extraDirectoryNames),
+					extraDirectoryNames,
+				)
+			}
+		} catch (error) {
+			setFileError(source === 'picker'
+				? (error instanceof Error ? error.message : 'The selected file could not be read. Please choose it again.')
+				: chatFileReadErrorMessage(error))
+			return
+		}
+		const files = readable.files
+		const folderHint = resolveDropFolderHint({
+			files,
+			stubNames: readable.stubNames,
+			directoryNames: extraDirectoryNames,
+			singleItemManyFiles: incoming.length > 1 || Boolean(dropFolderHint),
+			firstDirectName: dropFolderHint || incoming[0]?.name,
+		}) || dropFolderHint || null
+		if (!files.length) {
+			setFileError('This folder could not be read. Drop the files inside it, or try again.')
+			return
+		}
+		setFileJobs(previous => previous.filter(job => job.status !== 'failed'))
+		const id = crypto.randomUUID()
+		const isPdfFile = files[0].type === 'application/pdf' || files[0].name.toLowerCase().endsWith('.pdf')
+		const isFolderSelection = Boolean(folderHint) || files.some(file => Boolean(file.webkitRelativePath && file.webkitRelativePath.includes('/')))
+		const bundleName = chatFileBundleDisplayName(files, folderHint)
+		const mediaFile = files.length === 1 && !isFolderSelection && (
+			files[0].type.startsWith('video/')
+			|| files[0].type.startsWith('image/')
+			|| isPdfFile
+		) ? files[0] : null
+		const previewMediaFile = mediaFile && (mediaFile.type.startsWith('video/') || mediaFile.type.startsWith('image/')) ? mediaFile : null
+		const videoFile = mediaFile?.type.startsWith('video/') ? mediaFile : null
+		const controller = new AbortController()
+		fileControllersRef.current.set(id, controller)
+		setFileJobs(previous => [
+			...previous,
+			{
+				id,
+				files,
+				name: bundleName,
+				progress: 0,
+				status: 'uploading',
+			},
+		])
+		if (source === 'camera') setNativeCameraProcessing(false)
+		let thumbnail: Blob | undefined
+		let mediaDimensions: { width: number; height: number } | undefined
+		try {
+			if (previewMediaFile && source !== 'camera') {
+				mediaDimensions = await readMediaDimensions(previewMediaFile)
+			}
+			if (videoFile && source !== 'camera') {
+				setFileJobs(previous => previous.map(item => item.id === id ? { ...item, progress: 0.03 } : item))
+				thumbnail = await createVideoThumbnail(videoFile)
+				setFileJobs(previous => previous.map(item => item.id === id ? { ...item, progress: 0.08 } : item))
+			} else if (previewMediaFile) {
+				thumbnail = previewMediaFile
+				setFileJobs(previous => previous.map(item => item.id === id ? { ...item, progress: 0.08 } : item))
+			}
+		} catch (error) {
+			if (source === 'camera') setNativeCameraProcessing(false)
+			if (!isNotFoundReadError(error)) {
+				setFileError(chatFileReadErrorMessage(error) || 'Video thumbnail could not be created.')
+			}
+			// Keep the job alive and continue uploading; the receiver can still
+			// render the decrypted media when no local thumbnail is available.
+		}
+		if (controller.signal.aborted) {
+			fileControllersRef.current.delete(id)
+			return
+		}
+		let thumbnailUrl: string | undefined
+		try {
+			thumbnailUrl = thumbnail ? URL.createObjectURL(thumbnail) : undefined
+		} catch (error) {
+			if (!isNotFoundReadError(error)) {
+				setFileError(chatFileReadErrorMessage(error))
+			}
+			thumbnail = undefined
+		}
+		if (thumbnailUrl) {
+			setFileJobs(previous => previous.map(item => item.id === id ? { ...item, thumbnailUrl } : item))
+		}
+		try {
+			const encrypted = await encryptChatFiles(
+				files,
+				files.length > 1 || Boolean(folderHint)
+					? bundleName
+					: undefined,
+				thumbnail,
+				mediaDimensions,
+			)
+			const fragmentHash = await uploadEncryptedChatFileDataUrl(
+				profiles[0]?.privateKeyArmor || '',
+				encrypted.dataUrl,
+				progress => setFileJobs(previous => previous.map(item => item.id === id ? { ...item, progress } : item)),
+				controller.signal,
+			)
+			setFileJobs(previous => previous.map(item => item.id === id
+				? { ...item, status: 'ready', progress: 1, manifest: { ...encrypted.manifest, fragmentHash } }
+				: item))
+		} catch (error) {
+			if (error instanceof DOMException && error.name === 'AbortError') {
+				setFileJobs(previous => previous.filter(item => item.id !== id))
+			} else {
+				setFileJobs(previous => previous.map(item => item.id === id ? { ...item, status: 'failed', error: chatFileReadErrorMessage(error) } : item))
+			}
+		} finally {
+			fileControllersRef.current.delete(id)
+		}
+	}, [hasRoute, profiles])
+	addChatFilesRef.current = addChatFiles
+
+	const handleChatFileDragEnter = useCallback((event: React.DragEvent) => {
+		event.preventDefault()
+		event.stopPropagation()
+		if (!hasRoute) return
+		if (!Array.from(event.dataTransfer.types).includes('Files')) return
+		fileDragDepthRef.current += 1
+		setFileDropActive(true)
+	}, [hasRoute])
+
+	const handleChatFileDragOver = useCallback((event: React.DragEvent) => {
+		event.preventDefault()
+		event.stopPropagation()
+		if (!hasRoute) return
+		event.dataTransfer.dropEffect = 'copy'
+		if (Array.from(event.dataTransfer.types).includes('Files')) setFileDropActive(true)
+	}, [hasRoute])
+
+	const handleChatFileDragLeave = useCallback((event: React.DragEvent) => {
+		event.preventDefault()
+		event.stopPropagation()
+		const next = event.relatedTarget as Node | null
+		// Overlay mount often fires leave with relatedTarget=null — do not clear.
+		if (!next) return
+		if (event.currentTarget.contains(next)) return
+		fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1)
+		if (fileDragDepthRef.current === 0) setFileDropActive(false)
+	}, [])
+
+	const handleChatFileDrop = useCallback((event: React.DragEvent) => {
+		event.preventDefault()
+		event.stopPropagation()
+		// Snapshot FileList BEFORE any React state update — some engines clear
+		// dataTransfer after the drop handler yields / re-renders.
+		const directFiles = Array.from(event.dataTransfer.files || [])
+		const dataTransfer = event.dataTransfer
+		if (!hasRoute) {
+			fileDragDepthRef.current = 0
+			setFileDropActive(false)
+			return
+		}
+		setFileError(null)
+		// Start the FileSystem walk + FileList arrayBuffer() before React
+		// state updates yield; Chrome otherwise invalidates the drop Files.
+		const dropWork = filesFromDropTransfer(dataTransfer, directFiles)
+		fileDragDepthRef.current = 0
+		setFileDropActive(false)
+		void dropWork.then(({ files, folderHint }) => {
+			if (files.length) {
+				void addChatFiles(files, folderHint)
+				return
+			}
+			setFileError('This folder could not be read. Drop the files inside it, or try again.')
+		}).catch(error => {
+			setFileError(chatFileReadErrorMessage(error))
+		})
+	}, [addChatFiles, hasRoute])
+
+	useEffect(() => {
+		const clearFileDropUi = () => {
+			fileDragDepthRef.current = 0
+			setFileDropActive(false)
+		}
+		window.addEventListener('dragend', clearFileDropUi)
+		return () => window.removeEventListener('dragend', clearFileDropUi)
+	}, [])
+
+	const openChatCamera = useCallback(() => {
+		setFileError(null)
+		if (!hasRoute) {
+			setFileError('Camera attachments require an active Chat route.')
+			return
+		}
+		const requestId = crypto.randomUUID()
+		cameraRequestIdRef.current = requestId
+		if (requestNativeCameraCapture({ requestId, mediaType: 'video' })) {
+			setNativeCameraProcessing(true)
+			return
+		}
+		const getUserMedia = navigator.mediaDevices?.getUserMedia
+		if (typeof getUserMedia === 'function') {
+			void getUserMedia.call(navigator.mediaDevices, { video: true, audio: true })
+				.then(stream => {
+					cameraRequestIdRef.current = null
+					setFileError(null)
+					setCameraStream(stream)
+				})
+				.catch(() => {
+					cameraRequestIdRef.current = null
+					cameraInputRef.current?.click()
+				})
+			return
+		}
+		cameraRequestIdRef.current = null
+		cameraInputRef.current?.click()
+	}, [hasRoute])
+
+	const closeChatCamera = useCallback(() => {
+		try { cameraRecorderRef.current?.stop() } catch {}
+		cameraRecorderRef.current = null
+		cameraChunksRef.current = []
+		cameraStream?.getTracks().forEach(track => track.stop())
+		setCameraStream(null)
+		setCameraRecording(false)
+	}, [cameraStream])
+
+	const startChatCameraRecording = useCallback((video: HTMLVideoElement) => {
+		if (!cameraStream || cameraRecording) return
+		const mimeType = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
+			.find(type => MediaRecorder.isTypeSupported(type)) || ''
+		const recorder = mimeType ? new MediaRecorder(cameraStream, { mimeType }) : new MediaRecorder(cameraStream)
+		cameraChunksRef.current = []
+		recorder.ondataavailable = event => {
+			if (event.data.size > 0) cameraChunksRef.current.push(event.data)
+		}
+		recorder.onstop = () => {
+			const blob = new Blob(cameraChunksRef.current, { type: recorder.mimeType || 'video/webm' })
+			cameraChunksRef.current = []
+			cameraRecorderRef.current = null
+			cameraStream.getTracks().forEach(track => track.stop())
+			setCameraStream(null)
+			setCameraRecording(false)
+			if (blob.size > 0) {
+				const file = new File([blob], `camera-${Date.now()}.webm`, { type: blob.type || 'video/webm' })
+				void addChatFiles([file])
+			}
+		}
+		cameraRecorderRef.current = recorder
+		recorder.start(250)
+		setCameraRecording(true)
+		video.play().catch(() => {})
+	}, [addChatFiles, cameraRecording, cameraStream])
+
+	const stopChatCameraRecording = useCallback(() => {
+		if (cameraRecorderRef.current?.state !== 'inactive') cameraRecorderRef.current?.stop()
+	}, [])
+
+	useEffect(() => {
+		const video = cameraPreviewRef.current
+		if (!video || !cameraStream) return
+		video.srcObject = cameraStream
+		void video.play().catch(() => {})
+		return () => {
+			video.srcObject = null
+		}
+	}, [cameraStream])
+
+	const cancelChatFileJob = useCallback((id: string) => {
+		fileControllersRef.current.get(id)?.abort()
+		setFileJobs(previous => {
+			const removed = previous.find(item => item.id === id)
+			if (removed?.thumbnailUrl) URL.revokeObjectURL(removed.thumbnailUrl)
+			return previous.filter(item => item.id !== id)
+		})
+	}, [])
+
+	const stopVoiceDurationTimer = useCallback(() => {
+		if (recordingTimerRef.current !== null) {
+			window.clearTimeout(recordingTimerRef.current)
+			recordingTimerRef.current = null
+		}
+	}, [])
+
+	const stopVoiceLevelMeter = useCallback(() => {
+		if (voiceLevelRafRef.current !== null) {
+			window.cancelAnimationFrame(voiceLevelRafRef.current)
+			voiceLevelRafRef.current = null
+		}
+		voiceAnalyserRef.current = null
+		const context = voiceAudioContextRef.current
+		voiceAudioContextRef.current = null
+		if (context) void context.close().catch(() => {})
+	}, [])
+
+	const sampleVoiceLevel = useCallback(() => {
+		if (!voiceCallLiveRef.current) {
+			voiceLevelRafRef.current = null
+			return
+		}
+		const readLevel = (analyser: AnalyserNode | null) => {
+			if (!analyser) return null
+			const values = new Uint8Array(analyser.fftSize)
+			analyser.getByteTimeDomainData(values)
+			let sum = 0
+			for (const value of values) {
+				const normalized = (value - 128) / 128
+				sum += normalized * normalized
+			}
+			return Math.min(1, Math.sqrt(sum / values.length) * 3.5)
+		}
+		const local = readLevel(voiceAnalyserRef.current)
+		if (local !== null) setVoiceLevelSamples(previous => [...previous.slice(-119), local])
+		voiceLevelRafRef.current = window.requestAnimationFrame(sampleVoiceLevel)
+	}, [])
+
+	useEffect(() => {
+		voiceCallLiveRef.current = voiceCallState === 'outgoing'
+		if (voiceCallState !== 'outgoing') return
+		void remoteVoiceAudioContextRef.current?.resume().catch(() => {})
+		void voicePlaybackRef.current?.resume()
+		if (voiceLevelRafRef.current === null) {
+			voiceLevelRafRef.current = window.requestAnimationFrame(sampleVoiceLevel)
+		}
+	}, [sampleVoiceLevel, voiceCallState])
+
+	const scheduleVoiceDurationTimer = useCallback(() => {
+		stopVoiceDurationTimer()
+		if (!recordingStartedAtRef.current) return
+		recordingTimerRef.current = window.setTimeout(() => {
+			setVoiceDurationMs(Date.now() - recordingStartedAtRef.current)
+			scheduleVoiceDurationTimer()
+		}, 250)
+	}, [stopVoiceDurationTimer])
+
+	useEffect(() => () => {
+		stopVoiceDurationTimer()
+		stopVoiceLevelMeter()
+		try { recorderRef.current?.stop() } catch { /* already stopped */ }
+	}, [stopVoiceDurationTimer, stopVoiceLevelMeter])
+
+	const startVoiceRecording = useCallback(async () => {
+		if (!hasRoute || isRecordingVoice || voiceSending) return
+		setVoiceError(null)
+		if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+			setVoiceError('Voice recording is not supported by this browser.')
+			return
+		}
+		try {
+			const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+			const mimeType = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm']
+				.find(type => MediaRecorder.isTypeSupported(type)) || ''
+			const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
+			recordingChunksRef.current = []
+			setVoiceLevelSamples([])
+			recorder.ondataavailable = event => {
+				if (event.data.size > 0) {
+					recordingChunksRef.current.push(event.data)
+					setVoiceRecordedBytes(prev => prev + event.data.size)
+				}
+			}
+			recorder.onerror = () => setVoiceError('Voice recording failed. Please try again.')
+			recorderRef.current = recorder
+			recordingStartedAtRef.current = Date.now()
+			setVoiceDurationMs(0)
+			setVoiceRecordedBytes(0)
+			setIsRecordingVoice(true)
+			const AudioContextCtor =
+				window.AudioContext ||
+				(window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+			if (AudioContextCtor) {
+				const audioContext = new AudioContextCtor()
+				const source = audioContext.createMediaStreamSource(stream)
+				const analyser = audioContext.createAnalyser()
+				analyser.fftSize = 256
+				source.connect(analyser)
+				voiceAudioContextRef.current = audioContext
+				voiceAnalyserRef.current = analyser
+				voiceLevelRafRef.current = window.requestAnimationFrame(sampleVoiceLevel)
+			}
+			recorder.start(250)
+			scheduleVoiceDurationTimer()
+		} catch {
+			setVoiceError('Microphone access was denied or unavailable.')
+		}
+	}, [hasRoute, isRecordingVoice, sampleVoiceLevel, scheduleVoiceDurationTimer, voiceSending])
+
+	const finishVoiceRecording = useCallback(async () => {
+		const recorder = recorderRef.current
+		if (!recorder || recorder.state === 'inactive') return
+		stopVoiceDurationTimer()
+		stopVoiceLevelMeter()
+		const durationMs = Math.max(1, Date.now() - recordingStartedAtRef.current)
+		setVoiceDurationMs(durationMs)
+		setIsRecordingVoice(false)
+		await new Promise<void>(resolve => {
+			recorder.onstop = () => resolve()
+			recorder.stop()
+		})
+		recorder.stream.getTracks().forEach(track => track.stop())
+		recorderRef.current = null
+		const blob = new Blob(recordingChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+		recordingChunksRef.current = []
+		if (!blob.size) {
+			setVoiceError('No audio was recorded. Please try again.')
+			return
+		}
+		setVoiceDraftBlob(blob)
+		setVoiceRecordedBytes(blob.size)
+		setVoiceError(null)
+	}, [stopVoiceDurationTimer, stopVoiceLevelMeter])
+
+	const cancelVoiceDraft = useCallback(() => {
+		if (voiceSending) return
+		setVoiceDraftBlob(null)
+		setVoiceDurationMs(0)
+		setVoiceRecordedBytes(0)
+		setVoiceError(null)
+	}, [voiceSending])
+
+	const sendVoiceDraft = useCallback(async () => {
+		if (!voiceDraftBlob || voiceSending || !profiles?.[0]?.privateKeyArmor) return
+		setVoiceSending(true)
+		setVoiceError(null)
+		try {
+			const encrypted = await encryptVoiceBlob(voiceDraftBlob, voiceDurationMs)
+			const fragmentHash = await uploadEncryptedVoiceDataUrl(
+				profiles[0].privateKeyArmor,
+				encrypted.dataUrl,
+			)
+			const now = Date.now()
+			const sendId = crypto.randomUUID()
+			const payload: ChatMessage = {
+				id: `tmp_${now}_${Math.random().toString(16).slice(2)}`,
+				sendId,
+				from: 'me',
+				text: '',
+				createdAt: now,
+				status: 'sending',
+				voiceMessage: { ...encrypted.manifest, fragmentHash },
+			}
+			const next = [...(messagesRef.current || []), payload]
+			messagesRef.current = next
+			setMessages(next)
+			const wirePayload = {
+				sendId,
+				from: 'me' as const,
+				text: '',
+				createdAt: now,
+				voiceMessage: payload.voiceMessage,
+			}
+			const wireVoice = JSON.stringify(wirePayload)
+			const sent = await sendChatToRecipient(wireVoice)
+			const voiceStatus = settleSendStatus(String(payload.id), wireVoice, sent)
+			const settled = next.map(message =>
+				message.id === payload.id ? { ...message, status: voiceStatus, sendError: sent ? undefined : lastSendCodeRef.current, sendFingerprint: lastSendHeldRef.current?.fingerprint } : message,
+			)
+			messagesRef.current = settled
+			setMessages(settled)
+			chatData.messages = settled
+			await storageDataRef.current?.()
+			if (sent) mirrorChatMessageToHistory(chatData.address, settled.find(message => message.id === payload.id), 'out')
+			else setVoiceError('Voice message failed to reach CoNET entry nodes. Please retry.')
+			if (sent) {
+				setVoiceDraftBlob(null)
+				setVoiceDurationMs(0)
+				setVoiceRecordedBytes(0)
+			}
+		} catch (error) {
+			setVoiceError(error instanceof Error ? error.message : 'Voice message could not be sent.')
+		} finally {
+			setVoiceSending(false)
+		}
+	}, [allNodes, chatData, privateKey, profiles, voiceDraftBlob, voiceDurationMs, voiceSending])
+
+	const reflashdata = async () => {
+		if (!profiles?.length) return
+
+		const p0: profile = profiles[0]
+		const chats = Array.isArray(p0?.chats) ? p0.chats : []
+		if (!chats.length) return
+
+		const addr = String(chatData.address || "").toLowerCase()
+		if (!addr) return
+
+		const myChat = chats.find(n => String(n.address || "").toLowerCase() === addr)
+		if (!myChat) return
+
+		// Profile updates are frequent while the gossip/history daemons are
+		// active. Capture the viewport before the async decrypt work starts:
+		// rehydrating the same conversation must never force a native WebView
+		// back to the bottom and produce a visible periodic jump.
+		const currentScroller = scrollRef.current
+		const wasAtBottom = !didInitialScrollRef.current || !!(
+			currentScroller &&
+			currentScroller.scrollHeight - currentScroller.scrollTop - currentScroller.clientHeight <= 24
+		)
+
+		// profiles/落盘的消息（“远端”）
+		const remoteStored = Array.isArray(myChat.messages) ? myChat.messages : []
+		const remote = await Promise.all(remoteStored.map(async message => {
+			if (message.fileMessage || !message.fileMessageCipher || !privateKey) return message
+			const fileMessage = await decryptLocalFileManifest(message.fileMessageCipher, privateKey)
+			return fileMessage ? { ...message, fileMessage } : message
+		}))
+
+		// Local UI rows may include tmp_ / a more advanced status. Outbound file
+		// sends put the same optimistic bubble in both messagesRef and
+		// liveFileMessagesRef — concatenate without sendId/id dedupe used to
+		// stack 2→3 identical photo bubbles until remote caught up.
+		const localKeyOf = (m: ChatMessage | undefined): string =>
+			(m?.sendId && String(m.sendId)) || (m?.id && String(m.id)) || ''
+		const localByKey = new Map<string, ChatMessage>()
+		const rememberLocal = (m: ChatMessage | undefined) => {
+			const key = localKeyOf(m)
+			if (!m || !key) return
+			const prev = localByKey.get(key)
+			if (!prev || statusRank(m.status) >= statusRank(prev.status)) {
+				localByKey.set(key, m)
+			}
+		}
+		for (const m of Array.isArray(messagesRef.current) ? messagesRef.current : []) rememberLocal(m)
+		for (const m of liveFileMessagesRef.current.values()) rememberLocal(m)
+		const local = Array.from(localByKey.values())
+
+		// Index local by id and sendId (remote may match on either).
+		const localById = new Map<string, ChatMessage>()
+		for (const m of local) {
+			if (m?.id) localById.set(m.id, m)
+			if (m?.sendId) localById.set(m.sendId, m)
+		}
+
+		// ✅ 1) 先以 remote 为基础，逐条 merge：取双方更高 status；local tmp_ 字段补齐
+		const merged: ChatMessage[] = remote.map(rm => {
+			const lm =
+				localById.get(rm.sendId ?? '') ||
+				localById.get(rm.id ?? '') ||
+				null
+			if (!lm) return rm
+
+			const remoteRank = statusRank(rm.status)
+			const localRank = statusRank(lm.status)
+			if (localRank > remoteRank) {
+				return { ...rm, ...lm, status: lm.status }
+			}
+			if (remoteRank > localRank) {
+				return {
+					...rm,
+					...(lm.fileMessage && !rm.fileMessage ? { fileMessage: lm.fileMessage } : {}),
+					status: rm.status,
+				}
+			}
+			// equal rank: remote text/payload wins; keep local status if set
+			if (lm.status && lm.status !== rm.status) {
+				return {
+					...rm,
+					...(lm.fileMessage && !rm.fileMessage ? { fileMessage: lm.fileMessage } : {}),
+					status: lm.status,
+				}
+			}
+			return {
+				...rm,
+				...(lm.fileMessage && !rm.fileMessage ? { fileMessage: lm.fileMessage } : {}),
+			}
+		})
+
+		// Remote absorbed an optimistic file send — drop the live-file safety copy.
+		for (const m of merged) {
+			if (m?.sendId) liveFileMessagesRef.current.delete(m.sendId)
+		}
+
+		// ✅ 2) 把 local 里仍然存在但 remote 里没有的 tmp_ 消息追加回去（防止被冲掉）
+		const remoteIdSet = new Set<string>()
+		for (const m of remote) {
+			if (m?.id) remoteIdSet.add(String(m.id))
+			if (m?.sendId) remoteIdSet.add(String(m.sendId))
+		}
+		const localTempExtras = local.filter(m => {
+			if (!m?.id || !isTempId(m.id)) return false
+			if (remoteIdSet.has(m.id)) return false
+			if (m.sendId && remoteIdSet.has(String(m.sendId))) return false
+			return true
+		})
+
+		const nextCandidates = [...merged, ...localTempExtras]
+			.slice()
+			.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+		const next: ChatMessage[] = []
+		const seenNext = new Set<string>()
+		for (const m of nextCandidates) {
+			const key = localKeyOf(m)
+			if (key) {
+				if (seenNext.has(key)) continue
+				seenNext.add(key)
+			}
+			next.push(m)
+		}
+
+		const messageViewportSignature = (message: ChatMessage) => JSON.stringify({
+			id: message.id,
+			sendId: message.sendId,
+			createdAt: message.createdAt,
+			status: message.status,
+			text: message.text,
+			fileHash: message.fileMessage?.fragmentHash || message.fileMessage?.archiveName,
+			voiceHash: message.voiceMessage?.fragmentHash,
+		})
+		const previous = messagesRef.current || []
+		const previousSignatures = previous.map(messageViewportSignature)
+		const nextSignatures = next.map(messageViewportSignature)
+		const changed =
+			previousSignatures.length !== nextSignatures.length ||
+			previousSignatures.some((signature, index) => signature !== nextSignatures[index])
+		if (!changed) return
+
+		// Repair only bubbles that were not already on screen. Re-mirroring the
+		// whole thread on every profile refresh re-fetched the encrypted index
+		// once per historical call status (`phone:<session>:ringing|cancelled`).
+		const previousSendIds = new Set(previous.map((message) => message.sendId).filter(Boolean))
+		const fresh = next.filter((message) => message.sendId && !previousSendIds.has(message.sendId))
+		if (fresh.length) backfillChatMessagesToHistory(chatData.address, fresh)
+
+		// ✅ 3) 刷 UI
+		// Only pin after a real message change, and only when the user was
+		// already at the bottom (or this is the first hydration). A profile
+		// refresh must preserve a user's reading position.
+		pendingInitialScrollRef.current = wasAtBottom
+		messagesRef.current = next
+		setMessages(next)
+	}
+
+	// ✅ 放在 Chat 组件内部，refs 声明处附近
+	const didInitialScrollRef = useRef(false)     // 只允许“首次到底”执行一次
+	const pendingInitialScrollRef = useRef(true)  // 用于 reflashdata 异步回来后也能触发一次
+
+	const scrollToBottom = (mode: "auto" | "smooth" = "auto") => {
+	const el = scrollRef.current
+	
+	if (!el) return
+	// 直接到底（不依赖 scrollHeight - clientHeight）
+	el.scrollTo({ top: el.scrollHeight, behavior: mode })
+	// A scroll the page makes itself must not hide the header (back + call buttons).
+	showCapsuleNow()
+	}
+
+	/**
+	 * After the local user sends, the newest bubble must stay fully visible.
+	 * A single smooth scroll is not enough: the composer changes height (file
+	 * chip -> sent), image/video bubbles settle, and status rows appear after
+	 * the first scroll, which pushed the last bubble under the input bar.
+	 * While this hold is active, any layout change re-pins the scroller to the
+	 * bottom. A real user scroll gesture (wheel / touchmove) releases it.
+	 */
+	const stickToBottomRef = useRef(false)
+	const stickReleaseTimerRef = useRef<number | null>(null)
+	/**
+	 * Follow mode: a conversation opens pinned to its newest bubble and keeps following it
+	 * while the content grows underneath (history restore after a cold start, media settling,
+	 * new messages) until the user deliberately scrolls away. Without it the single initial
+	 * pin ran against the short pre-hydration list, the thread then grew to thousands of px
+	 * and the viewport stayed near the old offset. Released by a user gesture, re-armed when
+	 * the user scrolls back to the very bottom (or sends).
+	 */
+	const followBottomRef = useRef(true)
+	const releaseBottomPin = useCallback(() => {
+		stickToBottomRef.current = false
+		if (stickReleaseTimerRef.current !== null) {
+			window.clearTimeout(stickReleaseTimerRef.current)
+			stickReleaseTimerRef.current = null
+		}
+	}, [])
+	const holdBottomPin = useCallback((ms = 6000) => {
+		stickToBottomRef.current = true
+		followBottomRef.current = true
+		if (stickReleaseTimerRef.current !== null) window.clearTimeout(stickReleaseTimerRef.current)
+		stickReleaseTimerRef.current = window.setTimeout(() => {
+			stickToBottomRef.current = false
+			stickReleaseTimerRef.current = null
+		}, ms)
+		const sc = scrollRef.current
+		if (sc) sc.scrollTop = sc.scrollHeight
+		showCapsuleNow()
+	}, [showCapsuleNow])
+	const [composerEl, setComposerEl] = useState<HTMLDivElement | null>(null)
+	const [chatContentEl, setChatContentEl] = useState<HTMLDivElement | null>(null)
+	// iOS keyboard: keep the header on screen; only the list and composer move.
+	const [chatRootEl, setChatRootEl] = useState<HTMLDivElement | null>(null)
+	const keyboardCovers = useVisualViewportFrame(chatRootEl)
+	// The list got shorter under the keyboard: keep the newest bubble above the composer.
+	useEffect(() => {
+		const scroller = scrollRef.current
+		if (!scroller || !followBottomRef.current) return
+		const frame = requestAnimationFrame(() => {
+			scroller.scrollTop = scroller.scrollHeight
+			showCapsuleNow()
+		})
+		return () => cancelAnimationFrame(frame)
+	}, [keyboardCovers, showCapsuleNow])
+
+	useEffect(() => {
+		const scroller = scrollRef.current
+		if (!scroller || typeof ResizeObserver === 'undefined') return
+		const frameHost = scroller.parentElement
+		// Following the newest bubble is the page's own scroll, not the user's:
+		// keep the header (back + call buttons) on screen. Without this, a new
+		// message while pinned to the bottom slid the whole header away.
+		const pinNow = () => {
+			scroller.scrollTop = scroller.scrollHeight
+			showCapsuleNow()
+		}
+		const observers: ResizeObserver[] = []
+		if (composerEl) {
+			let lastHeight = -1
+			const composerObserver = new ResizeObserver(() => {
+				const height = Math.ceil(composerEl.getBoundingClientRect().height)
+				if (height === lastHeight) return
+				// Measure against the old layout before the spacer follows the
+				// new composer height: were we pinned to the newest bubble?
+				// Opening a conversation can leave the viewport a few px short of the
+				// very end (fractional heights, spacer settling) — be tolerant so
+				// attaching a file chip still lifts the newest bubble above the bar.
+				const wasAtBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 48
+				lastHeight = height
+				frameHost?.style.setProperty('--chat-composer-h', `${height}px`)
+				if (stickToBottomRef.current || wasAtBottom) pinNow()
+			})
+			composerObserver.observe(composerEl)
+			observers.push(composerObserver)
+		}
+		if (chatContentEl) {
+			const contentObserver = new ResizeObserver(() => {
+				if (stickToBottomRef.current || followBottomRef.current) pinNow()
+			})
+			contentObserver.observe(chatContentEl)
+			observers.push(contentObserver)
+		}
+		// Only a truly-at-the-bottom viewport re-arms follow mode; a user gesture disarms it.
+		const settleFollow = () => {
+			if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 8) {
+				followBottomRef.current = true
+			}
+		}
+		let wheelSettleTimer: number | null = null
+		const onUserGesture = () => {
+			releaseBottomPin()
+			followBottomRef.current = false
+		}
+		const onWheel = () => {
+			onUserGesture()
+			if (wheelSettleTimer !== null) window.clearTimeout(wheelSettleTimer)
+			wheelSettleTimer = window.setTimeout(settleFollow, 160)
+		}
+		const onTouchEnd = () => { requestAnimationFrame(settleFollow) }
+		scroller.addEventListener('wheel', onWheel, { passive: true })
+		scroller.addEventListener('touchmove', onUserGesture, { passive: true })
+		scroller.addEventListener('touchend', onTouchEnd, { passive: true })
+		scroller.addEventListener('scroll', settleFollow, { passive: true })
+		return () => {
+			for (const observer of observers) observer.disconnect()
+			if (wheelSettleTimer !== null) window.clearTimeout(wheelSettleTimer)
+			scroller.removeEventListener('wheel', onWheel)
+			scroller.removeEventListener('touchmove', onUserGesture)
+			scroller.removeEventListener('touchend', onTouchEnd)
+			scroller.removeEventListener('scroll', settleFollow)
+		}
+	}, [composerEl, chatContentEl, releaseBottomPin, showCapsuleNow])
+
+	useEffect(() => () => {
+		if (stickReleaseTimerRef.current !== null) window.clearTimeout(stickReleaseTimerRef.current)
+	}, [])
+
+	// ✅ 1) 首次进入：用 useLayoutEffect，避免初次渲染闪烁
+	useLayoutEffect(() => {
+		if (didInitialScrollRef.current) return
+
+		requestAnimationFrame(() => {
+			scrollToBottom("auto")
+			showCapsuleNow()
+			didInitialScrollRef.current = true
+			// 这里不要 pendingInitialScrollRef.current = false
+			// 让 pending 那个 effect 负责“最终一次的清 unread”
+		})
+	}, [showCapsuleNow])
+
+	/** 菜单与定位相关常量：菜单估算高度、间距、底部输入栏预留 */
+	const MENU_EST_H = 150
+	const MENU_GAP = 8
+	const BOTTOM_RESERVED = 132
+
+	function commitReactionUI(m: ChatMessage, el: HTMLElement, isMe: boolean) {
+		const r = el.getBoundingClientRect()
+		// iOS 风格：菜单宽度适中，可横向滚动显示更多
+		const menuWidth = Math.min(280, window.innerWidth - 24)
+		const x = clamp(r.left + r.width / 2 - menuWidth / 2, 12, window.innerWidth - menuWidth - 12)
+		// 放在气泡上方，留出小间隙
+		const y = clamp(r.top - 48, 12, window.innerHeight - 120)
+		setReactionUI({
+			open: true,
+			messageId: m.sendId ?? m.id ?? '',
+			x,
+			y,
+			placement: "top",
+			rect: { top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.bottom },
+			isMe,
+			text: m.text || '',
+			hasCard: !!m.paymentCard,
+			createdAt: m.createdAt,
+		})
+	}
+
+	function openReactionBarForElement(m: ChatMessage, el: HTMLElement, isMe: boolean) {
+		// The menu deliberately scrolls the thread; follow mode must not yank it back down.
+		releaseBottomPin()
+		followBottomRef.current = false
+		const scroller = scrollRef.current
+		const vh = typeof window !== 'undefined' ? window.innerHeight : 667
+		const safeBottom = vh - BOTTOM_RESERVED
+		const r0 = el.getBoundingClientRect()
+		// 菜单显示在气泡下方，需要的底部边界
+		const menuBottom = r0.bottom + MENU_GAP + MENU_EST_H
+		const overflow = menuBottom - safeBottom
+
+		// 不会被遮挡：直接显示
+		if (overflow <= 0 || !scroller) {
+			commitReactionUI(m, el, isMe)
+			return
+		}
+
+		const maxScroll = scroller.scrollHeight - scroller.clientHeight
+		const canScrollMore = Math.max(0, maxScroll - scroller.scrollTop)
+
+		if (overflow <= canScrollMore) {
+			// 还能继续向上滚动：滚动到位后再显示
+			scroller.scrollTop = scroller.scrollTop + overflow
+			requestAnimationFrame(() => commitReactionUI(m, el, isMe))
+			return
+		}
+
+		// 无法继续滚动（如最新一条）：增加底部额外空间，再滚动上提
+		const extra = overflow - canScrollMore + 24
+		setMenuBottomSpacer(prev => Math.max(prev, extra))
+		requestAnimationFrame(() => {
+			const sc = scrollRef.current
+			if (sc) {
+				const newMax = sc.scrollHeight - sc.clientHeight
+				sc.scrollTop = Math.min(newMax, sc.scrollTop + overflow)
+			}
+			requestAnimationFrame(() => commitReactionUI(m, el, isMe))
+		})
+	}
+
+		function closeReactionBar() {
+		setReactionUI(prev => ({ ...prev, open: false, messageId: undefined }))
+		setMenuBottomSpacer(0)
+	}
+
+	/** Copy Text：复制被长按消息的文本 */
+	function handleCopyMessageText() {
+		const t = reactionUI.text || ''
+		if (t) {
+			try { navigator.clipboard.writeText(t) } catch { /* ignore */ }
+		}
+		closeReactionBar()
+	}
+
+	/** Reply：以被长按消息为引用，聚焦输入框 */
+	function handleReplyToMessage() {
+		const id = reactionUI.messageId
+		const t = reactionUI.text || ''
+		if (id) {
+			setReplyTo({ id, text: t, from: reactionUI.isMe ? 'me' : 'them' })
+			requestAnimationFrame(() => inputRef.current?.focus())
+		}
+		closeReactionBar()
+	}
+
+	/** Delete：本地删除该消息（及其 reaction 引用），并落盘 */
+	async function handleDeleteMessage() {
+		const id = reactionUI.messageId
+		closeReactionBar()
+		if (!id) return
+		const next: ChatMessage[] = (messagesRef.current || []).filter(m => {
+			const mid = m.sendId ?? m.id ?? ''
+			if (mid === id) return false
+			// 同时删除指向该消息的 reaction / reply
+			if (m.reply?.messageId === id) return false
+			return true
+		})
+		messagesRef.current = next
+		setMessages(next)
+		chatData.messages = next
+		await storageData()
+	}
+
+		/** the recipient's PGP armor for a send. The chat copy may lack it (the shell read-back strips it), so it is taken from AddressPGP here.
+	 * A missing or invalid key is logged with a fixed code and shown as an error; the send then fails. Nothing is dropped silently. */
+	async function recipientArmorForSend(): Promise<string> {
+		const keyed = await resolveRecipientForSend(chatData, lookupRecipientRecord)
+		if (keyed.ok) return keyed.publicArmored
+		console.warn(`[chat] send blocked: ${keyed.code}`)
+		setChatError(chatHeldBannerText(keyed.code))
+		return ''
+	}
+
+/** 发送 reaction：带 reply 指针的消息，对方可根据 messageId 找到原消息并显示 icon */
+	async function sendReaction(targetMessageId: string, reactionKey: string) {
+		closeReactionBar()
+		if (!profiles?.length) return
+		const tempId = `tmp_reaction_${Date.now()}_${Math.random().toString(16).slice(2)}`
+		const now = Date.now()
+		const payload: ChatMessage = {
+			id: tempId,
+			from: 'me',
+			text: '',
+			createdAt: now,
+			status: 'sending',
+			reply: { messageId: targetMessageId, reactionKey },
+		}
+		{
+			const next: ChatMessage[] = [...(messagesRef.current || []), payload]
+			messagesRef.current = next
+			setMessages(next)
+		}
+		if (!allNodes?.length) {
+			const next = (messagesRef.current || []).map(m =>
+				m.id === tempId ? { ...m, status: 'failed' as const } : m
+			)
+			messagesRef.current = next
+			setMessages(next)
+			chatData.messages = next
+			await storageData()
+			return
+		}
+		let ok = false
+		try {
+			ok = await sendChatToRecipient(JSON.stringify(payload))
+		} catch {
+			ok = false
+		}
+		const next: ChatMessage[] = (messagesRef.current || []).map(m =>
+			m.id === tempId ? { ...m, status: settleSendStatus(tempId, JSON.stringify(payload), ok), sendError: ok ? undefined : lastSendCodeRef.current, sendFingerprint: lastSendHeldRef.current?.fingerprint } : m
+		)
+		messagesRef.current = next
+		setMessages(next)
+		chatData.messages = next
+		await storageData()
+	}
+
+	/** 发送方取消 Payment Request：发送一条 reply 指向该卡片的 paymentRequestCancel 消息；完成后才把消息加入列表并显示 decline 信息 */
+	async function sendPaymentRequestCancel(targetSendId: string) {
+		if (!profiles?.length) return
+		setDeclineLoadingForSendId(targetSendId)
+		const now = Date.now()
+		const payload: ChatMessage = {
+			id: `tmp_cancel_pr_${now}_${Math.random().toString(16).slice(2)}`,
+			from: 'me',
+			text: '',
+			createdAt: now,
+			status: 'sent',
+			reply: { messageId: targetSendId, replyType: 'paymentRequestCancel' },
+		}
+		try {
+			if (!allNodes?.length) {
+				return
+			}
+			// a held cancel stays on the chat as a message with the held status and its retry, not a banner only.
+			const cancelWire = JSON.stringify(payload)
+			const ok = await sendChatToRecipient(cancelWire)
+			const cancelStatus = settleSendStatus(String(payload.id), cancelWire, ok)
+			if (ok || isHeldRouteCode(lastSendCodeRef.current)) {
+				const held: ChatMessage = { ...payload, status: cancelStatus, sendError: ok ? undefined : lastSendCodeRef.current, sendFingerprint: lastSendHeldRef.current?.fingerprint }
+				const next: ChatMessage[] = [...(messagesRef.current || []), held]
+				messagesRef.current = next
+				setMessages(next)
+				chatData.messages = next
+				await storageData()
+			}
+		} finally {
+			setDeclineLoadingForSendId(null)
+		}
+	}
+
+	/** 执行 Payment Request 的 USDC 转账（与 PayScreen BeamioTransfer workflow 一致）。使用显式参数 currency/currencyAmount/usdcAmount。 */
+	async function executePaymentRequestTransfer(
+		prSendId: string,
+		usdcAmountNum: number,
+		toAddress: string,
+		originalCurrency: ICurrency,
+		originalCurrencyAmount: string
+	) {
+		if (!profiles?.length || !toAddress) {
+			setPayTransferError('Missing profile or chat')
+			return
+		}
+		const paidReceiptArmor = await recipientArmorForSend()
+		if (!paidReceiptArmor) {
+			setPayTransferError(chatHeldBannerText('recipient_key_unavailable'))
+			return
+		}
+		setPayTransferLoading(prSendId)
+		setPayTransferError(null)
+		const usdcAmountStr = usdcAmountNum > 0 ? usdcAmountNum.toFixed(6) : '0'
+		const params = new URLSearchParams({
+			amount: usdcAmountStr,
+			usdcAmount: usdcAmountStr,
+			currency: originalCurrency,
+			currencyAmount: originalCurrencyAmount,
+			toAddress,
+			note: '',
+		}).toString()
+		const requestEndpoint = `${aptEndpoint}/api/BeamioTransfer?${params}`
+		try {
+			const response = await fetch(requestEndpoint, { method: 'GET' })
+			if (response.status !== 402) {
+				setPayTransferError('Transfer request failed')
+				setPayTransferLoading(null)
+				return
+			}
+			const { accepts } = await response.json().catch(() => ({}))
+			const message = Array.isArray(accepts) ? accepts[0] : null
+			if (!message?.payTo || message.maxAmountRequired == null) {
+				setPayTransferError('Invalid payment challenge')
+				setPayTransferLoading(null)
+				return
+			}
+			const pay = BigInt(Number(message.maxAmountRequired).toFixed(0))
+			const paymentHeader = await AuthorizationSign(pay, message.payTo)
+			if (!paymentHeader) {
+				setPayTransferError(tu('sign_failed'))
+				setPayTransferLoading(null)
+				return
+			}
+			const secondResponse = await fetch(message.data?.reqUrl ?? requestEndpoint, {
+				method: 'GET',
+				headers: { 'X-PAYMENT': paymentHeader, 'Access-Control-Expose-Headers': 'X-PAYMENT-RESPONSE' },
+				// @ts-ignore
+				__is402Retry: true,
+			})
+			const body = await secondResponse.json().catch(() => ({}))
+			if (!secondResponse.ok || !body?.USDC_tx) {
+				setPayTransferError(body?.error || 'Transfer failed')
+				setPayTransferLoading(null)
+				return
+			}
+			const txHash = body.USDC_tx
+			const now = Date.now()
+			const tempId = `tmp_paid_pr_${now}_${Math.random().toString(16).slice(2)}`
+			const payload: ChatMessage = {
+				id: tempId,
+				from: 'me',
+				text: '',
+				createdAt: now,
+				status: 'sent',
+				reply: { messageId: prSendId, replyType: 'paymentRequestPaid', paymentHash: txHash },
+			}
+			const next: ChatMessage[] = [...(messagesRef.current || []), payload]
+			messagesRef.current = next
+			setMessages(next)
+			chatData.messages = next
+			if (allNodes?.length) {
+				// the receipt is sent under the trust rule; a held receipt keeps its message with the held status and its retry.
+				const paidWire = JSON.stringify(payload)
+				let paidOk = false
+				try {
+					paidOk = await sendChatToRecipient(paidWire)
+				} catch (_) {}
+				const paidStatus = settleSendStatus(tempId, paidWire, paidOk)
+				const withPaid = (messagesRef.current || []).map(m => (m.id === tempId ? { ...m, status: paidStatus, sendError: paidOk ? undefined : lastSendCodeRef.current, sendFingerprint: lastSendHeldRef.current?.fingerprint } : m))
+				messagesRef.current = withPaid
+				setMessages(withPaid)
+				chatData.messages = withPaid
+			}
+			await storageData()
+			setPayConfirmForSendId(null)
+		} catch (e) {
+			setPayTransferError((e as Error)?.message || 'Transfer failed')
+		} finally {
+			setPayTransferLoading(null)
+		}
+	}
+
+	type paymentCard = {
+		amount: number
+		token: ICurrency
+		approx: string
+		title: string
+		timeStamp: number
+	}
+
+	useEffect(() => {
+		messagesRef.current = messages
+	}, [messages])
+
+	useLayoutEffect(() => {
+		setShowFooter(voiceCallState === 'outgoing' && voiceCallMinimized)
+		return () => setShowFooter(true)
+	}, [setShowFooter, voiceCallMinimized, voiceCallState])
+
+	const statusRank = (s?: ChatMessage["status"]) => {
+	if (s === "delivered") return 4
+	if (s === "sent") return 3
+	if (s === "failed") return 3
+	if (s === "sending") return 2
+	return 1 // undefined / 其它
+	}
+
+	const isTempId = (id: string) => /^tmp_/i.test(id || "")
+
+
+	useEffect(() => {
+		// ✅ 如果这次 profiles 变化来自本组件 storageData()，跳过一次 reflashdata
+		if (skipNextReflashdataRef.current) {
+			skipNextReflashdataRef.current = false
+			return
+		}
+
+		if (runningRef.current) return
+		runningRef.current = true
+
+		;(async () => {
+			try {
+			await reflashdata()
+			} finally {
+			runningRef.current = false
+			}
+		})()
+	}, [profiles])
+
+
+
+	// textarea 自适应高度
+	useEffect(() => {
+		const el = inputRef.current
+		if (!el) return
+		el.style.height = "0px"
+		const next = Math.min(140, Math.max(44, el.scrollHeight))
+		el.style.height = `${next}px`
+	}, [text])
+
+	const forceClearUnread = () => {
+		const ps = Array.isArray(profiles) ? profiles : []
+		if (ps.length === 0 || !chatData?.address) return
+
+		const addr = chatData.address.toLowerCase()
+		const now = Date.now()
+
+		// ✅ 先判断：当前 unread 是否真的 > 0，不需要清就直接退出
+		const p0 = ps[0]
+		const chats0: chatData[] = Array.isArray(p0?.chats) ? p0.chats : []
+		const idx0 = chats0.findIndex(c => c.address?.toLowerCase() === addr)
+		const cur = idx0 >= 0 ? chats0[idx0] : null
+		if (!cur || Number(cur.unreadCount || 0) <= 0) return
+
+		// ✅ 1) React state
+		setProfiles(prev => {
+			if (!prev?.length) return prev
+			const p = prev[0]
+			const chats = Array.isArray(p.chats) ? p.chats : []
+			const idx = chats.findIndex(c => c.address?.toLowerCase() === addr)
+			if (idx < 0) return prev
+
+			const nextChats = chats.slice()
+			const old = nextChats[idx]
+			nextChats[idx] = {
+			...old,
+			unreadCount: 0,
+			lastReadTs: Math.max(Number(old?.lastReadTs || 0), now)
+			}
+
+			const next = prev.slice()
+			next[0] = { ...p, chats: nextChats }
+			return next
+		})
+
+		// ✅ 2) CoNET_Data snapshot（让 storeSystemData 写到最新）
+		const temp = CoNET_Data
+		if (temp) {
+			const nextChats = chats0.slice()
+			const old = nextChats[idx0]
+			nextChats[idx0] = {
+			...old,
+			unreadCount: 0,
+			lastReadTs: Math.max(Number(old?.lastReadTs || 0), now)
+			}
+			const nextProfiles = ps.slice()
+			nextProfiles[0] = { ...p0, chats: nextChats }
+			temp.profiles = nextProfiles
+			setCoNET_Data(temp)
+		}
+
+		void storeSystemData()
+	}
+
+	type UrlKind = "cashcode" | "paymentlink" | "beamio" | "url"
+
+	const isUrl = (input: string): UrlKind | undefined => {
+		if (!input || typeof input !== "string") return
+	  
+		let searchParams: URLSearchParams
+	  
+		try {
+		  // 尝试作为完整 URL 解析
+		  const u = new URL(input)
+		  searchParams = u.searchParams
+		} catch {
+		  // 再尝试作为 query string 解析
+		  try {
+			searchParams = new URLSearchParams(input)
+		  } catch {
+			// 两种都失败 → 非 URL
+			return
+		  }
+		}
+	  
+		const code = searchParams.get("code") || ""
+		const secureCode =
+		  searchParams.get("secureCode") ||""
+		const cashcode = searchParams.get("cashcode") || ""
+		const beamio = searchParams.get("beamio") || ""
+	  
+		if (beamio) return "beamio"
+		if (secureCode || cashcode) return "cashcode"
+		if (code) return "paymentlink"
+	  
+		// 是 URL，但不属于你关心的类型
+		return "url"
+	  }
+
+	 
+
+
+	const clearChatInput = () => {
+		suppressImeEchoRef.current = true
+		imeComposingRef.current = false
+		if (suppressImeEchoTimerRef.current != null) {
+			window.clearTimeout(suppressImeEchoTimerRef.current)
+			suppressImeEchoTimerRef.current = null
+		}
+		const el = inputRef.current
+		if (el) {
+			try {
+				el.blur()
+			} catch {
+				/* ignore */
+			}
+			el.value = ""
+		}
+		flushSync(() => setText(""))
+		// Destroy the composing IME session: controlled value="" alone cannot undo DOM writes from compositionend.
+		flushSync(() => setInputSession(s => s + 1))
+		queueMicrotask(() => {
+			flushSync(() => setText(""))
+			if (inputRef.current) inputRef.current.value = ""
+		})
+		// CJK IME on iOS/Android WebView often emits late input/compositionend (100–300ms).
+		suppressImeEchoTimerRef.current = window.setTimeout(() => {
+			flushSync(() => setText(""))
+			if (inputRef.current) inputRef.current.value = ""
+			suppressImeEchoRef.current = false
+			suppressImeEchoTimerRef.current = null
+		}, 400)
+	}
+
+	const sendFileDrafts = useCallback(async () => {
+		const ready = fileJobs.filter(job => job.status === 'ready' && job.manifest)
+		if (!ready.length || (!privateKey && !isShellContext()) || !allNodes?.length) return
+		for (const job of ready) {
+			const now = Date.now()
+			const sendId = crypto.randomUUID()
+			const payload: ChatMessage = {
+				id: `tmp_${now}_${Math.random().toString(16).slice(2)}`,
+				sendId,
+				from: 'me',
+				text: '',
+				createdAt: now,
+				status: 'sending',
+				fileMessage: job.manifest,
+			}
+			if (payload.sendId) liveFileMessagesRef.current.set(payload.sendId, payload)
+			const next = [...(messagesRef.current || []), payload]
+			messagesRef.current = next
+			setMessages(next)
+			// a held file keeps its message with the held status and its retry, not a banner only.
+			const fileWire = JSON.stringify({
+				sendId, from: 'me', text: '', createdAt: now, fileMessage: job.manifest,
+			})
+			const sent = await sendChatToRecipient(fileWire).catch(() => false)
+			const fileStatus = settleSendStatus(String(payload.id), fileWire, sent)
+			const settled = next.map(message => message.id === payload.id ? { ...message, status: fileStatus, sendError: sent ? undefined : lastSendCodeRef.current, sendFingerprint: lastSendHeldRef.current?.fingerprint } : message)
+			messagesRef.current = settled
+			setMessages(settled)
+			chatData.messages = settled
+			const settledFileMessage = settled.find(message => message.id === payload.id)
+			if (settledFileMessage?.sendId) {
+				liveFileMessagesRef.current.set(settledFileMessage.sendId, settledFileMessage)
+			}
+			await storageData()
+			if (sent) mirrorChatMessageToHistory(chatData.address, settledFileMessage, 'out')
+			else setFileError('A file message failed to reach CoNET entry nodes. Please try again.')
+			if (sent) setFileJobs(previous => {
+				const removed = previous.find(item => item.id === job.id)
+				if (removed?.thumbnailUrl) URL.revokeObjectURL(removed.thumbnailUrl)
+				return previous.filter(item => item.id !== job.id)
+			})
+		}
+	}, [allNodes, chatData, fileJobs, privateKey])
+
+	async function send() {
+		const temp = CoNET_Data
+		if (!temp || !profiles?.length) return
+		if (!toAddress || !hasRoute) return
+
+		// Prefer DOM value so in-progress IME composition is included when user taps Send.
+		const t = (inputRef.current?.value ?? text).trim()
+		if (!t) {
+			await sendFileDrafts()
+			return
+		}
+
+		const nowGuard = Date.now()
+		const prev = lastSentGuardRef.current
+		if (prev.text === t && nowGuard - prev.at < 900) return
+		lastSentGuardRef.current = { text: t, at: nowGuard }
+
+		clearChatInput()
+
+		const mode = isUrl(t)
+		void mode
+
+
+		const tempId = `tmp_${Date.now()}_${Math.random().toString(16).slice(2)}`
+		const now = Date.now()
+		const sendId = crypto.randomUUID()
+
+		// 引用回复：发送方视角 from 取反（我引用对方=them，引用自己=me）；接收方解析时同样取反还原
+		const quoteForSend = replyTo
+			? { id: replyTo.id, text: (replyTo.text || '').slice(0, 240), from: (replyTo.from === 'me' ? 'me' : 'them') as 'me' | 'them' }
+			: undefined
+
+		// ✅ 1) 先插入 sending（同步构造 next），带 sendId 供对方 reply 时引用
+		const pendingMsg: ChatMessage = {
+			id: tempId,
+			sendId,
+			from: "me",
+			text: t,
+			createdAt: now,
+			status: "sending",
+			...(quoteForSend ? { quote: quoteForSend } : {}),
+		}
+
+		{
+			const next: ChatMessage[] = [...(messagesRef.current || []), pendingMsg]
+			messagesRef.current = next
+			setMessages(next)
+		}
+
+		// ✅ 2) entry pool（sendMessage 内部挑选健康节点并重试）
+		if (!allNodes?.length) {
+			const next: ChatMessage[] = (messagesRef.current || []).map(m =>
+			m.id === tempId ? { ...m, status: "failed" as const, sendError: lastSendCodeRef.current } : m
+			)
+			messagesRef.current = next
+			setMessages(next)
+
+			chatData.messages = next
+			await storageData()
+			return
+		}
+
+		// ✅ 3) 发送：统一发 JSON 包，带 sendId，对方据此可 reply
+		const payload = { sendId, from: 'me' as const, text: t, createdAt: now, ...(quoteForSend ? { quote: quoteForSend } : {}) }
+		// 发送后清除引用草稿
+		setReplyTo(null)
+		let ok = false
+		try {
+			ok = await sendChatToRecipient(JSON.stringify(payload))
+		} catch {
+			ok = false
+		}
+
+		if (!ok) {
+			const failCode = lastSendCodeRef.current
+			const held = failCode === 'route_unconfirmed' || failCode === 'fingerprint_changed' || failCode === 'first_fetch_pending'
+			if (held) heldSendsRef.current.set(tempId, { text: JSON.stringify(payload), attempt: 0, pinned: lastSendHeldRef.current })
+			const next: ChatMessage[] = (messagesRef.current || []).map(m =>
+			m.id === tempId ? { ...m, status: statusOfUnsentCode(failCode), sendError: lastSendCodeRef.current, sendFingerprint: lastSendHeldRef.current?.fingerprint } : m
+			)
+			if (failCode === 'route_unconfirmed') scheduleHeldSend(tempId)
+			messagesRef.current = next
+			setMessages(next)
+
+			chatData.messages = next
+			await storageData()
+			if (!lastSendCodeRef.current || lastSendCodeRef.current === 'send_failed') setChatError('Message failed to reach CoNET entry nodes. Please try again.')
+			return
+		}
+
+		// ✅ 4) 标记 sent（同步构造 next），并用同一份 next 去落盘
+		{
+			const next: ChatMessage[] = (messagesRef.current || []).map(m =>
+			m.id === tempId ? { ...m, status: "sent" as const } : m
+			)
+			messagesRef.current = next
+			setMessages(next)
+
+			chatData.messages = next
+			await storageData()
+
+			// Mirror the settled outbound message into encrypted history (fresh-device recovery).
+			const sentMsg = next.find(m => m.id === tempId)
+			mirrorChatMessageToHistory(chatData.address, sentMsg, 'out')
+		}
+	}
+
+	const sendAll = useCallback(async () => {
+		const value = (inputRef.current?.value ?? text).trim()
+		if (value) {
+			await send()
+			await sendFileDrafts()
+		} else {
+			await send()
+		}
+	}, [sendFileDrafts, text])
+
+	useEffect(() => {
+		if (chatData.unreadCount > 0) {
+			clearedRef.current = false
+		}
+	}, [chatData.unreadCount])
+
+	// 首次装载 / rehydrate 后贴底一次。媒体消息现在在 manifest 中携带
+	// intrinsic width/height，外层先占位固定 aspect-ratio，不再用 ResizeObserver
+	// 追踪异步 Blob 加载；反复 pin 会造成图片解密完成时页面抖动。
+	useEffect(() => {
+		if (!pendingInitialScrollRef.current) return
+		if (!messages?.length) return
+
+		const scroller = scrollRef.current
+		if (!scroller) return
+		const finishPinning = () => {
+			pendingInitialScrollRef.current = false
+			didInitialScrollRef.current = true
+			showCapsuleNow()
+			forceClearUnread()
+		}
+		let finishTimer: number | null = null
+		const frame = requestAnimationFrame(() => {
+			scrollToBottom("auto")
+			finishTimer = window.setTimeout(finishPinning, 250)
+		})
+
+		return () => {
+			cancelAnimationFrame(frame)
+			if (finishTimer !== null) window.clearTimeout(finishTimer)
+		}
+	}, [messages.length, showCapsuleNow])
+
+	// 当用户发送新消息后，视图自动滚动到最底部
+	const prevMessagesLengthRef = useRef(messages.length)
+	useEffect(() => {
+		if (messages.length > prevMessagesLengthRef.current) {
+			const last = messages[messages.length - 1]
+			if (last?.from === 'me') {
+				// Pin (not smooth-scroll): a smooth scroll aims at the height measured
+				// now and ends short once the bubble / composer settle. holdBottomPin
+				// re-pins on every layout change until the user scrolls away.
+				holdBottomPin(6000)
+				requestAnimationFrame(() => scrollToBottom('auto'))
+			}
+			prevMessagesLengthRef.current = messages.length
+		} else {
+			prevMessagesLengthRef.current = messages.length
+		}
+	}, [messages])
+
+	const peerProfile = useMemo((): searchResult | undefined => {
+		const address = String(chatData.address || '').trim()
+		const fromDb = address ? resolvePeerSearchResult(address) : null
+		if (fromDb?.address) return fromDb
+		const stored = chatData.beamio
+		const storedName = (stored?.username || '').trim()
+		if (stored && storedName && storedName !== '未知') {
+			return { ...stored, address: stored.address || address }
+		}
+		const tag = (peerTag?.username || peerTag?.accountName || '').replace(/^@+/, '').trim()
+		if (peerTag && (tag || address)) {
+			return {
+				address,
+				username: tag || '未知',
+				first_name: peerTag.first_name || peerTag.firstName || '',
+				last_name: peerTag.last_name || peerTag.lastName || '',
+				image: peerTag.image || '',
+				created_at: 0,
+				follow_count: '',
+				follower_count: '',
+			}
+		}
+		if (address) return unknowAcc(address)
+		return stored
+	}, [chatData.address, chatData.beamio, peerTag, resolvePeerSearchResult])
+
+	const peerAvatar = useMemo(() => {
+		const img = (peerProfile?.image || '').trim()
+		if (img) return img
+		return avatarImgUrl(peerProfile?.username, peerProfile?.address || chatData.address)
+	}, [avatarImgUrl, chatData.address, peerProfile])
+
+	useEffect(() => {
+		const address = String(chatData.address || '').trim()
+		if (!address) return
+		const known = resolvePeerSearchResult(address)
+		if (known?.username && known.username !== '未知') return
+		void ensureProfilesForAddresses([address]).catch(() => {})
+	}, [chatData.address, ensureProfilesForAddresses, resolvePeerSearchResult])
+
+	const clearedRef = useRef(false)
+	// 距离底部多少 px 视为“已到最底”
+	const BOTTOM_EPS = 24
+
+	const isAtBottom = () => {
+		const el = scrollRef.current
+		if (!el) return false
+		const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+		return distance <= BOTTOM_EPS
+	}
+
+	const clearUnreadIfNeeded = () => {
+		if (!chatData?.unreadCount || chatData.unreadCount <= 0) return
+		if (!isAtBottom()) return
+
+		// 避免在一次到底滚动中重复触发多次
+		if (clearedRef.current) return
+		clearedRef.current = true
+
+		forceClearUnread()
+	}
+
+	const storageData = async () => {
+		const temp = CoNET_Data
+		const ps = Array.isArray(profiles) ? profiles : []
+		if (!temp || ps.length === 0) return
+
+		const p0: profile = ps[0]
+		const chats: chatData[] = Array.isArray(p0?.chats) ? p0.chats : []
+
+		const addr = String(chatData?.address || "").toLowerCase()
+		if (!addr) return
+
+		const idx = chats.findIndex(c => String(c?.address || "").toLowerCase() === addr)
+
+		const persistableMessages = await Promise.all((chatData.messages || []).map(async message => {
+			if (!message.fileMessage) return message
+			const fileMessageCipher = privateKey
+				? await encryptLocalFileManifest(message.fileMessage, privateKey)
+				: undefined
+			const { fileMessage: _fileMessage, ...safeMessage } = message
+			return fileMessageCipher ? { ...safeMessage, fileMessageCipher } : safeMessage
+		}))
+		const persistableChat = { ...chatData, messages: persistableMessages }
+		const persistableChats = idx >= 0
+			? chats.map((c, i) => i === idx ? persistableChat : c)
+			: [...chats, persistableChat]
+		const nextProfile = { ...p0, chats: persistableChats }
+		const nextProfiles = ps.slice()
+		nextProfiles[0] = nextProfile
+
+		// ✅ 关键：告诉 useEffect([profiles]) 这次更新是我自己触发的，不要 reflashdata 覆盖 messages
+		skipNextReflashdataRef.current = true
+
+		setProfiles(nextProfiles)
+
+		const nextTemp = temp
+		nextTemp.profiles = nextProfiles
+		setCoNET_Data(nextTemp)
+
+		await storeSystemData()
+	}
+	storageDataRef.current = storageData
+
+	function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+		// keyCode 229 = IME processing (Android WebView / legacy); isComposing = modern browsers
+		const ne = e.nativeEvent
+		if (ne.isComposing || ne.keyCode === 229 || imeComposingRef.current) return
+		if (e.key === "Enter" && !e.shiftKey) {
+			e.preventDefault()
+			void send()
+		}
+	}
+
+	function onCompositionStart() {
+		imeComposingRef.current = true
+	}
+
+	function onCompositionEnd(e: React.CompositionEvent<HTMLTextAreaElement>) {
+		imeComposingRef.current = false
+		if (suppressImeEchoRef.current) {
+			e.currentTarget.value = ""
+			flushSync(() => setText(""))
+			return
+		}
+		if (hasRoute) setText(e.currentTarget.value)
+	}
+
+	function onBeforeInput(e: React.FormEvent<HTMLTextAreaElement>) {
+		if (!suppressImeEchoRef.current) return
+		e.preventDefault()
+		const t = e.currentTarget
+		t.value = ""
+		if (text !== "") flushSync(() => setText(""))
+	}
+
+  // textarea 自适应高度（1~3行），超过3行时只显示最后3行
+	useEffect(() => {
+		const el = inputRef.current
+		if (!el) return
+
+		// 你现在的 textarea 是 leading-[20px]
+		const lineH = 20
+		const maxLines = 3
+		const maxH = lineH * maxLines
+
+		// reset -> measure
+		el.style.height = "0px"
+		const next = Math.min(maxH, Math.max(lineH, el.scrollHeight))
+		el.style.height = `${next}px`
+
+		// 超过3行：保持滚动在底部（只显示最后3行）
+		// 注意：需要 textarea overflow-y-auto 才能内部滚动
+		el.scrollTop = el.scrollHeight
+	}, [text])
+
+	const activeVoiceSessionId = voiceCallOfferRef.current?.sessionId || voiceCallSessionRef.current || ''
+	const activeVoiceCallRecord = (Array.isArray(profiles?.[0]?.phoneCalls) ? profiles[0].phoneCalls : [])
+		.find((item: PhoneCallRecord) => sameCallId(item.sessionId, activeVoiceSessionId))
+	const activeVoicePeerTag = (
+		peerProfile?.username ||
+		chatData.beamio?.username ||
+		(activeVoiceCallRecord?.peerAddress || toAddress)
+	).trim()
+	const activeVoicePeerLabel = activeVoicePeerTag
+		? activeVoicePeerTag.startsWith('@') ? activeVoicePeerTag : `@${activeVoicePeerTag}`
+		: '@Beamio'
+	const voicePeerProfile = peerProfile || chatData.beamio
+	const voicePeerLastRaw = String(voicePeerProfile?.last_name || '').split('\r\n')[0] || ''
+	const voicePeerLastName = voicePeerLastRaw.trim().startsWith('{') ? '' : voicePeerLastRaw.trim()
+	const voicePeerFirstName = String(voicePeerProfile?.first_name || '').trim()
+	const activeVoicePeerName = `${voicePeerFirstName} ${voicePeerLastName}`.trim() || activeVoicePeerLabel
+	const voiceRelayOpenFailed = voiceError === VOICE_RELAY_OPEN_ERROR
+	const voiceCallStatusLabel = voiceRelayOpenFailed || voiceDialFailed
+		? 'Call failed'
+		: voiceReconnecting && (voiceCallAnswered || activeVoiceCallRecord?.status === 'answered')
+		? 'Reconnecting…'
+		: voiceCallConnecting
+		? 'Connecting'
+		: (activeVoiceCallRecord?.status === 'answered' || voiceCallAnswered)
+			? 'Voice call'
+			: activeVoiceCallRecord?.status === 'timed_out'
+				? 'Timed out'
+				: activeVoiceCallRecord?.status === 'unreachable'
+					? 'Unreachable'
+					: activeVoiceCallRecord?.status === 'busy'
+						? 'On another call'
+						: 'Ringing'
+	// Browser dialer: ringback from the moment the offer is out (record 'ringing')
+	// until Accept, decline, timeout, hang-up or failure changes any of these.
+	const voiceRingbackActive = !isCashTreesNativeWebView()
+		&& voiceCallState === 'outgoing'
+		&& !voiceCallConnecting
+		&& !voiceCallAnswered
+		&& !voiceRelayOpenFailed
+		&& !voiceDialFailed
+		&& activeVoiceCallRecord?.direction === 'outgoing'
+		&& activeVoiceCallRecord?.status === 'ringing'
+
+	useEffect(() => {
+		if (!voiceRingbackActive) {
+			callTonesRef.current?.stopRingback()
+			return
+		}
+		ensureCallTones().startRingback()
+	}, [ensureCallTones, voiceRingbackActive])
+
+	useEffect(() => {
+		// Inside the native shell the native call screen owns the call UI
+		// (including its own return pill); the web window stays hidden.
+		if (voiceCallState !== 'outgoing' || !voiceCallMinimized || isCashTreesNativeWebView()) {
+			publishMinimizedVoiceCallWindow(null)
+			return
+		}
+		publishMinimizedVoiceCallWindow({
+			peerName: activeVoicePeerName,
+			avatarSrc: peerAvatar || '',
+			statusLabel: voiceCallStatusLabel,
+			onRestore: () => {
+				onShowThread?.()
+				setVoiceCallMinimized(false)
+				navigate('/chat')
+			},
+		})
+		return () => publishMinimizedVoiceCallWindow(null)
+	}, [activeVoicePeerName, navigate, onShowThread, peerAvatar, voiceCallMinimized, voiceCallState, voiceCallStatusLabel])
+
+	useEffect(() => {
+		if (voiceCallState !== 'outgoing') {
+			setVoiceInCallToolsExpanded(true)
+			setVoiceInCallElapsedMs(0)
+			return
+		}
+		const answeredAt = Number(activeVoiceCallRecord?.answeredAt || 0)
+		if (!(voiceCallAnswered || activeVoiceCallRecord?.status === 'answered') || !answeredAt) {
+			setVoiceInCallElapsedMs(0)
+			return
+		}
+		let cancelled = false
+		let timer: number | undefined
+		const tick = () => setVoiceInCallElapsedMs(Math.max(0, Date.now() - answeredAt))
+		const schedule = () => {
+			timer = window.setTimeout(() => {
+				if (cancelled) return
+				tick()
+				schedule()
+			}, 1000) as unknown as number
+		}
+		tick()
+		schedule()
+		return () => {
+			cancelled = true
+			if (timer !== undefined) clearTimeout(timer)
+		}
+	}, [activeVoiceCallRecord?.answeredAt, activeVoiceCallRecord?.status, voiceCallAnswered, voiceCallState])
+
+	const voiceInCallClockLabel = (() => {
+		const total = Math.max(0, Math.floor(voiceInCallElapsedMs / 1000))
+		const mm = String(Math.floor(total / 60)).padStart(2, '0')
+		const ss = String(total % 60).padStart(2, '0')
+		return `${mm}:${ss}`
+	})()
+	// Peer video replaces the audio-call background only once a frame is on screen.
+	// After the peer turns the camera (back) on, the gradient stays until the first
+	// frame arrives, the same as the iOS and Android call screens.
+	const hasPeerVideoBackground = Boolean(remoteVoiceVideoUrl)
+	const voicePeerAddress = String(activeVoiceCallRecord?.peerAddress || toAddress || '').trim()
+	const voicePeerAddressShort = voicePeerAddress
+		? `${voicePeerAddress.slice(0, 6)}…${voicePeerAddress.slice(-4)}`
+		: ''
+
+  return (
+		<div
+			ref={setChatRootEl}
+			className="fixed inset-0 bg-[#F1F8ED]"
+			onDragEnter={handleChatFileDragEnter}
+			onDragOver={handleChatFileDragOver}
+			onDragLeave={handleChatFileDragLeave}
+			onDrop={handleChatFileDrop}
+		>
+			<ChatHeaderIOS
+				layerRef={setHeaderLayerRef}
+				beamioer={peerProfile}
+				onBack={onBack}
+				onCenterClick={() => {
+					if (peerProfile?.address) setShowContactProfile(true)
+				}}
+				online={peerOnline}
+				nativeWakeable={peerNativeWakeable}
+				avatarSrc={peerAvatar}
+				onCall={voiceCallState === 'outgoing' ? endOrDismissVoiceCall : startVoiceCall}
+				onPhoneHistory={() => navigate('/phone')}
+				callBusy={voiceCallState === 'outgoing'}
+				callLoading={voiceCallConnecting && voiceCallState === 'outgoing'}
+			/>
+			{showContactProfile && peerProfile?.address ? (
+				<div className="fixed inset-0 z-[9999] flex flex-col overflow-hidden bg-white dark:bg-slate-900">
+					<div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
+						<BeamioContactProfilePreview
+							item={peerProfile}
+							close={() => setShowContactProfile(false)}
+						/>
+					</div>
+				</div>
+			) : null}
+			{/* Browser PWA only: inside the native shell the native call screen is used
+			    (same design: Beamio Audio header, Mute / Video / Speaker, End). */}
+			{voiceCallState === 'outgoing' && !voiceCallMinimized && !isCashTreesNativeWebView() && !(
+				incomingVoiceOffer?.sessionId &&
+				!sameCallId(incomingVoiceOffer.sessionId, liveVoiceSessionId)
+			) ? (
+				<div
+					className="fixed inset-0 z-[170] flex flex-col overflow-hidden text-white"
+					style={{
+						background: hasPeerVideoBackground
+							? '#000'
+							: 'linear-gradient(180deg, #2C3A4D 0%, #161E2A 52%, #0A0E15 100%)',
+					}}
+					role="dialog"
+					aria-label="Voice call"
+					data-peer-video={peerVoiceVideoEnabled ? 'on' : 'off'}
+				>
+					{hasPeerVideoBackground ? (
+						<div className="absolute inset-0" aria-label="Remote video">
+							<img
+								ref={attachRemoteVideoImg}
+								alt=""
+								className="h-full w-full object-cover"
+								draggable={false}
+							/>
+							<div className="absolute inset-0 bg-black/40" aria-hidden />
+						</div>
+					) : null}
+
+					{/* Top chrome: minimize + optional local FaceTime preview (native InCall). */}
+					<div
+						className="relative z-20 flex items-start justify-between px-5"
+						style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top, 0px))' }}
+					>
+						<button
+							type="button"
+							onClick={() => setVoiceCallMinimized(true)}
+							className="grid h-11 w-11 place-items-center rounded-full border border-white/20 bg-white/15 text-white/85 backdrop-blur-md"
+							aria-label="Minimize call"
+							tabIndex={-1}
+						>
+							<ChevronDown className="h-5 w-5" strokeWidth={2.5} aria-hidden />
+						</button>
+						<div className="pointer-events-none absolute left-1/2 top-[max(0.75rem,env(safe-area-inset-top,0px))] flex h-11 -translate-x-1/2 items-center gap-[7px]">
+							<img
+								src={`${process.env.PUBLIC_URL}/beamio-call-mark.png`}
+								alt=""
+								className="h-5 w-5 rounded-full"
+								draggable={false}
+							/>
+							<span className="text-[15px] text-[#EBEBF5]/60">Beamio Audio</span>
+						</div>
+						{softLocalVideoOn ? (
+							<video
+								ref={softLocalVideoElRef}
+								className="h-[7.4rem] w-[5.5rem] rounded-2xl border border-white/35 bg-black object-cover shadow-lg"
+								muted
+								playsInline
+								autoPlay
+								aria-label="Your camera preview"
+							/>
+						) : (
+							<span className="h-11 w-11" aria-hidden />
+						)}
+					</div>
+
+					<div className="relative z-10 flex min-h-0 flex-1 flex-col px-5">
+						<div className="min-h-0 flex-1" aria-hidden />
+
+						{voiceError ? (
+							<div role="alert" className="mb-3 rounded-2xl border border-rose-200/40 bg-rose-500/25 px-4 py-3 text-sm text-white">
+								<div className="flex items-start gap-2">
+									<AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+									<p>{voiceError}</p>
+								</div>
+							</div>
+						) : null}
+						{voiceVideoNote ? (
+							<div role="alert" className="mb-3 rounded-2xl border border-white/30 bg-white/15 px-4 py-3 text-sm text-white">
+								{voiceVideoNote}
+							</div>
+						) : null}
+
+						{hasPeerVideoBackground && !voiceInCallToolsExpanded ? (
+							<button
+								type="button"
+								onClick={() => setVoiceInCallToolsExpanded(true)}
+								className="mb-[max(1.75rem,env(safe-area-inset-bottom))] flex w-full flex-col items-center rounded-[1.75rem] bg-black/50 px-5 py-3.5 backdrop-blur-md"
+								aria-label="Show call controls"
+							>
+								<span className="mb-2 h-1.5 w-10 rounded-full bg-white/35" aria-hidden />
+								<span className="flex items-center gap-2.5">
+									<span className="max-w-[10rem] truncate text-[17px] font-bold">{activeVoicePeerLabel}</span>
+									<span className="font-mono text-[15px] font-bold text-white/75">
+										{voiceCallAnswered || activeVoiceCallRecord?.status === 'answered'
+											? (voiceReconnecting ? 'Reconnecting…' : voiceInCallClockLabel)
+											: voiceCallStatusLabel}
+									</span>
+									<ChevronUp className="h-4 w-4 text-white/80" aria-hidden />
+								</span>
+							</button>
+						) : (
+							<div
+								className={`mb-[max(0.75rem,env(safe-area-inset-bottom))] w-full ${
+									hasPeerVideoBackground
+										? 'rounded-[1.75rem] bg-black/50 px-2 pb-3 pt-4 backdrop-blur-md'
+										: 'pb-3 pt-4'
+								}`}
+								data-testid="call-tools-panel"
+								onClick={event => {
+									// Over peer video, a tap on the panel outside its buttons
+									// collapses it, the same as the grabber.
+									if (!hasPeerVideoBackground) return
+									if (!isCallToolsPanelBackgroundTap(event.target, event.currentTarget)) return
+									setVoiceInCallToolsExpanded(false)
+								}}
+							>
+								{hasPeerVideoBackground ? (
+									<button
+										type="button"
+										onClick={() => setVoiceInCallToolsExpanded(false)}
+										className="mx-auto mb-3 block h-1.5 w-10 rounded-full bg-white/35"
+										aria-label="Hide call controls"
+									/>
+								) : null}
+
+								<div className="flex flex-col items-center pb-5">
+									<p className="text-[28px] font-bold tracking-tight">{activeVoicePeerLabel}</p>
+									<p className="mt-1.5 font-mono text-[18px] tracking-wide text-white/70">
+										{voiceCallAnswered || activeVoiceCallRecord?.status === 'answered'
+											? (voiceReconnecting ? 'Reconnecting…' : voiceInCallClockLabel)
+											: voiceCallStatusLabel === 'Ringing' && voicePeerWake === 'ringing'
+												? 'Ringing…'
+												: voiceCallStatusLabel === 'Ringing' && voicePeerWake === 'restricted'
+													? 'Their phone may be restricting Beamio'
+													: voiceCallStatusLabel === 'Connecting' || voiceCallStatusLabel === 'Ringing'
+														? 'Calling…'
+														: voiceCallStatusLabel}
+									</p>
+									{voiceCallStatusLabel === 'Ringing' && voicePeerWake === 'restricted' ? (
+										<p className="mt-1 max-w-[18rem] text-center text-[13px] text-white/60">
+											They'll see a missed call when they open Beamio.
+										</p>
+									) : null}
+									{voicePeerAddressShort ? (
+										<div
+											className="mt-1.5 inline-flex items-center gap-1.5 rounded-full border border-[#dce2f7] bg-[#e9edff] px-3 py-1.5 text-[13px] font-medium text-[#424655]"
+											title={voicePeerAddress}
+										>
+											<Wallet className="h-3.5 w-3.5 text-[#0051d1]" aria-hidden />
+											<span className="font-mono">{voicePeerAddressShort}</span>
+										</div>
+									) : null}
+								</div>
+
+								{/* Mute | Video | Speaker (same as the native call screens). */}
+								<div className="flex items-start justify-center gap-7">
+									<button
+										type="button"
+										onClick={toggleVoiceCallMute}
+										className="flex w-[4.75rem] flex-col items-center gap-2"
+										aria-pressed={voiceCallMuted}
+										aria-label="Mute"
+									>
+										<span
+											className={`grid h-[4.75rem] w-[4.75rem] place-items-center rounded-full ${
+												voiceCallMuted ? 'bg-white text-[#161E2A]' : 'bg-white/20 text-white'
+											}`}
+										>
+											{voiceCallMuted ? <MicOff className="h-7 w-7" /> : <Mic className="h-7 w-7" />}
+										</span>
+										<span className="text-sm">Mute</span>
+									</button>
+									<button
+										type="button"
+										onClick={() => void toggleSoftLocalVideo()}
+										disabled={!(voiceCallAnswered || activeVoiceCallRecord?.status === 'answered')}
+										className="flex w-[4.75rem] flex-col items-center gap-2 disabled:opacity-35"
+										aria-pressed={softLocalVideoOn}
+										aria-label="Video"
+									>
+										<span
+											className={`grid h-[4.75rem] w-[4.75rem] place-items-center rounded-full ${
+												softLocalVideoOn ? 'bg-white text-[#161E2A]' : 'bg-white/20 text-white'
+											}`}
+										>
+											{softLocalVideoOn ? <Video className="h-7 w-7" /> : <VideoOff className="h-7 w-7" />}
+										</span>
+										<span className="text-sm">Video</span>
+									</button>
+									<button
+										type="button"
+										onClick={() => {
+											voicePlaybackRef.current?.resume()
+											setVoiceSpeakerOn(previous => {
+												const next = !previous
+												voicePlaybackRef.current?.setOutputGain(next ? 4 : 1)
+												return next
+											})
+										}}
+										className="flex w-[4.75rem] flex-col items-center gap-2"
+										aria-pressed={voiceSpeakerOn}
+										aria-label="Speaker"
+									>
+										<span
+											className={`grid h-[4.75rem] w-[4.75rem] place-items-center rounded-full ${
+												voiceSpeakerOn ? 'bg-white text-[#161E2A]' : 'bg-white/20 text-white'
+											}`}
+										>
+											{voiceSpeakerOn ? <Volume2 className="h-7 w-7" /> : <VolumeX className="h-7 w-7" />}
+										</span>
+										<span className="text-sm">Speaker</span>
+									</button>
+								</div>
+
+								{/* End, centered (same as the native call screens). */}
+								<div className="mt-[1.35rem] flex items-start justify-center">
+									<button
+										type="button"
+										onClick={endOrDismissVoiceCall}
+										className="flex w-[4.75rem] flex-col items-center gap-2"
+										aria-label="End call"
+									>
+										<span className="grid h-[4.75rem] w-[4.75rem] place-items-center rounded-full bg-[#FF3B30] text-white">
+											<PhoneOff className="h-8 w-8" strokeWidth={2.25} />
+										</span>
+										<span className="text-sm">End</span>
+									</button>
+								</div>
+							</div>
+						)}
+					</div>
+				</div>
+			) : null}
+			{incomingVoiceOffer && !isCashTreesNativeWebView() ? (
+				<>
+				{/* Same banner as the native shells: Beamio Audio + caller, Decline / Answer. */}
+				<div
+					className="pointer-events-auto fixed isolate left-2 right-2 top-[max(0.5rem,env(safe-area-inset-top))] z-[100] rounded-[14px] bg-[#2C2C2E]/90 px-4 py-4 text-white shadow-[0_12px_30px_rgba(0,0,0,0.25)] backdrop-blur-xl"
+					role="dialog"
+					aria-label="Incoming voice call"
+					style={{ touchAction: 'manipulation' }}
+				>
+					<div className="flex items-center gap-3">
+						{/* Drawn locally from the verified tag; a call never fetches an avatar. */}
+						{localCallerAvatarDataUri(incomingCaller?.tag) ? (
+							<img
+								src={localCallerAvatarDataUri(incomingCaller?.tag)}
+								alt=""
+								className="h-11 w-11 shrink-0 rounded-full bg-white/10 object-cover"
+								draggable={false}
+							/>
+						) : null}
+						<div className="min-w-0 flex-1">
+							<div className="flex items-center gap-[7px]">
+								<img
+									src={`${process.env.PUBLIC_URL}/beamio-call-mark.png`}
+									alt=""
+									className="h-5 w-5 rounded-full"
+									draggable={false}
+								/>
+								<span className="truncate text-[12.5px] text-[#EBEBF5]/60">Beamio Audio</span>
+							</div>
+							<p className="mt-[3px] truncate text-[17px] font-bold">
+								{incomingCaller?.tag || 'Incoming voice call'}
+							</p>
+							{incomingCaller?.address ? (
+								<div className="mt-1">
+									<BeamioAddressCapsule
+										address={incomingCaller.address}
+										leading={<Wallet className="h-3 w-3 shrink-0 text-[#0051d1]" aria-hidden />}
+									/>
+								</div>
+							) : null}
+							{incomingCaller?.identityWarning ? (
+								<div className="mt-1">
+									<p className="truncate text-xs font-semibold text-[#FF453A]">{incomingCaller.claimedTag || 'Unknown tag'}</p>
+									{incomingCaller.claimedAddress ? (
+										<div className="mt-1">
+											<BeamioAddressCapsule
+												address={incomingCaller.claimedAddress}
+												className="border-red-200 bg-red-50 text-red-700"
+												iconClassName="text-red-400"
+											/>
+										</div>
+									) : null}
+									<p className="text-[11px] font-semibold text-[#FF453A]">{incomingCaller.identityWarning}</p>
+								</div>
+							) : null}
+						</div>
+						<button
+							type="button"
+							{...rejectVoiceCallTap}
+							disabled={incomingVoiceAction !== 'idle'}
+							className={`${RELIABLE_TAP_BUTTON_CLASS} pointer-events-auto relative z-10 grid h-11 w-11 shrink-0 touch-manipulation place-items-center rounded-full bg-[#D81720] text-white disabled:cursor-wait disabled:opacity-60`}
+							aria-label="Decline incoming voice call"
+							aria-busy={incomingVoiceAction === 'declining'}
+						>
+							{incomingVoiceAction === 'declining'
+								? <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
+								: <X className="h-5 w-5" strokeWidth={3} aria-hidden />}
+						</button>
+						<button
+							type="button"
+							{...acceptVoiceCallTap}
+							disabled={incomingVoiceAction !== 'idle'}
+							className={`${RELIABLE_TAP_BUTTON_CLASS} pointer-events-auto relative z-10 grid h-11 w-11 shrink-0 touch-manipulation place-items-center rounded-full bg-[#0754D9] text-white disabled:cursor-wait disabled:opacity-60`}
+							aria-label="Accept incoming voice call"
+							aria-busy={incomingVoiceAction === 'accepting'}
+						>
+							{incomingVoiceAction === 'accepting'
+								? <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
+								: <Check className="h-5 w-5" strokeWidth={3} aria-hidden />}
+						</button>
+					</div>
+				</div>
+				</>
+			) : null}
+			{/* iOS 风格 Message Reaction 菜单：仅对收到的消息显示，在 message 上方，内容可左右滚动；一点展开/收缩动画 */}
+			<AnimatePresence>
+			{reactionUI.open && (
+				<motion.div
+					key="reaction-menu-layer"
+					className="fixed inset-0 z-[200]"
+					initial={{ scale: 0, opacity: 0 }}
+					animate={{ scale: 1, opacity: 1 }}
+					exit={{ scale: 0, opacity: 0 }}
+					transition={{
+						duration: 0.28,
+						ease: [0.22, 0.61, 0.36, 1],
+					}}
+					style={{
+						transformOrigin: `${reactionUI.x}px ${reactionUI.y}px`,
+					}}
+				>
+					<div
+						className="absolute inset-0"
+						aria-hidden
+						onClick={closeReactionBar}
+						onTouchStart={closeReactionBar}
+					/>
+					<div
+						className="fixed z-[201] flex flex-col items-center pointer-events-none ml-4"
+						style={{
+							left: reactionUI.x,
+							top: reactionUI.y,
+							width: Math.min(280, typeof window !== 'undefined' ? window.innerWidth - 24 : 280),
+						}}
+					>
+						{/* 主菜单：毛玻璃椭圆（恢复点击以操作内部按钮） */}
+						<div
+							className="relative flex items-center rounded-full bg-black/5 shadow-lg ring-1 ring-black/5 backdrop-blur-sm py-2 px-3 min-w-0 pointer-events-auto"
+							style={{ boxShadow: '0 4px 24px rgba(0,0,0,0.12)' }}
+							onClick={e => e.stopPropagation()}
+						>
+							<div className="flex gap-0.5 overflow-x-auto overflow-y-hidden scrollbar-hide w-full max-w-[280px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+								{REACTIONS.map(({ key, label }) => (
+									<button
+										key={key}
+										type="button"
+										className="flex-shrink-0 w-9 h-9 rounded-full grid place-items-center text-xl active:scale-95 transition-transform hover:bg-black/5"
+										onClick={() => {
+											if (reactionUI.messageId) sendReaction(reactionUI.messageId, key)
+										}}
+										aria-label={key}
+									>
+										{label}
+									</button>
+								))}
+							</div>
+						</div>
+					</div>
+
+					{/* iOS 风格上下文菜单：在被长按气泡下方（位置空间不足时上移），与点赞 bar 并存 */}
+					{(() => {
+						const rect = reactionUI.rect
+						if (!rect) return null
+						const vw = typeof window !== 'undefined' ? window.innerWidth : 375
+						const vh = typeof window !== 'undefined' ? window.innerHeight : 667
+						const menuW = Math.min(244, vw - 24)
+						// 以 item 为界：菜单始终在气泡下方、左对齐气泡左缘
+						const menuLeft = clamp(rect.left, 12, vw - menuW - 12)
+						const menuTop = clamp(rect.bottom + MENU_GAP, 12, vh - MENU_EST_H - 16)
+						const hasText = !!(reactionUI.text && reactionUI.text.trim())
+						const tsLabel = reactionUI.createdAt ? formatTimeLabel(reactionUI.createdAt) : ''
+						return (
+							<div
+								className="fixed z-[202] pointer-events-auto"
+								style={{ left: menuLeft, top: menuTop, width: menuW }}
+								onClick={e => e.stopPropagation()}
+							>
+								<div className="overflow-hidden rounded-2xl bg-white/95 backdrop-blur-xl ring-1 ring-black/5 shadow-[0_12px_40px_rgba(15,23,42,0.18)] text-[15px] text-slate-900">
+									<button
+										type="button"
+										onClick={handleReplyToMessage}
+										className="flex w-full items-center justify-between gap-3 px-4 py-3 active:bg-black/5"
+									>
+										<span className="font-medium">Reply</span>
+										<CornerUpLeft className="h-[18px] w-[18px] text-slate-500" strokeWidth={2} />
+									</button>
+									{hasText && (
+										<>
+											<div className="h-px bg-black/5" />
+											<button
+												type="button"
+												onClick={handleCopyMessageText}
+												className="flex w-full items-center justify-between gap-3 px-4 py-3 active:bg-black/5"
+											>
+												<span className="font-medium">Copy Text</span>
+												<Copy className="h-[18px] w-[18px] text-slate-500" strokeWidth={2} />
+											</button>
+										</>
+									)}
+									{tsLabel && (
+										<>
+											<div className="h-px bg-black/10" />
+											<div className="px-4 py-2.5 text-[12px] text-slate-400">{tsLabel}</div>
+										</>
+									)}
+									<div className="h-px bg-black/5" />
+									<button
+										type="button"
+										onClick={handleDeleteMessage}
+										className="flex w-full items-center justify-between gap-3 px-4 py-3 active:bg-rose-50"
+									>
+										<span className="font-medium text-rose-600">Delete</span>
+										<Trash2 className="h-[18px] w-[18px] text-rose-500" strokeWidth={2} />
+									</button>
+								</div>
+							</div>
+						)
+					})()}
+				</motion.div>
+			)}
+			</AnimatePresence>
+
+			{/* 内容区：消息列表 */}
+			<div
+				className={["absolute inset-0", "bg-[#F1F8ED]"].join(" ")}
+				style={{
+					// paddingTop: "calc(env(safe-area-inset-top) + 140px)",
+					// paddingBottom: "calc(env(safe-area-inset-bottom) + 112px)"
+				}}
+			>
+			{/* 顶部白色渐变蒙版 */}
+			<div
+				className="absolute left-0 right-0 top-0 h-[10rem] pointer-events-none z-10"
+				style={{ background: "linear-gradient(to bottom, rgba(241,248,237,1) 0%, rgba(241,248,237,0) 100%)" }}
+				aria-hidden
+			/>
+			{/* 底部白色渐变蒙版 */}
+			{/* The fade only covers the composer area (+1rem): a taller mask washed out the newest bubble. */}
+			<div
+				className="absolute left-0 right-0 bottom-0 pointer-events-none z-10"
+				style={{
+					height: "calc(var(--chat-composer-h, 88px) + 1rem)",
+					background: "linear-gradient(to top, rgba(241,248,237,1) 0%, rgba(241,248,237,0) 100%)",
+				}}
+				aria-hidden
+			/>
+			<div
+				ref={setChatScrollRef}
+				className="relative h-full overscroll-contain overflow-y-auto px-4 py-4"
+				style={{
+					// Image/IPFS decoding can change descendants after the first
+					// paint. Disable browser scroll anchoring so WebView/browser
+					// does not repeatedly compensate the viewport and appear to
+					// shake while media messages settle.
+					overflowAnchor: 'none',
+				}}
+				onScroll={() => {
+				clearUnreadIfNeeded()
+				expandHistoryWindowIfNeeded()
+				}}
+			>
+				{fileDropActive ? (
+					<div
+						className="fixed inset-0 z-[120] grid place-items-center border-2 border-dashed border-[#1652f0]/70 bg-[#dceaff]/55 backdrop-blur-sm"
+						onDragEnter={handleChatFileDragEnter}
+						onDragOver={handleChatFileDragOver}
+						onDrop={handleChatFileDrop}
+					>
+						<div className="pointer-events-none rounded-2xl bg-white/85 px-6 py-4 text-center shadow-lg ring-1 ring-white/80">
+							<p className="text-base font-semibold text-[#1652f0]">Drop files to attach</p>
+							<p className="mt-1 text-xs text-slate-500">Files and folders are encrypted before upload.</p>
+						</div>
+					</div>
+				) : null}
+				<div className="min-h-full flex flex-col justify-end">
+				<div ref={setChatContentEl} className="mx-auto w-full max-w-[820px]">
+					<div aria-hidden className="h-[96px]" />
+					{libraryOlderPending ? (
+						<div className="py-2 text-center text-xs text-slate-500" role="status">Loading earlier messages…</div>
+					) : null}
+					<AnimatePresence initial={false}>
+							{sections.map(sec => (
+									<div key={sec.key}>
+									<ChatSectionHeader title={sec.title} />
+
+									{sec.items.map(m => {
+										const isMe = m.from === "me"
+										const multisigPreview = parseAaMultisigChatPreview(m.text)
+										const hasMultisigCard = !!multisigPreview
+										const hasCard = !!m.paymentCard
+										const hasVoice = !!m.voiceMessage
+										const hasCallRecord = !!m.callRecord
+										const hasFile = !!m.fileMessage
+										const shareUrl =
+											!hasMultisigCard && !hasCard && isPrimarilyBeamioShareLinkMessage(m.text)
+												? findBeamioShareUrlInText(m.text)
+												: null
+										const hasShareLinkCard = !!shareUrl
+										const genericUrl =
+											!hasMultisigCard && !hasCard && !hasShareLinkCard && isPrimarilyHttpUrlMessage(m.text)
+												? findHttpUrlInText(m.text)
+												: null
+										const hasGenericLinkCard = !!genericUrl
+										const reactionBadges = (() => {
+											const reactions = getReactionsForMessage(m)
+											const show = reactions?.slice(-2) ?? []
+											if (!show.length) return null
+											const hasMyReply = show.some(r => r.from === 'me')
+											return (
+												<div
+													className={`absolute -top-2 -left-2 z-10 flex items-center gap-0.5 rounded-tl-xl rounded-tr-xl rounded-br-xl rounded-bl-[6px] px-1.5 py-1 shadow-lg ring-1 ring-black/5 ${hasMyReply ? 'bg-[#1652f0]/80' : 'bg-slate-100/90'}`}
+													aria-hidden
+												>
+													{show.map((r, i) => (
+														<span key={`${r.reactionKey}-${i}`} className="text-base leading-none">
+															{REACTIONS.find(x => x.key === r.reactionKey)?.label ?? r.reactionKey}
+														</span>
+													))}
+												</div>
+											)
+										})()
+
+										return (
+										<motion.div
+											key={m.id}
+											initial={{ opacity: 0, y: 6 }}
+											animate={{ opacity: 1, y: 0 }}
+											exit={{ opacity: 0, y: 6 }}
+											transition={{ type: "spring", stiffness: 520, damping: 40 }}
+											className={["w-full flex mb-2", isMe ? "justify-end" : "justify-start"].join(" ")}
+										>
+											<div className="max-w-[78%] sm:max-w-[62%]">
+											{hasCallRecord && m.callRecord ? (
+												(() => {
+													const liveRecord = findPhoneCallByIds(
+														profiles?.[0]?.phoneCalls,
+														{
+															callId: m.callRecord?.callId,
+															sessionId: m.callRecord?.sessionId,
+														},
+													)
+													// Prefer live terminal (declined) over a stale ringing mirror on the message.
+													const mergedRecord = mergePhoneCallRecord(m.callRecord, liveRecord) ?? liveRecord ?? m.callRecord
+													const startedMs = phoneCallStampMs(mergedRecord.createdAt)
+													const ringExpired = mergedRecord.status === 'ringing'
+														&& (startedMs === 0 || Date.now() - startedMs > INCOMING_CALL_RING_TIMEOUT_MS + 15_000)
+													const record = ringExpired
+														? { ...mergedRecord, status: 'timed_out' as const, endedAt: mergedRecord.endedAt || Date.now() }
+														: mergedRecord
+													const statusText =
+														record.status === 'ringing'
+															? record.direction === 'outgoing' ? 'Calling…' : 'Incoming call'
+															: record.status === 'missed'
+																? record.direction === 'incoming' ? 'Missed call' : 'No answer'
+																: record.status === 'declined'
+																	? record.direction === 'incoming' ? 'Declined' : 'Recipient declined'
+																	: record.status === 'busy'
+																		? record.direction === 'incoming'
+																			? 'Missed call · While on another call'
+																			: 'Call failed · On another call'
+																	: record.status === 'timed_out'
+																		? 'Timed out'
+																	: record.status === 'unreachable'
+																		? 'Unreachable'
+																		: record.status === 'cancelled'
+																		? 'Call cancelled'
+																		: record.status === 'failed'
+																			? 'Call failed'
+																			: record.status === 'answered'
+																				? record.durationMs ? `Voice call · ${formatVoiceDuration(record.durationMs)}` : 'Voice call'
+																				: record.durationMs ? `Call ended · ${formatVoiceDuration(record.durationMs)}` : 'Call ended'
+													const statusClass =
+														record.status === 'missed' || record.status === 'declined' || record.status === 'busy' || record.status === 'timed_out' || record.status === 'unreachable' || record.status === 'failed'
+															? 'text-rose-600'
+															: record.status === 'ringing'
+																? 'text-[#1652f0]'
+																: 'text-slate-600'
+													return (
+														<div className="flex min-w-[190px] items-center gap-3 rounded-2xl bg-white/90 px-4 py-3 shadow-[0_4px_16px_rgba(15,23,42,0.08)] ring-1 ring-black/5">
+															<div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
+																record.status === 'missed' || record.status === 'declined' || record.status === 'busy' || record.status === 'timed_out' || record.status === 'unreachable'
+																	? 'bg-rose-50'
+																	: 'bg-[#e9edff]'
+															}`}>
+																<Phone className={`h-4.5 w-4.5 ${statusClass}`} strokeWidth={2.25} aria-hidden />
+															</div>
+															<div className="min-w-0">
+																<div className={`text-sm font-semibold ${statusClass}`}>{statusText}</div>
+																<div className="mt-0.5 text-[11px] text-slate-400">{formatTimeLabel(record.createdAt)}</div>
+															</div>
+														</div>
+													)
+												})()
+											) : hasFile && m.fileMessage ? (
+												<div
+													className="relative"
+													onPointerDown={e => {
+														if (e.pointerType === "mouse" && e.button !== 0) return
+														if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current)
+														const target = e.currentTarget as HTMLElement
+														pressTimerRef.current = window.setTimeout(() => openReactionBarForElement(m, target, isMe), 450)
+													}}
+													onPointerUp={() => { if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current); pressTimerRef.current = null }}
+													onPointerCancel={() => { if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current); pressTimerRef.current = null }}
+													onPointerLeave={() => { if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current); pressTimerRef.current = null }}
+													onContextMenu={e => { e.preventDefault(); openReactionBarForElement(m, e.currentTarget as HTMLElement, isMe) }}
+												>
+													{reactionBadges}
+													<ChatFileMessagePlayer manifest={m.fileMessage} isMe={isMe} />
+													{isMe ? <div className="absolute -bottom-2 -right-2"><BubbleCornerStatus status={m.status} /></div> : null}
+												</div>
+											) : hasVoice && m.voiceMessage ? (
+												<div
+													className="relative"
+													onPointerDown={e => {
+														if (e.pointerType === "mouse" && e.button !== 0) return
+														if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current)
+														const target = e.currentTarget as HTMLElement
+														pressTimerRef.current = window.setTimeout(() => openReactionBarForElement(m, target, isMe), 450)
+													}}
+													onPointerUp={() => { if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current); pressTimerRef.current = null }}
+													onPointerCancel={() => { if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current); pressTimerRef.current = null }}
+													onPointerLeave={() => { if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current); pressTimerRef.current = null }}
+													onContextMenu={e => { e.preventDefault(); openReactionBarForElement(m, e.currentTarget as HTMLElement, isMe) }}
+												>
+													{reactionBadges}
+													<VoiceMessagePlayer manifest={m.voiceMessage} isMe={isMe} />
+													{isMe && (
+														<div className="absolute -bottom-2 -right-2">
+															<BubbleCornerStatus status={m.status} onRetry={() => setVoiceError('Please record and send the voice message again.')} />
+														</div>
+													)}
+												</div>
+											) : hasMultisigCard && multisigPreview ? (
+												<AaMultisigChatRequestCard
+													preview={(() => {
+														const stored =
+															walletEoa && multisigPreview.taskId
+																? getAaMultisigTaskAny(walletEoa, multisigPreview.taskId)
+																: null
+														if (!stored || !walletEoa) return multisigPreview
+														return enrichMultisigChatPreview(
+															multisigPreview,
+															stored,
+															walletEoa
+														)
+													})()}
+													timeLabel={fmtTime(getMsgTs(m))}
+													isMe={isMe}
+													onOpen={() =>
+														openMultisigFromChat(
+															m.text,
+															isMe,
+															multisigPreview.taskId,
+															multisigPreview.aaAccount
+														)
+													}
+												/>
+											) : hasCard ? (
+												<div
+													className="relative"
+													onPointerDown={e => {
+														if (e.pointerType === "mouse" && e.button !== 0) return
+														if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current)
+														const target = e.currentTarget as HTMLElement
+														pressTimerRef.current = window.setTimeout(() => {
+															openReactionBarForElement(m, target, isMe)
+														}, 450)
+													}}
+													onPointerUp={() => {
+														if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current)
+														pressTimerRef.current = null
+													}}
+													onPointerCancel={() => {
+														if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current)
+														pressTimerRef.current = null
+													}}
+													onPointerLeave={() => {
+														if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current)
+														pressTimerRef.current = null
+													}}
+													onContextMenu={e => {
+														e.preventDefault()
+														openReactionBarForElement(m, e.currentTarget as HTMLElement, isMe)
+													}}
+												>
+												{(() => {
+													const reactions = getReactionsForMessage(m)
+													const show = reactions?.slice(-2) ?? []
+													if (!show.length) return null
+													const hasMyReply = show.some(r => r.from === 'me')
+													return (
+														<div
+															className={["absolute -top-2 -left-2 z-10 flex items-center gap-0.5 rounded-tl-xl rounded-tr-xl rounded-br-xl rounded-bl-[6px] px-1.5 py-1 shadow-lg ring-1 ring-black/5", hasMyReply ? "bg-[#1652f0]/80" : "bg-slate-100/15"].join(" ")}
+															style={{ boxShadow: '0 3px 12px rgba(0,0,0,0.2)' }}
+															aria-hidden
+														>
+															{show.map((r, i) => {
+																const label = REACTIONS.find(x => x.key === r.reactionKey)?.label ?? r.reactionKey
+																return <span key={`${r.reactionKey}-${i}`} className="text-base leading-none" title={r.reactionKey}>{label}</span>
+															})}
+														</div>
+													)
+												})()}
+												{m.paymentCard!.cardType === "paymentRequest" ? (
+													(() => {
+														const prCancelled = m.sendId ? cancelledPaymentRequestSendIds.has(m.sendId) : false
+														const prPaid = m.sendId ? paidPaymentRequestMap.has(m.sendId) : false
+														const prDeclineLoading = declineLoadingForSendId === (m.sendId ?? m.id ?? '')
+														const prPayConfirm = !isMe && !prCancelled && !prPaid && payConfirmForSendId === (m.sendId ?? m.id ?? '')
+														const pc = m.paymentCard!
+														// USDC amount: for USDC request use stored value; for fiat convert at current rate when receiver clicks Pay
+														const usdcForConfirm = pc.currency === 'USDC'
+															? Number(pc.usdcAmount || 0)
+															: (() => { const rate = fxRateUSDCToCurrency(pc.currency); return rate > 0 ? Number(pc.amount) / rate : 0 })()
+														const usdcStr = Number.isFinite(usdcForConfirm) ? usdcForConfirm.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'
+														const prLoading = payTransferLoading === (m.sendId ?? m.id ?? '')
+														let actionBlock: React.ReactNode
+														if (prPaid) {
+															const paidInfo = m.sendId ? paidPaymentRequestMap.get(m.sendId) : null
+															const hash = paidInfo?.hash ?? ''
+															actionBlock = (
+																<>
+																	<div className="flex items-center justify-center gap-2 rounded-xl bg-emerald-50 border border-emerald-200/80 py-3 px-4">
+																		<CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-600" />
+																		<span className="text-[13px] font-semibold text-emerald-700">Payment Sent</span>
+																	</div>
+																	{hash && (
+																		<div className="flex items-center gap-1.5 rounded-lg bg-slate-100 px-2 py-1 mt-2">
+																			<code className="flex-1 text-[10px] text-slate-600 truncate" title={hash}>{hash.slice(0, 10)}…{hash.slice(-8)}</code>
+																			<button type="button" onClick={() => navigator.clipboard.writeText(hash)} className="p-1 text-slate-500 hover:text-slate-700" aria-label={tu('copy')}><Copy className="w-3.5 h-3.5" /></button>
+																			<button type="button" onClick={() => openExternalUrl(baseExplorerTxUrl(hash))} className="p-1 text-slate-500 hover:text-slate-700" aria-label="Open explorer"><ExternalLink className="w-3.5 h-3.5" /></button>
+																		</div>
+																	)}
+																</>
+															)
+														} else if (prCancelled) {
+															actionBlock = null
+														} else if (prPayConfirm) {
+															const insufficientBalance = Number(usdcbalance) < usdcForConfirm
+															actionBlock = (
+																<div className="rounded-xl bg-slate-50 border border-slate-200 p-2.5 space-y-2">
+																	<div className="text-[11px] text-slate-600 leading-tight">
+																		Pay with EOA account USDC (converted at current rate): <span className="font-semibold tabular-nums">{usdcStr} USDC</span>
+																	</div>
+																	{insufficientBalance && (
+																		<div className="text-[11px] font-medium text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">{tu('insufficient_balance')}</div>
+																	)}
+																	{payTransferError && (
+																		<div className="text-[11px] font-medium text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5">{payTransferError}</div>
+																	)}
+																	<div className="flex gap-2">
+																		<button type="button" onClick={() => { setPayConfirmForSendId(null); setPayTransferError(null); }} disabled={prLoading} className="flex-1 py-2 rounded-lg text-xs font-semibold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 disabled:opacity-50">{tu('cancel')}</button>
+																		{!insufficientBalance && (
+																		<button type="button" disabled={prLoading} onClick={() => {
+																			if (!m.sendId) return
+																			const origAmountStr = (pc.currency === 'JPY' || pc.currency === 'TWD') ? String(Math.round(Number(pc.amount))) : Number(pc.amount).toFixed(2)
+																			executePaymentRequestTransfer(m.sendId, usdcForConfirm, toAddress, pc.currency, origAmountStr)
+																		}} className="flex-1 py-2 rounded-lg text-xs font-semibold text-white bg-[#1652f0] hover:opacity-90 disabled:opacity-70 flex items-center justify-center gap-1.5">
+																			{prLoading ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Sending…</> : tu('confirm')}
+																		</button>
+																		)}
+																	</div>
+																</div>
+															)
+														} else {
+															// 发送方(请求方)：只显示 Cancel；接收方：只显示 Decline + Pay
+															actionBlock = (
+																<div className="flex gap-2">
+																	{isMe ? (
+																		<button
+																			type="button"
+																			disabled={prDeclineLoading}
+																			onClick={() => m.sendId && !prDeclineLoading && sendPaymentRequestCancel(m.sendId)}
+																			className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-70 flex items-center justify-center gap-1.5"
+																		>
+																			{prDeclineLoading ? <><Loader2 className="w-4 h-4 animate-spin shrink-0" /> Cancelling…</> : '取消'}
+																		</button>
+																	) : (
+																		<>
+																			<button
+																				type="button"
+																				disabled={prDeclineLoading}
+																				onClick={() => m.sendId && !prDeclineLoading && sendPaymentRequestCancel(m.sendId)}
+																				className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-70 flex items-center justify-center gap-1.5"
+																			>
+																				{prDeclineLoading ? <><Loader2 className="w-4 h-4 animate-spin shrink-0" /> Declining…</> : 'Decline'}
+																			</button>
+																			{!prDeclineLoading && (
+																				<button
+																					type="button"
+																					onClick={() => setPayConfirmForSendId(m.sendId ?? m.id ?? '')}
+																					className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white bg-[#1652f0] hover:opacity-90"
+																				>{tu('pay')}</button>
+																			)}
+																		</>
+																	)}
+																</div>
+															)
+														}
+														const timeLabel = prPaid && m.sendId && paidPaymentRequestMap.has(m.sendId)
+															? formatTimeLabel(paidPaymentRequestMap.get(m.sendId)!.createdAt)
+															: prCancelled && m.sendId && cancelledPaymentRequestMap.has(m.sendId)
+																? formatTimeLabel(cancelledPaymentRequestMap.get(m.sendId)!)
+																: formatTimeLabel(pc.timeStamp)
+														const headerIcon = prPaid ? (
+															<div className="w-10 h-10 rounded-full bg-emerald-100 border border-emerald-200 flex items-center justify-center shrink-0">
+																<CheckCircle2 className="w-5 h-5 text-emerald-600" strokeWidth={2.2} />
+															</div>
+														) : prCancelled ? (
+															<div className="w-10 h-10 rounded-full bg-red-100 border border-red-200 flex items-center justify-center shrink-0">
+																<X className="w-5 h-5 text-red-600" strokeWidth={2.5} />
+															</div>
+														) : (
+															<div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
+																<DollarSign className="w-5 h-5 text-slate-600" strokeWidth={2.2} />
+															</div>
+														)
+														const headerTitle = prPaid ? 'Paid via Beamio' : prCancelled ? 'Request Declined' : 'Payment Request'
+														const amountStr = `${fiatPrefix(pc.currency)}${Number(pc.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+														return (
+													<div className={`w-[280px] max-w-full rounded-[22px] bg-white text-slate-900 shadow-[0_6px_18px_rgba(2,6,23,0.10)] ring-1 ring-black/5 overflow-hidden ${isMe ? "ml-auto" : "mr-auto"}`}>
+														<div className="p-4">
+															<div className="flex items-start justify-between gap-2 mb-3">
+																<div className="flex items-center gap-2 min-w-0">
+																	{headerIcon}
+																	<div className="min-w-0">
+																		<div className="font-bold text-[15px] text-slate-900">{headerTitle}</div>
+																		<div className="text-[11px] text-slate-500 truncate">
+																			{prCancelled && m.sendId && cancelledPaymentRequestMap.has(m.sendId)
+																				? formatTimeLabel(cancelledPaymentRequestMap.get(m.sendId)!)
+																				: (pc.walletLabel ?? 'Main Wallet • EOA')}
+																		</div>
+																	</div>
+																</div>
+																<span className="text-[11px] text-slate-400 shrink-0">{timeLabel}</span>
+															</div>
+															<div className="text-center mb-1">
+																<div className="text-[22px] font-bold text-slate-900">{amountStr}</div>
+															</div>
+															{(pc.memo ?? pc.title) && (
+																<div className="text-center text-[13px] text-slate-500 mb-3">{pc.memo ?? pc.title}</div>
+															)}
+															{actionBlock}
+															<div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
+																<span className="text-[10px] font-semibold text-slate-400 tracking-wider uppercase">由 Beamio 安全保护</span>
+																<button type="button" className="p-1 text-slate-400 hover:text-slate-600" aria-label="More">
+																	<MoreHorizontal className="w-4 h-4" />
+																</button>
+															</div>
+														</div>
+													</div>
+														)
+													})()
+												) : m.paymentCard!.cardType === "merchantGift" ? (
+													(() => {
+														const pc = m.paymentCard!
+														const claimUrl = (pc.requestUrl || pc.cashcodeUrl || '').trim()
+														const amountStr = `${fiatPrefix(pc.currency)}${Number(pc.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+														const openGiftClaim = () => {
+															if (!claimUrl) return
+															// Same path as global search paste → App opens MerchantGiftClaimSheet
+															setScanData(claimUrl)
+														}
+														return (
+															<button
+																type="button"
+																onClick={openGiftClaim}
+																className={`w-[280px] max-w-full overflow-hidden rounded-[18px] bg-gradient-to-br from-[#2f2b27] via-[#25221e] to-[#1a1816] text-left text-[#faf9fe] shadow-[0_8px_24px_rgba(2,6,23,0.28)] ring-1 ring-white/10 transition active:scale-[0.99] ${isMe ? 'ml-auto' : 'mr-auto'}`}
+															>
+																<div className="flex items-center justify-between gap-2 px-3.5 pb-2 pt-3">
+																	<div className="flex min-w-0 items-center gap-1.5">
+																		<Gift className="h-3.5 w-3.5 shrink-0 text-white" aria-hidden />
+																		<span className="truncate text-[10px] font-semibold uppercase tracking-[0.12em] text-white/90">
+																			Direct asset drop
+																		</span>
+																	</div>
+																	<span className="shrink-0 font-mono text-[10px] tracking-wide text-white/45">
+																		{formatTimeLabel(pc.timeStamp)}
+																	</span>
+																</div>
+																{pc.imageUrl ? (
+																	<div className="mx-3 mb-3 h-28 overflow-hidden rounded-xl">
+																		<IpfsImg src={pc.imageUrl} alt="" className="h-full w-full object-cover" />
+																	</div>
+																) : null}
+																<div className="mx-3 mb-3 overflow-hidden rounded-xl bg-gradient-to-r from-slate-300/25 via-purple-300/20 to-slate-200/15 px-3 py-3">
+																	<div className="flex items-start justify-between gap-2">
+																		<div className="min-w-0">
+																			<span className="inline-flex rounded-full bg-white/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white/80">
+																				Gift
+																			</span>
+																			<p className="mt-1.5 truncate text-[13px] font-semibold text-white">
+																				{pc.title || 'Merchant gift'}
+																			</p>
+																		</div>
+																		<span className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-white/70">
+																			Gift voucher
+																		</span>
+																	</div>
+																</div>
+																<div className="px-3.5 pb-3.5">
+																	<p className="text-[10px] font-semibold uppercase tracking-wider text-[#baa479]">
+																		Gift card value
+																	</p>
+																	<p className="mt-0.5 text-[22px] font-bold tracking-tight text-white">
+																		{amountStr}
+																	</p>
+																	<p className="mt-1 text-[11px] text-white/55">
+																		Tap to claim to your vault
+																	</p>
+																</div>
+															</button>
+														)
+													})()
+												) : (
+												<MessageSendReceiveCard
+													variant={
+														m.paymentCard!.cardType === "membershipActivated"
+															? "membershipActivated"
+															: m.paymentCard!.cashcodeUrl
+																? "cashcode"
+																: isMe
+																	? "sent"
+																	: "received"
+													}
+													status="Completed"
+													amount={m.paymentCard!.amount}
+													usdcAmount={m.paymentCard!.usdcAmount}
+													cashcodeUrl={m.paymentCard!.cashcodeUrl}
+													title={m.paymentCard!.title}
+													timeLabel={formatTimeLabel(m.paymentCard!.timeStamp)}
+													onMenu={() => {}}
+													currency={m.paymentCard!.currency}
+													className={isMe ? "ml-auto" : "mr-auto"}
+													statusLabel={m.paymentCard!.cardType === "membershipActivated" ? m.paymentCard!.statusLabel : undefined}
+													onViewInvoice={m.paymentCard!.cardType === "membershipActivated" ? () => { /* TODO: 跳转发票/详情 */ } : undefined}
+												/>
+												)}
+
+													{isMe && (
+														<div className="absolute -bottom-2 -right-2">
+														<BubbleCornerStatus
+															status={m.status}
+															onRetry={() => {
+															if (m.status !== "failed") return
+															setText(m.text)
+															setMessages(prev => prev.filter(x => x.id !== m.id))
+															}}
+														/>
+														</div>
+													)}
+												</div>
+											) : hasShareLinkCard && shareUrl ? (
+												<div className="relative">
+													<ChatShareLinkPreviewCard
+														shareUrl={shareUrl}
+														timeLabel={fmtTime(getMsgTs(m))}
+														isMe={isMe}
+														onOpen={() => {
+															const nav = resolveBeamioShareInAppNavigation(shareUrl)
+															if (nav) {
+																navigate({ pathname: nav.pathname, search: nav.search })
+																return
+															}
+															void openExternalUrl(shareUrl)
+														}}
+													/>
+													{isMe && (
+														<div className="absolute -bottom-2 -right-2">
+															<BubbleCornerStatus
+																status={m.status}
+																onRetry={() => {
+																	if (m.status !== "failed") return
+																	setText(m.text)
+																	setMessages(prev => prev.filter(x => x.id !== m.id))
+																}}
+															/>
+														</div>
+													)}
+												</div>
+											) : hasGenericLinkCard && genericUrl ? (
+												<div className="relative">
+													<ChatGenericLinkPreviewCard
+														url={genericUrl}
+														timeLabel={fmtTime(getMsgTs(m))}
+														isMe={isMe}
+														onOpen={() => {
+															void openExternalUrl(genericUrl)
+														}}
+													/>
+													{isMe && (
+														<div className="absolute -bottom-2 -right-2">
+															<BubbleCornerStatus
+																status={m.status}
+																onRetry={() => {
+																	if (m.status !== "failed") return
+																	setText(m.text)
+																	setMessages(prev => prev.filter(x => x.id !== m.id))
+																}}
+															/>
+														</div>
+													)}
+												</div>
+											) : (
+												<div
+												className={[
+													"relative",
+													"px-3.5 py-2.5",
+													"rounded-[18px]",
+													"shadow-[0_8px_22px_rgba(15,23,42,0.08)]",
+													isMe
+													? "bg-[#1652f0] text-white rounded-br-[10px]"
+													: "bg-white text-slate-900 ring-1 ring-black/5 rounded-bl-[10px]"
+												].join(" ")}
+												onPointerDown={e => {
+													if (e.pointerType === "mouse" && e.button !== 0) return
+													if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current)
+													const target = e.currentTarget as HTMLElement
+													pressTimerRef.current = window.setTimeout(() => {
+														openReactionBarForElement(m, target, isMe)
+													}, 450)
+												}}
+												onPointerUp={() => {
+													if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current)
+													pressTimerRef.current = null
+												}}
+												onPointerCancel={() => {
+													if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current)
+													pressTimerRef.current = null
+												}}
+												onPointerLeave={() => {
+													if (pressTimerRef.current) window.clearTimeout(pressTimerRef.current)
+													pressTimerRef.current = null
+												}}
+												onContextMenu={e => {
+													e.preventDefault()
+													openReactionBarForElement(m, e.currentTarget as HTMLElement, isMe)
+												}}
+												>
+												{(() => {
+													const reactions = getReactionsForMessage(m)
+													const show = reactions?.slice(-2) ?? []
+													if (!show.length) return null
+													const hasMyReply = show.some(r => r.from === 'me')
+													return (
+														<div
+															className={["absolute -top-2 -left-2 z-10 flex items-center gap-0.5 rounded-tl-xl rounded-tr-xl rounded-br-xl rounded-bl-[6px] px-1.5 py-1 shadow-lg ring-1 ring-black/5", hasMyReply ? "bg-[#1652f0]/30" : "bg-slate-100/25"].join(" ")}
+															style={{ boxShadow: '0 3px 12px rgba(0,0,0,0.2)' }}
+															aria-hidden
+														>
+															{show.map((r, i) => {
+																const label = REACTIONS.find(x => x.key === r.reactionKey)?.label ?? r.reactionKey
+																return <span key={`${r.reactionKey}-${i}`} className="text-base leading-none" title={r.reactionKey}>{label}</span>
+															})}
+														</div>
+													)
+												})()}
+												{m.quote?.text && (
+													<div
+														className={[
+															"mb-1.5 rounded-lg border-l-2 pl-2 pr-2 py-1 text-[12px] leading-snug line-clamp-2",
+															isMe
+																? "border-white/60 bg-white/15 text-white/85"
+																: "border-[#1652f0]/50 bg-slate-100 text-slate-500"
+														].join(" ")}
+													>
+														{m.quote.text}
+													</div>
+												)}
+												<div className="whitespace-pre-wrap break-words text-[14px] leading-relaxed">
+													{m.text}
+												</div>
+
+												{isMe && (
+													<BubbleCornerStatus
+													status={m.status}
+													onRetry={() => {
+														if (m.status !== "failed") return
+														setText(m.text)
+														setMessages(prev => prev.filter(x => x.id !== m.id))
+													}}
+													/>
+												)}
+												</div>
+											)}
+
+											{!isMe && m.claimedFrom ? (
+												<div
+													role="alert"
+													className="mt-1 flex max-w-full items-start gap-1.5 rounded-xl border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11px] font-semibold text-red-700"
+												>
+													<AlertTriangle className="mt-[1px] h-3.5 w-3.5 shrink-0" aria-hidden />
+													<span className="min-w-0 break-all">
+														Unverified sender claim: this message says it is from {m.claimedFrom}, but it was signed by this contact.
+													</span>
+												</div>
+											) : null}
+											<div className={["mt-1 flex items-center gap-2", isMe ? "justify-end" : "justify-start"].join(" ")}>
+												<span className="text-[11px] text-slate-400">
+												{fmtTime(getMsgTs(m))}
+												</span>
+
+												{isMe && (
+												<span className="text-[11px]">
+													{m.status === "sending" && <span className="text-slate-400">Sending…</span>}
+													{m.status === "sent" && <span className="text-slate-400">Sent</span>}
+													{m.status === "delivered" && <span className="text-[#1652f0]">Delivered</span>}
+													{m.status === "failed" && (
+													<button
+														type="button"
+														onClick={() => {
+														setText(m.text)
+														setMessages(prev => prev.filter(x => x.id !== m.id))
+														}}
+														className="text-rose-600 underline underline-offset-2"
+													>
+														Failed · Tap to retry</button>
+													)}{m.sendError && m.status === "failed" && <span className="ml-1 text-[11px] text-rose-600">{sendFailedDetailText(m.sendError)}</span>}
+													{m.status === "first_fetch_pending" && m.id && (
+														<span className="ml-1 inline-flex flex-col gap-1 text-[11px]">
+															<span className="text-amber-700">{chatHeldLabelText("first_fetch_pending")}</span>
+															{m.sendFingerprint && (<span className="font-mono break-all text-[10px] text-slate-600">{tu("chat.held.fingerprint.caption")}: {formatFingerprintForCompare(m.sendFingerprint)}</span>)}
+															<span className="inline-flex gap-2">
+																<button type="button" className="text-[#1652f0] underline" onClick={() => void retryHeldSend(m.id as string, 'verify')}>{tu("chat.held.action.verify")}</button>
+															</span>
+														</span>
+													)}
+													{m.status === "fingerprint_changed" && m.id && (
+														<span className="ml-1 inline-flex flex-col gap-1 text-[11px]">
+															<span className="text-amber-700">{chatHeldLabelText("fingerprint_changed")}</span>
+															{m.sendFingerprint && (<span className="font-mono break-all text-[10px] text-slate-600">{tu("chat.held.fingerprint.caption")}: {formatFingerprintForCompare(m.sendFingerprint)}</span>)}
+															<span className="inline-flex gap-2">
+																<button type="button" className="text-[#1652f0] underline" onClick={() => void retryHeldSend(m.id as string, 'accept')}>{tu("chat.held.action.accept")}</button>
+															</span>
+														</span>
+													)}
+													{m.status === "route_unconfirmed" && m.id && (
+														<span className="ml-1 inline-flex gap-2 text-[11px]">
+															<span className="text-amber-700">{chatHeldLabelText("route_unconfirmed")}</span>
+															<button type="button" className="text-[#1652f0] underline" onClick={() => void retryHeldSend(m.id as string, 'fresh')}>{tu("chat.held.action.retry")}</button>
+															<button type="button" className="text-rose-600 underline" onClick={() => void retryHeldSend(m.id as string, 'cached')}>{tu("chat.held.action.send_anyway")}</button>
+														</span>
+													)}
+																										{m.status === "sent" && m.sentViaUnconfirmedRoute && <span className="ml-1 text-[11px] text-amber-700">(unconfirmed route)</span>}
+												</span>
+												)}
+											</div>
+											</div>
+										</motion.div>
+										)
+									})}
+									</div>
+								))}
+							</AnimatePresence>
+
+					{/* ✅ 关键：底部 spacer —— 随输入栏实际高度变化（附件 chip / 多行 / 回复条），保证最后一条完整可见 */}
+					<div aria-hidden style={{ height: "max(96px, calc(var(--chat-composer-h, 88px) + 1.5rem))" }} />
+					{/* 长按底部消息时临时增加的额外空间，确保菜单完整显示 */}
+					{menuBottomSpacer > 0 && <div aria-hidden style={{ height: menuBottomSpacer }} />}
+				</div>
+				</div>
+			</div>
+			</div>
+
+			{/* 底部：输入栏（iOS 毛玻璃 + pill） */}
+			<div
+				ref={setComposerEl}
+				className={[
+					"fixed left-0 right-0 bottom-0 z-50",
+					// On the keyboard there is no home indicator to clear.
+					keyboardCovers ? "pb-0" : "pb-[env(safe-area-inset-bottom)]"
+				].join(" ")}
+				onDragEnter={handleChatFileDragEnter}
+				onDragOver={handleChatFileDragOver}
+				onDrop={handleChatFileDrop}
+			>
+				<div className={["bg-white/0"].join(" ")}>
+					<div className="relative">
+						<div className="mx-auto w-full max-w-[820px] px-3 pt-3 pb-4">
+						{cameraStream ? (
+							<div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm">
+								<div className="w-full max-w-lg overflow-hidden rounded-3xl bg-white p-3 shadow-2xl">
+									<video
+										ref={cameraPreviewRef}
+										className="aspect-[3/4] w-full rounded-2xl bg-black object-cover"
+										autoPlay
+										muted
+										playsInline
+									/>
+									<div className="mt-3 flex items-center justify-between gap-3">
+										<button
+											type="button"
+											onClick={closeChatCamera}
+											className="rounded-full px-4 py-2 text-sm font-semibold text-slate-600 ring-1 ring-slate-200"
+										>
+											Cancel
+										</button>
+										<button
+											type="button"
+											onClick={() => cameraRecording ? stopChatCameraRecording() : startChatCameraRecording(cameraPreviewRef.current as HTMLVideoElement)}
+											className="rounded-full bg-[#1652f0] px-5 py-2 text-sm font-semibold text-white"
+										>
+											{cameraRecording ? 'Stop' : 'Record video'}
+										</button>
+									</div>
+								</div>
+							</div>
+						) : null}
+						{pgpMigrationRetry && !pgpMigrationRetryDismissed && (
+							<div role="alert" className="mb-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-700">
+								{tu('pgp_migration_retry_notice')}
+								<button type="button" className="ml-2 underline" onClick={() => setPgpMigrationRetryDismissed(true)}>Dismiss</button>
+							</div>
+						)}
+						{verifyPrompt && (
+							<div role="dialog" aria-label={tu('chat.verify_once.title')} className="mb-2 rounded-2xl border border-amber-300 bg-amber-50 p-3 text-[13px] text-slate-800">
+								<p className="font-semibold">{tu('chat.verify_once.title')}</p>
+								<p className="mt-1">{tu('chat.verify_once.body')}</p>
+								<p className="mt-2 break-all font-mono text-[12px]">{tu('chat.held.fingerprint.caption')}: {formatFingerprintForCompare(verifyPrompt.fingerprint)}</p>
+								<p className="mt-1 text-[12px] text-slate-600">{tu('chat.verify_once.hint')}</p>
+								<div className="mt-2 flex gap-3">
+									<button type="button" className="text-[#1652f0] underline" onClick={confirmVerifyPrompt}>{tu('chat.verify_once.action')}</button>
+									<button type="button" className="text-slate-600 underline" onClick={dismissVerifyPrompt}>{tu('chat.verify_once.later')}</button>
+								</div>
+							</div>
+						)}
+						{chatError && (
+							<div role="alert" className="mb-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-700">
+								{chatError}
+								<button type="button" className="ml-2 underline" onClick={() => setChatError(null)}>Dismiss</button>
+							</div>
+						)}
+						{voiceError && !voiceRelayOpenFailed && (
+							<div role="alert" className="mb-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-700">
+								{voiceError}
+								<button type="button" className="ml-2 underline" onClick={() => setVoiceError(null)}>Dismiss</button>
+							</div>
+						)}
+						{isRecordingVoice && (
+							<div className="mb-2 rounded-xl border border-rose-200 bg-white/85 px-3 py-2 text-[13px] text-rose-700">
+								<div className="flex items-center justify-between gap-3">
+									<span>
+										Recording voice message · {formatVoiceDuration(voiceDurationMs)} ·{' '}
+										{formatVoiceBytes(voiceRecordedBytes)}
+									</span>
+									<button type="button" className="shrink-0 font-semibold underline" onClick={() => void finishVoiceRecording()}>
+										Stop
+									</button>
+								</div>
+								<div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-rose-100" aria-hidden>
+									<div
+										className="h-full rounded-full bg-rose-500 transition-[width] duration-300"
+										style={{
+											width: `${Math.min(100, Math.max(2, (voiceRecordedBytes / VOICE_MAX_AUDIO_BYTES) * 100))}%`,
+										}}
+									/>
+								</div>
+								<div className="mt-1.5 h-8 overflow-hidden rounded-md bg-[#fff4f7]/70" aria-label="Current recording volume">
+									<svg
+										viewBox="0 0 240 32"
+										preserveAspectRatio="none"
+										className="h-full w-full"
+										role="img"
+										aria-label="Live recording waveform"
+									>
+										<path d={voiceWaveformPath(voiceLevelSamples)} fill="rgba(225,29,72,0.58)" />
+										<path d="M 0 16 L 240 16" stroke="rgba(225,29,72,0.28)" strokeWidth="0.5" />
+									</svg>
+								</div>
+							</div>
+						)}
+						{replyTo && (
+							<div className="mb-2 flex items-center gap-2 rounded-2xl bg-white/70 backdrop-blur-xl ring-1 ring-black/5 px-3 py-2 shadow-[0_4px_16px_rgba(15,23,42,0.06)]">
+								<CornerUpLeft className="h-4 w-4 shrink-0 text-[#1652f0]" strokeWidth={2.2} />
+								<div className="min-w-0 flex-1">
+									<div className="text-[11px] font-semibold text-[#1652f0]">
+										{replyTo.from === 'me' ? 'Replying to yourself' : 'Replying'}
+									</div>
+									<div className="truncate text-[12px] text-slate-500">{replyTo.text || '…'}</div>
+								</div>
+								<button
+									type="button"
+									tabIndex={-1}
+									onClick={() => setReplyTo(null)}
+									className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-slate-400 active:scale-95 hover:bg-black/5"
+									aria-label="Cancel reply"
+								>
+									<X className="h-4 w-4" strokeWidth={2.4} />
+								</button>
+							</div>
+						)}
+						{nativeCameraProcessing ? (
+							<div role="status" aria-live="polite" className="mb-2 flex items-center gap-2 rounded-xl bg-blue-50 px-3 py-2 text-[12px] text-blue-700">
+								<Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+								<span>Processing your camera video… Please wait.</span>
+							</div>
+						) : null}
+						{fileError ? <div role="alert" className="mb-2 rounded-xl bg-rose-50 px-3 py-2 text-[12px] text-rose-700">{fileError}</div> : null}
+						<div>
+						<input ref={fileInputRef} type="file" multiple hidden onChange={event => { void addChatFiles(Array.from(event.target.files || []), null, 'picker'); event.currentTarget.value = '' }} />
+						<input ref={photoInputRef} type="file" accept="image/*,video/*" multiple hidden onChange={event => { void addChatFiles(Array.from(event.target.files || []), null, 'picker'); event.currentTarget.value = '' }} />
+						<input ref={cameraInputRef} type="file" accept="video/*" capture="environment" hidden onChange={event => { void addChatFiles(Array.from(event.target.files || []), null, 'picker'); event.currentTarget.value = '' }} />
+						<div className="flex items-center gap-2">
+							<PlusActionMenu
+								open={plusOpen}
+								onClose={() => setPlusOpen(false)}
+								anchorRef={plusBtnRef}
+								onAttachFiles={() => fileInputRef.current?.click()}
+								onSelectPhotos={() => {
+									const requestId = `photo-${Date.now()}`
+									if (!requestNativePhotoPicker({ requestId })) photoInputRef.current?.click()
+								}}
+								onCaptureCamera={openChatCamera}
+								
+							/>
+								{/* ✅ 输入框：内部放 send 按钮 */}
+								<div
+									className={[
+									"relative flex-1",
+									"rounded-[22px]",
+									"bg-white/60 backdrop-blur-xl",
+									"ring-1 ring-black/5",
+									"shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]"
+									].join(" ")}
+								>
+									{fileJobs.length || (voiceDraftBlob && !isRecordingVoice) ? (
+										<div className="relative mx-2 flex flex-wrap items-center justify-start gap-1.5 pt-2">
+											{voiceDraftBlob && !isRecordingVoice ? (
+												<div className="inline-flex h-11 max-w-[min(100%,22rem)] items-center gap-2 rounded-2xl bg-white/75 px-3 ring-1 ring-black/5 backdrop-blur-xl">
+													<span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#dceaff] text-[#1652f0]" aria-hidden>
+														<Mic className="h-4 w-4" strokeWidth={2.3} />
+													</span>
+													<div className="min-w-0">
+														<p className="truncate text-[13px] font-semibold text-slate-700">Voice message</p>
+														<p className="text-[11px] text-slate-500">{formatVoiceDuration(voiceDurationMs)} · {formatVoiceBytes(voiceRecordedBytes)}</p>
+													</div>
+													<button type="button" tabIndex={-1} disabled={voiceSending} onClick={cancelVoiceDraft} aria-label="Delete voice message" className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-slate-500 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50">
+														<X className="h-4 w-4" strokeWidth={2.4} />
+													</button>
+												</div>
+											) : null}
+											{fileJobs.map(job => (
+												<div key={job.id} className="inline-flex h-11 max-w-[min(100%,22rem)] items-center gap-2 rounded-2xl bg-white/75 px-3 ring-1 ring-black/5 backdrop-blur-xl">
+													{job.thumbnailUrl ? (
+														<div className="relative h-8 w-10 shrink-0 overflow-hidden rounded-lg bg-slate-100">
+															<img src={job.thumbnailUrl} alt={job.name} className="h-full w-full object-cover" />
+															{job.files.length === 1 && job.files[0].type.startsWith('video/') ? (
+																<span className="absolute inset-0 grid place-items-center">
+																	<span className="grid h-6 w-6 place-items-center rounded-full bg-black/60 text-white">
+																		<Play className="ml-0.5 h-3 w-3 fill-current" />
+																	</span>
+																</span>
+															) : null}
+														</div>
+													) : null}
+													<div className="min-w-0 flex-1">
+														<p className="truncate text-[13px] font-semibold text-slate-700">{folderDisplayName(job.name) || job.name}</p>
+														{job.files.length > 1 ? (
+															<p className="truncate text-[11px] text-slate-500">
+																{`${job.files.length} files · ${formatVoiceBytes(job.files.reduce((sum, file) => sum + file.size, 0))}`}
+															</p>
+														) : null}
+														{job.status === 'uploading' ? <div className="mt-1 h-1 overflow-hidden rounded-full bg-slate-200"><div className="h-full bg-[#1652f0] transition-[width]" style={{ width: `${Math.max(2, job.progress * 100)}%` }} /></div> : null}
+														{job.error ? <p role="alert" className="text-[11px] text-rose-600">{job.error}</p> : null}
+													</div>
+													<button type="button" tabIndex={-1} onClick={() => cancelChatFileJob(job.id)} aria-label="Cancel file upload" className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-slate-500 hover:bg-rose-50 hover:text-rose-600"><X className="h-4 w-4" strokeWidth={2.4} /></button>
+												</div>
+											))}
+										</div>
+									) : null}
+									<button
+										ref={plusBtnRef}
+										type="button"
+										tabIndex={-1}
+										onClick={() => setPlusOpen(true)}
+										className="absolute bottom-2 left-2 grid h-8 w-8 place-items-center rounded-full bg-transparent ring-1 ring-slate-300/70 backdrop-blur-xl transition active:scale-[0.95]"
+										aria-label="More actions"
+									>
+										<Plus className="h-4 w-4 text-slate-500" strokeWidth={2.6} />
+									</button>
+									<textarea
+									key={inputSession}
+									ref={inputRef}
+									value={text}
+									onChange={e => {
+										if (!hasRoute) return
+										if (suppressImeEchoRef.current) {
+											e.target.value = ""
+											if (text !== "") flushSync(() => setText(""))
+											return
+										}
+										setText(e.target.value)
+									}}
+									onBeforeInput={hasRoute ? onBeforeInput : undefined}
+									onKeyDown={hasRoute ? onKeyDown : undefined}
+									onCompositionStart={hasRoute ? onCompositionStart : undefined}
+									onCompositionEnd={hasRoute ? onCompositionEnd : undefined}
+									placeholder={hasRoute ? "iMessage…" : "No route – message may not be delivered"}
+									readOnly={!hasRoute}
+									rows={1}
+									tabIndex={1}
+									inputMode="text"
+									enterKeyHint="send"
+									{...chatComposerAutofillProps()}
+									autoCorrect="on"
+									spellCheck
+									className={[
+										"w-full resize-none bg-transparent outline-none",
+										"py-3 pl-14 pr-14",
+										"pr-14",
+										"text-[15px] leading-[20px]",
+										"placeholder:text-slate-400",
+										"disabled:opacity-60",
+										"overflow-y-auto",
+										"[scrollbar-width:none]",
+										"[-ms-overflow-style:none]",
+										"[&::-webkit-scrollbar]:hidden"
+									].join(" ")}
+									/>
+
+									{/* ✅ 按钮放进输入框内部，最右对齐 */}
+									<button
+									type="button"
+									tabIndex={-1}
+									onClick={() => {
+										if (voiceDraftBlob) {
+											void sendVoiceDraft()
+										} else if (canSend || (hasRoute && (inputRef.current?.value ?? text).trim())) {
+										void sendAll()
+										} else if (isRecordingVoice) {
+											void finishVoiceRecording()
+										} else {
+											void startVoiceRecording()
+										}
+									}}
+									disabled={voiceSending}
+									onPointerDown={e => {
+										// Keep focus until send() snapshots DOM value + remounts; avoids IME commit-on-blur refill.
+										if (voiceDraftBlob || canSend || (hasRoute && (inputRef.current?.value ?? "").trim())) {
+											e.preventDefault()
+										}
+									}}
+									className={[
+										"absolute right-2 bottom-2",
+										"h-8 w-8 rounded-full",
+										"grid place-items-center",
+										"transition active:scale-[0.95]",
+										canSend
+										? [
+											"bg-[rgba(22,82,240,0.60)]",
+											"shadow-[0_4px_12px_rgba(22,82,240,0.15)]"
+											].join(" ")
+										: isRecordingVoice
+											? ["bg-rose-500", "ring-1 ring-rose-600"].join(" ")
+											: ["bg-transparent", "ring-1 ring-slate-300/70"].join(" ")
+									].join(" ")}
+									aria-label={voiceDraftBlob || canSend ? tu('send') : isRecordingVoice ? "Stop voice recording" : "Record voice message"}
+									>
+									{canSend ? (
+										<ArrowUp className="h-4 w-4 text-white/70" strokeWidth={2.8} />
+									) : isRecordingVoice ? (
+										<div className="h-3 w-3 rounded-sm bg-white" aria-hidden />
+									) : (
+										<Mic className="h-4 w-4 text-slate-400" strokeWidth={2.4} />
+									)}
+									</button>
+								</div>
+							</div>
+						</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		)
+}

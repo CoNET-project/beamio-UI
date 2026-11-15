@@ -1,0 +1,98 @@
+import {
+	BEAMIO_AA_MULTISIG_TYPE,
+	buildAaMultisigChatOuterLine,
+	type AaMultisigInner,
+	type AaMultisigProposeInner,
+	type AaMultisigRejectInner,
+	type AaMultisigSignInner,
+	type AaMultisigSubmittedInner,
+} from '@/utils/aaMultisigProtocol'
+import { lookupRecipientRecord, sendMessage } from '@/services/chat'
+import { resolveRecipientForSend } from '@/utils/recipientPublicKey'
+
+async function sendMultisigInnerToRecipient(params: {
+	recipientEoa: string
+	inner: AaMultisigInner
+	privateKeyArmor: string
+	allNodes: nodeInfo[]
+}): Promise<boolean> {
+	// the inner is a send to the recipient: the trust rule applies. A failed read, a missing record or a held key is not sent.
+	const recipientKey = await resolveRecipientForSend({ address: params.recipientEoa }, lookupRecipientRecord)
+	if (!recipientKey.ok) {
+		console.warn(`[aaMultisigGossip] inner not sent: ${recipientKey.code}`)
+		return false
+	}
+	const outerLine = buildAaMultisigChatOuterLine(params.inner)
+	if (!params.allNodes?.length) return false
+	return sendMessage(recipientKey.publicArmored, outerLine, params.privateKeyArmor, params.allNodes)
+}
+
+export async function broadcastAaMultisigInner(params: {
+	recipients: string[]
+	inner: AaMultisigInner
+	privateKeyArmor: string
+	allNodes: nodeInfo[]
+	excludeEoa?: string
+}): Promise<{ sent: number; failed: number }> {
+	const exclude = (params.excludeEoa ?? '').toLowerCase()
+	const uniq = [...new Set(params.recipients.map((r) => r.toLowerCase()))].filter(
+		(r) => r.startsWith('0x') && r.length === 42 && r !== exclude
+	)
+	let sent = 0
+	let failed = 0
+	for (const recipient of uniq) {
+		const ok = await sendMultisigInnerToRecipient({
+			recipientEoa: recipient,
+			inner: params.inner,
+			privateKeyArmor: params.privateKeyArmor,
+			allNodes: params.allNodes,
+		})
+		if (ok) sent++
+		else failed++
+	}
+	return { sent, failed }
+}
+
+export function buildProposeInner(
+	fields: Omit<AaMultisigProposeInner, 'type' | 'action' | 'sendId'>
+): AaMultisigProposeInner {
+	return {
+		type: BEAMIO_AA_MULTISIG_TYPE,
+		action: 'propose',
+		sendId: crypto.randomUUID().toLowerCase(),
+		...fields,
+	}
+}
+
+export function buildSignInner(
+	fields: Omit<AaMultisigSignInner, 'type' | 'action' | 'sendId'>
+): AaMultisigSignInner {
+	return {
+		type: BEAMIO_AA_MULTISIG_TYPE,
+		action: 'sign',
+		sendId: crypto.randomUUID().toLowerCase(),
+		...fields,
+	}
+}
+
+export function buildRejectInner(
+	fields: Omit<AaMultisigRejectInner, 'type' | 'action' | 'sendId'>
+): AaMultisigRejectInner {
+	return {
+		type: BEAMIO_AA_MULTISIG_TYPE,
+		action: 'reject',
+		sendId: crypto.randomUUID().toLowerCase(),
+		...fields,
+	}
+}
+
+export function buildSubmittedInner(
+	fields: Omit<AaMultisigSubmittedInner, 'type' | 'action' | 'sendId'>
+): AaMultisigSubmittedInner {
+	return {
+		type: BEAMIO_AA_MULTISIG_TYPE,
+		action: 'submitted',
+		sendId: crypto.randomUUID().toLowerCase(),
+		...fields,
+	}
+}

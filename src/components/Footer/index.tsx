@@ -1,0 +1,730 @@
+// Footer/index.tsx
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { useNavigate, useLocation } from 'react-router-dom'
+import { motion, useAnimation } from 'framer-motion'
+import { CoNET_Data, setCoNET_Data } from '../../utils/globals'
+import { ReactComponent as ShoppingIconGrey } from './assets/shopping-1-icon.grey.svg'
+import { ReactComponent as ShoppingBlueIcon } from './assets/shopping-1-icon.blue.svg'
+import { ReactComponent as WalletBlueIcon } from './assets/wallet-1-icon-blue.svg'
+import { ReactComponent as WalletIconGrey } from './assets/wallet-1-icon-grey.svg'
+import { ReactComponent as HomeIconGrey } from './assets/home-icon-grey.svg'
+import { ReactComponent as HomeIconBlue } from './assets/home-icon-blue.svg'
+import { ReactComponent as ChatBlueIcon } from './assets/chat-blue.svg'
+import { ReactComponent as ChatGreyIcon } from './assets/chat-grey.svg'
+
+import { ReactComponent as PayIcon } from './assets/pay-icon.svg'
+
+import { Search } from 'lucide-react'
+import { searchUsername, storeSystemData } from '@/services/beamio'
+import { useDaemonContext } from '@/providers/DaemonProvider'
+import type { Transition } from 'framer-motion'
+import { tu } from '@/locale/beamioLocale'
+import { useReliableTapHandler, RELIABLE_TAP_BUTTON_CLASS } from '@/utils/reliableTap'
+
+
+/** Footer 可点击 tab；首格 `/history` 对应首页 `/`；第二格为 Wallet */
+type TabKey = '/history' | '/wallet' | '/pay' | '/chat' | '/settings'
+type ActiveKey = TabKey | 'home'
+type Phase = 'idle' | 'moving' | 'settling' | 'impact'
+
+const ICON_CLASS = 'w-[18px] h-[18px] block'
+/** Ledger / Pay tab：相对其它 tab 图标放大至 115% */
+const LEDGER_ICON_CLASS = `${ICON_CLASS} origin-center scale-[1.15]`
+/** 未缩放内容约 34px 高 × FOOTER_BAR_SCALE，用于与右侧 Search 垂直居中对齐 */
+const FOOTER_BAR_LAYOUT_W_PX = 210
+const FOOTER_BAR_SCALE = 1.28
+/** Hit box must match visual size after CSS scale (layout box stays pre-transform). */
+const FOOTER_BAR_VISUAL_W_PX = Math.round(FOOTER_BAR_LAYOUT_W_PX * FOOTER_BAR_SCALE)
+const FOOTER_BAR_VISUAL_H_PX = Math.round(34 * FOOTER_BAR_SCALE)
+const SLOT_H = 'h-6'
+
+
+
+
+/** Parse CSS rgb/rgba → perceived luminance; null if unreadable / transparent. */
+function luminanceFromCssColor(raw: string): number | null {
+	const s = String(raw || '').trim().toLowerCase()
+	if (!s || s === 'transparent' || s === 'inherit' || s === 'initial') return null
+	const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(s)
+	if (hex) {
+		let h = hex[1]
+		if (h.length === 3) h = h.split('').map((c) => c + c).join('')
+		const n = parseInt(h, 16)
+		const r = (n >> 16) & 255
+		const g = (n >> 8) & 255
+		const b = n & 255
+		return 0.299 * r + 0.587 * g + 0.114 * b
+	}
+	const m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)$/.exec(s)
+	if (!m) return null
+	const a = m[4] != null ? Number(m[4]) : 1
+	if (!(a > 0.08)) return null
+	return 0.299 * Number(m[1]) + 0.587 * Number(m[2]) + 0.114 * Number(m[3])
+}
+
+/**
+ * Lightweight under-footer luminance sample.
+ * Do NOT use html2canvas here — full-body raster on scroll/resize causes /home layout thrash (My Brands jitter).
+ */
+function sampleLuminanceUnderPoint(clientX: number, clientY: number): number | null {
+	if (typeof document === 'undefined') return null
+	const stack =
+		typeof document.elementsFromPoint === 'function'
+			? document.elementsFromPoint(clientX, clientY)
+			: (() => {
+					const one = document.elementFromPoint(clientX, clientY)
+					return one ? [one] : []
+				})()
+	for (const node of stack) {
+		if (!(node instanceof HTMLElement)) continue
+		if (node.hasAttribute('data-html2canvas-ignore')) continue
+		const style = window.getComputedStyle(node)
+		const lum = luminanceFromCssColor(style.backgroundColor)
+		if (lum != null) return lum
+	}
+	const bodyLum = luminanceFromCssColor(window.getComputedStyle(document.body).backgroundColor)
+	return bodyLum
+}
+
+const Footer = ({ visible }: { visible: boolean }) => {
+	const location = useLocation()
+	const { pathname } = location
+	const isHomeRoute = /^\/(?:home\/?)?$/i.test(pathname)
+	/** Explore Offers list: keep the global bar and search tappable with or without rows. */
+	const pinRewardPtDiscoverBar = useMemo(() => {
+		const p = (pathname || '/').toLowerCase()
+		const onDiscover = p === '/discover' || p.startsWith('/discover?')
+		const state = location.state as { rewardPtUsdcOnly?: boolean; referrerRewardOnly?: boolean } | null
+		const filteredDiscover = Boolean(state?.rewardPtUsdcOnly || state?.referrerRewardOnly)
+		return onDiscover && filteredDiscover
+	}, [pathname, location.state])
+	const [scrollHidden, setScrollHidden] = useState(false)
+
+	useLayoutEffect(() => {
+		setScrollHidden(false)
+		// A: the scroll hide belongs to the home page only. /wallet, /chat, /discover and /bountyboard keep the global bar resident.
+		if (!visible || pinRewardPtDiscoverBar || !isHomeRoute) return
+
+		const positions = new WeakMap<EventTarget, number>()
+		const homeScroller = isHomeRoute ? document.querySelector<HTMLElement>('[data-home-main-scroll]') : null
+		const pageScroller = document.scrollingElement ?? document.documentElement
+		// Safari can report negative scrollTop at the top and values beyond the bottom during rubber-band scrolling.
+		const readTop = (node: Element) =>
+			Math.max(0, Math.min(node.scrollTop, node.scrollHeight - node.clientHeight))
+
+		positions.set(pageScroller, readTop(pageScroller))
+		if (homeScroller) positions.set(homeScroller, readTop(homeScroller))
+
+		const onScroll = (event: Event) => {
+			const node = event.target === document ? pageScroller : event.target
+			if (!(node instanceof HTMLElement)) return
+			if (node.closest('[data-ignore-footer-scroll="1"]')) return
+			if (isHomeRoute && node !== pageScroller && !node.hasAttribute('data-home-main-scroll')) return
+			if (node.scrollHeight <= node.clientHeight + 1) return
+
+			const top = readTop(node)
+			// A node never seen before starts from 0: the first downward scroll after the home mounts already hides the bar.
+			const baseline = positions.get(node) ?? 0
+			if (top <= 2) {
+				positions.set(node, top)
+				setScrollHidden(false)
+			} else if (Math.abs(top - baseline) >= 8) {
+				positions.set(node, top)
+				setScrollHidden(top > baseline)
+			}
+		}
+
+		document.addEventListener('scroll', onScroll, { passive: true, capture: true })
+		return () => document.removeEventListener('scroll', onScroll, true)
+	}, [isHomeRoute, location.key, pinRewardPtDiscoverBar, visible])
+
+	const navigate = useNavigate()
+	const footerRef = useRef<HTMLDivElement>(null)
+	const [isDarkUnderneath, setIsDarkUnderneath] = useState(true)
+	const lastDarkRef = useRef(true)
+
+	const sampleBackgroundColor = useCallback(() => {
+		const el = footerRef.current
+		if (!el || typeof document === 'undefined') return
+		const rect = el.getBoundingClientRect()
+		if (rect.width === 0 || rect.height === 0) return
+		const centerX = rect.left + rect.width / 2
+		const centerY = rect.top + rect.height / 2
+		try {
+			const luminance = sampleLuminanceUnderPoint(centerX, centerY)
+			if (luminance == null) return
+			const nextDark = luminance < 128
+			if (nextDark === lastDarkRef.current) return
+			lastDarkRef.current = nextDark
+			setIsDarkUnderneath(nextDark)
+		} catch (err) {
+			console.warn('[Footer] Background sampling failed:', err)
+		}
+	}, [])
+
+	useEffect(() => {
+		if (!visible) return
+		const t = setTimeout(sampleBackgroundColor, 300)
+		return () => clearTimeout(t)
+	}, [visible, pathname, sampleBackgroundColor])
+
+	useEffect(() => {
+		if (!visible) return
+		let tm: ReturnType<typeof setTimeout>
+		const debouncedSample = () => {
+			clearTimeout(tm)
+			tm = setTimeout(sampleBackgroundColor, 400)
+		}
+		window.addEventListener('scroll', debouncedSample, { passive: true })
+		window.addEventListener('resize', debouncedSample)
+		return () => {
+			clearTimeout(tm)
+			window.removeEventListener('scroll', debouncedSample)
+			window.removeEventListener('resize', debouncedSample)
+		}
+	}, [visible, sampleBackgroundColor])
+	const [animId, setAnimId] = useState(0)
+	const totalDur = 0.62
+	const { hasNewVersion, darkModle, isInitialLoading, messageCount, setMessageCount, setShowFooter, setChatSearchOpen } = useDaemonContext()
+	const interactiveVisible = visible && (pinRewardPtDiscoverBar || !scrollHidden)
+
+
+	const getMsgKey = (raw: any) => {
+		// charts 可能是 string(JSON) 或对象
+		try {
+			const obj = typeof raw === 'string' ? JSON.parse(raw) : raw
+			const ts = Number(obj?.timestamp)
+			const from = String(obj?.from || '')
+			// ✅ 只要 timestamp 有意义，就用 timestamp；更保险可以加 from
+			if (Number.isFinite(ts) && ts > 0) return `${ts}` // 或 `${from}_${ts}`
+		} catch {}
+		return null
+	}
+
+
+
+	
+	const [badgeMap, setBadgeMap] = useState<Record<TabKey, number>>({
+		'/history': 0,
+		'/wallet': 0,
+		'/pay': 0,        // ✅ 中间 B icon 不用（即使有值也不会显示）
+		'/chat': 0,
+		'/settings': hasNewVersion ? 1 : 0
+	})
+
+	// 如果 hasNewVersion 变化，你希望 settings badge 跟着更新
+	useEffect(() => {
+		setBadgeMap(v => ({
+			...v,
+			'/settings': hasNewVersion ? Math.max(v['/settings'] || 0, 1) : 0
+		}))
+	}, [hasNewVersion])
+
+	const getBadge = React.useCallback((k: TabKey) => {
+		if (k === '/pay') return undefined
+		const n = badgeMap[k] || 0
+		if (n <= 0) return undefined
+		return n > 99 ? '99+' : String(n)
+	}, [badgeMap])
+	
+	const dropletControls = useAnimation()
+	const [phase, setPhase] = useState<Phase>('idle')
+
+	useEffect(() => {
+		const root = document.documentElement
+		if (darkModle) {
+			root.classList.add('dark', 'theme-dark')
+			root.classList.remove('theme-light')
+		} else {
+			root.classList.remove('dark', 'theme-dark')
+			root.classList.add('theme-light')
+		}
+	}, [darkModle])
+
+	useEffect(() => {
+		setBadgeMap(v => ({
+			...v,
+			'/chat': messageCount
+		}))
+	}, [messageCount])
+
+
+	const activeKey = useMemo<ActiveKey>(() => {
+		requestAnimationFrame(() => {
+			const el = document.activeElement as HTMLElement | null
+			if (!el) return
+			const tag = el.tagName?.toLowerCase()
+			const editable =
+			tag === 'input' || tag === 'textarea' || (el as any).isContentEditable
+			if (editable) el.blur()
+		})
+
+		const p = (pathname || '/').toLowerCase()
+		if (isHomeRoute) return '/history'
+		if (p.startsWith('/history')) return '/history'
+		if (p.startsWith('/wallet')) return '/wallet'
+		if (p.startsWith('/bountyboard') || p.startsWith('/pay') || p.startsWith('/qr')) return '/pay'
+		if (p.startsWith('/chat')) return '/chat'
+		if (p.startsWith('/settings') || p.startsWith('/discover')) return '/settings'
+		return 'home'
+	}, [isHomeRoute, pathname])
+
+	const scrollMainContentToTop = () => {
+		if (typeof document === 'undefined') return
+		document.querySelectorAll<HTMLElement>('.overflow-y-auto, .overflow-y-scroll').forEach((node) => {
+			if (node.scrollTop > 0) node.scrollTop = 0
+		})
+		window.scrollTo(0, 0)
+	}
+
+	const go = (k: TabKey) => {
+		const el = document.activeElement as HTMLElement | null
+		el?.blur()
+
+		setBadgeMap(v => ({ ...v, [k]: 0 }))
+		if (k === '/chat') {
+			setMessageCount(0)
+		}
+		if (pathname.startsWith('/chat')) {
+			setMessageCount(0)
+		}
+
+		const p = (pathname || '/').toLowerCase()
+		const alreadyOnMainTab =
+			(k === '/history' && isHomeRoute) ||
+			(k === '/wallet' && (p === '/wallet' || p.startsWith('/wallet?'))) ||
+			(k === '/settings' && (p === '/discover' || p.startsWith('/discover?'))) ||
+			(k === '/chat' && (p === '/chat' || p.startsWith('/chat?'))) ||
+			(k === '/pay' && (p === '/bountyboard' || p.startsWith('/bountyboard?')))
+
+		if (alreadyOnMainTab) {
+			const discoverState = location.state as { rewardPtUsdcOnly?: boolean; referrerRewardOnly?: boolean } | null
+			const filteredDiscover = Boolean(discoverState?.rewardPtUsdcOnly || discoverState?.referrerRewardOnly)
+			if (k === '/settings' && filteredDiscover) {
+				navigate('/discover', { replace: true, state: {} })
+				return
+			}
+			scrollMainContentToTop()
+			return
+		}
+
+		if (k === '/history') {
+			navigate('/')
+		} else if (k === '/wallet') {
+			navigate('/wallet')
+		} else if (k === '/settings') {
+			/* 中间购物图标 → Discover */
+			navigate('/discover')
+		} else if (k === '/pay') {
+			navigate('/BountyBoard')
+		} else {
+			navigate(k)
+		}
+	}
+
+	const tabs = useMemo(
+		() =>
+		([
+			{
+			key: '/history' as const,
+				iconGrey: <HomeIconGrey className={ICON_CLASS} />,
+				iconBlue: <HomeIconBlue className={ICON_CLASS} />,
+				title: '',//'Transactions',
+				badge: getBadge('/history'),
+			},
+			{
+				key: '/wallet' as const,
+				iconGrey: <WalletIconGrey className={ICON_CLASS} />,
+				iconBlue: <WalletBlueIcon className={ICON_CLASS} />,
+				title: '',
+				badge: getBadge('/wallet'),
+			},
+			{
+				key: '/settings' as const,
+				iconGrey: <ShoppingIconGrey className={ICON_CLASS} />,
+				iconBlue: <ShoppingBlueIcon className={ICON_CLASS} />,
+				title: '', //Me',
+				badge: getBadge('/settings')
+			},
+			{
+				key: '/chat' as const,
+				iconGrey: <ChatGreyIcon className={ICON_CLASS} />,
+				iconBlue: <ChatBlueIcon className={ICON_CLASS} />,
+				title: '', //tu('chat'),
+				badge: getBadge('/chat'),
+			},
+			{
+				key: '/pay' as const,
+				iconGrey: <PayIcon className={LEDGER_ICON_CLASS} />,
+				iconBlue: <PayIcon className={LEDGER_ICON_CLASS} />,
+				title: '',
+				// ✅ 不要 badge
+			},
+		] as const),
+		// ✅ 依赖 getBadge / badgeMap / darkModle
+		// getBadge 是闭包函数，这里最简单就是把 badgeMap 放进依赖，并且保证 getBadge 不在 useMemo 外重建也行
+		// 你如果担心 eslint，可以把 getBadge 用 useCallback 包一下
+		[darkModle, badgeMap]
+  )
+
+	const activeIndex = useMemo(() => {
+		if (activeKey === 'home') return -1
+		const i = tabs.findIndex(t => t.key === activeKey)
+		return i >= 0 ? i : -1
+	}, [tabs, activeKey])
+
+
+
+	useEffect(() => {
+		setAnimId(v => v + 1)
+	}, [activeIndex])
+
+	const prevIndexRef = useRef(activeIndex)
+	const [direction, setDirection] = useState<1 | -1>(1)
+
+	useEffect(() => {
+		const prev = prevIndexRef.current
+		const next = activeIndex
+		if (next === prev) return
+
+		setDirection(next > prev ? 1 : -1)
+		prevIndexRef.current = next
+	}, [activeIndex])
+
+	// 移除 isStandalone/MobileType 限制，使 Footer 在 Safari 移动浏览器中也能显示（与 PWA 一致）
+	const shouldRender = !isInitialLoading
+
+	// Do not open the search sheet from pointerup. Android WebView can
+	// synthesize a second click after the footer is hidden; the newly mounted
+	// QR button may then receive that same touch and launch the scanner.
+	const openGlobalSearch = useCallback(() => {
+		setChatSearchOpen(true)
+		setShowFooter(false)
+	}, [setChatSearchOpen, setShowFooter])
+
+	//					紅色氣泡表示
+	useEffect(() => {
+		if (!shouldRender) return
+
+		if (activeIndex < 0) {
+			dropletControls.set({ opacity: 0, x: '0%', borderRadius: 12, scaleX: 1, scaleY: 1 })
+			setPhase('idle')
+			return
+		}
+
+		let cancelled = false
+
+		const run = async () => {
+			dropletControls.set({
+				opacity: 1,
+				x: `${Math.max(0, prevIndexRef.current) * 100}%`,
+				borderRadius: 12,
+				scaleX: 0.5,
+				scaleY: 0.5,
+			})
+
+			setPhase('moving')
+
+			await dropletControls.start({
+				opacity: 1,
+				borderRadius: 12,
+				scaleX: 1.10,
+				scaleY: 0.90,
+				transition: {
+					duration: 0.12,
+					ease: [0.55, 0.0, 1.0, 0.45],
+				},
+			})
+			setPhase('settling')
+			if (cancelled) return
+
+			await dropletControls.start({
+				borderRadius: 12,
+				scaleX: 1.272,
+				scaleY: 1.152,
+				transition: {
+					duration: 0.14,
+					ease: [0.55, 0.0, 1.0, 0.45],
+				},
+			})
+
+			await dropletControls.start({
+				borderRadius: 12,
+				scaleX: 1,
+				scaleY: 1,
+				transition: {
+					duration: 0.55,
+					ease: [0.2, 0.9, 0.2, 1],
+				},
+			})
+
+			if (cancelled) return
+			setPhase('idle')
+		}
+
+		run()
+
+		return () => {
+			cancelled = true
+		}
+	}, [activeIndex, shouldRender, dropletControls])
+
+	if (!shouldRender) return null
+
+	const Item = ({
+		k,
+		iconGrey,
+		iconBlue,
+		title,
+		badge,
+	}: {
+		k: TabKey
+		iconGrey: React.ReactNode
+		iconBlue: React.ReactNode
+		title: string
+		badge?: string
+	}) => {
+		const active = activeKey !== 'home' && activeKey === k
+		const tap = useReliableTapHandler(() => go(k))
+
+		const iconTarget = (() => {
+			if (!active) return { scaleX: 1, scaleY: 1, y: 0 }
+			if (phase === 'moving') return { scaleX: 0.7, scaleY: 0.60, y: 2 }
+			return { scaleX: 1, scaleY: 1, y: 0 }
+		})()
+
+		const iconTransition: Transition = (() => {
+			if (!active) return { duration: 0.12 }
+			if (phase === 'moving') return { type: 'spring', stiffness: 950, damping: 85, mass: 0.35 }
+			if (phase === 'settling') return { duration: 0.6, ease: [0.12, 0.82, 0.18, 1] }
+			return { duration: 0.18, ease: 'easeOut' }
+		})()
+
+		return (
+			<button
+				type="button"
+				data-touch-priority="1"
+				aria-label={k === '/chat' ? tu('chat') : undefined}
+				disabled={!interactiveVisible}
+				onPointerDown={tap.onPointerDown}
+				onPointerUp={tap.onPointerUp}
+				onClick={tap.onClick}
+				className={[
+					'relative w-full h-6 px-[1px] flex flex-col items-center justify-center gap-[1px] rounded-md select-none focus:outline-none',
+					RELIABLE_TAP_BUTTON_CLASS,
+					'focus-visible:ring-2 focus-visible:ring-[#1562f0]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-white/90 dark:focus-visible:ring-[#6ba3ff]/75 dark:focus-visible:ring-offset-slate-900',
+				].join(' ')}
+			>
+				<motion.div
+					className="relative flex items-center justify-center"
+					animate={iconTarget}
+					transition={iconTransition}
+				>
+					{active ? (
+						<span
+							className="
+								inline-flex [&_path]:!fill-[#1562f0] dark:[&_path]:!fill-[#6ba3ff]
+								[&_path]:!fill-opacity-100
+								drop-shadow-[0_2px_10px_rgba(21,98,240,0.32)]
+								dark:drop-shadow-[0_2px_14px_rgba(21,98,240,0.48)]
+							"
+						>
+							{iconBlue}
+						</span>
+					) : (
+						<span className={`inline-flex [&_path]:!fill-opacity-100 ${isDarkUnderneath ? '[&_path]:!fill-black' : '[&_path]:!fill-white'}`}>{iconGrey}</span>
+					)}
+
+					{badge && (
+						<span
+						className="
+							absolute top-[1px] right-[1px]
+							z-20
+							min-w-[8px] h-[8px] px-0.5
+							rounded-full
+							bg-rose-500
+							text-[9px] leading-[8px]
+							text-white
+							flex items-center justify-center
+							ring-1 ring-white/70 dark:ring-slate-900/60
+						"
+						>
+						{badge}
+						</span>
+					)}
+				</motion.div>
+
+				<motion.div
+					className={`
+						text-[9px] leading-none font-medium
+						${active ? 'text-[#1562f0] dark:text-[#6ba3ff]' : isDarkUnderneath ? 'text-black/80' : 'text-white/90'}
+					`}
+					animate={
+						active && (phase === 'impact' || phase === 'settling')
+							? { opacity: 0.85, y: 1 }
+							: { opacity: 1, y: 0 }
+					}
+					transition={
+						phase === 'settling'
+							? { duration: 0.38, ease: [0.2, 0.9, 0.2, 1] }
+							: { duration: 0.18, ease: 'easeOut' }
+					}
+				>
+					{title}
+				</motion.div>
+			</button>
+		)
+	}
+
+	return (
+		<motion.div
+			ref={footerRef}
+			data-html2canvas-ignore
+			aria-hidden={!interactiveVisible}
+			className="fixed left-0 right-0 z-[200] flex items-center justify-between pl-4 pr-4 overflow-visible"
+			animate={{ opacity: interactiveVisible ? 1 : 0, y: 0 }}
+			transition={{ duration: 0.28, ease: [0.2, 0.8, 0.2, 1] }}
+			initial={false}
+			style={{
+				// Safari can reduce the visual viewport while its Smart App
+				// Banner is visible. Keep the global bar anchored to the
+				// usable bottom edge instead of the layout viewport edge.
+				bottom: 'max(1rem, env(safe-area-inset-bottom, 0px))',
+				willChange: 'transform, opacity',
+				// Android WebView can fail to retarget touch events from a
+				// pointer-events:none fixed parent to transformed descendants.
+				// Keep the footer hit box interactive while visible; hidden
+				// states still let touches pass through to the page below.
+				pointerEvents: interactiveVisible ? 'auto' : 'none',
+				touchAction: 'manipulation',
+				/* Hidden: hard-hide so Coupons / fullscreen sheets cannot paint "under" a translucent bar. */
+				visibility: visible ? 'visible' : 'hidden',
+			}}
+		>
+			 {/* ✅ 玻璃层：hit box = visual size after scale；内层再 scale，避免右侧 tab 点到空白 */}
+			<div
+				className={[
+					'relative shrink-0 overflow-visible',
+					interactiveVisible ? 'pointer-events-auto' : 'pointer-events-none',
+				].join(' ')}
+				style={{ width: FOOTER_BAR_VISUAL_W_PX, height: FOOTER_BAR_VISUAL_H_PX }}
+			>
+			<div
+				className={[
+					'absolute bottom-0 left-0 origin-bottom-left',
+					interactiveVisible ? 'pointer-events-auto' : 'pointer-events-none',
+				].join(' ')}
+				style={{
+					width: FOOTER_BAR_LAYOUT_W_PX,
+					maxWidth: FOOTER_BAR_LAYOUT_W_PX,
+					transform: `scale(${FOOTER_BAR_SCALE})`,
+				}}
+			>
+				<div
+					className="
+						relative
+						rounded-[14px]
+						overflow-visible
+					"
+					>
+					{/* ✅ 背景玻璃层：负责圆角裁切 + blur */}
+					<div
+						className="
+						absolute inset-0
+						rounded-[14px]
+						overflow-hidden
+						border border-white/60 dark:border-white/10
+						pt-1 pb-1.5
+						"
+						style={{
+						backgroundColor: isDarkUnderneath
+							? 'rgba(255, 255, 255, 0.4)'
+							: 'rgba(0, 0, 0, 0.4)',
+						WebkitBackdropFilter: 'blur(1rem)',
+						backdropFilter: 'blur(1rem)',
+						transform: 'translate3d(0,0,0)',
+						WebkitTransform: 'translate3d(0,0,0)',
+						pointerEvents: 'none'
+						}}
+					>
+						{/* ✅ droplet 放在背景层里（被圆角裁切没问题） */}
+						<div className="relative h-full">
+						<motion.div
+							className="
+							absolute inset-y-0 left-0 w-1/5
+							overflow-hidden
+							-top-2 -bottom-2
+							border border-white/20
+							bg-white/20
+							pointer-events-none
+							"
+							style={{
+							boxShadow: 'none',
+							transformOrigin: 'center center',
+							}}
+							initial={{
+							opacity: activeIndex < 0 ? 0 : 1,
+							x: `${Math.max(0, activeIndex) * 100}%`,
+							borderRadius: 12,
+							scaleX: 1,
+							scaleY: 1
+							}}
+							animate={dropletControls}
+						/>
+						</div>
+					</div>
+
+					{/* ✅ 前景内容层：不裁切，所以 badge 可以越界 */}
+					<div
+						className={[
+							'relative pt-1 pb-1.5 overflow-visible',
+							interactiveVisible ? 'pointer-events-auto' : 'pointer-events-none',
+						].join(' ')}
+					>
+						<div className="relative grid grid-cols-5 items-center gap-0 overflow-visible">
+						{tabs.map(t => (
+							<Item
+							key={t.key}
+							k={t.key}
+							iconGrey={t.iconGrey}
+							iconBlue={t.iconBlue}
+							title={t.title}
+							badge={(t as any).badge}
+							/>
+						))}
+						</div>
+					</div>
+					</div>
+				
+			</div>
+			</div>
+				{/* Search：与左侧 tab bar 同一行垂直居中，随 footer 同步显隐 */}
+				<button
+					type="button"
+					tabIndex={interactiveVisible ? 0 : -1}
+					disabled={!interactiveVisible}
+					data-touch-priority="1"
+					onClick={openGlobalSearch}
+					className={[
+						'w-10 h-10 rounded-full flex items-center justify-center border shrink-0',
+						RELIABLE_TAP_BUTTON_CLASS,
+						'focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1562f0]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-white/90',
+						'dark:focus-visible:ring-[#6ba3ff]/75 dark:focus-visible:ring-offset-slate-900',
+						interactiveVisible ? 'pointer-events-auto' : 'pointer-events-none',
+					].join(' ')}
+					style={{
+						backgroundColor: isDarkUnderneath ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)',
+						color: isDarkUnderneath ? '#000' : '#fff',
+						borderColor: isDarkUnderneath ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.4)',
+						WebkitBackdropFilter: 'blur(1rem)',
+						backdropFilter: 'blur(1rem)'
+					}}
+					aria-label={tu('search')}
+				>
+					<Search className="w-5 h-5" />
+				</button>
+		</motion.div>
+	)
+}
+
+export default Footer
