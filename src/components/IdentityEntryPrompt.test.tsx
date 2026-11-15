@@ -4,7 +4,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import IdentityEntryPrompt from './IdentityEntryPrompt'
 import { IDENTITY_ENTRY_PROMPT_EVENT } from '../services/identityEntryPrompt'
-import { onNativeIdentityRetryRequested } from '../services/nativeIdentityProbeRetry'
+import { onNativeIdentityRetryRequested, setNativeIdentityCapability } from '../services/nativeIdentityProbeRetry'
 import { tu } from '../locale/beamioLocale'
 
 jest.mock('../services/shellChatCapability', () => ({ shellChatBlockedNow: jest.fn(() => false) }))
@@ -32,5 +32,20 @@ describe('the shared identity prompt on screen', () => {
 		expect(retry).toHaveBeenCalledTimes(1)
 		expect(screen.queryByRole('dialog')).toBeNull()
 		off()
+	})
+
+	it('an answered hello without the capability shows the unavailable copy and no retry', async () => {
+		setNativeIdentityCapability('missing')
+		render(<IdentityEntryPrompt />)
+		act(() => {
+			window.dispatchEvent(new Event(IDENTITY_ENTRY_PROMPT_EVENT))
+		})
+		expect(await screen.findByRole('dialog')).toBeTruthy()
+		expect(screen.getByText(tu('shell_chat_unavailable_title'))).toBeTruthy()
+		expect(screen.getByText(tu('shell_chat_unavailable_body'))).toBeTruthy()
+		expect(screen.queryByRole('button', { name: tu('native_not_ready_retry_action') })).toBeNull()
+		expect(screen.queryByText(tu('native_not_ready_hint'))).toBeNull()
+		expect(screen.getByRole('button', { name: tu('close') })).toBeTruthy()
+		setNativeIdentityCapability('unanswered')
 	})
 })
