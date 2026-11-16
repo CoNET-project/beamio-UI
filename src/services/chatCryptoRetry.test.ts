@@ -29,6 +29,26 @@ describe('Y.81 chat crypto availability (CA-01 to CA-06)', () => {
 		})
 	})
 
+	it('CA-04 (R35): crypto fully available but no local history: still the retry notice and the schedule, never "no session"', () => {
+		expect(chatCryptoAvailabilityOf({ kPgpVerified: true, pgpSource: 'ok', offline: false, localHistoryAvailable: false })).toEqual({
+			history: 'hidden_with_retry', encryptActions: 'enabled', hint: 'chat_crypto_retrying', retry: 'schedule', useL: false,
+		})
+	})
+
+	it('CA-04 (R35): every input without local history shows the notice and the schedule, and never a "no session" state', () => {
+		for (const kPgpVerified of [true, false]) {
+			for (const pgpSource of ['ok', 'pgp_source_unavailable', 'none'] as const) {
+				for (const offline of [true, false]) {
+					const out = chatCryptoAvailabilityOf({ kPgpVerified, pgpSource, offline, localHistoryAvailable: false })
+					expect(out.history).toBe('hidden_with_retry')
+					expect(out.hint).toBe('chat_crypto_retrying')
+					expect(out.retry).toBe('schedule')
+					expect(out.useL).toBe(false)
+				}
+			}
+		}
+	})
+
 	it('CA-05: the retry delays are 30 s, 2 min, 10 min, then manual', () => {
 		expect([0, 1, 2].map((n) => chatCryptoRetryAfter(n))).toEqual([30_000, 120_000, 600_000])
 		expect(chatCryptoRetryAfter(3)).toBe('manual')

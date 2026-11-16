@@ -22,7 +22,11 @@ export type ChatCryptoAvailability = {
 /** CA-01 to CA-04 (Y.81 1). The keys are never read from L (useL is always false, Y.81 1 and §25.52.3). */
 export function chatCryptoAvailabilityOf(input: ChatCryptoInput): ChatCryptoAvailability {
 	const full = input.kPgpVerified && input.pgpSource === 'ok'
-	if (full) return { history: input.localHistoryAvailable ? 'readwrite' : 'hidden_with_retry', encryptActions: 'enabled', hint: null, retry: null, useL: false }
+	// CA-04: no local history is never shown as "no session". The notice and the schedule apply whatever the crypto state (R35).
+	if (!input.localHistoryAvailable) {
+		return { history: 'hidden_with_retry', encryptActions: full ? 'enabled' : 'disabled', hint: 'chat_crypto_retrying', retry: 'schedule', useL: false }
+	}
+	if (full) return { history: 'readwrite', encryptActions: 'enabled', hint: null, retry: null, useL: false }
 	return {
 		history: input.localHistoryAvailable ? 'readonly' : 'hidden_with_retry',
 		encryptActions: 'disabled',
