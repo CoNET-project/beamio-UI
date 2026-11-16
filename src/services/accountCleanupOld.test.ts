@@ -1,5 +1,5 @@
 /**
- * Y.91 CU-01 to CU-08 (accountCleanupOldCases in pgp-migration-vectors.v2.json, sha256 cce7b834…). The native layer does the removal; these
+ * Y.91 CU-01 to CU-08 (accountCleanupOldCases in pgp-migration-vectors.v2.json, sha256 e61a2469…6d90). The native layer does the removal; these
  * tests pin the page side: the command shape, the result mapping, and the resume with the same idempotencyKey. SYNTHETIC values only.
  */
 import { accountCleanupOutcomeOf, buildAccountCleanupOldCommand, runAccountCleanupOld } from './accountCleanupOld'

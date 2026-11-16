@@ -1,5 +1,5 @@
 /**
- * Y.89 presence mapping, TS-01 to TS-06 (vectors in pgp-migration-vectors.v2.json, sha256 cce7b834…55b7).
+ * Y.89 presence mapping, TS-01 to TS-06 (vectors in pgp-migration-vectors.v2.json, sha256 e61a2469…6d90).
  * The table below carries each vector's input and expected result.
  */
 import { nativePresence, onboardingAllowed, type NativePresenceInput } from './accountPresence'

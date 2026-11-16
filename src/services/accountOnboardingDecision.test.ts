@@ -4,6 +4,7 @@
  * account; the cleanup of previous storage happens only after a confirmed recovery. SYNTHETIC values only.
  */
 import { decideAccountReset, idbPresenceOf, nativePresence, type NativePresence } from './accountPresence'
+import { idbSignalOf } from './accountJudgement'
 
 const base = { userConfirmedRecovery: false, newAccountEstablished: false }
 
@@ -87,5 +88,37 @@ describe('cleanup only after a confirmed recovery', () => {
 
 	it('a confirmed recovery without the new account: onboarding, no cleanup', () => {
 		expect(decideAccountReset({ idb: 'confirmed_none', native: 'confirmed_none', userConfirmedRecovery: true, newAccountEstablished: false })).toBe('onboarding')
+	})
+})
+
+describe('Y.106: residue and kPresent (readable mnemonic is has; a residue without a readable mnemonic is unknown; confirmed none needs kPresent false)', () => {
+	it('a readable mnemonic on the IDB side is has: the original account continues, even when the native side confirms none', () => {
+		const idb = idbPresenceOf(idbSignalOf({ status: 'loaded', keyPresent: true }))
+		expect(idb).toBe('has')
+		expect(decideAccountReset({ ...base, idb, native: 'confirmed_none' })).toBe('continue_account')
+	})
+
+	it('an account record without a readable mnemonic is unknown: retry, never onboarding', () => {
+		const idb = idbPresenceOf(idbSignalOf({ status: 'loaded', accountPresent: true }))
+		expect(idb).toBe('unknown')
+		expect(decideAccountReset({ ...base, idb, native: 'confirmed_none' })).toBe('retry_unknown')
+	})
+
+	it('no_key without kPresent is not confirmed none: retry, never onboarding', () => {
+		const native = nativePresence({ ws: 'no_key', snapshotUnknown: false })
+		expect(native).toBe('unknown')
+		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('retry_unknown')
+	})
+
+	it('no_key with kPresent true (a residue exists) is not confirmed none: retry, never onboarding', () => {
+		const native = nativePresence({ ws: 'no_key', kPresent: true, snapshotUnknown: false })
+		expect(native).toBe('unknown')
+		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('retry_unknown')
+	})
+
+	it('confirmed none needs the full condition: IDB empty and native no_key with kPresent false, and nothing else', () => {
+		const native = nativePresence({ ws: 'no_key', kPresent: false, snapshotUnknown: false })
+		expect(native).toBe('confirmed_none')
+		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('onboarding')
 	})
 })

@@ -49,11 +49,16 @@ describe('source guards', () => {
 		expect(cmd).toContain('{ type: NATIVE_ACCOUNT_CREATE_OPEN_COMMAND, account }')
 	})
 
-	it('the gate never routes a shell build to onboarding: native_retry backs off without a limit', () => {
+	it('the gate never routes a shell build to onboarding: native_retry follows the Y.104 cadence, then manual', () => {
 		const gate = read('src/components/AppEntryGate.tsx')
 		// the router is the pure storageRoute.ts; a shell (and a browser) never reaches onboarding from a storage failure.
 		expect(gate).toContain("storageUnavailableRoute({ nativeShell, reason }) === 'native_retry'")
 		expect(read('src/services/storageRoute.ts')).toContain("input.nativeShell && input.reason === 'native_retry'")
-		expect(gate).toContain('nativeStoreWaitDelayMs(attempt)')
+		expect(gate).toContain('const step = nativeRetryStep(attempt)')
+		expect(gate).toContain('window.setTimeout(() => void init(), step.delayMs)')
+		expect(gate).not.toContain('nativeStoreWaitDelayMs(attempt)')
+		expect(gate).not.toContain('attempt >= 6')
+		// used-up retries show the manual screen, never onboarding
+		expect(gate).toContain('showStorageUnavailable(MIGRATION_RETRY_SCREEN)')
 	})
 })

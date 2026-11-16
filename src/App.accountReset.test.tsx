@@ -178,16 +178,17 @@ describe('account reset at the gate (Y.85, Y.89, Y.93)', () => {
 		race.caps = ['identity.native-keys.v1']
 		race.kPresent = undefined
 		renderApp()
-		await waitFor(() => expect(screen.getByText(RETRY_TITLE)).toBeTruthy(), { timeout: 3000 })
+		// Y.104: the unknown answer is retried on the cadence (30 s first); the page never onboards and the decision is logged.
+		await waitFor(() => expect(publishNativePwaLog).toHaveBeenCalledWith('warn', expect.stringContaining('shell upgrade needed')), { timeout: 3000 })
+		expect(publishNativePwaLog).toHaveBeenCalledWith('warn', expect.stringContaining('onboarding not entered, nothing deleted'))
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
-		expect(publishNativePwaLog).toHaveBeenCalledWith('warn', expect.stringContaining('shell upgrade needed'))
 	})
 
 	// Y.90 4 at the page: a no_key answer whose kPresent is true is a key without a native wallet: retry, never onboarding.
 	it('no_key with kPresent true: retry, never onboarding', async () => {
 		race.kPresent = true
 		renderApp()
-		await waitFor(() => expect(screen.getByText(RETRY_TITLE)).toBeTruthy(), { timeout: 3000 })
+		await waitFor(() => expect(publishNativePwaLog).toHaveBeenCalledWith('warn', expect.stringContaining('onboarding not entered, nothing deleted')), { timeout: 3000 })
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
 	})
 
