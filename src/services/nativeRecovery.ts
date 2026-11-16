@@ -236,7 +236,18 @@ export function parseAccountCreateOpenAck(
 	return { ok: false, reason: typeof p.error === 'string' && p.error ? p.error : 'bad_ack', walletStatus }
 }
 
+/**
+ * Pre-send check of `account` (spec §25.52Z.2): a BeamioTag of 1 to 64 visible ASCII characters (0x21–0x7E) that does not
+ * start with 0x, or an EOA address of 0x plus 40 lowercase hex digits. The native side stays the authority; a value that fails
+ * here is never sent.
+ */
+export function isValidNativeAccount(account: string): boolean {
+	if (/^0x[0-9a-f]{40}$/.test(account)) return true
+	return /^[\x21-\x7E]{1,64}$/.test(account) && !account.startsWith('0x')
+}
+
 export async function nativeAccountCreateOpen(account: string): Promise<NativeAccountCreateOpenResult> {
+	if (!isValidNativeAccount(account)) return { ok: false, reason: 'bad_request' }
 	const probe = await probeNativeCapabilities()
 	if (!probe.answered) return { ok: false, reason: 'native_unavailable' }
 	const reqId = nextReqId()

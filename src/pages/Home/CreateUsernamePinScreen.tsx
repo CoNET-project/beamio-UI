@@ -418,6 +418,11 @@ const CreateUsernamePinScreen = forwardRef<
 				setCreateError(tu('create_account_try_later'))
 				return
 			}
+			if (opened.reason === 'bad_request') {
+				// the name is not a valid BeamioTag for the native create (spec §25.52Z.2); nothing was sent
+				setCreateError(tu('create_account_invalid_name'))
+				return
+			}
 			if (opened.reason === 'not_available') {
 				if (opened.walletStatus === 'G1' || opened.walletStatus === 'G2') {
 					//G1 and G2 show "unavailable" and do not retry.

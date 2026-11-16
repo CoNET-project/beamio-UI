@@ -133,6 +133,7 @@
     "create_account_existing_key_required": "暂无法确认本机已有的账户密钥，无法完成用户名创建，账户与资产不受影响。",
     "create_account_native_unavailable": "当前应用版本暂不支持在本设备上新建账号。",
     "create_account_try_later": "请稍后重试。",
+    "create_account_invalid_name": "请使用 1 至 64 个英文字母、数字或符号，不含空格或非 ASCII 字符，且不以 0x 开头。",
     "create_account_opening": "正在打开安全创建页，请在该页面完成操作。",
     "create_account_unavailable": "当前设备暂不可创建账户。",
     "create_account_unavailable_terminal": "暂不可用，请稍后再试或联系支持。",
