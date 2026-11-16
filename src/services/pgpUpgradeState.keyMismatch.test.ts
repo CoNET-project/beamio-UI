@@ -1,6 +1,6 @@
 /**
- * Y.68: a registration answer key_mismatch records the retry state, which shows the notice only. The recorder accepts
- * only the five known codes and changes nothing else.
+ * Y.68: a registration answer key_mismatch records the retry state, which shows the notice only. The recorder takes a
+ * PgpUpgradeStateCode (typed: the five spec codes); it has no runtime check, and it writes nothing else.
  */
 import { pgpUpgradeRetryVisible, recordPgpUpgradeState, resetPgpUpgradeStateForTest } from './pgpUpgradeState'
 
