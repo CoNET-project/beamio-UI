@@ -589,9 +589,12 @@ export default function AppEntryGate() {
 				if (reset === 'continue_account') {
 					// Y.85 (b): the native side holds the account (here a G1 wallet; a locked or unlocked wallet with walletState absent
 					// already returned above). It is entered on its public address, as the native G1 entry does. Nothing is deleted.
-					const eoa = shellNativeState?.status === 'not_ready'
-						? (readPersistedShellEoa() || await readWalletEoaAddress().then((r) => (r.kind === 'address' ? r.eoa : '')))
-						: ''
+					// G2 (Y.107, R45): a native locked or unlocked answer carries its public EOA; the account continues on it, never a passcode trap.
+					const eoa = shellNativeState && (shellNativeState.status === 'locked' || shellNativeState.status === 'unlocked') && 'eoa' in shellNativeState && shellNativeState.eoa
+						? shellNativeState.eoa
+						: shellNativeState?.status === 'not_ready'
+							? (readPersistedShellEoa() || await readWalletEoaAddress().then((r) => (r.kind === 'address' ? r.eoa : '')))
+							: ''
 					if (eoa) {
 						applyLocalWallet(eoa)
 						return

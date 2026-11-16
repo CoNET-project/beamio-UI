@@ -139,3 +139,20 @@ describe('Y.107: residues never block onboarding; only a readable mnemonic is ha
 		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('retry_unknown')
 	})
 })
+
+describe('G2 (R45): a native walletStatus locked answer with a readable mnemonic continues the original account, never a passcode trap', () => {
+	const { readFileSync } = require('fs') as typeof import('fs')
+	const { join } = require('path') as typeof import('path')
+
+	it('a locked native answer is has, so the account continues (Y.107 1)', () => {
+		const native = nativePresence({ ws: 'locked', snapshotUnknown: false })
+		expect(native).toBe('has')
+		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('continue_account')
+	})
+
+	it('the passcode page stays keyed to walletState locked only (GY), and the continue branch takes the EOA from a locked or unlocked answer', () => {
+		const gate = readFileSync(join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
+		expect(gate).toContain("if (shellWalletState === 'locked' && identity === 'declared') {")
+		expect(gate).toContain("(shellNativeState.status === 'locked' || shellNativeState.status === 'unlocked') && 'eoa' in shellNativeState")
+	})
+})
