@@ -21,7 +21,13 @@ export const RecoveryInputs = ({pin}: prof) => {
   const testCode = async () => {
 		if (!codeValue || !beamio) return
 		setCodeStatus("loading")
-		const kk = await restoreWithUserPin(beamio.accountName, codeValue, true)
+		let kk: unknown
+		try {
+			kk = await restoreWithUserPin(beamio.accountName, codeValue, true)
+		} catch {
+			// a failed lookup is an error, not a wrong code
+			return setCodeStatus('error')
+		}
 		
 		if (!kk ) {
 			return setCodeStatus('error')

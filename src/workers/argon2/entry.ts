@@ -2,6 +2,7 @@
  * Off-main-thread Argon2id — keeps UI animations (Create ID loading) responsive
  * while hashing 32MB-memory params.
  */
+import '../../utils/webSocketGuard'  // WebSocket refusal (project rule): first, before any module that may use it
 
 import { argon2id } from '@noble/hashes/argon2.js'
 import type { Argon2idWorkerRequest, Argon2idWorkerResponse } from './protocol'

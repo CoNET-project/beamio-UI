@@ -10,6 +10,7 @@ import { ethers } from 'ethers'
 import { eventPayloadOf, NATIVE_EVENT_NAMES, withoutGlobalNoKeyLock } from './nativeKeyState'
 import { nextReqId, probeNativeCapabilities, requestNativeAck } from './nativeChatRouteRegister'
 import { parsePasscodeStatus, type NativeWalletState as NativeWalletStateReport } from './accountJudgement'
+import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
 
 export const NATIVE_RECOVERY_OPEN_COMMAND = 'nativeRecoveryOpen'
 export const NATIVE_RECOVERY_RESULT_EVENT = 'nativeRecoveryResult'
@@ -138,6 +139,16 @@ function onWindowEvent(ev: Event): void {
 	if (!p || p.type !== NATIVE_RECOVERY_RESULT_EVENT) return
 	const code = p.code
 	if (typeof code !== 'string') return
+	// B7 (PM ruling): a result with a reqId that is not the open request's is discarded (fail closed).
+	// A result with no reqId is delivered with a warning during the QA candidate period only; the freeze drops it too.
+	if (typeof p.reqId === 'number') {
+		if (openedRecoveryReqId === null || p.reqId !== openedRecoveryReqId) {
+			publishNativePwaLog('warn', '[nativeRecovery] nativeRecoveryResult reqId does not match the open request: discarded (B7)')
+			return
+		}
+	} else {
+		publishNativePwaLog('warn', '[nativeRecovery] nativeRecoveryResult has no reqId: delivered in the QA candidate period only (B7)')
+	}
 	// an unrecognised code is passed on as `unknown`(generic retry copy), not dropped.
 	const known = (NATIVE_RECOVERY_RESULT_CODES as readonly string[]).includes(code)
 	if (watch) watch.resultSeen = true
@@ -163,13 +174,21 @@ function stopListeningIfIdle(): void {
  * Asks the shell to open its recovery page. Resolves ok when the shell acknowledges (the page is open); the outcome comes as
  * `nativeRecoveryResult`. Nothing is a success until that event arrives.
  */
+/**
+ * The reqId of the open request the host answered `ok` to (B7, Chat SDK interface r3rz §25.52Y.48). Results with another
+ * reqId are discarded; a result without a reqId is delivered only during the QA candidate period.
+ */
+let openedRecoveryReqId: number | null = null
+
 export async function nativeRecoveryOpen(): Promise<{ ok: true } | { ok: false; reason: string }> {
 	const probe = await probeNativeCapabilities()
 	if (!probe.answered) return { ok: false, reason: 'native_unavailable' }
-	const answer = await requestNativeAck({ type: NATIVE_RECOVERY_OPEN_COMMAND }, OPEN_TIMEOUT_MS)
+	const reqId = nextReqId()
+	const answer = await requestNativeAck({ type: NATIVE_RECOVERY_OPEN_COMMAND }, OPEN_TIMEOUT_MS, reqId)
 	if (answer.kind !== 'payload') return { ok: false, reason: answer.kind }
 	const p = answer.payload as { type?: unknown; ok?: unknown; error?: unknown }
 	if (p.type === 'ack' && p.ok === true) {
+		openedRecoveryReqId = reqId
 		beginWatch()
 		return { ok: true }
 	}

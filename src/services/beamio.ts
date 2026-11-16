@@ -45,6 +45,7 @@ import {
 	type BeamioUiLocale,
 } from '@/utils/beamioProfileLocaleCurrency'
 import {ethers, FetchRequest, keccak256, Network, toUtf8Bytes} from 'ethers' 
+import { isAccountNotFoundError } from './accountLookupErrors'
 import usdc_abi from './ABI/usdc_abi.json'
 import { encodeInitRaw, parseInitRaw } from './initRecordCodec'
 import { runAuthorizationSign } from './authorizationSign'
@@ -2196,16 +2197,6 @@ const beamioAccountContract = {
 
 const beamioAccountSC = new ethers.Contract(beamioAccountContract.address, beamioAccountContract.abi, beamioAccountContract.provider)
 
-/** 224422 迁移前 AccountRegistry（只读归档 RPC） */
-const LEGACY_ACCOUNT_REGISTRY_RPC = 'https://rpc-old.conet.network'
-const LEGACY_ACCOUNT_REGISTRY_ADDRESS = '0x4afaca09cf8307070a83836223Ae129073eC92e5'
-
-const legacyBeamioAccountSC = new ethers.Contract(
-	LEGACY_ACCOUNT_REGISTRY_ADDRESS,
-	beamioAccountABI,
-	conetJsonRpcProvider(LEGACY_ACCOUNT_REGISTRY_RPC, 8_000)
-)
-
 const withRegistryReadTimeout = async <T>(work: Promise<T>, ms = REGISTRY_READ_TIMEOUT_MS): Promise<T> => {
 	let timer: number | undefined
 	try {
@@ -2248,19 +2239,33 @@ const decodeRecoverStoragePayload = (encoded: string): RecoverStoragePayload | n
 const isValidRecoverStoragePayload = (obj: RecoverStoragePayload | null): obj is ValidRecoverStoragePayload =>
 	!!obj?.img && !!obj?.stored
 
-/** 从指定 AccountRegistry 读取 @tag 对应的 PIN recover blob */
+/**
+ * The PIN recover blob read in three exclusive results: `found`; `none` (a valid answer with no blob: the empty value);
+ * `unavailable` (a failed or timed-out read, or a blob that does not decode). Only `none` means "no record".
+ */
+export type RecoverLookup =
+	| { status: 'found'; encoded: string; payload: ValidRecoverStoragePayload }
+	| { status: 'none' }
+	| { status: 'unavailable'; reason: string }
+
+/** 从指定 AccountRegistry 读取 @tag 对应的 PIN recover blob（三态，见 RecoverLookup） */
 const fetchRecoverPayloadByAccountName = async (
 	accountName: string,
 	registry: ethers.Contract
-): Promise<{ encoded: string; payload: ValidRecoverStoragePayload } | null> => {
+): Promise<RecoverLookup> => {
+	let encoded: string
 	try {
-		const encoded: string = await withRegistryReadTimeout(registry.getBase64ByAccountName(accountName))
-		if (!encoded?.trim()) return null
+		encoded = await withRegistryReadTimeout(registry.getBase64ByAccountName(accountName))
+	} catch (ex) {
+		return { status: 'unavailable', reason: ex instanceof Error ? ex.message.slice(0, 80) : 'rpc' }
+	}
+	if (!encoded?.trim()) return { status: 'none' }
+	try {
 		const payload = decodeRecoverStoragePayload(encoded)
-		if (!isValidRecoverStoragePayload(payload)) return null
-		return { encoded, payload }
+		if (!isValidRecoverStoragePayload(payload)) return { status: 'unavailable', reason: 'undecodable_blob' }
+		return { status: 'found', encoded, payload }
 	} catch {
-		return null
+		return { status: 'unavailable', reason: 'undecodable_blob' }
 	}
 }
 
@@ -2329,6 +2334,7 @@ const readUserInfoLookup = async (registry: ethers.Contract, keyID: string): Pro
 	try {
 		userInfo = await withRegistryReadTimeout(registry.getAccount(keyID))
 	} catch (ex) {
+		if (isAccountNotFoundError(ex)) return { status: 'no_account' }
 		return { status: 'network_error', reason: ex instanceof Error ? ex.message.slice(0, 80) : 'rpc' }
 	}
 	try {
@@ -2434,30 +2440,6 @@ const isValidEthersPrivateKey = (pk: unknown): pk is string => {
 	if (!pk || typeof pk !== 'string') return false
 	const s = String(pk).trim().replace(/^0x/i, '')
 	return /^[0-9a-fA-F]{64}$/.test(s)
-}
-
-const migrateLegacyRecoverToNewRegistry = async (
-	accountName: string,
-	encodedRecover: string,
-	privateKey: string,
-	wallet: string
-): Promise<{ ok: boolean; beamio: beamio }> => {
-	const nameHash = ethers.solidityPackedKeccak256(['string'], [accountName])
-	const recover: IAccountRecover[] = [{ hash: nameHash, encrypto: encodedRecover }]
-	const fallbackBeamio = buildMinimalBeamioFromAccountName(accountName)
-
-	// A failed read is neither a record nor "no record": nothing is regenerated and nothing is created .
-	const legacyRead = await readUserInfoLookup(legacyBeamioAccountSC, wallet)
-	if (legacyRead.status === 'network_error') return { ok: false, beamio: fallbackBeamio }
-	const legacyProfile = legacyRead.status === 'ok' ? legacyRead.info : null
-	const beamioForEnqueue = legacyProfile ?? fallbackBeamio
-	beamioForEnqueue.accountName = accountName
-
-	const ok = legacyProfile
-		? await RegenerateUser(beamioForEnqueue, recover, privateKey)
-		: await newUser(accountName, recover, privateKey)
-
-	return { ok, beamio: beamioForEnqueue }
 }
 
 /**
@@ -2831,10 +2813,8 @@ export const createDetachedRecoverAccount = async (BeamioName: string, pin: stri
 	// newUser can return before Master finishes AccountRegistry write — wait until PIN decrypt works.
 	const deadline = Date.now() + 45_000
 	while (Date.now() < deadline) {
-		const hit =
-			(await fetchRecoverPayloadByAccountName(BeamioName, beamioAccountSC)) ||
-			(await fetchRecoverPayloadByAccountName(BeamioName, legacyBeamioAccountSC))
-		if (hit?.payload?.img && hit.payload.stored) {
+		const hit = await fetchRecoverPayloadByAccountName(BeamioName, beamioAccountSC)
+		if (hit.status === 'found' && hit.payload.img && hit.payload.stored) {
 			try {
 				await aesGcmDecryptWithStored(hit.payload.img, pin, hit.payload.stored)
 				return { eoa }
@@ -2857,10 +2837,9 @@ export const unlockDetachedRecoverPrivateKey = async (
 	const accountName = username.trim()
 	if (!accountName || !pin) return null
 	try {
-		const recoverHit =
-			(await fetchRecoverPayloadByAccountName(accountName, beamioAccountSC))
-			|| (await fetchRecoverPayloadByAccountName(accountName, legacyBeamioAccountSC))
-		if (!recoverHit?.payload?.img || !recoverHit.payload.stored) return null
+		const recoverHit = await fetchRecoverPayloadByAccountName(accountName, beamioAccountSC)
+		// none and unavailable both mean "could not unlock": the caller reports a failed unlock, never a claimed absence.
+		if (recoverHit.status !== 'found' || !recoverHit.payload.img || !recoverHit.payload.stored) return null
 		const mnemonicBase64 = await aesGcmDecryptWithStored(
 			recoverHit.payload.img,
 			pin,
@@ -2919,16 +2898,14 @@ export const restoreWithUserPin = async (username: string, pin: string, test = f
 		const accountName = username.trim()
 		if (!accountName) return false
 
-		let recoverHit = await fetchRecoverPayloadByAccountName(accountName, beamioAccountSC)
-		let legacyEncodedForMigrate: string | undefined
-
-		if (!recoverHit) {
-			const legacyHit = await fetchRecoverPayloadByAccountName(accountName, legacyBeamioAccountSC)
-			if (!legacyHit) {
-				return false
-			}
-			recoverHit = legacyHit
-			legacyEncodedForMigrate = legacyHit.encoded
+		// The current registry only: the deprecated rpc-old read is removed (no legacy fallback, no migration write).
+		const recoverHit = await fetchRecoverPayloadByAccountName(accountName, beamioAccountSC)
+		// A valid "no blob" answer is a wrong or unknown name (false). A failed read is not: it is reported as unavailable.
+		if (recoverHit.status === 'none') {
+			return false
+		}
+		if (recoverHit.status === 'unavailable') {
+			throw new Error('recover_lookup_unavailable')
 		}
 
 		const obj = recoverHit.payload
@@ -2951,25 +2928,6 @@ export const restoreWithUserPin = async (username: string, pin: string, test = f
 
 		const profile: profile = temp.profiles[0]
 
-		if (legacyEncodedForMigrate) {
-			const privateKey = temp.profiles[0].privateKeyArmor
-			if (isValidEthersPrivateKey(privateKey)) {
-				const { ok, beamio: migratedBeamio } = await migrateLegacyRecoverToNewRegistry(
-					accountName,
-					legacyEncodedForMigrate,
-					privateKey,
-					profile.keyID
-				)
-				// A migration that did not complete (a failed read among it) writes no record .
-				if (ok) temp.beamio = migratedBeamio
-				if (!ok) {
-					console.warn(`[restoreWithUserPin] legacy AccountRegistry migrate (addUser) failed for @${accountName}`)
-				}
-			} else if (!temp.beamio) {
-				temp.beamio = buildMinimalBeamioFromAccountName(accountName)
-			}
-		}
-
 		// A record is used. A valid "no account" keeps the local name as the copy; a failed read writes nothing, and the restore then reports
 		// the wallet as incomplete .
 		const onchainRead = await getUserInfoLookup(profile.keyID)
@@ -2984,6 +2942,8 @@ export const restoreWithUserPin = async (username: string, pin: string, test = f
 
 		return temp
 	} catch (ex: any) {
+		// a failed registry read is rethrown: the caller reports it as unavailable, never as a wrong name
+		if (ex?.message === 'recover_lookup_unavailable') throw ex
 		console.log(`checkBeamioAccount error ${ex.message}`)
 		return false
 	}

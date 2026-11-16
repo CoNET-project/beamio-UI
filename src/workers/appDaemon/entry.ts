@@ -6,6 +6,7 @@
  * 90s unified: resolveUnifiedIncomeStats only (no OOG assemble)
  * 15s aa pending / 5min oracle
  */
+import '../../utils/webSocketGuard'  // WebSocket refusal (project rule): first, before any module that may use it
 
 import type {
 	AppDaemonMainTickKind,

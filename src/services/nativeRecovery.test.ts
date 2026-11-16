@@ -42,8 +42,16 @@ function installShell(reply: Record<string, unknown>): void {
 	}
 }
 
-const emitResult = (event: Record<string, unknown>) =>
+/** Raw delivery, with the reqId as given (the B7 filter tests). */
+const emitRaw = (event: Record<string, unknown>) =>
 	window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'chatModuleEvent', event } }))
+
+/** Mapping tests: a result without a reqId is delivered (QA candidate period, with a warning); the reqId filter has its own tests below. */
+const emitResult = (event: Record<string, unknown>) => {
+	const { reqId: _reqId, ...rest } = event
+	void _reqId
+	emitRaw(rest)
+}
 
 /** Lets the fake shell's replies (timers) and the promise chain run, under fake timers. */
 async function settle<T>(p: Promise<T>): Promise<T> {
@@ -192,5 +200,29 @@ describe('recoveryOpenErrorKey (the line shown when the native page cannot open)
 		for (const r of ['bad_request', 'key_over_bridge_refused', 'timeout', 'unavailable']) {
 			expect(recoveryOpenErrorKey(r)).toBe('something_went_wrong_while_restoring_your_wallet')
 		}
+	})
+})
+
+describe('B7 reqId filter (§25.52Y.48, PM ruling)', () => {
+	it('delivers a result whose reqId is the open request reqId, and discards a mismatched one', async () => {
+		installShell({ type: 'ack', ok: true })
+		const got: unknown[] = []
+		const off = onNativeRecoveryResult((r) => got.push(r))
+		await settle(nativeRecoveryOpen())
+		const openId = (sent.find((c) => c.type === NATIVE_RECOVERY_OPEN_COMMAND) as { reqId: number }).reqId
+		emitRaw({ type: 'nativeRecoveryResult', reqId: openId + 999, code: 'bad_pin' })
+		emitRaw({ type: 'nativeRecoveryResult', reqId: openId, code: 'bad_pin' })
+		expect(got).toEqual([{ code: 'bad_pin' }])
+		off()
+	})
+
+	it('delivers a result with no reqId during the QA candidate period', async () => {
+		installShell({ type: 'ack', ok: true })
+		const got: unknown[] = []
+		const off = onNativeRecoveryResult((r) => got.push(r))
+		await settle(nativeRecoveryOpen())
+		emitRaw({ type: 'nativeRecoveryResult', code: 'not_found' })
+		expect(got).toEqual([{ code: 'not_found' }])
+		off()
 	})
 })

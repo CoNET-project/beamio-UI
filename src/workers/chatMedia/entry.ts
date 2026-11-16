@@ -2,6 +2,7 @@
  * Off-main-thread chat media: base64 Data URL decode, AES-GCM decrypt, unzip.
  * A 20 MB video blocked the main thread for hundreds of ms when this ran there.
  */
+import '../../utils/webSocketGuard'  // WebSocket refusal (project rule): first, before any module that may use it
 
 import { decryptFragmentCipher, fragmentBodyToCipher } from '../../utils/mediaFragment'
 import type { ChatMediaWorkerRequest, ChatMediaWorkerResponse } from './protocol'

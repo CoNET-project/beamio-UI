@@ -43,6 +43,8 @@ export function nativeInitAllowed(identity: IdentityCapabilityState): boolean {
 
 /** The retry screen for a native that did not answer its capability probe and has no known public address. */
 export const NATIVE_RETRY_SCREEN = 'native_not_ready_retry'
+/** Storage not readable yet and no page copy: shown after the bounded native wait, never as "no account" (r3rz). */
+export const MIGRATION_RETRY_SCREEN = 'migration_retry'
 
 /**
  * Capability missing and the native wallet not ready: the local home when this device holds a public address, else the unified

@@ -61,10 +61,11 @@ describe('no account reader returns null for a failure, and a failed read writes
 		expect(offenders.map((f) => f.replace(SRC, ''))).toEqual([])
 	})
 
-	it('the legacy registry read writes nothing from a failed read: no regenerate, no create, no assignment', () => {
+	it('the deprecated rpc-old legacy read is removed: no legacy registry fallback, no migration write (R2213)', () => {
 		const b = text('services/beamio.ts')
-		expect(b).toContain("if (legacyRead.status === 'network_error') return { ok: false, beamio: fallbackBeamio }")
-		expect(b).toContain('if (ok) temp.beamio = migratedBeamio')
+		expect(b).not.toContain('rpc-old.conet.network')
+		expect(b).not.toContain('legacyBeamioAccountSC')
+		expect(b).not.toContain('migrateLegacyRecoverToNewRegistry')
 	})
 
 	it('the restore writes the local name only for a valid "no account", never for a failed read', () => {

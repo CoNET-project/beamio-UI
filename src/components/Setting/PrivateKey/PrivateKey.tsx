@@ -77,7 +77,7 @@ export default function PrivateKeyReveal({ privateKey, onClose }: Props) {
       const ret = profiles[0].privateKeyArmor.replace(/^0x/i, '')
       return ret
     } catch (e: any) {
-      setErrorText(e?.message || 'Failed to verify password.')
+      setErrorText(e?.message === 'recover_lookup_unavailable' ? 'Could not reach the account record. Try again.' : (e?.message || 'Failed to verify password.'))
       return null
     } finally {
       setLoading(false)

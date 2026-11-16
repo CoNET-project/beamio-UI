@@ -2,6 +2,8 @@
 
 // Must stay the first import: takes a legacy Recovery Code out of the URL.
 import './utils/legacyRestoreLinkBoot'
+// WebSocket refusal (project rule): installed before any library that captures the global constructor is evaluated.
+import './utils/webSocketGuard'
 import './utils/ignoreResizeObserverLoopError'
 import React from 'react';
 import ReactDOM from 'react-dom/client';

@@ -11,7 +11,7 @@ const gate = fs.readFileSync(path.join(__dirname, 'AppEntryGate.tsx'), 'utf8')
 
 describe('AppEntryGate and the missing identity capability', () => {
 	it('the capability state comes from the hello probe and the decision is the shared pure function', () => {
-		expect(gate).toContain("import { identityCapabilityFrom, missingIdentityNotReadyEntry, NATIVE_RETRY_SCREEN, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'")
+		expect(gate).toContain("import { identityCapabilityFrom, missingIdentityNotReadyEntry, MIGRATION_RETRY_SCREEN, NATIVE_RETRY_SCREEN, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'")
 		expect(gate).toContain('identityCapabilityFrom(await probeNativeCapabilities())')
 	})
 

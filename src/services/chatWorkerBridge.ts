@@ -587,7 +587,7 @@ function makeGossipWorker(): Worker {
 		if (mustUseNativeChatBridge()) {
 			throw new Error('chat-sdk Worker is disabled inside the native WebView shell')
 		}
-		return new Worker(new URL('@conet.project/chat-sdk/worker', import.meta.url), {
+		return new Worker(new URL('../workers/chatSdkGossip/entry.ts', import.meta.url), {
 			// Chunk name is the worker name. A new name bypasses a cached worker
 			// that never finished opening the PGP key and left voice listen with no relay.
 			name: 'beamio-chat-gossip-relay',
@@ -599,7 +599,7 @@ function makeGossipWorker(): Worker {
 	if (process.env.REACT_APP_SHELL_BUILD === 'true') {
 		throw new Error('shell build: the TypeScript gossip Worker is not part of the shell target')
 	}
-	return new Worker(new URL('@conet.project/chat-sdk/worker', import.meta.url), {
+	return new Worker(new URL('../workers/chatSdkGossip/entry.ts', import.meta.url), {
 		// Chunk name is the worker name. A new name bypasses a cached worker
 		// that never finished opening the PGP key and left voice listen with no relay.
 		name: 'beamio-chat-gossip-relay',

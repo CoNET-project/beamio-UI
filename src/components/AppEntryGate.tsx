@@ -22,7 +22,7 @@ import NativeKeyImportRequired from '@/components/NativeKeyImportRequired'
 import { ensureShellChatState } from '@/services/shellChatCapability'
 import { beamioTagCreateNeeded, idbSignalOf, judgeBrowser, judgeLocalOnly, judgeShellFromNative, type NativeWalletState, type NativeWalletStatus } from '../services/accountJudgement'
 import { queryNativeWalletState } from '../services/nativeRecovery'
-import { identityCapabilityFrom, missingIdentityNotReadyEntry, NATIVE_RETRY_SCREEN, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'
+import { identityCapabilityFrom, missingIdentityNotReadyEntry, MIGRATION_RETRY_SCREEN, NATIVE_RETRY_SCREEN, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'
 import { identityProbeDelayMs, onNativeIdentityRetryRequested, requestNativeIdentityRetry, setNativeIdentityCapability } from '@/services/nativeIdentityProbeRetry'
 import { probeNativeCapabilities } from '@/services/nativeChatRouteRegister'
 import { IDENTITY_CAPABILITY_MISSING } from '@/services/bridgeGuard'
@@ -223,6 +223,11 @@ export default function AppEntryGate() {
 		if (storageUnavailableRoute({ nativeShell, reason }) === 'native_retry') {
 			const attempt = nativeRetryAttemptRef.current
 			nativeRetryAttemptRef.current = attempt + 1
+			// bounded: after the retries, the page shows the retry screen instead of waiting forever (no account is claimed)
+			if (attempt >= 6) {
+				showStorageUnavailable(MIGRATION_RETRY_SCREEN)
+				return
+			}
 			nativeWaitRef.current = true
 			publishNativePwaLog('info', '[AppEntryGate] native store not ready; retrying (no onboarding)')
 			setSplashVisible(true)
@@ -771,7 +776,23 @@ export default function AppEntryGate() {
 			) : storageUnavailable ? (
 				<div className="flex min-h-0 flex-1 flex-col items-center justify-center bg-[#071126] px-6 text-center text-white">
 					<div className="w-full max-w-md rounded-3xl border border-white/15 bg-white/10 p-6 shadow-2xl backdrop-blur-xl">
-						{storageUnavailable === NATIVE_RETRY_SCREEN ? (
+						{storageUnavailable === MIGRATION_RETRY_SCREEN ? (
+							<>
+								<h1 className="text-xl font-semibold">{tu('migration_retry_title')}</h1>
+								<p className="mt-3 text-sm leading-6 text-white/75">{tu('migration_retry_body')}</p>
+								<button
+									type="button"
+									className="mt-5 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-[#071126]"
+									onClick={() => {
+										nativeRetryAttemptRef.current = 0
+										setStorageUnavailable('')
+										void init()
+									}}
+								>
+									{tu('migration_retry_action')}
+								</button>
+							</>
+						) : storageUnavailable === NATIVE_RETRY_SCREEN ? (
 							<>
 								<h1 className="text-xl font-semibold">{tu('native_not_ready_retry_title')}</h1>
 								<p className="mt-3 text-sm leading-6 text-white/75">{tu('native_not_ready_retry_body')}</p>
