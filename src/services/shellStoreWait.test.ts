@@ -187,3 +187,18 @@ describe('Y.104 3: the retry state runs 30 s, 2 min, 10 min, then the manual ret
 		expect(block).not.toMatch(/onboarding|createWallet|clearIdentity/i)
 	})
 })
+
+describe('Y.104 3 (ruling): the unknown retry branch shares the same cadence and never onboards', () => {
+	it('the retry_unknown branch uses nativeRetryStep with the shared attempt counter, then the manual screen', () => {
+		const gate = readFileSync(join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
+		const at = gate.indexOf("if (reset !== 'onboarding') {")
+		expect(at).toBeGreaterThan(0)
+		const block = gate.slice(at, gate.indexOf('\n\t\t\t}', at))
+		expect(block).toContain('const step = nativeRetryStep(attempt)')
+		expect(block).toContain('window.setTimeout(() => void init(), step.delayMs)')
+		expect(block).toContain('showStorageUnavailable(NATIVE_RETRY_SCREEN)')
+		expect(block).not.toMatch(/onboarding\(|createWallet|clearIdentity|native_recovery_needed/i)
+		// one cadence: the retry_unknown branch must not carry its own delay
+		expect(block).not.toContain('nativeStoreWaitDelayMs')
+	})
+})

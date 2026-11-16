@@ -603,6 +603,17 @@ export default function AppEntryGate() {
 				if (reset !== 'onboarding') {
 					// retry_unknown: never onboarding, nothing deleted, and no account creation entry on the retry screen.
 					publishNativePwaLog('warn', `[AppEntryGate] account reset decision=${reset}: onboarding not entered, nothing deleted (retry)`)
+					// Y.104 3: unknown keeps the retry state on the same cadence as the native store wait: 30 s, 2 min, 10 min automatically, then the
+					// manual retry screen. Used-up retries stay unknown: never onboarding, no account-lost prompt.
+					const attempt = nativeRetryAttemptRef.current
+					nativeRetryAttemptRef.current = attempt + 1
+					const step = nativeRetryStep(attempt)
+					if (step.kind === 'retry') {
+						nativeWaitRef.current = true
+						setSplashVisible(true)
+						window.setTimeout(() => void init(), step.delayMs)
+						return
+					}
 					showStorageUnavailable(NATIVE_RETRY_SCREEN)
 					return
 				}
