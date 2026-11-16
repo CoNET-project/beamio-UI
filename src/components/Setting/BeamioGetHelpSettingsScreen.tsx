@@ -76,7 +76,7 @@ export default function BeamioGetHelpSettingsScreen({colse}:prof) {
               type="button"
               onClick={() => {
                 window.location.href =
-                  "mailto:support@beamio.app?subject=Beamio%20support%20request&body=Please%20describe%20your%20question%20or%20issue.%20If%20possible%2C%20include%20your%20browser%20and%20device%20info.";
+                  "mailto:support@beamio.ca?subject=Beamio%20support%20request&body=Please%20describe%20your%20question%20or%20issue.%20If%20possible%2C%20include%20your%20browser%20and%20device%20info.";
               }}
               className="w-full h-11 px-4 rounded-2xl border border-slate-200 bg-white flex items-center justify-between text-slate-800"
             >
@@ -87,7 +87,7 @@ export default function BeamioGetHelpSettingsScreen({colse}:prof) {
                 <div className="flex flex-col items-start">
                   <span>Email support</span>
                   <span className="text-[11px] text-slate-400">
-                    support@beamio.app — we read every message during early access.
+                    support@beamio.ca — we read every message during early access.
                   </span>
                 </div>
               </div>
@@ -99,7 +99,7 @@ export default function BeamioGetHelpSettingsScreen({colse}:prof) {
               type="button"
               onClick={() => {
                 window.location.href =
-                  "mailto:support@beamio.app?subject=Beamio%20bug%20report&body=Please%20describe%20what%20happened%2C%20the%20steps%20to%20reproduce%20it%2C%20and%20your%20browser%20%2F%20device%20info.";
+                  "mailto:support@beamio.ca?subject=Beamio%20bug%20report&body=Please%20describe%20what%20happened%2C%20the%20steps%20to%20reproduce%20it%2C%20and%20your%20browser%20%2F%20device%20info.";
               }}
               className="w-full h-11 px-4 rounded-2xl border border-slate-200 bg-white flex items-center justify-between text-slate-800"
             >
