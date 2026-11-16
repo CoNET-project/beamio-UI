@@ -1,0 +1,146 @@
+{
+  "source": "pm-notes chat-sdk-local-read-2026-11-11/interface/protocol/pgp-migration-vectors.v2.json",
+  "sourceSha256": "3207ab012e3f03f936c037b9044ffce84e27750f47043ce29eb01d36308f735a",
+  "entries": [
+    {
+      "id": "PU-01",
+      "title": "事件 pgpUpgradeState：L 有效，写入成功：code upgraded_from_L，只含 type 与 code",
+      "input": {
+        "action": "upgraded_from_L"
+      },
+      "expect": {
+        "type": "pgpUpgradeState",
+        "code": "upgraded_from_L"
+      }
+    },
+    {
+      "id": "PU-02",
+      "title": "事件 pgpUpgradeState：链上备份恢复成功：code upgraded_from_chain",
+      "input": {
+        "action": "upgraded_from_chain"
+      },
+      "expect": {
+        "type": "pgpUpgradeState",
+        "code": "upgraded_from_chain"
+      }
+    },
+    {
+      "id": "PU-03",
+      "title": "事件 pgpUpgradeState：K_pgp 已存在：code keep_existing",
+      "input": {
+        "action": "keep_existing"
+      },
+      "expect": {
+        "type": "pgpUpgradeState",
+        "code": "keep_existing"
+      }
+    },
+    {
+      "id": "PU-04",
+      "title": "事件 pgpUpgradeState：L 无效，用户经原生确认后点击：code generated_on_user_click（P-IMP-PGP 方案 A）",
+      "input": {
+        "action": "generated_on_user_click"
+      },
+      "expect": {
+        "type": "pgpUpgradeState",
+        "code": "generated_on_user_click"
+      }
+    },
+    {
+      "id": "PU-05",
+      "title": "事件 pgpUpgradeState：需迁移待重试（自动路径或未确认）：code pgp_migration_retry",
+      "input": {
+        "action": "pgp_migration_retry"
+      },
+      "expect": {
+        "type": "pgpUpgradeState",
+        "code": "pgp_migration_retry"
+      }
+    },
+    {
+      "id": "PU-06",
+      "title": "事件 pgpUpgradeState：fromDevice 等内部异常：一律 pgp_migration_retry，不泄露原因",
+      "input": {
+        "internalError": true
+      },
+      "expect": {
+        "type": "pgpUpgradeState",
+        "code": "pgp_migration_retry"
+      }
+    },
+    {
+      "id": "RA-01",
+      "title": "复用入口，壳内提交成功：ack ok:true，result 仅 code:submitted，无字段",
+      "input": {
+        "code": "submitted"
+      },
+      "expect": {
+        "type": "ack",
+        "ok": true,
+        "result": {
+          "code": "submitted"
+        }
+      }
+    },
+    {
+      "id": "RA-02",
+      "title": "复用入口，服务端拒绝：ack ok:false，error chain_refused，无字段",
+      "input": {
+        "code": "chain_refused"
+      },
+      "expect": {
+        "type": "ack",
+        "ok": false,
+        "error": "chain_refused"
+      }
+    },
+    {
+      "id": "RA-03",
+      "title": "复用入口，两路网络不通：ack ok:false，error network_unavailable",
+      "input": {
+        "code": "network_unavailable"
+      },
+      "expect": {
+        "type": "ack",
+        "ok": false,
+        "error": "network_unavailable"
+      }
+    },
+    {
+      "id": "RA-04",
+      "title": "复用入口，签名失败：ack ok:false，error sign_failed，不提交",
+      "input": {
+        "code": "sign_failed"
+      },
+      "expect": {
+        "type": "ack",
+        "ok": false,
+        "error": "sign_failed"
+      }
+    },
+    {
+      "id": "RA-05",
+      "title": "复用入口，备份回读失败：ack ok:false，error backup_readback_failed，不提交",
+      "input": {
+        "code": "backup_readback_failed"
+      },
+      "expect": {
+        "type": "ack",
+        "ok": false,
+        "error": "backup_readback_failed"
+      }
+    },
+    {
+      "id": "RA-06",
+      "title": "复用入口，无 K_pgp：ack ok:false，error no_pgp_key（沿用现有码）",
+      "input": {
+        "code": "no_pgp_key"
+      },
+      "expect": {
+        "type": "ack",
+        "ok": false,
+        "error": "no_pgp_key"
+      }
+    }
+  ]
+}

@@ -586,9 +586,20 @@ async function writeAt(payload: Loose, rev: number): Promise<WriteOutcome> {
  */
 export async function shellRecordRead(options: { probe?: boolean; raw?: boolean } = {}): Promise<ShellRecordRead> {
 	const reqId = nextReqId()
+	// Diagnostics (S25, 2026-11-15): reason codes and times only. No record, key or field value is logged.
+	const sentAt = Date.now()
+	publishNativePwaLog('info', `[shellRecordRead] sent at ${new Date(sentAt).toISOString()}`)
 	const answer = await sendShellRecordCommand(buildShellRecordReadCommand(reqId), TIMEOUT_MS)
-	if (answer.kind !== 'payload') return { status: 'error', reason: transportReason(answer) }
+	if (answer.kind !== 'payload') {
+		const reason = transportReason(answer)
+		publishNativePwaLog('warn', `[shellRecordRead] no answer: reason=${reason} ms=${Date.now() - sentAt}`)
+		return { status: 'error', reason }
+	}
 	const parsed = parseShellRecordRead(answer.payload)
+	publishNativePwaLog(
+		parsed.status === 'error' ? 'warn' : 'info',
+		`[shellRecordRead] returned status=${parsed.status}${parsed.status === 'error' ? ` reason=${parsed.reason}` : ''} ms=${Date.now() - sentAt}`,
+	)
 	if (parsed.status === 'ok' || parsed.status === 'absent') {
 		// A read that answered ok or absent completes the read: a write may follow.
 		blocked = false

@@ -64,7 +64,7 @@ describe('shell recovery path', () => {
 
 	it('the shell outcome is a short code: ok enters without a reload, legacy_record shows its line', () => {
 		expect(restore).toMatch(/onNativeRecoveryResult\(\(\{ code, eoa \}\) => \{/)
-		expect(restore).toMatch(/if \(code === 'ok'\) \{[\s\S]{0,500}notifyNativeWalletReady\(initialBeamioTag\)/)
+		expect(restore).toMatch(/if \(code === 'ok'\) \{[\s\S]{0,500}notifyNativeWalletReady\(initialBeamioTag, eoa\)/)
 		expect(restore).not.toMatch(/if \(code === 'ok'\) \{\s*window\.location\.reload\(\)/)
 		expect(restore).toMatch(/nativeRecoveryCopyKey\(code\)[\s\S]{0,40}setRecoveryError\(tu\(copyKey\)\)/)  // legacy_record keeps its copy through the mapping
 	})

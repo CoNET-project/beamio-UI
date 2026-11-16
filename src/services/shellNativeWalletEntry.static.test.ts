@@ -43,7 +43,7 @@ describe('shell wallet entry on the native wallet', () => {
 		expect(start).toBeGreaterThan(-1)
 		const block = r.slice(start, start + 900)
 		expect(block).toContain('reachNativeWallet()')
-		expect(block).toContain('notifyNativeWalletReady(initialBeamioTag)')
+		expect(block).toContain('notifyNativeWalletReady(initialBeamioTag, eoa)')
 		expect(block).not.toContain('window.location.reload()')
 	})
 

@@ -150,7 +150,7 @@ export default function RestoreWalletUnifiedScreen({
 				announceNativeWalletEstablished()
 				rememberNativeEoa(eoa)
 				// The entry gate reads the native state and decides: G2 enters the app; G1 shows the same notice as a cold start.
-				void reachNativeWallet().then(() => notifyNativeWalletReady(initialBeamioTag))
+				void reachNativeWallet().then(() => notifyNativeWalletReady(initialBeamioTag, eoa))
 				return
 			}
 			// legacy_record: this version does not restore it. Every other non-ok code is shown by the native page, which stays

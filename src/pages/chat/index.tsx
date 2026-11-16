@@ -1,3 +1,4 @@
+import { deviceCachedBeamioTagFor, homeDisplayLabel } from "@/utils/accountNameGuard"
 import { useDaemonContext } from "@/providers/DaemonProvider"
 import {
 	initMessage, dedupeChatsByAddress
@@ -54,7 +55,8 @@ const Home = () => {
 	const accountTag = (beamio?.accountName ?? '').trim().replace(/^@+/, '')
 	const resolvedOwnTag = resolveTagPlain(ownEoa).replace(/^@+/, '')
 	const plainTag = accountTag || resolvedOwnTag
-	const ownTag = plainTag ? `@${plainTag}` : '@Beamio'
+	// no name known for this account: the device cache for this EOA, then the short address (never a fixed name)
+	const ownTag = homeDisplayLabel(plainTag || deviceCachedBeamioTagFor(ownEoa), ownEoa)
 	const profileImage = beamio?.image != null ? String(beamio.image).trim() : ''
 	const ownAvatar = profileImage || avatarImgUrl(plainTag || undefined, ownEoa)
 

@@ -28,7 +28,7 @@ describe('restore screen: shell recovery entry', () => {
 	})
 
 	it('the outcome is a result event: ok enters without a reload, legacy_record shows its line, the others stay with the native page', () => {
-		expect(screen).toMatch(/onNativeRecoveryResult\(\(\{ code, eoa \}\) => \{[\s\S]*?if \(code === 'ok'\)[\s\S]*?notifyNativeWalletReady\(initialBeamioTag\)/)
+		expect(screen).toMatch(/onNativeRecoveryResult\(\(\{ code, eoa \}\) => \{[\s\S]*?if \(code === 'ok'\)[\s\S]*?notifyNativeWalletReady\(initialBeamioTag, eoa\)/)
 		expect(screen).not.toMatch(/if \(code === 'ok'\) \{\s*window\.location\.reload\(\)/)
 		expect(screen).toMatch(/const copyKey = nativeRecoveryCopyKey\(code\)\s*if \(copyKey\) setRecoveryError\(tu\(copyKey\)\)/)  // legacy_record keeps its copy through the mapping
 	})

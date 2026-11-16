@@ -31,6 +31,16 @@ export const NATIVE_ROUTE_ERROR_CODES = [
 	'bad_request',
 	'no_pgp_key',
 	'sig_rejected',
+	// Y.61: fail closed. network_unavailable and chain_refused may be retried; key_mismatch goes to the recovery prompt.
+	'backup_failed',
+	'backup_readback_failed',
+	'key_mismatch',
+	'sign_failed',
+	'chain_refused',
+	'network_unavailable',
+	// Y.64: the native side got a success answer but the chain does not show the registration. Not a success on the page:
+	// it is an unfinished, retryable state and nothing is posted.
+	'unverified_submit',
 ] as const
 export type NativeRouteErrorCode = (typeof NATIVE_ROUTE_ERROR_CODES)[number]
 
@@ -39,6 +49,8 @@ export type NativeRouteLocalCode = 'timeout' | 'bad_ack'
 
 export type NativeRouteOutcome =
 	| { ok: true; result: Record<string, unknown> }
+	/** Y.61: the native layer registered the route itself; the page posts nothing. */
+	| { ok: true; submitted: true }
 	| { ok: false; code: NativeRouteErrorCode | NativeRouteLocalCode }
 
 export type NativeRouteInput = {
@@ -136,6 +148,9 @@ export function judgeRouteAck(payload: Loose): NativeRouteOutcome {
 	if (payload.ok === true) {
 		if ('code' in payload || 'error' in payload) return { ok: false, code: 'bad_ack' }
 		if (!isPlainObject(payload.result)) return { ok: false, code: 'bad_ack' }
+		// Y.61 submitted: exactly {code:"submitted"} and no other field.
+		const r = payload.result as Record<string, unknown>
+		if (Object.keys(r).length === 1 && r.code === 'submitted') return { ok: true, submitted: true }
 		return { ok: true, result: payload.result }
 	}
 	if (payload.ok === false) {

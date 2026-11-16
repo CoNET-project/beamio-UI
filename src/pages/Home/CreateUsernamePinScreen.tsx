@@ -11,7 +11,7 @@ import { announceNativeFlowPending } from "@/services/nativeFlowPending"
 import { ensureShellChatState } from "@/services/shellChatCapability"
 import { isShellContext } from "@/services/shellContext"
 import { publishNativePwaLog } from "@/utils/cashTreesNativePwaLog"
-import { notifyNativeWalletReady, reachNativeWallet, rememberNativeEoa, rememberShellAccountName } from "@/services/nativeWallet"
+import { notifyNativeWalletReady, reachNativeWallet, rememberNativeEoa } from "@/services/nativeWallet"
 import { warmArgon2Worker } from "@/services/argon2WorkerBridge"
 import {
 	Eye,
@@ -120,6 +120,8 @@ const CreateUsernamePinScreen = forwardRef<
 	// Pending native create: set when the native page opens; cleared only on ok, on cancel (the page is
 	// closed), or when this screen unmounts. A failed result keeps the native page open and keeps pending: no second open.
 	const nativeCreatePendingRef = useRef(false)
+	// the BeamioTag of the native create in progress; cached with its EOA when the native result arrives
+	const createTagRef = useRef("")
 	/**consecutive G0 not_available acks (three show the terminal copy), the 15 s wait before a manual retry, and the "正在打开" state. */
 	const g0NotAvailableCountRef = useRef(0)
 	const createCooldownUntilRef = useRef(0)
@@ -143,7 +145,7 @@ const CreateUsernamePinScreen = forwardRef<
 			announceNativeWalletEstablished()
 			rememberNativeEoa(eoa)
 			void reachNativeWallet().then((st) => {
-				if (st.status === 'locked' || st.status === 'unlocked') notifyNativeWalletReady()
+				if (st.status === 'locked' || st.status === 'unlocked') notifyNativeWalletReady(createTagRef.current, eoa)
 				else setCreateError(tu('create_account_try_later'))
 			})
 		})
@@ -173,7 +175,7 @@ const CreateUsernamePinScreen = forwardRef<
 				nativeCreatePendingRef.current = false
 				rememberNativeEoa(eoa)
 				void reachNativeWallet().then((st) => {
-					if (st.status === 'locked' || st.status === 'unlocked') notifyNativeWalletReady()
+					if (st.status === 'locked' || st.status === 'unlocked') notifyNativeWalletReady(createTagRef.current, eoa)
 					else setCreateError(tu('create_account_try_later'))
 				})
 				return
@@ -381,7 +383,8 @@ const CreateUsernamePinScreen = forwardRef<
 				return
 			}
 			publishNativePwaLog('info', '[createAccount] shell: native create requested')
-			rememberShellAccountName(trimmedTag)
+			// the name is cached with its EOA only when the native result arrives (notifyNativeWalletReady)
+			createTagRef.current = trimmedTag
 			if (nativeCreatePendingRef.current) {
 				// The native page is still open for the last confirmation: no second open.
 				setLoading(false)

@@ -1,0 +1,99 @@
+{
+  "source": "pm-notes chat-sdk-local-read-2026-11-11/interface/protocol/pgp-migration-vectors.v2.json (ipSubmitVerificationCases)",
+  "sourceSha256": "c1d792f81cdbb511afe23c29d96e4a00aee42578df2ff90e589ef2dcfbc6b69a",
+  "entries": [
+    {
+      "id": "IP-01",
+      "title": "IP 成功应答，链上只读核对已登记：submitted",
+      "input": {
+        "ipResponse": "ok",
+        "chainReadable": true,
+        "chainRegistered": true
+      },
+      "expect": {
+        "code": "submitted",
+        "retried": false
+      }
+    },
+    {
+      "id": "IP-02",
+      "title": "IP 成功应答，链上未登记：unverified_submit，不报 submitted",
+      "input": {
+        "ipResponse": "ok",
+        "chainReadable": true,
+        "chainRegistered": false
+      },
+      "expect": {
+        "code": "unverified_submit",
+        "retried": false
+      }
+    },
+    {
+      "id": "IP-03",
+      "title": "IP 成功应答，读链不可达：network_unavailable，不报 submitted",
+      "input": {
+        "ipResponse": "ok",
+        "chainReadable": false
+      },
+      "expect": {
+        "code": "network_unavailable",
+        "retried": false
+      }
+    },
+    {
+      "id": "IP-04",
+      "title": "IP 返回 5xx，重试前核对链上已登记：submitted，不重复提交",
+      "input": {
+        "ipResponse": "5xx",
+        "chainReadable": true,
+        "chainRegistered": true
+      },
+      "expect": {
+        "code": "submitted",
+        "retried": false
+      }
+    },
+    {
+      "id": "IP-05",
+      "title": "IP 超时，重试前核对链上未登记，重试成功且之后链上登记：submitted（重试一次）",
+      "input": {
+        "ipResponse": "timeout",
+        "chainReadable": true,
+        "chainRegistered": false,
+        "retryOk": true,
+        "chainRegisteredAfterRetry": true
+      },
+      "expect": {
+        "code": "submitted",
+        "retried": true
+      }
+    },
+    {
+      "id": "IP-06",
+      "title": "IP 5xx，重试后链上仍未登记：network_unavailable，不报 submitted",
+      "input": {
+        "ipResponse": "5xx",
+        "chainReadable": true,
+        "chainRegistered": false,
+        "retryOk": true,
+        "chainRegisteredAfterRetry": false
+      },
+      "expect": {
+        "code": "network_unavailable",
+        "retried": true
+      }
+    },
+    {
+      "id": "IP-07",
+      "title": "IP 5xx，读链不可达：network_unavailable，不盲目重试",
+      "input": {
+        "ipResponse": "5xx",
+        "chainReadable": false
+      },
+      "expect": {
+        "code": "network_unavailable",
+        "retried": false
+      }
+    }
+  ]
+}

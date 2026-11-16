@@ -6,6 +6,7 @@ import React, { useEffect, useMemo, useRef, useState, useLayoutEffect, useCallba
 import { isShellContext } from '@/services/shellContext'
 import { probeHasSigner } from '@/services/mailboxProbeSigning'
 import { CHAT_WINDOW_INITIAL, anchoredScrollTop, hiddenCount, nextWindowCount, shouldExpandWindow, viewportForScroller, windowTail } from "@/utils/chatWindow"
+import { shortAddressLabel } from "@/utils/accountNameGuard"
 import { flushSync } from "react-dom"
 import { BeamioAddressCapsule } from '@/components/BeamioAddressCapsule'
 import { localCallerAvatarDataUri } from '@/utils/callerAvatar'
@@ -134,6 +135,7 @@ import {
 import type { AaMultisigChatPreview } from '@/utils/aaMultisigChatPreview'
 import { tu } from '@/locale/beamioLocale'
 import { getPgpMigrationState, subscribePgpMigrationState } from '@/services/pgpMigrationRunner'
+import { installPgpUpgradeStateListener, pgpUpgradeRetryVisible, subscribePgpUpgradeState } from '@/services/pgpUpgradeState'
 import {
 	decryptVoiceFragment,
 	encryptVoiceBlob,
@@ -2444,6 +2446,9 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	// the migration retry notice (approved copy) shows only in the retryable state of the shell's background run.
 	const [pgpMigrationRetry, setPgpMigrationRetry] = useState(() => getPgpMigrationState() === 'retryable')
 	const [pgpMigrationRetryDismissed, setPgpMigrationRetryDismissed] = useState(false)
+	// Y.62 pgpUpgradeState: only pgp_migration_retry shows the non-blocking notice; the other codes change no screen.
+	const [pgpUpgradeRetry, setPgpUpgradeRetry] = useState(() => { installPgpUpgradeStateListener(); return pgpUpgradeRetryVisible() })
+	useEffect(() => subscribePgpUpgradeState((code) => setPgpUpgradeRetry(code === 'pgp_migration_retry')), [])
 	useEffect(() => subscribePgpMigrationState((st) => {
 		setPgpMigrationRetry(st === 'retryable')
 		if (st === 'retryable') setPgpMigrationRetryDismissed(false)
@@ -3770,7 +3775,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 							sessionId: signal.sessionId,
 							peerAddress: provenAddress,
 							// Never send EOA as CallKit title — dual EOA/@tag collapses bottom chrome.
-							displayName: tag || 'Beamio',
+							displayName: tag || tu('call_system_title'),
 							...nextClaim,
 							signal,
 						}),
@@ -3794,7 +3799,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 							callId: signal.callId,
 							sessionId: signal.sessionId,
 							peerAddress: provenAddress,
-							displayName: localTag || 'Beamio',
+							displayName: localTag || tu('call_system_title'),
 							...claim,
 							signal,
 						}),
@@ -4044,7 +4049,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 					sessionId: offer.sessionId,
 					peerAddress: offer.from,
 					// Opaque title only — EOA as CallKit name collapses bottom chrome.
-					displayName: 'Beamio',
+					displayName: tu('call_system_title'),
 				})
 			}
 			if (!nativeShellOwnsAccept) {
@@ -7931,7 +7936,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	).trim()
 	const activeVoicePeerLabel = activeVoicePeerTag
 		? activeVoicePeerTag.startsWith('@') ? activeVoicePeerTag : `@${activeVoicePeerTag}`
-		: '@Beamio'
+		: shortAddressLabel(activeVoiceCallRecord?.peerAddress || toAddress)
 	const voicePeerProfile = peerProfile || chatData.beamio
 	const voicePeerLastRaw = String(voicePeerProfile?.last_name || '').split('\r\n')[0] || ''
 	const voicePeerLastName = voicePeerLastRaw.trim().startsWith('{') ? '' : voicePeerLastRaw.trim()
@@ -9293,6 +9298,12 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 								</div>
 							</div>
 						) : null}
+						{pgpUpgradeRetry && (
+							<div role="status" className="mb-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
+								<p className="font-semibold">{tu('chat_pgp_migration_retry_title')}</p>
+								<p className="mt-1">{tu('chat_pgp_migration_retry_body')}</p>
+							</div>
+						)}
 						{pgpMigrationRetry && !pgpMigrationRetryDismissed && (
 							<div role="alert" className="mb-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-700">
 								{tu('pgp_migration_retry_notice')}

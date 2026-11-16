@@ -14,7 +14,7 @@ import { formatDigitalAssetDisplay } from '@/utils/formatDigitalAssetDisplay'
 import base_icon from '@/components/assets/base-logo.png'
 import { beamioWalletAccent } from '@/utils/beamioWalletAccent'
 import { CoNET_Data, setCoNET_Data } from '../../utils/globals'
-import { homeAccountName, keepExistingAccountName } from '../../utils/accountNameGuard'
+import { deviceCachedBeamioTagFor, homeAccountName, homeDisplayLabel, keepExistingAccountName } from '../../utils/accountNameGuard'
 import { closeReservedExternalWindow, fetchJsonSync, isCashTreesNativeWebView, openCoinbaseCheckoutUrl, reserveExternalBrowserWindow, type InAppBrowserClosedDetail } from '@/utils/cashTreesNativeNfc'
 import type { LucideIcon } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
@@ -2476,12 +2476,13 @@ const Home = (_props: HomeProps) => {
 	/** 顶部左侧胶囊：beamioTag 协议（对齐 BeamioPayMe / beamio-capsule）— 头像优先 `image`，否则 `getImg(tag)`；展示单一 `@` + tag */
 	const { homeBeamioTagLabel, homeCapsuleAvatarSrc } = useMemo(() => {
 		// Display only: the React state first, then the stored wallet name (set before the server call resolves).
-		const normalized = homeAccountName(beamio?.accountName, CoNET_Data?.beamio?.accountName)
-		const label = `@${normalized}`
+		// Offline or a failed lookup: the BeamioTag cached on this device, then the short address. Never a fixed name.
+		const normalized = homeAccountName(beamio?.accountName, CoNET_Data?.beamio?.accountName, deviceCachedBeamioTagFor(profiles?.[0]?.keyID))
+		const label = homeDisplayLabel(normalized, profiles?.[0]?.keyID)
 		const img = beamio?.image != null ? String(beamio.image).trim() : ''
-		const src = img || getImg(normalized)
+		const src = img || getImg(normalized || profiles?.[0]?.keyID)
 		return { homeBeamioTagLabel: label, homeCapsuleAvatarSrc: src }
-	}, [beamio?.accountName, beamio?.image])
+	}, [beamio?.accountName, beamio?.image, profiles])
 
 	/** CashTrees 卡片区：AA 短地址；Total CAD = (EOA+AA) USDC × BeamioOracle(USDC→CAD) + 基础设施卡 points 按卡币种折 CAD */
 	const cashTreesCardDisplay = useMemo(() => {

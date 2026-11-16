@@ -10,6 +10,9 @@ import ReactDOM from 'react-dom/client';
 import './locale/i18n';
 import './index.css';
 import App from './App';
+// Y.62 pgpUpgradeState: listen from startup so an event that arrives before the chat page mounts is recorded.
+import { installPgpUpgradeStateListener } from './services/pgpUpgradeState';
+installPgpUpgradeStateListener();
 import { BeamioLocaleRoot } from './locale/BeamioLocaleRoot';
 import reportWebVitals from './reportWebVitals';
 import { DaemonProvider } from './providers/DaemonProvider'

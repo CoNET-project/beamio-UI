@@ -639,6 +639,13 @@ export default function AppEntryGate() {
 				'warn',
 				`[AppEntryGate] splash force-dismiss after ${SPLASH_FORCE_DISMISS_MS}ms → storage unavailable (retry; never onboarding)`,
 			)
+			// S25 (2026-11-15): an undecided start at the deadline is a startup in progress, not an unreadable store. It shows the
+			// retryable state (never onboarding, no record is judged, nothing is written). The retry re-runs the identity probe and the init.
+			if (nativeShellRef.current || isCashTreesNativeWebView()) {
+				publishNativePwaLog('warn', `[AppEntryGate] splash deadline ${SPLASH_FORCE_DISMISS_MS}ms, start undecided: retryable state`)
+				showStorageUnavailable(NATIVE_RETRY_SCREEN)
+				return
+			}
 			handleStorageUnavailable('timeout')
 		}, SPLASH_FORCE_DISMISS_MS)
 

@@ -53,8 +53,10 @@ export async function submitBrowserChatRouteRegister(
  * Checks a native `result` before it is posted: exactly the eight fields, in the spec order, with the types the server takes.
  * Anything else (a key, a backup password, a recovery code, an extra field) is `bad_ack`, and nothing is posted.
  */
-export function judgeNativeRegisterResult(result: Record<string, unknown>): 'ok' | 'bad_ack' {
+export function judgeNativeRegisterResult(result: Record<string, unknown>): 'ok' | 'bad_ack' | 'submitted' {
 	const keys = Object.keys(result)
+	// Y.61: the native layer registered the route itself. Its result is only {code:"submitted"}; the page posts nothing.
+	if (keys.length === 1 && keys[0] === 'code' && result.code === 'submitted') return 'submitted'
 	if (keys.length !== NATIVE_RESULT_KEYS.length) return 'bad_ack'
 	for (let i = 0; i < keys.length; i++) if (keys[i] !== NATIVE_RESULT_KEYS[i]) return 'bad_ack'
 	for (const k of ['wallet', 'keyID', 'publicKeyArmored', 'encrypKeyArmored', 'routeKeyID', 'nonce', 'signature'] as const) {
@@ -73,7 +75,10 @@ export async function submitNativeChatRouteRegister(
 	post: (body: Record<string, unknown>) => Promise<{ ok: boolean }>,
 ): Promise<RouteRegisterOutcome> {
 	if (!outcome.ok) return { ok: false, reason: `native_${outcome.code}` }
-	if (judgeNativeRegisterResult(outcome.result) !== 'ok') return { ok: false, reason: 'native_bad_ack' }
+	if ('submitted' in outcome) return { ok: true }
+	const judged = judgeNativeRegisterResult(outcome.result)
+	if (judged === 'submitted') return { ok: true }
+	if (judged !== 'ok') return { ok: false, reason: 'native_bad_ack' }
 	const body: Record<string, unknown> = {}
 	for (const k of NATIVE_RESULT_KEYS) body[k] = outcome.result[k]
 	const res = await post(body)

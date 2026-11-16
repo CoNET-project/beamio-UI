@@ -9,34 +9,14 @@ import { probeNativeCapabilities } from './nativeChatRouteRegister'
 import { identityCapabilityFrom, nativeInitAllowed } from './shellEntryDecision'
 import { readNodeListForInit } from './coNETNodeRead'
 import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
+import { deviceCachedBeamioTagFor, rememberDeviceBeamioTag } from '@/utils/accountNameGuard'
 
 /** Fired after a native recovery succeeds: the app re-reads the native wallet state and enters the app (no reload). */
 export const NATIVE_WALLET_READY_EVENT = 'beamio:native-wallet-ready'
 
-const ACCOUNT_NAME_KEY = 'beamio.shellAccountName'
-
-/** The BeamioTag the user restored with (public, not key material). Used only to name the account in the shell. */
-export function rememberShellAccountName(tag: string | undefined | null): void {
-	const name = (tag ?? '').trim().replace(/^@+/, '')
-	if (!name) return
-	try {
-		window.localStorage.setItem(ACCOUNT_NAME_KEY, name)
-	} catch {
-		// private mode or storage disabled: the account simply has no name in the shell
-	}
-}
-
-export function shellAccountName(): string {
-	try {
-		return window.localStorage.getItem(ACCOUNT_NAME_KEY)?.trim() ?? ''
-	} catch {
-		return ''
-	}
-}
-
 /** The in-memory profile for a shell wallet: the public address and, if known, the account name. No secret field. */
 export function publicWalletSeed(eoa: string): encrypt_keys_object {
-	const name = shellAccountName()
+	const name = deviceCachedBeamioTagFor(eoa)
 	const profile = {
 		keyID: eoa,
 		isPrimary: true,
@@ -109,8 +89,9 @@ export async function reachNativeWallet(): Promise<NativeWalletState> {
 	return state
 }
 
-export function notifyNativeWalletReady(tag?: string): void {
-	rememberShellAccountName(tag)
+/** `tag` and `eoa` are the account the native wallet was created or restored for; the name is cached only with its EOA. */
+export function notifyNativeWalletReady(tag?: string, eoa?: string): void {
+	rememberDeviceBeamioTag(tag, eoa)
 	// a native wallet that became ready may now hold the account the chat was refused for.
 	forgetInitRefusal()
 	window.dispatchEvent(new Event(NATIVE_WALLET_READY_EVENT))
