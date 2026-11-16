@@ -197,6 +197,9 @@ describe('account reset at the gate (Y.85, Y.89, Y.93)', () => {
 		// the recovery screen shows its import entry (native_key_required_import)
 		await waitFor(() => expect(screen.getByText('native_key_required_import')).toBeTruthy(), { timeout: 3000 })
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
+		// no native retry screen, and no creation entry
+		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
+		expect(screen.queryByText('native_account_create')).toBeNull()
 		const afterRecovery = race.reachCalls
 		await new Promise((r) => setTimeout(r, 300))
 		// no automatic retry: the native wallet is not asked again
