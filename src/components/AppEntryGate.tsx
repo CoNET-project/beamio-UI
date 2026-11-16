@@ -632,7 +632,8 @@ export default function AppEntryGate() {
 			}
 			setSplashVisible(false)
 			if (action === 'release') {
-				publishNativePwaLog('warn', `[AppEntryGate] splash force-dismiss after ${SPLASH_FORCE_DISMISS_MS}ms`)
+				// The decision was made before the deadline: the timer only hides the splash (no screen or storage change).
+				publishNativePwaLog('info', `[AppEntryGate] splash deadline ${SPLASH_FORCE_DISMISS_MS}ms after a decision: splash hidden, nothing else changed`)
 				return
 			}
 			publishNativePwaLog(

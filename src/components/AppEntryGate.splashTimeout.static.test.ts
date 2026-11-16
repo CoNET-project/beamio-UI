@@ -19,3 +19,13 @@ describe('splash deadline in a shell', () => {
 		expect(block).not.toMatch(/goOnboarding|writeInit|persistInitRecord|shellRecordWrite/)
 	})
 })
+
+describe('splash deadline after a decision', () => {
+	it('the release branch is a splash-only dismissal, logged as info (not a forced dismissal)', () => {
+		const start = src.indexOf("if (action === 'release') {")
+		const block = src.slice(start, src.indexOf('}', src.indexOf('return', start)) + 1)
+		expect(block).toContain("publishNativePwaLog('info'")
+		expect(block).not.toContain('force-dismiss')
+		expect(block).toMatch(/splash hidden, nothing else changed/)
+	})
+})
