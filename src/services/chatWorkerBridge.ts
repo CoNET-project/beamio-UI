@@ -418,6 +418,25 @@ export const openLocalChatPage = async (
 	}
 }
 
+/**
+ * The page's read result for the Y.102 signal. A chat with no local library or no record answers `no_library` (a normal empty session,
+ * never a notice); a read that fails or cannot be opened answers `read_error` (unreadable). openLocalChatPage keeps its null for the merge.
+ */
+export type LocalChatHistoryRead = { kind: 'page'; source: string; items: number } | { kind: 'no_library' } | { kind: 'not_ready' } | { kind: 'read_error' }
+export const readLocalChatHistory = async (convKey: string, viewport: ChatLocalViewport): Promise<LocalChatHistoryRead> => {
+	const h = activeClient?.history
+	// no history client yet: not ready, nothing is judged
+	if (!h || typeof h.openConversation !== 'function') return { kind: 'not_ready' }
+	try {
+		const page = await h.openConversation(convKey, viewport)
+		// a chat with no local library or no record: a normal empty session
+		if (!page) return { kind: 'no_library' }
+		return { kind: 'page', source: page.source, items: page.items.length }
+	} catch {
+		return { kind: 'read_error' }
+	}
+}
+
 export const loadOlderLocalChatPage = async (
 	convKey: string,
 	cursor: string,

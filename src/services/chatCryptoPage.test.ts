@@ -125,7 +125,7 @@ describe('Y.81 gate and real history signal on the chat page (R45 blockers)', ()
 		expect(chat).not.toContain('localHistoryReadable: true, localHistoryEmpty: false }))')
 		expect(chat).toContain('useEffect(() => () => { chatCryptoDecryptGate.enabled = false }, [])')
 		expect(chat).toContain('localHistoryReadable: localHistorySignal.localHistoryReadable')
-		expect(chat).toContain('setLocalHistoryRead(historyReadOf(page))')
+		expect(chat).toContain('setLocalHistoryRead(historyReadOf(await readLocalChatHistory(address, viewport)))')
 	})
 })
 
@@ -135,22 +135,28 @@ describe('Y.81 and Y.102: the page history read result, and every private-key de
 	const chat = readFileSync(join(__dirname, '..', 'pages', 'chat', 'chat.tsx'), 'utf8')
 
 	it('a local page with items is readable and not empty; an empty local page is readable and empty', () => {
-		expect(historySignalOf(historyReadOf({ source: 'local', items: [{}] }))).toEqual({ localHistoryReadable: true, localHistoryEmpty: false })
-		expect(historySignalOf(historyReadOf({ source: 'local', items: [] }))).toEqual({ localHistoryReadable: true, localHistoryEmpty: true })
+		expect(historySignalOf(historyReadOf({ kind: 'page', source: 'local', items: 2 }))).toEqual({ localHistoryReadable: true, localHistoryEmpty: false })
+		expect(historySignalOf(historyReadOf({ kind: 'page', source: 'local', items: 0 }))).toEqual({ localHistoryReadable: true, localHistoryEmpty: true })
 	})
 
-	it('a null page or a non-local source is unreadable, never an empty history', () => {
-		expect(historySignalOf(historyReadOf(null))).toEqual({ localHistoryReadable: false, localHistoryEmpty: false })
-		expect(historySignalOf(historyReadOf({ source: 'remote', items: [] }))).toEqual({ localHistoryReadable: false, localHistoryEmpty: false })
+	it('no local library or no record is a normal empty session (readable, empty), never a notice', () => {
+		expect(historySignalOf(historyReadOf({ kind: 'no_library' }))).toEqual({ localHistoryReadable: true, localHistoryEmpty: true })
 	})
 
-	it('no read yet is not_read: no history notice is raised, and nothing is claimed as read', () => {
-		expect(historySignalOf({ kind: 'not_read' })).toEqual({ localHistoryReadable: true, localHistoryEmpty: false })
+	it('not ready (no history client yet) is not_read: nothing is judged, no empty session shown, no notice raised', () => {
+		const r = historyReadOf({ kind: 'not_ready' })
+		expect(r).toEqual({ kind: 'not_read' })
+		expect(historySignalOf(r)).toEqual({ localHistoryReadable: true, localHistoryEmpty: false })
+	})
+
+	it('a read error, or a page that is not from the local library, is unreadable, never an empty history', () => {
+		expect(historySignalOf(historyReadOf({ kind: 'read_error' }))).toEqual({ localHistoryReadable: false, localHistoryEmpty: false })
+		expect(historySignalOf(historyReadOf({ kind: 'page', source: 'remote', items: 0 }))).toEqual({ localHistoryReadable: false, localHistoryEmpty: false })
+		expect(historySignalOf(historyReadOf({ kind: 'page', source: 'remote', items: 3 }))).toEqual({ localHistoryReadable: false, localHistoryEmpty: false })
 	})
 
 	it('the page feeds its own read result, and a failed read is unreadable', () => {
-		expect(chat).toContain('setLocalHistoryRead(historyReadOf(page))')
-		expect(chat).toContain('const page = await openLocalChatPage(address, viewport).catch(() => null)')
+		expect(chat).toContain('setLocalHistoryRead(historyReadOf(await readLocalChatHistory(address, viewport)))')
 		expect(chat).toContain('localHistoryReadable: localHistorySignal.localHistoryReadable')
 		expect(chat).not.toContain('localHistoryReadable: true, localHistoryEmpty: false }))')
 	})

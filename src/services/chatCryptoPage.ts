@@ -64,17 +64,25 @@ export const chatCryptoDecryptGate: { enabled: boolean } = { enabled: true }
  * The page's own local history read result (R_db, Y.102). `not_read` is the honest state when the page has not run the local library read for
  * this chat; it does not claim a read happened, and it raises no history notice (no failure was observed).
  */
-export type LocalHistoryRead = { kind: 'read'; items: number } | { kind: 'unreadable' } | { kind: 'not_read' }
+export type LocalHistoryRead = { kind: 'read'; items: number } | { kind: 'no_library' } | { kind: 'unreadable' } | { kind: 'not_read' }
 
-/** A local library page: a local source with items. A null page or a non-local source is unreadable, never "empty". */
-export function historyReadOf(page: { source: string; items: readonly unknown[] } | null | undefined): LocalHistoryRead {
-	if (!page || page.source !== 'local') return { kind: 'unreadable' }
-	return { kind: 'read', items: page.items.length }
+/**
+ * Maps the page's read result. `no_library` (a chat with no local library or no record) and an empty local page are both a normal empty session.
+ * A read error, or a page that cannot be trusted (not local, with items), is unreadable: it is never shown as an empty history.
+ */
+export function historyReadOf(raw: { kind: 'page'; source: string; items: number } | { kind: 'no_library' } | { kind: 'not_ready' } | { kind: 'read_error' }): LocalHistoryRead {
+	if (raw.kind === 'no_library') return { kind: 'no_library' }
+	if (raw.kind === 'not_ready') return { kind: 'not_read' }
+	if (raw.kind === 'read_error') return { kind: 'unreadable' }
+	// a page that is not from the local library is a read error (Y.102 3), whatever it holds
+	if (raw.source !== 'local') return { kind: 'unreadable' }
+	return { kind: 'read', items: raw.items }
 }
 
 /** The Y.102 inputs: read with items is readable and not empty; read with no items is readable and empty; unreadable is not readable. */
 export function historySignalOf(read: LocalHistoryRead): { localHistoryReadable: boolean; localHistoryEmpty: boolean } {
 	if (read.kind === 'unreadable') return { localHistoryReadable: false, localHistoryEmpty: false }
 	if (read.kind === 'read') return { localHistoryReadable: true, localHistoryEmpty: read.items === 0 }
+	if (read.kind === 'no_library') return { localHistoryReadable: true, localHistoryEmpty: true }
 	return { localHistoryReadable: true, localHistoryEmpty: false }
 }

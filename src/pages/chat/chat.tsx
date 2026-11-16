@@ -95,6 +95,7 @@ import {
 	onVoiceFrame,
 	localChatMigrationState,
 	openLocalChatPage,
+	readLocalChatHistory,
 } from '@/services/chatWorkerBridge'
 import { PlusActionMenu } from "./components/PlusActionMenu"
 import { useDaemonContext } from "@/providers/DaemonProvider"
@@ -2114,7 +2115,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 			// a failed read is unreadable (Y.102 3), never a silent empty history
 			const page = await openLocalChatPage(address, viewport).catch(() => null)
 			// the page's own read result, for every chat (Y.102): a read without items is empty, a failed or non-local read is unreadable
-			if (!cancelled) setLocalHistoryRead(historyReadOf(page))
+			if (!cancelled) setLocalHistoryRead(historyReadOf(await readLocalChatHistory(address, viewport)))
 			if (!migrated || cancelled || !page || page.source !== 'local') return
 			setLibraryOlderPending(page.olderState === 'pending')
 			const entries = page.items
