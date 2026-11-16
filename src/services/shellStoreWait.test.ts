@@ -103,3 +103,24 @@ describe('Y.70 #4: a shell read that is not yet decided is retryable, never a re
 		expect(shellStorageErrorReason('shell_record_not_ready')).not.toBe('native_record')
 	})
 })
+
+describe('not_ready (Y.70 #4): positive and negative cases (0.53.5)', () => {
+	it('positive: not_ready is a retryable wait, and the wait delay keeps growing to the cap (the retries go on)', () => {
+		expect(shellStorageErrorReason('shell_record_not_ready')).toBe('native_retry')
+		expect(nativeStoreWaitDelayMs(0)).toBeLessThan(nativeStoreWaitDelayMs(1))
+		expect(nativeStoreWaitDelayMs(100)).toBe(NATIVE_STORE_WAIT_CAP_MS)
+	})
+
+	it('negative: not_ready is an error answer, never an absent store (no onboarding, no create)', () => {
+		const read = parseShellRecordRead({ type: 'ack', ok: false, error: 'not_ready' })
+		expect(read).toEqual({ status: 'error', reason: 'not_ready' })
+		expect(read.status).not.toBe('absent')
+		// shellRecordAsWalletRecord returns null only for absent; an error must throw, so no empty record is ever built.
+		expect(() => shellRecordAsWalletRecord(read)).toThrow('shell_record_not_ready')
+	})
+
+	it('negative: not_ready is never mapped to a store reason that would create or overwrite', () => {
+		expect(shellStorageErrorReason('shell_record_not_ready')).not.toBe('native_record')
+		expect(shellStorageErrorReason('shell_record_not_ready')).not.toBe('app_update_required')
+	})
+})
