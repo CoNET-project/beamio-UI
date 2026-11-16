@@ -1,20 +1,18 @@
 /**
- * Splash deadline races (0.53.5): a decision before or after the 12 s timer, and a Retry after a timeout. Same harness as
- * App.shellEntryRace.timeout.test (real App and entry gate; the bridge and storage are stubs). The 12 s timer runs on fake timers.
- * (Unused header text follows.) (A + B): the shell startup race (case: no record, or a failed read). A shell whose account is not in the storage read at App's init (no record, a failed
- * read, a timeout, or a record that cannot be read) must still show the global bar once the native wallet is applied. Before the fix the
- * init set the loading flag and returned, and nothing cleared it, so the bar and its search stayed hidden. Real App and entry gate; the
- * native bridge, the storage and the chat start are replaced by stubs. SYNTHETIC values only.
+ * Splash deadline races (0.53.5): a native decision before the 12 s timer, the timer first (the retry screen), a native
+ * store that is not ready twice, and a Retry after a timeout. The real App and entry gate run; the native bridge, the
+ * storage and the chat start are stubs. SYNTHETIC values only.
+ *
+ * Each case loads App from a fresh module registry (jest.resetModules in beforeEach). Without it, module-level state of
+ * the app (the identity capability in services/nativeIdentityProbeRetry, the shell record transport, and the native wallet
+ * hints) survives from an earlier case and the later cases see a stale App state. Reproduced by merging the cases into one
+ * file without the reset: the timer-first and the Retry cases fail.
  */
-import { act, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
 // A callable, constructible, property-returning stub for the worker modules (their methods are called at start-up).
 const mockDeepStub = (): any => new Proxy(function () {}, { get: (_t, k) => (k === 'then' || k === Symbol.toPrimitive ? undefined : k === '__esModule' ? true : mockDeepStub()), apply: () => mockDeepStub(), construct: () => mockDeepStub() })
 // The App is loaded after the text encoders exist (the jsdom global does not have them, and the App reads them when it loads).
 const nodeUtil = require('util')
 Object.assign(globalThis, { TextEncoder: nodeUtil.TextEncoder, TextDecoder: nodeUtil.TextDecoder })
-const App = require('./App').default
-const { DaemonProvider } = require('@/providers/DaemonProvider')
 
 const EOA = '0x1111111111111111111111111111111111111111'
 
@@ -106,6 +104,33 @@ jest.mock('@/components/PasscodeLockScreen', () => () => null)
 jest.mock('@/components/EmbeddedPwaUpdateBanner', () => ({ EmbeddedPwaUpdateBanner: () => null }))
 jest.mock('@/pages/Home/LoadingPage', () => () => null)
 
+
+// Fresh registry per case: React and Testing Library are loaded from the same registry as App, so hooks share one React.
+// Auto-cleanup is off; each case unmounts its own tree in the afterEach below, before the next registry is loaded.
+process.env.RTL_SKIP_AUTO_CLEANUP = 'true'
+let rtl: any
+let act: any
+let screen: any
+let waitFor: any
+let render: any
+let MemoryRouter: any
+let App: any
+let DaemonProvider: any
+function loadFresh() {
+	jest.resetModules()
+	rtl = require('@testing-library/react')
+	act = rtl.act
+	screen = rtl.screen
+	waitFor = rtl.waitFor
+	render = rtl.render
+	MemoryRouter = require('react-router-dom').MemoryRouter
+	App = require('./App').default
+	DaemonProvider = require('@/providers/DaemonProvider').DaemonProvider
+}
+afterEach(() => {
+	rtl?.cleanup()
+})
+
 function renderApp() {
 	return render(
 		<DaemonProvider>
@@ -116,14 +141,101 @@ function renderApp() {
 	)
 }
 
-
 const SPLASH_MS = 12_000
 const RETRY_TITLE = 'native_not_ready_retry_title'
 const RETRY_ACTION = 'native_not_ready_retry_action'
 const MIGRATION_TITLE = 'migration_retry_title'
 
+describe('splash deadline race: decision first (a native decision before the 12 s timer)', () => {
+	beforeEach(() => {
+		loadFresh()
+		jest.useFakeTimers()
+		race.caps = []
+		race.storage = 'null'
+		race.nativeResolve = undefined
+		race.nativeImmediate = undefined
+		race.reads = 0
+		race.notReady = false
+		mockChatStarts.length = 0
+	})
+	afterEach(() => {
+		jest.useRealTimers()
+	})
+
+	it('decision first, then the 12 s timer: the home stays, no retry screen, state unchanged', async () => {
+		renderApp()
+		await act(async () => { jest.advanceTimersByTime(1) })
+		await waitFor(() => expect(race.nativeResolve).toBeDefined())
+		await act(async () => { race.nativeResolve?.({ status: 'unlocked', eoa: EOA }) })
+		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy())
+		await act(async () => { jest.advanceTimersByTime(SPLASH_MS + 1000) })
+		expect(screen.getByRole('button', { name: 'search' })).toBeTruthy()
+		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
+	})
+})
+
+describe('splash deadline race: timer first (no decision by 12 s; the retry screen shows; a later decision enters the home)', () => {
+	beforeEach(() => {
+		loadFresh()
+		jest.useFakeTimers()
+		race.caps = []
+		race.storage = 'null'
+		race.nativeResolve = undefined
+		race.nativeImmediate = undefined
+		race.reads = 0
+		race.notReady = false
+		mockChatStarts.length = 0
+	})
+	afterEach(() => {
+		jest.useRealTimers()
+	})
+
+	it('timer first (no decision by 12 s): the retry state shows; a later decision enters the home and the retry state goes', async () => {
+		renderApp()
+		await act(async () => { jest.advanceTimersByTime(1) })
+		await waitFor(() => expect(race.nativeResolve).toBeDefined())
+		await act(async () => { jest.advanceTimersByTime(SPLASH_MS + 1000) })
+		expect(screen.getByText(RETRY_TITLE)).toBeTruthy()
+		await act(async () => { race.nativeResolve?.({ status: 'unlocked', eoa: EOA }) })
+		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy())
+		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
+	})
+})
+
+describe('splash deadline race: the native store not ready twice, then ok (end to end, the home is entered; no migration screen)', () => {
+	beforeEach(() => {
+		loadFresh()
+		jest.useFakeTimers()
+		race.caps = []
+		race.storage = 'null'
+		race.nativeResolve = undefined
+		race.nativeImmediate = undefined
+		race.reads = 0
+		race.notReady = false
+		mockChatStarts.length = 0
+	})
+	afterEach(() => {
+		jest.useRealTimers()
+	})
+
+	it('the native store is not ready twice, then ok: the home is entered end to end, no migration screen', async () => {
+		race.notReady = true
+		race.caps = ['identity.native-keys.v1']
+		race.nativeImmediate = { status: 'unlocked', eoa: EOA }
+		renderApp()
+		for (let i = 0; i < 6 && race.reads < 3; i += 1) {
+			await act(async () => { jest.advanceTimersByTime(60_000) })
+		}
+		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy(), { timeout: 5000 })
+		expect(race.reads).toBe(3)
+		expect(screen.queryByText(MIGRATION_TITLE)).toBeNull()
+		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
+	})
+})
+
 describe('splash deadline race: timeout, then Retry once the identity is declared (the home is entered, once)', () => {
 	beforeEach(() => {
+		loadFresh()
 		jest.useFakeTimers()
 		race.caps = []
 		race.storage = 'null'
