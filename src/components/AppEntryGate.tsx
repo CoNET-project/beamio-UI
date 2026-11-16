@@ -874,6 +874,21 @@ export default function AppEntryGate() {
 									{tu('migration_retry_action')}
 								</button>
 							</>
+						) : storageUnavailable === 'native_reading' ? (
+							<>
+								<h1 className="text-xl font-semibold">{tu('native_reading_title')}</h1>
+								<p className="mt-3 text-sm leading-6 text-white/75">{tu('native_reading_body')}</p>
+								<button
+									type="button"
+									className="mt-5 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-[#071126]"
+									onClick={() => {
+										setStorageUnavailable('')
+										void init()
+									}}
+								>
+									{tu('native_reading_action')}
+								</button>
+							</>
 						) : storageUnavailable === NATIVE_RETRY_SCREEN ? (
 							<>
 								<h1 className="text-xl font-semibold">{tu('native_not_ready_retry_title')}</h1>

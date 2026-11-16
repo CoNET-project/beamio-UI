@@ -4,6 +4,8 @@
  */
 import { NATIVE_STORE_WAIT_CAP_MS, nativeStoreWaitDelayMs, shellStorageErrorReason, splashDeadlineAction } from './shellStoreWait'
 import { parseShellRecordRead, shellRecordAsWalletRecord } from './shellRecordStore'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 
 describe('the wait while the native store is not ready', () => {
 	it('the delay grows from 3 s and stops at the cap (never a stop: the retries go on)', () => {
@@ -122,5 +124,37 @@ describe('not_ready (Y.70 #4): positive and negative cases (0.53.5)', () => {
 	it('negative: not_ready is never mapped to a store reason that would create or overwrite', () => {
 		expect(shellStorageErrorReason('shell_record_not_ready')).not.toBe('native_record')
 		expect(shellStorageErrorReason('shell_record_not_ready')).not.toBe('app_update_required')
+	})
+
+	it('Y.99 4: a read answering error + record_unreadable (flag repair failed) is unknown and retryable: native_reading', () => {
+		const read = parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'error', sub: 'record_unreadable' } })
+		expect(read).toEqual({ status: 'error', reason: 'record_unreadable' })
+		let msg = ''
+		try {
+			shellRecordAsWalletRecord(read)
+		} catch (e) {
+			msg = (e as Error).message
+		}
+		// never absent (null), so it never reaches onboarding or a new account
+		expect(msg).toBe('shell_record_record_unreadable')
+		expect(shellStorageErrorReason(msg)).toBe('native_reading')
+	})
+
+	it('Y.99 4: native_reading is not a retry of the store wait, not a recovery entry, and not a record error', () => {
+		expect(shellStorageErrorReason('shell_record_record_unreadable')).not.toBe('native_retry')
+		expect(shellStorageErrorReason('shell_record_record_unreadable')).not.toBe('native_recovery_needed')
+		expect(shellStorageErrorReason('shell_record_record_unreadable')).not.toBe('native_record')
+	})
+
+	it('Y.99 4: the gate shows the reading copy with a retry, and never routes it to onboarding', () => {
+		const gate = readFileSync(join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
+		const at = gate.indexOf("storageUnavailable === 'native_reading'")
+		expect(at).toBeGreaterThan(0)
+		const block = gate.slice(at, at + 700)
+		expect(block).toContain("tu('native_reading_body')")
+		expect(block).toContain('void init()')
+		expect(block).not.toMatch(/onboarding|createWallet|clearIdentity/i)
+		const locale = JSON.parse(readFileSync(join(__dirname, '..', 'locale', 'zh-CN.json'), 'utf8'))
+		expect(locale.ui.native_reading_body).toBe('正在读取，请稍后重试')
 	})
 })

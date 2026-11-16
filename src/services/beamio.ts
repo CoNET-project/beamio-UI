@@ -1336,7 +1336,7 @@ export const createOrGetWallet = async (secretPhrase: string | null, initAccount
 export type CheckStorageResult =
   | { status: 'loaded'; data: encrypt_keys_object }
   | { status: 'empty' }
-  | { status: 'unavailable'; reason: 'timeout' | 'indexeddb' | 'invalid_document' | 'vault_unreadable' | 'native_record' | 'native_recovery_needed' | 'native_retry' | 'eoa_mismatch' | 'app_update_required' }
+  | { status: 'unavailable'; reason: 'timeout' | 'indexeddb' | 'invalid_document' | 'vault_unreadable' | 'native_record' | 'native_recovery_needed' | 'native_retry' | 'native_reading' | 'eoa_mismatch' | 'app_update_required' }
   /** Encrypted with a passcode and not unlocked yet. Never treated as empty: the gate asks for the passcode. */
   | { status: 'locked' }
 
