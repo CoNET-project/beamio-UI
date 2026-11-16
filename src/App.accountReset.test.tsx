@@ -131,7 +131,8 @@ jest.mock('@/components/EmbeddedPwaUpdateBanner', () => ({ EmbeddedPwaUpdateBann
 // The onboarding page is replaced by a marker, so the test reads whether the gate entered onboarding.
 jest.mock('@/pages/Home/LoadingPage', () => {
 	const R = require('react')
-	return () => R.createElement('div', null, 'ONBOARDING_MARK')
+	// the stand-in creation entry (positive control for the role query in the recovery case): a real creation button sits here in onboarding.
+	return () => R.createElement(R.Fragment, null, R.createElement('div', null, 'ONBOARDING_MARK'), R.createElement('button', { type: 'button' }, 'Create account'))
 })
 const { publishNativePwaLog } = require('@/utils/cashTreesNativePwaLog')
 
@@ -165,6 +166,8 @@ describe('account reset at the gate (Y.85, Y.89, Y.93)', () => {
 		renderApp()
 		await waitFor(() => expect(screen.getByText('ONBOARDING_MARK')).toBeTruthy(), { timeout: 3000 })
 		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
+		// positive control: the role query used by the recovery case finds the creation entry when onboarding is shown
+		expect(screen.getByRole('button', { name: /create|get started|新建|创建/i })).toBeTruthy()
 	})
 
 	// CP-04 (Y.93 2b, option A, §25.29.5): a shell that does not report identity.native-keys.v1 shows the unified capability notice.
@@ -199,7 +202,8 @@ describe('account reset at the gate (Y.85, Y.89, Y.93)', () => {
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
 		// no native retry screen, and no creation entry
 		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
-		expect(screen.queryByText('native_account_create')).toBeNull()
+		// the creation entry is not offered on the recovery screen (role query; the positive control is the onboarding case above)
+		expect(screen.queryByRole('button', { name: /create|get started|新建|创建/i })).toBeNull()
 		const afterRecovery = race.reachCalls
 		await new Promise((r) => setTimeout(r, 300))
 		// no automatic retry: the native wallet is not asked again
