@@ -136,6 +136,8 @@ import type { AaMultisigChatPreview } from '@/utils/aaMultisigChatPreview'
 import { tu } from '@/locale/beamioLocale'
 import { getPgpMigrationState, subscribePgpMigrationState } from '@/services/pgpMigrationRunner'
 import { installPgpUpgradeStateListener, pgpUpgradeRetryVisible, subscribePgpUpgradeState } from '@/services/pgpUpgradeState'
+import { cryptoActionsEnabled, cryptoInputOf, cryptoNoticeOf, nextCryptoRetry } from '@/services/chatCryptoPage'
+import { chatCryptoAvailabilityOf } from '@/services/chatCryptoRetry'
 import {
 	decryptVoiceFragment,
 	encryptVoiceBlob,
@@ -2449,6 +2451,36 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	// Y.62 pgpUpgradeState: only pgp_migration_retry shows the non-blocking notice; the other codes change no screen.
 	const [pgpUpgradeRetry, setPgpUpgradeRetry] = useState(() => { installPgpUpgradeStateListener(); return pgpUpgradeRetryVisible() })
 	useEffect(() => subscribePgpUpgradeState((code) => setPgpUpgradeRetry(code === 'pgp_migration_retry')), [])
+	// Y.81 (batch 2): one chat-crypto notice and an action gate. The history signal is a placeholder until the page reads it (readable, not empty).
+	const [chatOnline, setChatOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine !== false)
+	const [cryptoAttempt, setCryptoAttempt] = useState(0)
+	const [cryptoTick, setCryptoTick] = useState(0)
+	const chatCryptoAvail = chatCryptoAvailabilityOf(cryptoInputOf({ pgpUpgradeRetry, pgpMigrationRetry, offline: !chatOnline, localHistoryReadable: true, localHistoryEmpty: false }))
+	const chatCryptoNotice = cryptoNoticeOf(chatCryptoAvail, cryptoAttempt)
+	const chatActionsRef = useRef(true)
+	chatActionsRef.current = cryptoActionsEnabled(chatCryptoAvail)
+	// Y.81 2: 30 s, 2 min, 10 min; then only the manual retry. Each retry re-reads the PGP state.
+	useEffect(() => {
+		if (chatCryptoNotice === null) { setCryptoAttempt(0); return }
+		if (chatCryptoNotice === 'chat_crypto_still_retrying') return
+		const delay = nextCryptoRetry(cryptoAttempt, 'none').delayMs
+		if (delay === null) return
+		const timer = window.setTimeout(() => { setCryptoAttempt((a) => a + 1); setCryptoTick((t) => t + 1) }, delay)
+		return () => window.clearTimeout(timer)
+	}, [chatCryptoNotice, cryptoAttempt])
+	useEffect(() => {
+		if (cryptoTick === 0) return
+		setPgpUpgradeRetry(pgpUpgradeRetryVisible())
+		setPgpMigrationRetry(getPgpMigrationState() === 'retryable')
+	}, [cryptoTick])
+	// Y.81 2 (CA-06): a network back online retries once, at once.
+	useEffect(() => {
+		const up = () => { setChatOnline(true); setCryptoTick((t) => t + 1) }
+		const down = () => setChatOnline(false)
+		window.addEventListener('online', up)
+		window.addEventListener('offline', down)
+		return () => { window.removeEventListener('online', up); window.removeEventListener('offline', down) }
+	}, [])
 	useEffect(() => subscribePgpMigrationState((st) => {
 		setPgpMigrationRetry(st === 'retryable')
 		if (st === 'retryable') setPgpMigrationRetryDismissed(false)
@@ -6716,6 +6748,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	}, [voiceSending])
 
 	const sendVoiceDraft = useCallback(async () => {
+		if (!chatActionsRef.current) return // Y.81 1: encryption actions disabled while the chat crypto is not available
 		if (!voiceDraftBlob || voiceSending || !profiles?.[0]?.privateKeyArmor) return
 		setVoiceSending(true)
 		setVoiceError(null)
@@ -7559,6 +7592,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	}
 
 	const sendFileDrafts = useCallback(async () => {
+		if (!chatActionsRef.current) return // Y.81 1: encryption actions disabled while the chat crypto is not available
 		const ready = fileJobs.filter(job => job.status === 'ready' && job.manifest)
 		if (!ready.length || (!privateKey && !isShellContext()) || !allNodes?.length) return
 		for (const job of ready) {
@@ -7603,6 +7637,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	}, [allNodes, chatData, fileJobs, privateKey])
 
 	async function send() {
+		if (!chatActionsRef.current) return // Y.81 1: encryption actions disabled while the chat crypto is not available
 		const temp = CoNET_Data
 		if (!temp || !profiles?.length) return
 		if (!toAddress || !hasRoute) return
@@ -7710,6 +7745,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	}
 
 	const sendAll = useCallback(async () => {
+		if (!chatActionsRef.current) return // Y.81 1: encryption actions disabled while the chat crypto is not available
 		const value = (inputRef.current?.value ?? text).trim()
 		if (value) {
 			await send()
@@ -9298,16 +9334,12 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 								</div>
 							</div>
 						) : null}
-						{pgpUpgradeRetry && (
-							<div role="status" className="mb-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
-								<p className="font-semibold">{tu('chat_pgp_migration_retry_title')}</p>
-								<p className="mt-1">{tu('chat_pgp_migration_retry_body')}</p>
-							</div>
-						)}
-						{pgpMigrationRetry && !pgpMigrationRetryDismissed && (
-							<div role="alert" className="mb-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-700">
-								{tu('pgp_migration_retry_notice')}
-								<button type="button" className="ml-2 underline" onClick={() => setPgpMigrationRetryDismissed(true)}>Dismiss</button>
+						{chatCryptoNotice !== null && (
+							<div role={chatCryptoNotice === 'chat_crypto_still_retrying' ? 'alert' : 'status'} className="mb-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
+								<p>{tu(chatCryptoNotice)}</p>
+								{chatCryptoNotice === 'chat_crypto_still_retrying' && (
+									<button type="button" className="mt-1 underline" onClick={() => { setCryptoAttempt(0); setCryptoTick((t) => t + 1) }}>{tu('chat_crypto_retry_action')}</button>
+								)}
 							</div>
 						)}
 						{verifyPrompt && (
