@@ -1,7 +1,8 @@
 /**
  * Y.91 and Y.100 (CU-01 to CU-08): the pending cleanup after a recovery. SYNTHETIC values only.
  */
-import { CLEANUP_PENDING_KEY, readCleanupPending, startCleanupAfterRecovery } from './accountCleanupPending'
+import { ethers } from 'ethers'
+import { CLEANUP_PENDING_KEY, cleanupAfterOnboardingRecovery, eoaOfRestoredRecord, readCleanupPending, startCleanupAfterRecovery } from './accountCleanupPending'
 import type { AccountCleanupCommand } from './accountCleanupOld'
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -69,5 +70,49 @@ describe('accountCleanupOld after recovery (Y.91, Y.100)', () => {
 		const presence = readFileSync(join(__dirname, 'accountPresence.ts'), 'utf8')
 		expect(presence).not.toContain('accountCleanupPending')
 		expect(presence).not.toContain('CLEANUP_PENDING_KEY')
+	})
+})
+
+describe('onboarding recovery and app-start resume (Y.91 c, Y.100)', () => {
+	const SYNTH_KEY = '0x' + '11'.repeat(32)
+
+	it('the EOA of a restored record: the keyID when it is an address, else the address of its key (lower case)', () => {
+		expect(eoaOfRestoredRecord({ profiles: [{ keyID: ACC.toUpperCase().replace('0X', '0x') }] })).toBe(ACC)
+		expect(eoaOfRestoredRecord({ profiles: [{ privateKeyArmor: SYNTH_KEY }] })).toBe(new ethers.Wallet(SYNTH_KEY).address.toLowerCase())
+		expect(eoaOfRestoredRecord({ profiles: [{ keyID: 'not-an-address', privateKeyArmor: 'bad' }] })).toBe('')
+		expect(eoaOfRestoredRecord({})).toBe('')
+		expect(eoaOfRestoredRecord(null)).toBe('')
+	})
+
+	it('a restore whose EOA cannot be read writes no marker and triggers no cleanup', () => {
+		const before = window.localStorage.getItem(CLEANUP_PENDING_KEY)
+		cleanupAfterOnboardingRecovery({ profiles: [] })
+		expect(window.localStorage.getItem(CLEANUP_PENDING_KEY)).toBe(before)
+	})
+
+	it('a restore with a known EOA writes the pending marker before the request (interrupted runs resume)', () => {
+		window.localStorage.removeItem(CLEANUP_PENDING_KEY)
+		cleanupAfterOnboardingRecovery({ profiles: [{ keyID: ACC }] })
+		const marker = readCleanupPending(window.localStorage)
+		expect(marker?.accountKey).toBe(ACC)
+		expect(marker?.keepNewAccount).toBe(true)
+		window.localStorage.removeItem(CLEANUP_PENDING_KEY)
+	})
+
+	it('CU-07 resume: the same idempotencyKey is reused across a restart, and only ok ends the marker', async () => {
+		const store = memStore()
+		store.setItem(CLEANUP_PENDING_KEY, JSON.stringify({ accountKey: ACC, idempotencyKey: 'key-R', keepNewAccount: true }))
+		const seen: string[] = []
+		const out = await startCleanupAfterRecovery(store, ACC, () => 'key-NEW', async (cmd) => (seen.push(cmd.idempotencyKey), incomplete))
+		expect(out).toEqual({ kind: 'incomplete' })
+		expect(new Set(seen)).toEqual(new Set(['key-R']))
+		expect(readCleanupPending(store)?.idempotencyKey).toBe('key-R')
+	})
+
+	it('the app-start resume and the onboarding call sites are wired (static)', () => {
+		const gate = readFileSync(join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
+		expect(gate).toContain('readCleanupPending(window.localStorage)')
+		const loading = readFileSync(join(__dirname, '..', 'pages', 'Home', 'LoadingPage.tsx'), 'utf8')
+		expect(loading.split('cleanupAfterOnboardingRecovery(temp)').length - 1).toBe(2)
 	})
 })

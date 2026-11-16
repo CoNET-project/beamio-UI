@@ -81,6 +81,7 @@ import {
 import { routeDiscoverMerchantDeepLink } from '@/utils/routeDiscoverMerchantDeepLink'
 import { stashAgentInviteIntroducerFromCurrentUrl } from '@/utils/agentInviteIntroducerStash'
 import { bindStashedAgentInviteReferrerIfNeeded } from '@/utils/agentInviteReferrerBind'
+import { cleanupAfterOnboardingRecovery } from '@/services/accountCleanupPending'
 
 
 const APP_VERSION = (packageJson as { version?: string }).version ?? ''
@@ -1519,6 +1520,7 @@ export default function BeamioOnboardingModal({ home, onInitComplete, requireWal
 													deferChat: true,
 													accountName: beamioTag,
 												})
+												void cleanupAfterOnboardingRecovery(temp)
 												home()
 												return
 											}
@@ -1536,6 +1538,7 @@ export default function BeamioOnboardingModal({ home, onInitComplete, requireWal
 												)
 												return
 											}
+											void cleanupAfterOnboardingRecovery(temp)
 											setTemp(temp)
 											setBeamioTag(restoredTag)
 											if (peekPendingDiscoverMerchantIntent()) {

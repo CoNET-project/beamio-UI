@@ -15,7 +15,7 @@ import { registerPendingSender } from '@/services/pendingServerSync'
 import { resumeDeferredWrite } from '@/services/shellRecordStore'
 import { installNativeNoKeyWatcher, openNativeKeyImport } from '@/services/nativeKeyState'
 import { onNativeImportResult } from '@/services/nativeImportResult'
-import { startCleanupAfterRecovery } from '@/services/accountCleanupPending'
+import { readCleanupPending, startCleanupAfterRecovery } from '@/services/accountCleanupPending'
 import { AppEntryNoKeyController } from './appEntryNoKeyController'
 import { NATIVE_WALLET_ESTABLISHED_EVENT } from '@/services/nativeWalletEstablished'
 import { NATIVE_FLOW_PENDING_EVENT } from '@/services/nativeFlowPending'
@@ -100,6 +100,12 @@ export default function AppEntryGate() {
 	const [storageUnavailable, setStorageUnavailable] = useState<string | null>(null)
 	/** an error line for the native recovery exit on the unavailable screen (existing copy keys only). */
 	const [nativeRecoveryNotice, setNativeRecoveryNotice] = useState('')
+	// Y.91 and Y.100: a pending cleanup from an earlier recovery resumes on app start with the same idempotencyKey. The new account is kept
+	// and the marker is not read by the presence judgement, so an unfinished cleanup never reads as no account.
+	useEffect(() => {
+		const pending = readCleanupPending(window.localStorage)
+		if (pending) void startCleanupAfterRecovery(window.localStorage, pending.accountKey).catch(() => undefined)
+	}, [])
 	// while the unavailable screen offers the native recovery exit, its result enters the app (the native side keeps the key).
 	useEffect(() => {
 		if (storageUnavailable !== 'native_recovery_needed') return
