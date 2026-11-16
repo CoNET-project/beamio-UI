@@ -47,8 +47,8 @@ import {
 } from '@/utils/consumerWalletGate'
 import { isShellContext } from '@/services/shellContext'
 import { nativeStoreWaitDelayMs, splashDeadlineAction } from '@/services/shellStoreWait'
-import { decideAccountReset, idbPresenceOf, nativePresenceOfState, type NativeWalletStatusAnswer } from '@/services/accountPresence'
-import { readNativeIdentityPublic } from '@/services/nativeIdentityPublic'
+import { decideAccountReset, idbPresenceOf, nativePresenceOfState, shellTierOf, type NativePresence, type NativeWalletStatusAnswer } from '@/services/accountPresence'
+import { IDENTITY_KPRESENT_CAPABILITY, readNativeIdentityPublic } from '@/services/nativeIdentityPublic'
 import { nativeRecoveryCopyKey, nativeRecoveryOpen, onNativeRecoveryResult, recoveryOpenErrorKey } from '@/services/nativeRecovery'
 import { announceNativeWalletEstablished } from '@/services/nativeWalletEstablished'
 import { tu } from '@/locale/beamioLocale'
@@ -530,12 +530,44 @@ export default function AppEntryGate() {
 			// Y.85 (c) and Y.89: a shell enters onboarding only when the IndexedDB side and the native side both confirmed none.
 			// Any unknown (or a contradicting "has") is retry: no onboarding, nothing deleted. The gate deletes nothing here.
 			if (isShellContext() && presence === 'no_account') {
-				const kPresent = shellNativeState?.status === 'no_key'
-					? await readNativeIdentityPublic().then((r) => (r.kind === 'no_key' ? r.kPresent : undefined))
-					: undefined
-				const nativeSide = shellNativeState ? nativePresenceOfState(shellNativeState, kPresent) : 'unknown'
+				// Y.93 2: the capabilities the shell reports decide which side is consulted. Without identity.native-keys.v1 the gate does not
+				// reach here (the unified capability notice), so the tier is native_no_kpresent or native_full here.
+				const caps = (await probeNativeCapabilities()).capabilities
+				const tier = shellTierOf({ shell: true, nativeKeys: identity === 'declared', kpresent: caps.includes(IDENTITY_KPRESENT_CAPABILITY) })
+				// Y.93 2b (option A, §25.29.5): a shell that does not report identity.native-keys.v1 is a missing capability. The unified
+				// capability notice, never onboarding and never a creation entry (CP-04).
+				if (tier === 'legacy_shell') {
+					publishNativePwaLog('info', '[AppEntryGate] identity.native-keys.v1 not declared at the no-record entry: capability missing (option A), no onboarding')
+					showStorageUnavailable(IDENTITY_CAPABILITY_MISSING)
+					return
+				}
+				let nativeSide: NativePresence = 'unknown'
+				if (tier === 'native_no_kpresent') {
+					// Y.93 2c: kPresent is not reported, so the native side is unknown (Y.90 4). No creation entry; the shell needs an upgrade.
+					publishNativePwaLog('warn', '[AppEntryGate] identity.kpresent.v1 not declared: native side unknown, no account creation (shell upgrade needed)')
+				} else {
+					const kPresent = shellNativeState?.status === 'no_key'
+						? await readNativeIdentityPublic().then((r) => (r.kind === 'no_key' ? r.kPresent : undefined))
+						: undefined
+					nativeSide = shellNativeState ? nativePresenceOfState(shellNativeState, kPresent) : 'unknown'
+				}
 				const reset = decideAccountReset({ idb: idbPresenceOf(idb), native: nativeSide, userConfirmedRecovery: false, newAccountEstablished: false })
+				if (reset === 'continue_account') {
+					// Y.85 (b): the native side holds the account (here a G1 wallet; a locked or unlocked wallet with walletState absent
+					// already returned above). It is entered on its public address, as the native G1 entry does. Nothing is deleted.
+					const eoa = shellNativeState?.status === 'not_ready'
+						? (readPersistedShellEoa() || await readWalletEoaAddress().then((r) => (r.kind === 'address' ? r.eoa : '')))
+						: ''
+					if (eoa) {
+						applyLocalWallet(eoa)
+						return
+					}
+					publishNativePwaLog('warn', '[AppEntryGate] account continues on the native side, but no public EOA is on this device: retry (nothing guessed)')
+					showStorageUnavailable(NATIVE_RETRY_SCREEN)
+					return
+				}
 				if (reset !== 'onboarding') {
+					// retry_unknown: never onboarding, nothing deleted, and no account creation entry on the retry screen.
 					publishNativePwaLog('warn', `[AppEntryGate] account reset decision=${reset}: onboarding not entered, nothing deleted (retry)`)
 					showStorageUnavailable(NATIVE_RETRY_SCREEN)
 					return

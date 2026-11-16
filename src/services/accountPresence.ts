@@ -90,3 +90,18 @@ export function decideAccountReset(input: AccountResetInput): AccountResetDecisi
 	if (input.userConfirmedRecovery && input.newAccountEstablished) return 'cleanup_old'
 	return 'onboarding'
 }
+
+/**
+ * Y.93 2: which side of the no-record entry a shell may consult, by the capabilities it reports.
+ * - `browser`: no native side (IndexedDB only, Y.93 2a).
+ * - `legacy_shell`: a shell that does not report identity.native-keys.v1: IndexedDB only, the single compatibility exception (Y.93 2b).
+ * - `native_no_kpresent`: native-keys reported, identity.kpresent.v1 not reported: the native side is unknown; no creation entry (Y.93 2c).
+ * - `native_full`: both reported: the two-sided judgement of Y.89 and Y.85 (Y.93 2d).
+ */
+export type ShellTier = 'browser' | 'legacy_shell' | 'native_no_kpresent' | 'native_full'
+
+export function shellTierOf(input: { shell: boolean; nativeKeys: boolean; kpresent: boolean }): ShellTier {
+	if (!input.shell) return 'browser'
+	if (!input.nativeKeys) return 'legacy_shell'
+	return input.kpresent ? 'native_full' : 'native_no_kpresent'
+}

@@ -67,3 +67,26 @@ describe('native side (Y.89 with Y.90 kPresent)', () => {
 		expect(nativePresenceOfState({ status: 'unknown' }, false)).toBe('unknown')
 	})
 })
+
+/**
+ * Y.93 2 capability tiers (onboardingCompatCases CP-03 to CP-06, pgp-migration-vectors.v2.json sha256 6d5b3129…).
+ */
+import { shellTierOf } from './accountPresence'
+
+describe('Y.93 capability tiers (CP-03 to CP-06)', () => {
+	it('CP-03: a browser (no native side) is the browser tier: IndexedDB only, an empty store may onboard', () => {
+		expect(shellTierOf({ shell: false, nativeKeys: false, kpresent: false })).toBe('browser')
+	})
+
+	it('CP-04: a shell without identity.native-keys.v1 is the legacy tier: a missing capability (option A), never onboarding', () => {
+		expect(shellTierOf({ shell: true, nativeKeys: false, kpresent: false })).toBe('legacy_shell')
+	})
+
+	it('CP-05: native-keys reported without kpresent is native_no_kpresent: the native side is unknown', () => {
+		expect(shellTierOf({ shell: true, nativeKeys: true, kpresent: false })).toBe('native_no_kpresent')
+	})
+
+	it('CP-06: both reported is native_full: the two-sided Y.89 and Y.85 judgement', () => {
+		expect(shellTierOf({ shell: true, nativeKeys: true, kpresent: true })).toBe('native_full')
+	})
+})
