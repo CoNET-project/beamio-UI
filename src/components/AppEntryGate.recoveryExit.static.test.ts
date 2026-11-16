@@ -40,7 +40,7 @@ describe('AppEntryGate: native recovery exit and storage decision', () => {
 		const g = read('AppEntryGate.tsx')
 		// the native retry is decided by the pure router (storageRoute.ts); every other reason is the unavailable screen.
 		expect(g).toContain("storageUnavailableRoute({ nativeShell, reason }) === 'native_retry'")
-		expect(g).toContain('window.setTimeout(() => void init(), nativeStoreWaitDelayMs(attempt))')
+		expect(g).toContain('window.setTimeout(() => void init(), step.delayMs)')
 		expect(g).toContain('splashDeadlineAction({ decided: decisionMadeRef.current, nativeWaiting: nativeWaitRef.current })')
 		expect(g).not.toContain('goOnboarding(false)\n\t\t\treturn\n\t\t}\n\t\tshowStorageUnavailable')
 		expect(read('../services/shellStoreWait.ts')).toMatch(/shell_record_\(migrating\|import_not_done\|legacy_store_unreadable\|not_ready\|timeout\|native_unavailable\)\\b/)

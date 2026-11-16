@@ -48,7 +48,7 @@ import {
 	pageWalletRecoverNeeded,
 } from '@/utils/consumerWalletGate'
 import { isShellContext } from '@/services/shellContext'
-import { nativeStoreWaitDelayMs, splashDeadlineAction } from '@/services/shellStoreWait'
+import { nativeRetryStep, splashDeadlineAction } from '@/services/shellStoreWait'
 import { decideAccountReset, idbPresenceOf, nativePresenceOfState, shellTierOf, type NativePresence, type NativeWalletStatusAnswer } from '@/services/accountPresence'
 import { IDENTITY_KPRESENT_CAPABILITY, readNativeIdentityPublic } from '@/services/nativeIdentityPublic'
 import { nativeRecoveryCopyKey, nativeRecoveryOpen, onNativeRecoveryResult, recoveryOpenErrorKey } from '@/services/nativeRecovery'
@@ -258,15 +258,16 @@ export default function AppEntryGate() {
 		if (storageUnavailableRoute({ nativeShell, reason }) === 'native_retry') {
 			const attempt = nativeRetryAttemptRef.current
 			nativeRetryAttemptRef.current = attempt + 1
-			// bounded: after the retries, the page shows the retry screen instead of waiting forever (no account is claimed)
-			if (attempt >= 6) {
+			// Y.104 3: 30 s, 2 min, 10 min automatically, then the manual retry screen. Used-up retries are still unknown: never onboarding, no account-lost prompt.
+			const step = nativeRetryStep(attempt)
+			if (step.kind === 'manual') {
 				showStorageUnavailable(MIGRATION_RETRY_SCREEN)
 				return
 			}
 			nativeWaitRef.current = true
 			publishNativePwaLog('info', '[AppEntryGate] native store not ready; retrying (no onboarding)')
 			setSplashVisible(true)
-			window.setTimeout(() => void init(), nativeStoreWaitDelayMs(attempt))
+			window.setTimeout(() => void init(), step.delayMs)
 			return
 		}
 		// An unreadable vault is never "no wallet": onboarding could overwrite the encrypted copy.: every browser reason

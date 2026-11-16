@@ -14,6 +14,15 @@ export function nativeStoreWaitDelayMs(attempt: number): number {
 	return backoffDelayMs(NATIVE_STORE_WAIT_BASE_MS, attempt, NATIVE_STORE_WAIT_CAP_MS)
 }
 
+/**
+ * Y.104 3 (the Y.83 3 backoff, kept): a retry state (a store not ready, unreadable, locked, or an unknown answer) retries automatically at
+ * 30 seconds, 2 minutes and 10 minutes, then waits for the user's manual retry. It never becomes onboarding, however many retries were used.
+ */
+export const NATIVE_RETRY_DELAYS_MS = [30_000, 120_000, 600_000] as const
+export function nativeRetryStep(attempt: number): { kind: 'retry'; delayMs: number } | { kind: 'manual' } {
+	return attempt < NATIVE_RETRY_DELAYS_MS.length ? { kind: 'retry', delayMs: NATIVE_RETRY_DELAYS_MS[attempt] } : { kind: 'manual' }
+}
+
 export type SplashDeadlineAction = 'release' | 'keep_waiting' | 'unavailable'
 
 /**

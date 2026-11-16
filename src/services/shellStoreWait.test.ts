@@ -2,7 +2,7 @@
  * (iOS QA 10617): while the native store is not ready (a migration), the wait is kept past the splash deadline and the app
  * never shows the storage-unavailable screen for it. Once the store reads ok, the app enters. The wait cap is a few tens of seconds.
  */
-import { NATIVE_STORE_WAIT_CAP_MS, nativeStoreWaitDelayMs, shellStorageErrorReason, splashDeadlineAction } from './shellStoreWait'
+import { NATIVE_RETRY_DELAYS_MS, NATIVE_STORE_WAIT_CAP_MS, nativeRetryStep, nativeStoreWaitDelayMs, shellStorageErrorReason, splashDeadlineAction } from './shellStoreWait'
 import { parseShellRecordRead, shellRecordAsWalletRecord } from './shellRecordStore'
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -156,5 +156,34 @@ describe('not_ready (Y.70 #4): positive and negative cases (0.53.5)', () => {
 		expect(block).not.toMatch(/onboarding|createWallet|clearIdentity/i)
 		const locale = JSON.parse(readFileSync(join(__dirname, '..', 'locale', 'zh-CN.json'), 'utf8'))
 		expect(locale.ui.native_reading_body).toBe('正在读取，请稍后重试')
+	})
+})
+
+describe('Y.104 3: the retry state runs 30 s, 2 min, 10 min, then the manual retry; used-up retries are never onboarding', () => {
+	it('the cadence is 30 seconds, 2 minutes and 10 minutes, then manual', () => {
+		expect(NATIVE_RETRY_DELAYS_MS).toEqual([30_000, 120_000, 600_000])
+		expect([0, 1, 2].map((n) => nativeRetryStep(n))).toEqual([
+			{ kind: 'retry', delayMs: 30_000 },
+			{ kind: 'retry', delayMs: 120_000 },
+			{ kind: 'retry', delayMs: 600_000 },
+		])
+	})
+
+	it('after the three automatic retries the step is manual, and it stays manual (never onboarding, never an account-lost step)', () => {
+		expect(nativeRetryStep(3)).toEqual({ kind: 'manual' })
+		for (const n of [4, 6, 20, 100]) expect(nativeRetryStep(n)).toEqual({ kind: 'manual' })
+	})
+
+	it('the gate uses the Y.104 step on its native_retry path: no exponential wait, no six-retry bound, no recovery entry, no onboarding', () => {
+		const gate = readFileSync(join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
+		expect(gate).toContain('const step = nativeRetryStep(attempt)')
+		expect(gate).toContain('window.setTimeout(() => void init(), step.delayMs)')
+		expect(gate).not.toContain('attempt >= 6')
+		expect(gate).not.toContain('nativeStoreWaitDelayMs(attempt)')
+		const at = gate.indexOf('const step = nativeRetryStep(attempt)')
+		const block = gate.slice(at, gate.indexOf('nativeWaitRef.current = true', at))
+		expect(block).toContain("showStorageUnavailable(MIGRATION_RETRY_SCREEN)")
+		expect(block).not.toContain("native_recovery_needed")
+		expect(block).not.toMatch(/onboarding|createWallet|clearIdentity/i)
 	})
 })
