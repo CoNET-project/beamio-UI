@@ -1407,7 +1407,7 @@ const readInitObject = async (options: { probe?: boolean } = {}): Promise<Loose 
   if (isShellContext()) {
     // absent is null; a read without the W-class fields, a redacted read, or any error throws (never an absent wallet).
     // a probe read (the pre-save read) does not move the write basis.
-    return shellRecordAsWalletRecord(await shellRecordRead(options))
+    return shellRecordAsWalletRecord(await shellRecordRead({ ...options, source: options.probe ? 'probe' : 'init' }))
   }
   const raw = await readDocTitle('init')
   return raw ? parseInitRaw(raw) : null

@@ -484,7 +484,7 @@ async function retryDeferredWrite(): Promise<void> {
 	retrying = true
 	try {
 		// A probe read: it completes a read and the answer is merged here; it does not move the copy basis. Raw: the intent is applied here.
-		const read = await shellRecordRead({ probe: true, raw: true })
+		const read = await shellRecordRead({ probe: true, raw: true, source: 'deferred' })
 		if (read.status !== 'ok' && read.status !== 'absent') {
 			countAttempt(pending)
 			return
@@ -584,21 +584,25 @@ async function writeAt(payload: Loose, rev: number): Promise<WriteOutcome> {
  * a probe too), so a copy that a probe feeds keeps the change. A probe does not move the copy basis. `raw` returns the stored record
  * as it is, for a write that applies its own intent (the retry and the removals).
  */
-export async function shellRecordRead(options: { probe?: boolean; raw?: boolean } = {}): Promise<ShellRecordRead> {
+/** A label for the diagnostics log only: which caller issued the read. Never a value. */
+export type ShellReadSource = 'init' | 'probe' | 'deferred' | 'removal' | 'unlabeled'
+
+export async function shellRecordRead(options: { probe?: boolean; raw?: boolean; source?: ShellReadSource } = {}): Promise<ShellRecordRead> {
 	const reqId = nextReqId()
 	// Diagnostics (S25, 2026-11-15): reason codes and times only. No record, key or field value is logged.
 	const sentAt = Date.now()
-	publishNativePwaLog('info', `[shellRecordRead] sent at ${new Date(sentAt).toISOString()}`)
+	const src = options.source ?? 'unlabeled'
+	publishNativePwaLog('info', `[shellRecordRead] sent source=${src} at ${new Date(sentAt).toISOString()}`)
 	const answer = await sendShellRecordCommand(buildShellRecordReadCommand(reqId), TIMEOUT_MS)
 	if (answer.kind !== 'payload') {
 		const reason = transportReason(answer)
-		publishNativePwaLog('warn', `[shellRecordRead] no answer: reason=${reason} ms=${Date.now() - sentAt}`)
+		publishNativePwaLog('warn', `[shellRecordRead] no answer source=${src}: reason=${reason} ms=${Date.now() - sentAt}`)
 		return { status: 'error', reason }
 	}
 	const parsed = parseShellRecordRead(answer.payload)
 	publishNativePwaLog(
 		parsed.status === 'error' ? 'warn' : 'info',
-		`[shellRecordRead] returned status=${parsed.status}${parsed.status === 'error' ? ` reason=${parsed.reason}` : ''} ms=${Date.now() - sentAt}`,
+		`[shellRecordRead] returned source=${src} status=${parsed.status}${parsed.status === 'error' ? ` reason=${parsed.reason}` : ''} ms=${Date.now() - sentAt}`,
 	)
 	if (parsed.status === 'ok' || parsed.status === 'absent') {
 		// A read that answered ok or absent completes the read: a write may follow.
@@ -691,7 +695,7 @@ function revertOps(ours: Loose, others: DeltaOp[]): DeltaOp[] {
  * Returns false when the store does not take it now: the removal is kept as an intent and the retry reads again.
  */
 async function applyRemovalsNow(removals: DeltaOp[]): Promise<boolean> {
-	const read = await shellRecordRead({ probe: true, raw: true })
+	const read = await shellRecordRead({ probe: true, raw: true, source: 'removal' })
 	if (read.status === 'absent') return true
 	if (read.status === 'ok') {
 		const payload = applyDelta(withBeamio(sanitizedCopy(read.record)), removals).record
