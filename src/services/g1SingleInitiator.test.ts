@@ -41,7 +41,7 @@ describe('G1 has one initiator: the entry path', () => {
 
 	it('one G1 attempt with a persisted EOA sends exactly one identity-only init, with that EOA', async () => {
 		persistShellEoa(EOA)
-		;(queryNativeWalletStatus as jest.Mock).mockResolvedValue({ status: 'not_ready' })
+		;(queryNativeWalletStatus as jest.Mock).mockResolvedValue({ status: 'not_ready', notReadyReason: 'g1_uninitialized' })
 		await reachNativeWallet()
 		expect(initShellIdentityOnly).toHaveBeenCalledTimes(1)
 		expect((initShellIdentityOnly as jest.Mock).mock.calls[0][0]).toBe(EOA)
@@ -49,7 +49,7 @@ describe('G1 has one initiator: the entry path', () => {
 
 	it('a G1 init with a listed node set sends the list, and an empty or unavailable read sends no nodes (never an empty list)', async () => {
 		persistShellEoa(EOA)
-		;(queryNativeWalletStatus as jest.Mock).mockResolvedValue({ status: 'not_ready' })
+		;(queryNativeWalletStatus as jest.Mock).mockResolvedValue({ status: 'not_ready', notReadyReason: 'g1_uninitialized' })
 		const nodes = [{ domain: 'a.example', armoredPublicKey: 'x' }]
 		;(readNodeListForInit as jest.Mock).mockResolvedValueOnce(nodes)
 		await reachNativeWallet()
@@ -61,7 +61,7 @@ describe('G1 has one initiator: the entry path', () => {
 
 	it('an init refused with address_mismatch is recorded once for the local home to act on, then cleared', async () => {
 		persistShellEoa(EOA)
-		;(queryNativeWalletStatus as jest.Mock).mockResolvedValue({ status: 'not_ready' })
+		;(queryNativeWalletStatus as jest.Mock).mockResolvedValue({ status: 'not_ready', notReadyReason: 'g1_uninitialized' })
 		;(initShellIdentityOnly as jest.Mock).mockResolvedValueOnce({ ok: false, reason: 'address_mismatch' })
 		await reachNativeWallet()
 		expect(takeInitRefusal()).toBe('address_mismatch')
@@ -69,7 +69,7 @@ describe('G1 has one initiator: the entry path', () => {
 	})
 
 	it('a G1 attempt with no persisted EOA sends no init', async () => {
-		;(queryNativeWalletStatus as jest.Mock).mockResolvedValue({ status: 'not_ready' })
+		;(queryNativeWalletStatus as jest.Mock).mockResolvedValue({ status: 'not_ready', notReadyReason: 'g1_uninitialized' })
 		await reachNativeWallet()
 		expect(initShellIdentityOnly).not.toHaveBeenCalled()
 	})
@@ -78,4 +78,19 @@ describe('G1 has one initiator: the entry path', () => {
 		const chat = readFileSync(join(__dirname, 'chat.ts'), 'utf8')
 		expect(chat).toMatch(/initWithPersistedEoa: SHELL_G1_INIT_ENABLED\s*\?/)
 	})
+})
+
+// Y.75: an unreadable (or reason-less) not_ready is undetermined; the entry path sends no init for it.
+describe('G1 init is sent only for g1_uninitialized (Y.75)', () => {
+	beforeEach(() => {
+		;(probeNativeCapabilities as jest.Mock).mockResolvedValue({ answered: true, capabilities: ['identity.native-keys.v1'] })
+		persistShellEoa(EOA)
+	})
+	for (const state of [{ status: 'not_ready', notReadyReason: 'unreadable' }, { status: 'not_ready' }]) {
+		it(`no init for ${JSON.stringify(state)}`, async () => {
+			;(queryNativeWalletStatus as jest.Mock).mockResolvedValue(state)
+			await reachNativeWallet()
+			expect(initShellIdentityOnly).not.toHaveBeenCalled()
+		})
+	}
 })

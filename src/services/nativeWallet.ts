@@ -67,7 +67,9 @@ export function takeInitRefusal(): string | null {
 export async function reachNativeWallet(): Promise<NativeWalletState> {
 	let state = await queryNativeWalletStatus()
 	const hint = nativeEoaHint ?? persistedNativeEoa()
-	if (state.status === 'not_ready' && hint) {
+	// Y.75 / Y.39 #7: init only when the native layer proves the record is uninitialized. A not_ready with unreadable
+	// (or no reason) never sends an init: it is undetermined, and an init here could create a key for an existing account.
+	if (state.status === 'not_ready' && state.notReadyReason === 'g1_uninitialized' && hint) {
 		// The identity-capability rule: an init carries identity. Without the declared capability nothing identity-bearing is sent.
 		const identity = identityCapabilityFrom(await probeNativeCapabilities())
 		if (!nativeInitAllowed(identity)) {

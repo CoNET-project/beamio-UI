@@ -50,6 +50,11 @@ export function subscribePgpUpgradeState(listener: (code: PgpUpgradeStateCode) =
 	}
 }
 
+/** Y.68: a registration answer key_mismatch records the retry state (the notice only; nothing is written or generated). */
+export function recordPgpUpgradeState(code: PgpUpgradeStateCode): void {
+	record(code)
+}
+
 function record(code: PgpUpgradeStateCode): void {
 	lastCode = code
 	for (const l of listeners) l(code)

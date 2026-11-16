@@ -1,3 +1,4 @@
+import { recordPgpUpgradeState } from './pgpUpgradeState'
 import { abortAfter, BOOT_REQUEST_TIMEOUT_MS } from '@/utils/bootTimeout'
 import {generateKey, readKey, createMessage, enums, encrypt} from 'openpgp'
 import {
@@ -1119,6 +1120,8 @@ export const regiestChatRouteNative = async (keyID: string, pubArmor: string, ro
 		})
 		const result = await submitNativeChatRouteRegister(outcome, postRegiestChatRoute)
 		if (!result.ok) chatBootLog(`regiestChatRoute not sent: ${result.reason}`, 'warn')
+		// Y.68: key_mismatch means the chain holds another keyId. Nothing is overwritten or generated; the notice asks for the retry.
+		if (!result.ok && result.reason === 'native_key_mismatch') recordPgpUpgradeState('pgp_migration_retry')
 		return result.ok
 	} catch (ex: any) {
 		console.error('[regiestChatRoute]', ex?.message ?? ex)
