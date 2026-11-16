@@ -50,6 +50,7 @@ import usdc_abi from './ABI/usdc_abi.json'
 import { encodeInitRaw, parseInitRaw } from './initRecordCodec'
 import { runAuthorizationSign } from './authorizationSign'
 import { readWalletEoaAddress } from './walletEoaAddress'
+import { NO_KEY_ERROR } from './nativeKeyState'
 import { shellRecordReadState } from './pageRecordDecision'
 import { injectShellSessionKey } from './shellSessionSigner'
 import { shellChatBlockedNow } from './shellChatCapability'
@@ -1611,6 +1612,10 @@ const readStorageWithStatus = async (allowMigration = true, options: { probe?: b
       // is a retry; a different account is never used.
       if (rec) {
         const native = await readWalletEoaAddress().catch(() => ({ kind: 'refused' as const, code: 'error' }))
+        // a page copy exists and the native layer answers no_key: the native key is missing. Recovery only (no retry loop, no onboarding).
+        if (native.kind === 'refused' && native.code === NO_KEY_ERROR) {
+          return { status: 'unavailable', reason: 'native_recovery_needed' }
+        }
         const state = shellRecordReadState(rec, native)
         if (state.kind === 'unavailable') return { status: 'unavailable', reason: state.reason }
         // the page-session key of this account, when one is held, is on the in-memory copy only (the write strips it)

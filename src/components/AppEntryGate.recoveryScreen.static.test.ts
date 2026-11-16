@@ -25,7 +25,7 @@ describe('the unavailable screen guides to the native import page first', () => 
 	})
 
 	it('the import handler sends nativeImportOpen and waits for the return only when the page opened', () => {
-		expect(gate).toContain("import { installNativeNoKeyWatcher, openNativeKeyImport } from '@/services/nativeKeyState'")
+		expect(gate).toContain("import { installNativeNoKeyWatcher, NO_KEY_ERROR, openNativeKeyImport } from '@/services/nativeKeyState'")
 		const at = gate.indexOf('const importWalletNative = async () => {')
 		expect(at).toBeGreaterThan(0)
 		const body = gate.slice(at, at + 300)

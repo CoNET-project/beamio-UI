@@ -13,7 +13,8 @@ import { onAppUpdateRequired } from '@/services/appUpdatePrompt'
 import { storageUnavailableRoute } from '@/services/storageRoute'
 import { registerPendingSender } from '@/services/pendingServerSync'
 import { resumeDeferredWrite } from '@/services/shellRecordStore'
-import { installNativeNoKeyWatcher, openNativeKeyImport } from '@/services/nativeKeyState'
+import { installNativeNoKeyWatcher, NO_KEY_ERROR, openNativeKeyImport } from '@/services/nativeKeyState'
+import { decideNoKeyEntry, readNoKeyFacts } from '@/services/noKeyEntry'
 import { onNativeImportResult } from '@/services/nativeImportResult'
 import { readCleanupPending, startCleanupAfterRecovery } from '@/services/accountCleanupPending'
 import { AppEntryNoKeyController } from './appEntryNoKeyController'
@@ -30,7 +31,7 @@ import { probeNativeCapabilities } from '@/services/nativeChatRouteRegister'
 import { IDENTITY_CAPABILITY_MISSING } from '@/services/bridgeGuard'
 import { NATIVE_WALLET_READY_EVENT, notifyNativeWalletReady, publicWalletSeed, reachNativeWallet, rememberNativeEoa, takeInitRefusal } from '@/services/nativeWallet'
 import { readPersistedShellEoa } from '@/services/shellIdentitySource'
-import { readWalletEoaAddress } from '@/services/walletEoaAddress'
+import { readWalletEoaAddress, type WalletEoaAddressAnswer } from '@/services/walletEoaAddress'
 import { setCoNET_Data } from '@/utils/globals'
 import PasscodeLockScreen from '@/components/PasscodeLockScreen'
 import { VAULT_LOCKED_EVENT } from '@/services/walletVaultEvents'
@@ -317,7 +318,15 @@ export default function AppEntryGate() {
 			if (stored.status === 'unavailable' && stored.reason === 'eoa_mismatch') return 'eoa_mismatch'
 			const read: PageRecordRead = stored.status === 'loaded' ? { status: 'loaded', data: stored.data } : stored.status === 'empty' ? { status: 'empty' } : { status: 'other' }
 			// the native account is read here (walletEoaAddress); a refusal, a timeout or an unavailable store is a retry.
-			const decision = decidePageRecord(read, await readWalletEoaAddress(), eoa)
+			const nativeAccount = await readWalletEoaAddress()
+			// no_key: a copy present means the native key is missing (recovery only); no copy is onboarding only when the native facts confirm it.
+			if (nativeAccount.kind === 'refused' && nativeAccount.code === NO_KEY_ERROR) {
+				const entry = decideNoKeyEntry(await readNoKeyFacts(), read.status === 'loaded' ? 'present' : read.status === 'empty' ? 'empty' : 'unknown')
+				publishNativePwaLog('warn', `[AppEntryGate] walletEoaAddress no_key: ${entry}; the page copy is kept, nothing is written`)
+				if (entry === 'native_key_missing') return 'native_key_missing'
+				return entry === 'onboarding' ? 'none' : 'retry'
+			}
+			const decision = decidePageRecord(read, nativeAccount, eoa)
 			if (decision === 'update_required') return 'update_required'
 			if (decision === 'record_unavailable') return 'record_unavailable'
 			if (decision === 'eoa_mismatch') {
@@ -386,6 +395,18 @@ export default function AppEntryGate() {
 		else handleStorageUnavailable('native_retry')
 	}
 
+	/** No device copy and walletEoaAddress answers no_key: onboarding only when the native facts confirm it (kPresent false). */
+	const enterOnboardingIfNoKeyConfirmed = async (identityState: IdentityCapabilityState): Promise<boolean> => {
+		if (readPersistedShellEoa() || identityState !== 'declared') return false
+		const answer: WalletEoaAddressAnswer = await readWalletEoaAddress()
+		if (answer.kind !== 'refused' || answer.code !== NO_KEY_ERROR) return false
+		const entry = decideNoKeyEntry(await readNoKeyFacts(), 'empty')
+		publishNativePwaLog('info', `[AppEntryGate] walletEoaAddress no_key with no device copy: ${entry}`)
+		if (entry !== 'onboarding') return false
+		goOnboarding(false)
+		return true
+	}
+
 	const init = async () => {
 		// /.2: the shell judges the account from `walletState`(the only basis). A native build that does not report it yet
 		// answers `not_reported`, and the existing route applies (unchanged 0.52.930 behaviour).
@@ -449,6 +470,7 @@ export default function AppEntryGate() {
 					applyLocalWallet(eoa)
 					return
 				}
+				if (await enterOnboardingIfNoKeyConfirmed(identity)) return
 				publishNativePwaLog('warn', '[AppEntryGate] local mode: no public EOA on this device; nothing is guessed')
 				// a missing capability returned above (unified state, never the import page); an unanswered hello keeps the retry screen, a declared shell the recovery entry.
 				// a missing capability never shows the recovery (import) page: the unified state; the capability-declared shell keeps the recovery entry.
@@ -477,6 +499,7 @@ export default function AppEntryGate() {
 						if (action === 'update_required') showStorageUnavailable('app_update_required')
 						if (action === 'eoa_mismatch') showStorageUnavailable('eoa_mismatch')
 						if (action === 'record_unavailable') showStorageUnavailable('native_record')
+						if (action === 'native_key_missing') showStorageUnavailable('native_recovery_needed')
 					})
 					return
 				}
@@ -783,6 +806,7 @@ export default function AppEntryGate() {
 						if (action === 'update_required') showStorageUnavailable('app_update_required')
 						if (action === 'eoa_mismatch') showStorageUnavailable('eoa_mismatch')
 						if (action === 'record_unavailable') showStorageUnavailable('native_record')
+						if (action === 'native_key_missing') showStorageUnavailable('native_recovery_needed')
 					})
 				}
 				else if (shellEntryFor(await shellIdentityState(), native) === 'chat_unavailable') showStorageUnavailable(IDENTITY_CAPABILITY_MISSING)

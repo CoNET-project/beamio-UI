@@ -73,7 +73,7 @@ export function useMnemonicOnce<T>(credential: Extract<WalletCredentialAnswer, {
 	}
 }
 
-export type PageCopyAction = 'none' | 'store_blob' | 'update_required' | 'retry' | 'eoa_mismatch' | 'record_unavailable'
+export type PageCopyAction = 'none' | 'store_blob' | 'update_required' | 'retry' | 'eoa_mismatch' | 'record_unavailable' | 'native_key_missing'
 
 /**
  * Whether a loaded page record belongs to the native account. The first profile's keyID must be a valid address equal to the
