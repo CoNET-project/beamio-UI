@@ -1,5 +1,5 @@
 /**
- * Y.85 account-reset state machine, vectors ST-01 to ST-08 (accountResetCases in pgp-migration-vectors.v2.json, sha256 26655ea3…1e381).
+ * Y.85 account-reset state machine, vectors ST-01 to ST-08 (accountResetCases in pgp-migration-vectors.v2.json, sha256 cce7b834…55b7).
  * The vector values present / absent / unknown map to has / confirmed_none / unknown (Y.89). SYNTHETIC values only.
  */
 import { decideAccountReset, idbPresenceOf, nativePresenceOfState, type AccountResetInput, type NativePresence } from './accountPresence'
@@ -69,7 +69,7 @@ describe('native side (Y.89 with Y.90 kPresent)', () => {
 })
 
 /**
- * Y.93 2 capability tiers (onboardingCompatCases CP-03 to CP-06, pgp-migration-vectors.v2.json sha256 26655ea3…1e381).
+ * Y.93 2 capability tiers (onboardingCompatCases CP-03 to CP-06, pgp-migration-vectors.v2.json sha256 cce7b834…55b7).
  */
 import { shellTierOf } from './accountPresence'
 
