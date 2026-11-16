@@ -50,7 +50,16 @@ export type NativeIdentityPublic =
 			pgpPublicKeyArmored?: string
 			ownRouteArmoredPublicKey?: string
 	  }
-	| { kind: 'no_key' | 'not_ready' | 'bad_request' | 'key_over_bridge_refused' | 'unavailable' | 'bad_identity' }
+	| { kind: 'no_key'; kPresent?: boolean }
+	| { kind: 'not_ready' | 'bad_request' | 'key_over_bridge_refused' | 'unavailable' | 'bad_identity' }
+
+/** Y.90: the top-level kPresent of an ok:false no_key answer. Read only when the shell declares identity.kpresent.v1; otherwise absent. */
+export const IDENTITY_KPRESENT_CAPABILITY = 'identity.kpresent.v1'
+export function kPresentFromNoKeyAnswer(payload: unknown, capabilities: readonly string[]): boolean | undefined {
+	if (!capabilities.includes(IDENTITY_KPRESENT_CAPABILITY)) return undefined
+	const v = (payload as { kPresent?: unknown } | null)?.kPresent
+	return typeof v === 'boolean' ? v : undefined
+}
 
 let identityPublicSeq = 0
 
@@ -116,6 +125,7 @@ export async function readNativeIdentityPublic(timeoutMs: number = TIMEOUT_MS): 
 	if (typeof window === 'undefined') return { kind: 'unavailable' }
 	const probe = await probeNativeCapabilities()
 	if (!probe.answered) return { kind: 'unavailable' }
+	const capabilities = probe.capabilities
 	identityPublicSeq += 1
 	const answer = await requestNativeAck({ type: NATIVE_IDENTITY_PUBLIC_COMMAND }, timeoutMs, NATIVE_QUERY_REQ_BASE + identityPublicSeq)
 	if (answer.kind !== 'payload') return { kind: 'unavailable' }
@@ -133,6 +143,7 @@ export async function readNativeIdentityPublic(timeoutMs: number = TIMEOUT_MS): 
 	}
 	switch (p.error) {
 		case 'no_key':
+			return { kind: 'no_key', kPresent: kPresentFromNoKeyAnswer(p, capabilities) }
 		case 'not_ready':
 		case 'bad_request':
 		case 'key_over_bridge_refused':
