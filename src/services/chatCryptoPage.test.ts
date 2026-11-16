@@ -97,3 +97,33 @@ describe('Y.81 wiring on the chat page (static)', () => {
 		expect(chat).toContain("window.addEventListener('online', up)")
 	})
 })
+
+describe('Y.81 gate and real history signal on the chat page (R45 blockers)', () => {
+	const { readFileSync } = require('fs') as typeof import('fs')
+	const { join } = require('path') as typeof import('path')
+	const chat = readFileSync(join(__dirname, '..', 'pages', 'chat', 'chat.tsx'), 'utf8')
+
+	it('every decrypt entry point outside the send path is gated: voice fragments and chat file manifests', () => {
+		expect(chat).toContain('if (!chatCryptoDecryptGate.enabled) { setLoading(false); return }')
+		expect(chat).toContain('if (!chatCryptoDecryptGate.enabled) return')
+		// the gate sits before each decrypt call
+		const v = chat.indexOf('void decryptVoiceFragment(manifest, controller.signal)')
+		expect(chat.lastIndexOf('chatCryptoDecryptGate.enabled', v)).toBeGreaterThan(chat.lastIndexOf('const controller', v))
+		const f = chat.indexOf('void decryptChatFileManifest(manifest, controller.signal)')
+		expect(chat.lastIndexOf('chatCryptoDecryptGate.enabled', f)).toBeGreaterThan(f - 400)
+	})
+
+	it('the decrypt gate is set from the same availability as the send gate on each render', () => {
+		expect(chat).toContain('chatCryptoDecryptGate.enabled = chatActionsRef.current')
+	})
+
+	it('the composer button is disabled consistently with the gate', () => {
+		expect(chat).toContain('disabled={voiceSending || !chatCryptoActionsOn}')
+	})
+
+	it('the local history signal comes from the local library read, not a hard-coded value', () => {
+		expect(chat).not.toContain('localHistoryReadable: true, localHistoryEmpty: false }))')
+		expect(chat).toContain('localHistoryReadable: localHistoryState.readable')
+		expect(chat).toContain("setLocalHistoryState(page && page.source === 'local' ? { readable: true, empty: page.items.length === 0 } : { readable: false, empty: false })")
+	})
+})

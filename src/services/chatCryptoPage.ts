@@ -53,3 +53,9 @@ export function nextCryptoRetry(retryAttempt: number, transition: 'offline_to_on
 	const after = chatCryptoRetryAfter(retryAttempt)
 	return { immediate: immediateRetriesOnNetworkRestore(transition) === 1, delayMs: after === 'manual' ? null : after }
 }
+
+/**
+ * Y.81 1: the decrypt entry points outside the page component (voice fragments, chat file manifests) read this flag, which the page sets on each
+ * render from the same gate as the send actions. A disabled gate means no decrypt runs.
+ */
+export const chatCryptoDecryptGate: { enabled: boolean } = { enabled: true }

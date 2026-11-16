@@ -136,7 +136,7 @@ import type { AaMultisigChatPreview } from '@/utils/aaMultisigChatPreview'
 import { tu } from '@/locale/beamioLocale'
 import { getPgpMigrationState, subscribePgpMigrationState } from '@/services/pgpMigrationRunner'
 import { installPgpUpgradeStateListener, pgpUpgradeRetryVisible, subscribePgpUpgradeState } from '@/services/pgpUpgradeState'
-import { cryptoActionsEnabled, cryptoInputOf, cryptoNoticeOf, nextCryptoRetry } from '@/services/chatCryptoPage'
+import { chatCryptoDecryptGate, cryptoActionsEnabled, cryptoInputOf, cryptoNoticeOf, nextCryptoRetry } from '@/services/chatCryptoPage'
 import { chatCryptoAvailabilityOf } from '@/services/chatCryptoRetry'
 import {
 	decryptVoiceFragment,
@@ -910,6 +910,7 @@ function VoiceMessagePlayer({ manifest: manifestProp, isMe }: { manifest: VoiceM
 		setUrl(null)
 		setError(null)
 		setLoading(true)
+		if (!chatCryptoDecryptGate.enabled) { setLoading(false); return } // Y.81 1: no decrypt while the chat crypto is not available
 		void decryptVoiceFragment(manifest, controller.signal)
 			.then(blob => {
 				if (cancelled) return
@@ -1426,6 +1427,7 @@ function ChatFileMessagePlayer({ manifest: manifestProp, isMe }: { manifest: Cha
 		setArchiveBlob(null)
 		setImageFullscreen(false)
 		setPdfFullscreen(false)
+		if (!chatCryptoDecryptGate.enabled) return // Y.81 1: no decrypt while the chat crypto is not available
 		void decryptChatFileManifest(manifest, controller.signal)
 			.then(result => {
 				setFiles(result)
@@ -2109,6 +2111,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 				innerHeight: window.innerHeight,
 			})
 			const page = await openLocalChatPage(address, viewport)
+			setLocalHistoryState(page && page.source === 'local' ? { readable: true, empty: page.items.length === 0 } : { readable: false, empty: false })
 			if (cancelled || !page || page.source !== 'local') return
 			setLibraryOlderPending(page.olderState === 'pending')
 			const entries = page.items
@@ -2455,10 +2458,13 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	const [chatOnline, setChatOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine !== false)
 	const [cryptoAttempt, setCryptoAttempt] = useState(0)
 	const [cryptoTick, setCryptoTick] = useState(0)
-	const chatCryptoAvail = chatCryptoAvailabilityOf(cryptoInputOf({ pgpUpgradeRetry, pgpMigrationRetry, offline: !chatOnline, localHistoryReadable: true, localHistoryEmpty: false }))
+	const [localHistoryState, setLocalHistoryState] = useState<{ readable: boolean; empty: boolean }>({ readable: true, empty: false })
+	const chatCryptoAvail = chatCryptoAvailabilityOf(cryptoInputOf({ pgpUpgradeRetry, pgpMigrationRetry, offline: !chatOnline, localHistoryReadable: localHistoryState.readable, localHistoryEmpty: localHistoryState.empty }))
 	const chatCryptoNotice = cryptoNoticeOf(chatCryptoAvail, cryptoAttempt)
 	const chatActionsRef = useRef(true)
 	chatActionsRef.current = cryptoActionsEnabled(chatCryptoAvail)
+	chatCryptoDecryptGate.enabled = chatActionsRef.current
+	const chatCryptoActionsOn = chatActionsRef.current
 	// Y.81 2: 30 s, 2 min, 10 min; then only the manual retry. Each retry re-reads the PGP state.
 	useEffect(() => {
 		if (chatCryptoNotice === null) { setCryptoAttempt(0); return }
@@ -9563,7 +9569,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 											void startVoiceRecording()
 										}
 									}}
-									disabled={voiceSending}
+									disabled={voiceSending || !chatCryptoActionsOn}
 									onPointerDown={e => {
 										// Keep focus until send() snapshots DOM value + remounts; avoids IME commit-on-blur refill.
 										if (voiceDraftBlob || canSend || (hasRoute && (inputRef.current?.value ?? "").trim())) {
