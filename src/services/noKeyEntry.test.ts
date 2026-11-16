@@ -1,42 +1,34 @@
 /**
- * walletEoaAddress answers `no_key` (the native layer holds no key). The three combinations that decide the page:
- *  1. no page copy, walletStatus no_key and kPresent false  -> onboarding
- *  2. a page copy present (any native facts)                -> native_key_missing (recovery only, never a retry loop)
- *  3. no copy, and the facts do not confirm the absence      -> retry (kPresent true, undefined, another status, or no facts)
+ * walletEoaAddress answers `no_key`. Cases follow the shared vectors page-copy-nokey-vectors.v1.json (sha 5e26715a…a174e,
+ * spec 25.52Y.151 / 25.52Y.153), PNK-01 to PNK-05. PNK-05 (the native layer holds the key and reports an address) is the
+ * unchanged address path and is covered by the gate's existing tests.
  */
 import { decideNoKeyEntry, type NoKeyFacts } from './noKeyEntry'
 
-const noKeyAbsent: NoKeyFacts = { walletStatus: 'no_key', kPresent: false }
+describe('walletEoaAddress no_key mapping (PNK vectors)', () => {
+	it('PNK-01: no no_key copy, walletStatus no_key and kPresent false -> none, onboarding', () => {
+		const facts: NoKeyFacts = { walletStatus: 'no_key', kPresent: false }
+		expect(decideNoKeyEntry(facts, 'empty')).toBe('onboarding')
+	})
 
-describe('decideNoKeyEntry: combination 1, no page copy and confirmed absence', () => {
-	it('onboards when walletStatus is no_key and kPresent is false', () => {
-		expect(decideNoKeyEntry(noKeyAbsent, 'empty')).toBe('onboarding')
+	it('PNK-02: a page copy present -> recovery entry only, not none, no automatic retry', () => {
+		const facts: NoKeyFacts = { walletStatus: 'no_key', kPresent: false }
+		expect(decideNoKeyEntry(facts, 'present')).toBe('native_key_missing')
 	})
-})
 
-describe('decideNoKeyEntry: combination 2, a page copy is present', () => {
-	it('is native_key_missing for every native fact, so recovery is shown instead of a retry', () => {
-		expect(decideNoKeyEntry(noKeyAbsent, 'present')).toBe('native_key_missing')
-		expect(decideNoKeyEntry({ walletStatus: 'no_key', kPresent: true }, 'present')).toBe('native_key_missing')
-		expect(decideNoKeyEntry(null, 'present')).toBe('native_key_missing')
+	it('PNK-03: kPresent missing -> needs recovery, retry unknown, never none', () => {
+		const facts: NoKeyFacts = { walletStatus: 'no_key', kPresent: undefined }
+		expect(decideNoKeyEntry(facts, 'empty')).toBe('retry')
 	})
-})
 
-describe('decideNoKeyEntry: combination 3, no copy and the absence is not confirmed', () => {
-	it('retries when kPresent is true (the native layer says the key is there)', () => {
-		expect(decideNoKeyEntry({ walletStatus: 'no_key', kPresent: true }, 'empty')).toBe('retry')
+	it('PNK-04: kPresent true -> needs recovery, recovery entry only, never none', () => {
+		const facts: NoKeyFacts = { walletStatus: 'no_key', kPresent: true }
+		expect(decideNoKeyEntry(facts, 'empty')).toBe('native_key_missing')
 	})
-	it('retries when kPresent is not reported (identity.kpresent.v1 not declared)', () => {
-		expect(decideNoKeyEntry({ walletStatus: 'no_key', kPresent: undefined }, 'empty')).toBe('retry')
-	})
-	it('retries when walletStatus is not no_key', () => {
-		expect(decideNoKeyEntry({ walletStatus: 'locked', kPresent: undefined }, 'empty')).toBe('retry')
-		expect(decideNoKeyEntry({ walletStatus: 'unavailable', kPresent: false }, 'empty')).toBe('retry')
-	})
-	it('retries when the native facts could not be read', () => {
+
+	it('no facts or an unreadable page record never maps to none', () => {
 		expect(decideNoKeyEntry(null, 'empty')).toBe('retry')
-	})
-	it('retries when the page record could not be read', () => {
-		expect(decideNoKeyEntry(noKeyAbsent, 'unknown')).toBe('retry')
+		expect(decideNoKeyEntry({ walletStatus: 'no_key', kPresent: false }, 'unknown')).toBe('retry')
+		expect(decideNoKeyEntry({ walletStatus: 'locked', kPresent: false }, 'empty')).toBe('retry')
 	})
 })

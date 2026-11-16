@@ -17,7 +17,11 @@ export type NoKeyPageRecord = 'empty' | 'present' | 'unknown'
 export function decideNoKeyEntry(facts: NoKeyFacts | null, pageRecord: NoKeyPageRecord): NoKeyEntry {
 	if (pageRecord === 'present') return 'native_key_missing'
 	if (pageRecord !== 'empty') return 'retry'
-	if (facts && facts.walletStatus === 'no_key' && facts.kPresent === false) return 'onboarding'
+	if (!facts || facts.walletStatus !== 'no_key') return 'retry'
+	// PNK-04: kPresent true means the native layer holds the key: recovery entry only, never onboarding.
+	if (facts.kPresent === true) return 'native_key_missing'
+	// PNK-01: confirmed absence is onboarding. PNK-03: kPresent missing is unknown: retry, never none.
+	if (facts.kPresent === false) return 'onboarding'
 	return 'retry'
 }
 
