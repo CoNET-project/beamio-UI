@@ -86,7 +86,9 @@ export const idbSignalOf = (read: {
 	if (read.status === 'loaded') {
 		if (read.keyPresent) return 'key'
 		if (read.accountPresent) return 'account_without_key'
-		return 'corrupt'
+		// Corrected (project rule, R43): a document that loaded and parsed, with no key and no account record, is a successful read with no
+		// mnemonic: IDB confirmed none (onboarding may proceed). An unparseable or structure-mismatched document is `corrupt` (unknown), below.
+		return 'absent'
 	}
 	if (read.status === 'locked') return 'locked'
 	if (read.status === 'empty') return 'absent'

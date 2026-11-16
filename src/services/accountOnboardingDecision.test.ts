@@ -118,8 +118,17 @@ describe('Y.107: residues never block onboarding; only a readable mnemonic is ha
 		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('retry_unknown')
 	})
 
-	it('a corrupt or unparseable IDB entry is unknown: retry, never onboarding', () => {
-		expect(idbPresenceOf(idbSignalOf({ status: 'loaded' }))).toBe('unknown')
+	it('R43: a parseable document with no key and no account is a successful read with no mnemonic: IDB confirmed none, so onboarding', () => {
+		expect(idbPresenceOf(idbSignalOf({ status: 'loaded' }))).toBe('confirmed_none')
+		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'loaded' })), native: 'confirmed_none' })).toBe('onboarding')
+	})
+
+	it('R43: an unparseable or structure-mismatched IDB entry (invalid_document) is corrupt, unknown: retry, never onboarding', () => {
+		expect(idbPresenceOf(idbSignalOf({ status: 'unavailable', reason: 'invalid_document' }))).toBe('unknown')
+		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'unavailable', reason: 'invalid_document' })), native: 'confirmed_none' })).toBe('retry_unknown')
+	})
+
+	it('a read error or a lock is unknown: retry, never onboarding', () => {
 		expect(idbPresenceOf(idbSignalOf({ status: 'unavailable', reason: 'read_error' }))).toBe('unknown')
 		expect(idbPresenceOf(idbSignalOf({ status: 'locked' }))).toBe('unknown')
 	})
