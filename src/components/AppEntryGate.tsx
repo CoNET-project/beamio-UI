@@ -47,6 +47,8 @@ import {
 } from '@/utils/consumerWalletGate'
 import { isShellContext } from '@/services/shellContext'
 import { nativeStoreWaitDelayMs, splashDeadlineAction } from '@/services/shellStoreWait'
+import { decideAccountReset, idbPresenceOf, nativePresenceOfState, type NativeWalletStatusAnswer } from '@/services/accountPresence'
+import { readNativeIdentityPublic } from '@/services/nativeIdentityPublic'
 import { nativeRecoveryCopyKey, nativeRecoveryOpen, onNativeRecoveryResult, recoveryOpenErrorKey } from '@/services/nativeRecovery'
 import { announceNativeWalletEstablished } from '@/services/nativeWalletEstablished'
 import { tu } from '@/locale/beamioLocale'
@@ -355,6 +357,8 @@ export default function AppEntryGate() {
 		// answers `not_reported`, and the existing route applies (unchanged 0.52.930 behaviour).
 		let shellWalletState: NativeWalletState | 'not_reported' | null = null
 		let shellWalletStatus: NativeWalletStatus = 'unknown'
+		// the native walletStatus answer of this start (Y.89 presence). Null when the shell did not reach it.
+		let shellNativeState: NativeWalletStatusAnswer | null = null
 		// the identity capability is probed once per start; a missing capability sends no init and shows neither the lock nor the import page.
 		let identity: IdentityCapabilityState = 'unanswered'
 		if (nativeShellRef.current) {
@@ -391,6 +395,7 @@ export default function AppEntryGate() {
 				return
 			}
 			const native = await reachNativeWallet()
+			shellNativeState = native
 			shellWalletStatus = native.status
 			// a G1 wallet the native layer proves readable enters the local home. The EOA comes from this device, or from
 			// walletEoaAddress; with neither, nothing is guessed and the recovery entry is shown.
@@ -522,6 +527,20 @@ export default function AppEntryGate() {
 				return
 			}
 			const presence = judged.account
+			// Y.85 (c) and Y.89: a shell enters onboarding only when the IndexedDB side and the native side both confirmed none.
+			// Any unknown (or a contradicting "has") is retry: no onboarding, nothing deleted. The gate deletes nothing here.
+			if (isShellContext() && presence === 'no_account') {
+				const kPresent = shellNativeState?.status === 'no_key'
+					? await readNativeIdentityPublic().then((r) => (r.kind === 'no_key' ? r.kPresent : undefined))
+					: undefined
+				const nativeSide = shellNativeState ? nativePresenceOfState(shellNativeState, kPresent) : 'unknown'
+				const reset = decideAccountReset({ idb: idbPresenceOf(idb), native: nativeSide, userConfirmedRecovery: false, newAccountEstablished: false })
+				if (reset !== 'onboarding') {
+					publishNativePwaLog('warn', `[AppEntryGate] account reset decision=${reset}: onboarding not entered, nothing deleted (retry)`)
+					showStorageUnavailable(NATIVE_RETRY_SCREEN)
+					return
+				}
+			}
 			nativeRetryAttemptRef.current = 0
 			// the store reads now: any earlier unavailable state is cleared, so the app enters on its own (no stuck screen).
 			nativeWaitRef.current = false

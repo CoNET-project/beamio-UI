@@ -19,7 +19,8 @@ describe('AppEntryGate decides shell entry from walletStatus', () => {
 		expect(src).toMatch(/installNativeNoKeyWatcher\(/)
 	})
 
-	it('does not read the identity, a PGP key or a private key at the gate', () => {
-		expect(src).not.toMatch(/identityPublic|readNativeIdentityPublic|privateKeyArmor|pgpPrivateKeyArmored/)
+	it('reads no PGP or private key at the gate; identityPublic only as the kPresent boolean of a no_key answer (Y.89, Y.90)', () => {
+		expect(src).not.toMatch(/privateKeyArmor|pgpPrivateKeyArmored/)
+		expect(src).toMatch(/readNativeIdentityPublic\(\)\.then\(\(r\) => \(r\.kind === 'no_key' \? r\.kPresent : undefined\)\)/)
 	})
 })
