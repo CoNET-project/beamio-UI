@@ -32,7 +32,9 @@ export function splashDeadlineAction(input: { decided: boolean; nativeWaiting: b
  * `no_key` from shellRecord, stops at unavailable: it never sends the user to onboarding (onboarding follows only an absent store).
  */
 export function shellStorageErrorReason(message: string): 'native_retry' | 'native_recovery_needed' | 'native_record' | 'app_update_required' {
-	if (/shell_record_(migrating|import_not_done|legacy_store_unreadable)/.test(message)) return 'native_retry'
+	// Retryable (Y.70 #4 and the transport): a snapshot not yet known answers not_ready; a timeout or an unanswered envelope
+	// is a transient bridge state. None of these is a record error and none creates, overwrites or treats the store as empty.
+	if (/shell_record_(migrating|import_not_done|legacy_store_unreadable|not_ready|timeout|native_unavailable)\b/.test(message)) return 'native_retry'
 	// the native layer refused this page (origin or frame): the page is not a trusted build, so the update prompt is shown.
 	if (message.includes('shell_record_origin_refused')) return 'app_update_required'
 	return message.includes('needs_native_recovery') ? 'native_recovery_needed' : 'native_record'

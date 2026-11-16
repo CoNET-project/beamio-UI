@@ -69,3 +69,37 @@ describe('a refused origin on a shell record read shows the update prompt', () =
 	})
 })
 
+
+describe('Y.70 #4: a shell read that is not yet decided is retryable, never a record error (0.53.5)', () => {
+	it('not_ready (snapshot unknown) is native_retry', () => {
+		expect(shellStorageErrorReason('shell_record_not_ready')).toBe('native_retry')
+	})
+
+	it('a timeout and an unanswered envelope are native_retry (transient bridge states)', () => {
+		expect(shellStorageErrorReason('shell_record_timeout')).toBe('native_retry')
+		expect(shellStorageErrorReason('shell_record_native_unavailable')).toBe('native_retry')
+	})
+
+	it('the existing retry codes are unchanged', () => {
+		expect(shellStorageErrorReason('shell_record_migrating')).toBe('native_retry')
+		expect(shellStorageErrorReason('shell_record_import_not_done')).toBe('native_retry')
+		expect(shellStorageErrorReason('shell_record_legacy_store_unreadable')).toBe('native_retry')
+	})
+
+	it('record errors stay native_record (closed, no retry): bad answer, rev, PGP private, unknown', () => {
+		expect(shellStorageErrorReason('shell_record_bad_answer')).toBe('native_record')
+		expect(shellStorageErrorReason('shell_record_rev_missing')).toBe('native_record')
+		expect(shellStorageErrorReason('shell_record_pgp_private_in_payload')).toBe('native_record')
+		expect(shellStorageErrorReason('shell_record_wallet_fields_missing')).toBe('native_record')
+		expect(shellStorageErrorReason('shell_record_some_new_code')).toBe('native_record')
+	})
+
+	it('a recovery hold stays native_recovery_needed; origin refusal stays app_update_required', () => {
+		expect(shellStorageErrorReason('shell_record_needs_native_recovery')).toBe('native_recovery_needed')
+		expect(shellStorageErrorReason('shell_record_origin_refused')).toBe('app_update_required')
+	})
+
+	it('a not_ready is never treated as an absent store (no onboarding route)', () => {
+		expect(shellStorageErrorReason('shell_record_not_ready')).not.toBe('native_record')
+	})
+})
