@@ -1,5 +1,5 @@
 /**
- * Y.94 PG-01 to PG-06 (pgpMissingBoundaryCases in pgp-migration-vectors.v2.json, sha256 5f9952f3…dc75). SYNTHETIC values only.
+ * Y.94 PG-01 to PG-06 (pgpMissingBoundaryCases in pgp-migration-vectors.v2.json, sha256 3ced6796…e613 (v2, Y.157)). SYNTHETIC values only.
  * The PGP signals (pgpReady, pgpUpgradeState, pgp_source_unavailable) decide chat only (Y.81). The account is judged by the mnemonic
  * (Y.85): presence logic never reads the PGP signals, and walletStatus without its status key is unknown.
  */

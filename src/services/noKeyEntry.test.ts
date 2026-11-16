@@ -1,5 +1,5 @@
 /**
- * walletEoaAddress answers `no_key`. Cases follow the shared vectors page-copy-nokey-vectors.v1.json (sha 5e26715a…a174e,
+ * walletEoaAddress answers `no_key`. Cases follow the shared vectors page-copy-nokey-vectors.v1.json (sha 4972aa8c…3d93 (page-copy-nokey v1, Y.157),
  * spec 25.52Y.151 / 25.52Y.153), PNK-01 to PNK-05. PNK-05 (the native layer holds the key and reports an address) is the
  * unchanged address path and is covered by the gate's existing tests.
  */

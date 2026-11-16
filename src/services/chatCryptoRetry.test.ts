@@ -1,5 +1,5 @@
 /**
- * Y.81 CA-01 to CA-06 (chatAvailabilityCases in pgp-migration-vectors.v2.json, sha256 5f9952f3…dc75), the Y.102 three cases, and the Y.83 4
+ * Y.81 CA-01 to CA-06 (chatAvailabilityCases in pgp-migration-vectors.v2.json, sha256 3ced6796…e613 (v2, Y.157)), the Y.102 three cases, and the Y.83 4
  * retry rule. SYNTHETIC values only.
  */
 import { chatCryptoAvailabilityOf, chatCryptoRetryAfter, immediateRetriesOnNetworkRestore, storageLockActionAt } from './chatCryptoRetry'
