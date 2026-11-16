@@ -23,7 +23,8 @@ const race: {
 	caps: string[]
 	eoa: string | null
 	idb: 'empty' | 'key'
-} = { shell: true, native: { status: 'no_key' }, walletState: 'absent', kPresent: false, caps: ['identity.native-keys.v1', 'identity.kpresent.v1'], eoa: EOA, idb: 'empty' }
+	reachCalls: number
+} = { shell: true, native: { status: 'no_key' }, walletState: 'absent', kPresent: false, caps: ['identity.native-keys.v1', 'identity.kpresent.v1'], eoa: EOA, idb: 'empty', reachCalls: 0 }
 
 const nodeUtil = require('util')
 Object.assign(globalThis, { TextEncoder: nodeUtil.TextEncoder, TextDecoder: nodeUtil.TextDecoder })
@@ -84,7 +85,10 @@ jest.mock('@/services/nativeWallet', () => ({
 	NATIVE_WALLET_READY_EVENT: 'beamio:native-wallet-ready',
 	notifyNativeWalletReady: jest.fn(),
 	publicWalletSeed: () => ({ profiles: [], beamio: undefined, isReady: true }),
-	reachNativeWallet: async () => race.native,
+	reachNativeWallet: async () => {
+		race.reachCalls += 1
+		return race.native
+	},
 	rememberNativeEoa: jest.fn(),
 	takeInitRefusal: () => null,
 }))
@@ -146,6 +150,7 @@ const BOTH_CAPS = ['identity.native-keys.v1', 'identity.kpresent.v1']
 
 describe('account reset at the gate (Y.85, Y.89, Y.93)', () => {
 	beforeEach(() => {
+		race.reachCalls = 0
 		race.shell = true
 		race.native = { status: 'no_key' }
 		race.walletState = 'absent'
@@ -186,12 +191,16 @@ describe('account reset at the gate (Y.85, Y.89, Y.93)', () => {
 
 	// Y.151 (PNK-04) supersedes Y.107/Y.108 here: a no_key answer with kPresent true holds the native key. It is the recovery entry only:
 	// never onboarding, never a creation entry.
-	it('no_key with kPresent true and no mnemonic on either side: recovery entry, not onboarding (Y.151 PNK-04)', async () => {
+	it('no_key with kPresent true and no mnemonic on either side: recovery entry, not onboarding, no retry (Y.151 PNK-04)', async () => {
 		race.kPresent = true
 		renderApp()
-		await waitFor(() => expect(screen.queryByText('ONBOARDING_MARK')).toBeNull(), { timeout: 3000 })
-		await new Promise((r) => setTimeout(r, 300))
+		// the recovery screen shows its import entry (native_key_required_import)
+		await waitFor(() => expect(screen.getByText('native_key_required_import')).toBeTruthy(), { timeout: 3000 })
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
+		const afterRecovery = race.reachCalls
+		await new Promise((r) => setTimeout(r, 300))
+		// no automatic retry: the native wallet is not asked again
+		expect(race.reachCalls).toBe(afterRecovery)
 	})
 
 	// CP-01: a passcode lock (walletStatus locked, the wallet is held) is has: continue_account, the passcode page; never onboarding.
