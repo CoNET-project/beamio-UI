@@ -26,6 +26,14 @@ describe('walletEoaAddress no_key mapping (PNK vectors)', () => {
 		expect(decideNoKeyEntry(facts, 'empty')).toBe('native_key_missing')
 	})
 
+	it('a page copy present with no native facts (facts null) -> recovery entry only, never none', () => {
+		expect(decideNoKeyEntry(null, 'present')).toBe('native_key_missing')
+	})
+
+	it('a page copy present with kPresent true -> recovery entry only, never none', () => {
+		expect(decideNoKeyEntry({ walletStatus: 'no_key', kPresent: true }, 'present')).toBe('native_key_missing')
+	})
+
 	it('no facts or an unreadable page record never maps to none', () => {
 		expect(decideNoKeyEntry(null, 'empty')).toBe('retry')
 		expect(decideNoKeyEntry({ walletStatus: 'no_key', kPresent: false }, 'unknown')).toBe('retry')
