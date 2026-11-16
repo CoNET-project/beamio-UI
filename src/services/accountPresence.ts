@@ -105,3 +105,27 @@ export function shellTierOf(input: { shell: boolean; nativeKeys: boolean; kprese
 	if (!input.nativeKeys) return 'legacy_shell'
 	return input.kpresent ? 'native_full' : 'native_no_kpresent'
 }
+
+/**
+ * The walletStatus answer shape (Y.94 3, PG-05, PG-06). The `status` key is the walletState of the answer: when it is missing the answer
+ * is malformed and is unknown, never has (so a locked answer without its status key is not a basis for an account). Only a present
+ * `locked` or `unlocked` with a valid account key (`eoa:workspace`) is has. `isAddress` checks the EOA (the caller passes ethers).
+ */
+export function parseWalletStatusResult(result: unknown, isAddress: (value: string) => boolean): NativeWalletStatusAnswer {
+	if (!result || typeof result !== 'object' || Array.isArray(result)) return { status: 'unknown' }
+	const r = result as { status?: unknown; accountKey?: unknown; notReadyReason?: unknown }
+	const st = r.status
+	if (st === 'no_key') return { status: 'no_key' }
+	// `notReadyReason` is read only on a not_ready answer; any other value, or none, is unreadable (no field).
+	if (st === 'not_ready') {
+		const reason = r.notReadyReason
+		return reason === 'g1_uninitialized' || reason === 'unreadable' ? { status: 'not_ready', notReadyReason: reason } : { status: 'not_ready' }
+	}
+	if (st === 'locked' || st === 'unlocked') {
+		const key = typeof r.accountKey === 'string' ? r.accountKey : ''
+		const eoa = key.split(':')[0]?.trim() ?? ''
+		return isAddress(eoa) ? { status: st, eoa: eoa.toLowerCase() } : { status: 'unknown' }
+	}
+	// a missing or unrecognised status key: the answer is malformed, so unknown (never has, never confirmed none).
+	return { status: 'unknown' }
+}

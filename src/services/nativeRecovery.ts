@@ -10,6 +10,7 @@ import { ethers } from 'ethers'
 import { eventPayloadOf, NATIVE_EVENT_NAMES, withoutGlobalNoKeyLock } from './nativeKeyState'
 import { nextReqId, probeNativeCapabilities, requestNativeAck } from './nativeChatRouteRegister'
 import { parsePasscodeStatus, type NativeWalletState as NativeWalletStateReport } from './accountJudgement'
+import { parseWalletStatusResult } from './accountPresence'
 import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
 
 export const NATIVE_RECOVERY_OPEN_COMMAND = 'nativeRecoveryOpen'
@@ -301,21 +302,9 @@ export async function queryNativeWalletStatus(): Promise<NativeWalletState> {
 	if (!probe.answered) return { status: 'unknown' }
 	const answer = await requestNativeAck({ type: NATIVE_WALLET_STATUS_COMMAND }, OPEN_TIMEOUT_MS)
 	if (answer.kind !== 'payload') return { status: 'unknown' }
-	const p = answer.payload as { type?: unknown; ok?: unknown; result?: { status?: unknown; accountKey?: unknown; notReadyReason?: unknown } }
+	const p = answer.payload as { type?: unknown; ok?: unknown; result?: unknown }
 	if (p.type !== 'ack' || p.ok !== true || !p.result) return { status: 'unknown' }
-	const st = p.result.status
-	if (st === 'no_key') return { status: st }
-	// `notReadyReason` is read only on a not_ready answer; any other value, or none, is unreadable (no field).
-	if (st === 'not_ready') {
-		const reason = p.result.notReadyReason
-		return reason === 'g1_uninitialized' || reason === 'unreadable' ? { status: st, notReadyReason: reason } : { status: st }
-	}
-	if (st === 'locked' || st === 'unlocked') {
-		const key = typeof p.result.accountKey === 'string' ? p.result.accountKey : ''
-		const eoa = key.split(':')[0]?.trim() ?? ''
-		return ethers.isAddress(eoa) ? { status: st, eoa: eoa.toLowerCase() } : { status: 'unknown' }
-	}
-	return { status: 'unknown' }
+	return parseWalletStatusResult(p.result, (a) => ethers.isAddress(a))
 }
 
 /**

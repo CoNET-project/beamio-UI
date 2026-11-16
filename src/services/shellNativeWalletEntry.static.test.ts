@@ -14,7 +14,9 @@ describe('shell wallet entry on the native wallet', () => {
 	it('the native wallet status is queried with walletStatus and the public address is read from accountKey', () => {
 		const nr = read('services/nativeRecovery.ts')
 		expect(nr).toContain("export const NATIVE_WALLET_STATUS_COMMAND = 'walletStatus'")
-		expect(nr).toContain("key.split(':')[0]")
+		// Y.94 3: the walletStatus shape is parsed by the pure parser (accountPresence); the public address is read from accountKey there.
+		expect(nr).toContain('parseWalletStatusResult(')
+		expect(read('services/accountPresence.ts')).toContain("key.split(':')[0]")
 	})
 
 	it('AppEntryGate asks the native wallet first in a shell; a native wallet enters the app; no key falls to the page wallet (boundary)', () => {
