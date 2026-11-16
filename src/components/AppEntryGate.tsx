@@ -178,6 +178,9 @@ export default function AppEntryGate() {
 		markDecided()
 		setGateDecided(true)
 		setSplashVisible(false)
+		// The native-retry screen of an earlier undecided start (the splash deadline) gives way to the decided entry: the App is the screen
+		// now. Without this the retry screen covers the Outlet and the home never shows (the decision was made, the screen was not cleared).
+		setStorageUnavailable((prev) => (prev === NATIVE_RETRY_SCREEN ? null : prev))
 		if (!isShellContext()) setIsInitialLoading(false)
 	}
 
