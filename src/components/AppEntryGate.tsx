@@ -599,14 +599,29 @@ export default function AppEntryGate() {
 					return
 				}
 				let nativeSide: NativePresence = 'unknown'
+				let nativeKPresent: boolean | undefined
 				if (tier === 'native_no_kpresent') {
 					// Y.93 2c: kPresent is not reported, so the native side is unknown (Y.90 4). No creation entry; the shell needs an upgrade.
 					publishNativePwaLog('warn', '[AppEntryGate] identity.kpresent.v1 not declared: native side unknown, no account creation (shell upgrade needed)')
 				} else {
-					const kPresent = shellNativeState?.status === 'no_key'
+					nativeKPresent = shellNativeState?.status === 'no_key'
 						? await readNativeIdentityPublic().then((r) => (r.kind === 'no_key' ? r.kPresent : undefined))
 						: undefined
-					nativeSide = shellNativeState ? nativePresenceOfState(shellNativeState, kPresent) : 'unknown'
+					nativeSide = shellNativeState ? nativePresenceOfState(shellNativeState, nativeKPresent) : 'unknown'
+				}
+				// Y.151 / PNK-01..05 (prevail over Y.108): a no_key native side is decided by the same function as the no-copy entry.
+				// Only kPresent false without a page copy is onboarding; kPresent true is recovery entry only; kPresent missing is retry.
+				if (shellNativeState?.status === 'no_key') {
+					const entry = decideNoKeyEntry({ walletStatus: 'no_key', kPresent: nativeKPresent }, idbPresenceOf(idb) === 'has' ? 'present' : idbPresenceOf(idb) === 'confirmed_none' ? 'empty' : 'unknown')
+					publishNativePwaLog('info', `[AppEntryGate] walletStatus no_key on the no-record entry: ${entry}`)
+					if (entry === 'native_key_missing') {
+						showStorageUnavailable('native_recovery_needed')
+						return
+					}
+					if (entry === 'onboarding') {
+						goOnboarding(false)
+						return
+					}
 				}
 				const reset = decideAccountReset({ idb: idbPresenceOf(idb), native: nativeSide, userConfirmedRecovery: false, newAccountEstablished: false })
 				if (reset === 'continue_account') {

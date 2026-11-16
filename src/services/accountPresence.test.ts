@@ -10,10 +10,10 @@ const cases: Array<{ id: string; input: NativePresenceInput; expect: string }> =
 	{ id: 'TS-03', input: { ws: 'unlocked', snapshotUnknown: false }, expect: 'has' },
 	{ id: 'TS-04', input: { ws: 'not_ready', reason: 'unreadable', snapshotUnknown: false }, expect: 'unknown' },
 	{ id: 'TS-05', input: { ws: 'not_ready', reason: 'unreadable', snapshotUnknown: true }, expect: 'unknown' },
-	{ id: 'TS-06', input: { ws: 'no_key', kPresent: true, snapshotUnknown: false }, expect: 'confirmed_none' },
+	{ id: 'TS-06', input: { ws: 'no_key', kPresent: true, snapshotUnknown: false }, expect: 'unknown' }, // Y.151 (PNK-04) supersedes Y.108 here
 ]
 
-describe('Y.89 native presence (TS-01–06; TS-06 per Y.108)', () => {
+describe('Y.89 native presence (TS-01–06; TS-06 per Y.151, superseding Y.108)', () => {
 	for (const c of cases) {
 		it(`${c.id}: ${c.expect}`, () => {
 			expect(nativePresence(c.input)).toBe(c.expect)
@@ -24,12 +24,12 @@ describe('Y.89 native presence (TS-01–06; TS-06 per Y.108)', () => {
 		expect(nativePresence({ ws: 'locked', snapshotUnknown: false })).toBe('has')
 	})
 
-	it('Y.108 (TS-06): no_key with kPresent a boolean (true or false) is confirmed none', () => {
-		expect(nativePresence({ ws: 'no_key', kPresent: true, snapshotUnknown: false })).toBe('confirmed_none')
+	it('Y.151 (supersedes Y.108, TS-06): no_key with kPresent false is confirmed none; kPresent true is never none', () => {
 		expect(nativePresence({ ws: 'no_key', kPresent: false, snapshotUnknown: false })).toBe('confirmed_none')
+		expect(nativePresence({ ws: 'no_key', kPresent: true, snapshotUnknown: false })).toBe('unknown')
 	})
 
-	it('Y.108: no_key with kPresent missing or not a boolean is a read error: unknown', () => {
+	it('Y.151: no_key with kPresent missing or not a boolean is a read error: unknown', () => {
 		expect(nativePresence({ ws: 'no_key', snapshotUnknown: false })).toBe('unknown')
 		expect(nativePresence({ ws: 'no_key', kPresent: 'yes' as unknown as boolean, snapshotUnknown: false })).toBe('unknown')
 	})

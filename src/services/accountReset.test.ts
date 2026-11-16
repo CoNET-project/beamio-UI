@@ -53,9 +53,10 @@ describe('IndexedDB side (Y.85 input idb)', () => {
 })
 
 describe('native side (Y.89 with Y.90 kPresent)', () => {
-	it('Y.108: no_key with kPresent true or false is confirmed none; kPresent missing is unknown (a read error)', () => {
+	// Y.151 (PNK-01..05) supersedes Y.108 for kPresent true: it is never confirmed none.
+	it('Y.151: no_key with kPresent false is confirmed none; kPresent true is not none; kPresent missing is unknown (a read error)', () => {
 		expect(nativePresenceOfState({ status: 'no_key' }, false)).toBe('confirmed_none')
-		expect(nativePresenceOfState({ status: 'no_key' }, true)).toBe('confirmed_none')
+		expect(nativePresenceOfState({ status: 'no_key' }, true)).toBe('unknown')
 		expect(nativePresenceOfState({ status: 'no_key' }, undefined)).toBe('unknown')
 	})
 

@@ -28,9 +28,9 @@ export function nativePresence(input: NativePresenceInput): NativePresence {
 		return input.reason === 'g1_uninitialized' ? 'has' : 'unknown'
 	}
 	if (input.ws === 'no_key') {
-		// Y.108 (TS-06): a successful no_key read with kPresent a boolean (true or false) is confirmed none. kPresent missing or not a
-		// boolean is a read error: unknown. kPresent never blocks onboarding by its value (Y.107 4).
-		return typeof input.kPresent === 'boolean' ? 'confirmed_none' : 'unknown'
+		// Y.151 (PNK-01..05) supersedes Y.108 for kPresent true: only kPresent false is confirmed none. kPresent true is the native key
+		// held (recovery entry only, never none, never retried as unknown here); kPresent missing or not a boolean is unknown.
+		return input.kPresent === false ? 'confirmed_none' : 'unknown'
 	}
 	return 'unknown'
 }

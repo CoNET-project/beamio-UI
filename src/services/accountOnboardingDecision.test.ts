@@ -104,15 +104,17 @@ describe('Y.107: residues never block onboarding; only a readable mnemonic is ha
 		expect(decideAccountReset({ ...base, idb, native: 'confirmed_none' })).toBe('onboarding')
 	})
 
-	it('a successful native no_key read with kPresent a boolean is confirmed none: onboarding when IDB is empty (Y.108)', () => {
-		for (const kPresent of [true, false] as const) {
-			const native = nativePresence({ ws: 'no_key', kPresent, snapshotUnknown: false })
-			expect(native).toBe('confirmed_none')
-			expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('onboarding')
-		}
+	// Y.151 (PNK-01..05) supersedes Y.108 for kPresent true: only kPresent false is confirmed none (onboarding); kPresent true is never none.
+	it('Y.151: no_key with kPresent false and IDB empty is onboarding; kPresent true is never onboarding', () => {
+		const none = nativePresence({ ws: 'no_key', kPresent: false, snapshotUnknown: false })
+		expect(none).toBe('confirmed_none')
+		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native: none })).toBe('onboarding')
+		const held = nativePresence({ ws: 'no_key', kPresent: true, snapshotUnknown: false })
+		expect(held).not.toBe('confirmed_none')
+		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native: held })).not.toBe('onboarding')
 	})
 
-	it('no_key with kPresent missing is a read error: retry, never onboarding (Y.108)', () => {
+	it('no_key with kPresent missing is a read error: retry, never onboarding (Y.151)', () => {
 		const native = nativePresence({ ws: 'no_key', snapshotUnknown: false })
 		expect(native).toBe('unknown')
 		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('retry_unknown')
