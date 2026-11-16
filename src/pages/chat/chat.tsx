@@ -2096,6 +2096,14 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	// Local library first screen : once the library serves reads (migration switched or purged), the
 	// newest text rows are merged into the list. Media rows are not in the library response; they stay with the list.
 	const [libraryOlderPending, setLibraryOlderPending] = useState(false)
+	const [historyRereadTick, setHistoryRereadTick] = useState(0)
+	const [localHistoryRead, setLocalHistoryRead] = useState<LocalHistoryRead>({ kind: 'not_read' })
+	// R48: a history client not ready yet (not_read) is read again once it is ready: 1 s steps, up to 10 times; the read result replaces not_read.
+	useEffect(() => {
+		if (localHistoryRead.kind !== 'not_read' || historyRereadTick >= 10) return
+		const timer = window.setTimeout(() => setHistoryRereadTick((t) => t + 1), 1000)
+		return () => window.clearTimeout(timer)
+	}, [localHistoryRead.kind, historyRereadTick])
 	useEffect(() => {
 		let cancelled = false
 		const address = chatData.address
@@ -2126,7 +2134,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		return () => {
 			cancelled = true
 		}
-	}, [chatData.address])
+	}, [chatData.address, historyRereadTick])
 
 	const scrollRef = useRef<HTMLDivElement | null>(null)
 	const {
@@ -2462,7 +2470,6 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	const [chatOnline, setChatOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine !== false)
 	const [cryptoAttempt, setCryptoAttempt] = useState(0)
 	const [cryptoTick, setCryptoTick] = useState(0)
-	const [localHistoryRead, setLocalHistoryRead] = useState<LocalHistoryRead>({ kind: 'not_read' })
 	const localHistorySignal = historySignalOf(localHistoryRead)
 	useEffect(() => () => { chatCryptoDecryptGate.enabled = false }, [])
 	const chatCryptoAvail = chatCryptoAvailabilityOf(cryptoInputOf({ pgpUpgradeRetry, pgpMigrationRetry, offline: !chatOnline, localHistoryReadable: localHistorySignal.localHistoryReadable, localHistoryEmpty: localHistorySignal.localHistoryEmpty }))

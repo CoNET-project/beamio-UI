@@ -127,6 +127,12 @@ describe('Y.81 gate and real history signal on the chat page (R45 blockers)', ()
 		expect(chat).toContain('localHistoryReadable: localHistorySignal.localHistoryReadable')
 		expect(chat).toContain('setLocalHistoryRead(historyReadOf(await readLocalChatHistory(address, viewport)))')
 	})
+
+	it('R48: a not_read history is read again once the client is ready: 1 s steps, up to 10, then no further judgement', () => {
+		expect(chat).toContain('if (localHistoryRead.kind !== \'not_read\' || historyRereadTick >= 10) return')
+		expect(chat).toContain('setHistoryRereadTick((t) => t + 1), 1000)')
+		expect(chat).toContain('}, [chatData.address, historyRereadTick])')
+	})
 })
 
 describe('Y.81 and Y.102: the page history read result, and every private-key decrypt call site (R46)', () => {
