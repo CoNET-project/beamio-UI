@@ -15,6 +15,7 @@ import { registerPendingSender } from '@/services/pendingServerSync'
 import { resumeDeferredWrite } from '@/services/shellRecordStore'
 import { installNativeNoKeyWatcher, openNativeKeyImport } from '@/services/nativeKeyState'
 import { onNativeImportResult } from '@/services/nativeImportResult'
+import { startCleanupAfterRecovery } from '@/services/accountCleanupPending'
 import { AppEntryNoKeyController } from './appEntryNoKeyController'
 import { NATIVE_WALLET_ESTABLISHED_EVENT } from '@/services/nativeWalletEstablished'
 import { NATIVE_FLOW_PENDING_EVENT } from '@/services/nativeFlowPending'
@@ -107,6 +108,9 @@ export default function AppEntryGate() {
 				setNativeRecoveryNotice('')
 				announceNativeWalletEstablished()
 				rememberNativeEoa(eoa)
+				// Y.91 and Y.100: the user completed the recovery and the native layer confirmed it. The previous storage is cleaned by the native
+				// layer; the new account is kept, and a pending marker holds until the cleanup answers ok (never treated as no account).
+				if (eoa) void startCleanupAfterRecovery(window.localStorage, eoa).catch(() => undefined)
 				setStorageUnavailable(null)
 				void reachNativeWallet().then(() => notifyNativeWalletReady(''))
 				return
