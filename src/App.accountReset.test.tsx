@@ -185,11 +185,11 @@ describe('account reset at the gate (Y.85, Y.89, Y.93)', () => {
 	})
 
 	// Y.90 4 at the page: a no_key answer whose kPresent is true is a key without a native wallet: retry, never onboarding.
-	it('no_key with kPresent true: retry, never onboarding', async () => {
+	// Y.107 4: kPresent is not an onboarding blocker. A successful no_key read with no mnemonic on either side is confirmed none: onboarding.
+	it('no_key with kPresent true and no mnemonic on either side: onboarding (Y.107)', async () => {
 		race.kPresent = true
 		renderApp()
-		await waitFor(() => expect(publishNativePwaLog).toHaveBeenCalledWith('warn', expect.stringContaining('onboarding not entered, nothing deleted')), { timeout: 3000 })
-		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
+		await waitFor(() => expect(screen.getByText('ONBOARDING_MARK')).toBeTruthy(), { timeout: 3000 })
 	})
 
 	// CP-01: a passcode lock (walletStatus locked, the wallet is held) is has: continue_account, the passcode page; never onboarding.

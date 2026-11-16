@@ -1,5 +1,5 @@
 /**
- * Y.85 account-reset state machine, vectors ST-01 to ST-08 (accountResetCases in pgp-migration-vectors.v2.json, sha256 e61a2469…6d90).
+ * Y.85 account-reset state machine, vectors ST-01 to ST-08 (accountResetCases in pgp-migration-vectors.v2.json, sha256 5f9952f3…dc75).
  * The vector values present / absent / unknown map to has / confirmed_none / unknown (Y.89). SYNTHETIC values only.
  */
 import { decideAccountReset, idbPresenceOf, nativePresenceOfState, type AccountResetInput, type NativePresence } from './accountPresence'
@@ -42,19 +42,20 @@ describe('Y.85 account reset (ST-01 to ST-08)', () => {
 })
 
 describe('IndexedDB side (Y.85 input idb)', () => {
-	it('a key is present, an empty store is confirmed none, the rest is unknown', () => {
+	it('Y.107: a key is has; a successful read with no mnemonic (empty store, or an account record without a key) is confirmed none; the rest is unknown', () => {
 		expect(idbPresenceOf('key')).toBe('has')
 		expect(idbPresenceOf('absent')).toBe('confirmed_none')
-		for (const s of ['account_without_key', 'corrupt', 'unavailable', 'unfinished', 'locked'] as const) {
+		expect(idbPresenceOf('account_without_key')).toBe('confirmed_none')
+		for (const s of ['corrupt', 'unavailable', 'unfinished', 'locked'] as const) {
 			expect(idbPresenceOf(s)).toBe('unknown')
 		}
 	})
 })
 
 describe('native side (Y.89 with Y.90 kPresent)', () => {
-	it('no_key with kPresent false is confirmed none; true or absent is unknown', () => {
+	it('Y.108: no_key with kPresent true or false is confirmed none; kPresent missing is unknown (a read error)', () => {
 		expect(nativePresenceOfState({ status: 'no_key' }, false)).toBe('confirmed_none')
-		expect(nativePresenceOfState({ status: 'no_key' }, true)).toBe('unknown')
+		expect(nativePresenceOfState({ status: 'no_key' }, true)).toBe('confirmed_none')
 		expect(nativePresenceOfState({ status: 'no_key' }, undefined)).toBe('unknown')
 	})
 
@@ -69,7 +70,7 @@ describe('native side (Y.89 with Y.90 kPresent)', () => {
 })
 
 /**
- * Y.93 2 capability tiers (onboardingCompatCases CP-03 to CP-06, pgp-migration-vectors.v2.json sha256 e61a2469…6d90).
+ * Y.93 2 capability tiers (onboardingCompatCases CP-03 to CP-06, pgp-migration-vectors.v2.json sha256 5f9952f3…dc75).
  */
 import { shellTierOf } from './accountPresence'
 

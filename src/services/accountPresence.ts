@@ -28,8 +28,9 @@ export function nativePresence(input: NativePresenceInput): NativePresence {
 		return input.reason === 'g1_uninitialized' ? 'has' : 'unknown'
 	}
 	if (input.ws === 'no_key') {
-		// TS-01: confirmed none only when identityPublic says kPresent is false. TS-06: kPresent true or absent is unknown.
-		return input.kPresent === false ? 'confirmed_none' : 'unknown'
+		// Y.108 (TS-06): a successful no_key read with kPresent a boolean (true or false) is confirmed none. kPresent missing or not a
+		// boolean is a read error: unknown. kPresent never blocks onboarding by its value (Y.107 4).
+		return typeof input.kPresent === 'boolean' ? 'confirmed_none' : 'unknown'
 	}
 	return 'unknown'
 }
@@ -47,8 +48,11 @@ export function onboardingAllowed(idb: NativePresence, native: NativePresence): 
  * (locked, unavailable, unfinished, a record without a key, a corrupt record) is unknown.
  */
 export function idbPresenceOf(signal: IdbSignal): NativePresence {
+	// Y.107 1 and 3: a readable mnemonic is has. A successful read with no mnemonic (an empty store, or an account record without a key)
+	// is confirmed none; residues (PGP, history, phase, COMMIT, INTENT, MARK, digest) never block it.
 	if (signal === 'key') return 'has'
-	if (signal === 'absent') return 'confirmed_none'
+	if (signal === 'absent' || signal === 'account_without_key') return 'confirmed_none'
+	// Y.107 2: a real read error, a lock, not ready, or an entry that cannot be parsed or decrypted is unknown (retry).
 	return 'unknown'
 }
 

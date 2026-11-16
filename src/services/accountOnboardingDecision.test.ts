@@ -91,34 +91,42 @@ describe('cleanup only after a confirmed recovery', () => {
 	})
 })
 
-describe('Y.106: residue and kPresent (readable mnemonic is has; a residue without a readable mnemonic is unknown; confirmed none needs kPresent false)', () => {
+describe('Y.107: residues never block onboarding; only a readable mnemonic is has; a failed read is unknown', () => {
 	it('a readable mnemonic on the IDB side is has: the original account continues, even when the native side confirms none', () => {
 		const idb = idbPresenceOf(idbSignalOf({ status: 'loaded', keyPresent: true }))
 		expect(idb).toBe('has')
 		expect(decideAccountReset({ ...base, idb, native: 'confirmed_none' })).toBe('continue_account')
 	})
 
-	it('an account record without a readable mnemonic is unknown: retry, never onboarding', () => {
+	it('a successful IDB read with an account record and no mnemonic is confirmed none (residue does not block): onboarding', () => {
 		const idb = idbPresenceOf(idbSignalOf({ status: 'loaded', accountPresent: true }))
-		expect(idb).toBe('unknown')
-		expect(decideAccountReset({ ...base, idb, native: 'confirmed_none' })).toBe('retry_unknown')
+		expect(idb).toBe('confirmed_none')
+		expect(decideAccountReset({ ...base, idb, native: 'confirmed_none' })).toBe('onboarding')
 	})
 
-	it('no_key without kPresent is not confirmed none: retry, never onboarding', () => {
+	it('a successful native no_key read with kPresent a boolean is confirmed none: onboarding when IDB is empty (Y.108)', () => {
+		for (const kPresent of [true, false] as const) {
+			const native = nativePresence({ ws: 'no_key', kPresent, snapshotUnknown: false })
+			expect(native).toBe('confirmed_none')
+			expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('onboarding')
+		}
+	})
+
+	it('no_key with kPresent missing is a read error: retry, never onboarding (Y.108)', () => {
 		const native = nativePresence({ ws: 'no_key', snapshotUnknown: false })
 		expect(native).toBe('unknown')
 		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('retry_unknown')
 	})
 
-	it('no_key with kPresent true (a residue exists) is not confirmed none: retry, never onboarding', () => {
-		const native = nativePresence({ ws: 'no_key', kPresent: true, snapshotUnknown: false })
-		expect(native).toBe('unknown')
-		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('retry_unknown')
+	it('a corrupt or unparseable IDB entry is unknown: retry, never onboarding', () => {
+		expect(idbPresenceOf(idbSignalOf({ status: 'loaded' }))).toBe('unknown')
+		expect(idbPresenceOf(idbSignalOf({ status: 'unavailable', reason: 'read_error' }))).toBe('unknown')
+		expect(idbPresenceOf(idbSignalOf({ status: 'locked' }))).toBe('unknown')
 	})
 
-	it('confirmed none needs the full condition: IDB empty and native no_key with kPresent false, and nothing else', () => {
-		const native = nativePresence({ ws: 'no_key', kPresent: false, snapshotUnknown: false })
-		expect(native).toBe('confirmed_none')
-		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('onboarding')
+	it('a not_ready native read (unreadable) is unknown: retry, never onboarding, even with IDB empty', () => {
+		const native = nativePresence({ ws: 'not_ready', reason: 'unreadable', snapshotUnknown: false })
+		expect(native).toBe('unknown')
+		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('retry_unknown')
 	})
 })

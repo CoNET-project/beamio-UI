@@ -1,5 +1,5 @@
 /**
- * Y.89 presence mapping, TS-01 to TS-06 (vectors in pgp-migration-vectors.v2.json, sha256 e61a2469…6d90).
+ * Y.89 presence mapping, TS-01 to TS-06 (vectors in pgp-migration-vectors.v2.json, sha256 5f9952f3…dc75).
  * The table below carries each vector's input and expected result.
  */
 import { nativePresence, onboardingAllowed, type NativePresenceInput } from './accountPresence'
@@ -10,10 +10,10 @@ const cases: Array<{ id: string; input: NativePresenceInput; expect: string }> =
 	{ id: 'TS-03', input: { ws: 'unlocked', snapshotUnknown: false }, expect: 'has' },
 	{ id: 'TS-04', input: { ws: 'not_ready', reason: 'unreadable', snapshotUnknown: false }, expect: 'unknown' },
 	{ id: 'TS-05', input: { ws: 'not_ready', reason: 'unreadable', snapshotUnknown: true }, expect: 'unknown' },
-	{ id: 'TS-06', input: { ws: 'no_key', kPresent: true, snapshotUnknown: false }, expect: 'unknown' },
+	{ id: 'TS-06', input: { ws: 'no_key', kPresent: true, snapshotUnknown: false }, expect: 'confirmed_none' },
 ]
 
-describe('Y.89 native presence (TS-01–06)', () => {
+describe('Y.89 native presence (TS-01–06; TS-06 per Y.108)', () => {
 	for (const c of cases) {
 		it(`${c.id}: ${c.expect}`, () => {
 			expect(nativePresence(c.input)).toBe(c.expect)
@@ -24,8 +24,19 @@ describe('Y.89 native presence (TS-01–06)', () => {
 		expect(nativePresence({ ws: 'locked', snapshotUnknown: false })).toBe('has')
 	})
 
-	it('no_key with kPresent absent is unknown, never confirmed (no basis for onboarding)', () => {
+	it('Y.108 (TS-06): no_key with kPresent a boolean (true or false) is confirmed none', () => {
+		expect(nativePresence({ ws: 'no_key', kPresent: true, snapshotUnknown: false })).toBe('confirmed_none')
+		expect(nativePresence({ ws: 'no_key', kPresent: false, snapshotUnknown: false })).toBe('confirmed_none')
+	})
+
+	it('Y.108: no_key with kPresent missing or not a boolean is a read error: unknown', () => {
 		expect(nativePresence({ ws: 'no_key', snapshotUnknown: false })).toBe('unknown')
+		expect(nativePresence({ ws: 'no_key', kPresent: 'yes' as unknown as boolean, snapshotUnknown: false })).toBe('unknown')
+	})
+
+	it('Y.107 2: a failed native read (not_ready, unreadable, unknown snapshot) is unknown, never onboarding', () => {
+		expect(nativePresence({ ws: 'not_ready', reason: 'unreadable', snapshotUnknown: false })).toBe('unknown')
+		expect(nativePresence({ ws: 'no_key', kPresent: true, snapshotUnknown: true })).toBe('unknown')
 	})
 
 	it('not_ready without a reason is unknown', () => {
