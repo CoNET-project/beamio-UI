@@ -136,7 +136,7 @@ import type { AaMultisigChatPreview } from '@/utils/aaMultisigChatPreview'
 import { tu } from '@/locale/beamioLocale'
 import { getPgpMigrationState, subscribePgpMigrationState } from '@/services/pgpMigrationRunner'
 import { installPgpUpgradeStateListener, pgpUpgradeRetryVisible, subscribePgpUpgradeState } from '@/services/pgpUpgradeState'
-import { chatCryptoDecryptGate, cryptoActionsEnabled, cryptoInputOf, cryptoNoticeOf, nextCryptoRetry } from '@/services/chatCryptoPage'
+import { chatCryptoDecryptGate, cryptoActionsEnabled, cryptoInputOf, cryptoNoticeOf, historyReadOf, historySignalOf, nextCryptoRetry, type LocalHistoryRead } from '@/services/chatCryptoPage'
 import { chatCryptoAvailabilityOf } from '@/services/chatCryptoRetry'
 import {
 	decryptVoiceFragment,
@@ -2101,7 +2101,8 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		if (!address) return
 		void (async () => {
 			const state = await localChatMigrationState()
-			if (cancelled || (state !== 'switched' && state !== 'purged')) return
+			const migrated = state === 'switched' || state === 'purged'
+			if (cancelled) return
 			const el = scrollRef.current
 			const viewport = viewportForScroller({
 				clientWidth: el?.clientWidth ?? 0,
@@ -2110,9 +2111,11 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 				innerWidth: window.innerWidth,
 				innerHeight: window.innerHeight,
 			})
-			const page = await openLocalChatPage(address, viewport)
-			setLocalHistoryState(page && page.source === 'local' ? { readable: true, empty: page.items.length === 0 } : { readable: false, empty: false })
-			if (cancelled || !page || page.source !== 'local') return
+			// a failed read is unreadable (Y.102 3), never a silent empty history
+			const page = await openLocalChatPage(address, viewport).catch(() => null)
+			// the page's own read result, for every chat (Y.102): a read without items is empty, a failed or non-local read is unreadable
+			if (!cancelled) setLocalHistoryRead(historyReadOf(page))
+			if (!migrated || cancelled || !page || page.source !== 'local') return
 			setLibraryOlderPending(page.olderState === 'pending')
 			const entries = page.items
 				.filter((it) => it.kind === 'text' && typeof it.body === 'string')
@@ -2458,8 +2461,10 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	const [chatOnline, setChatOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine !== false)
 	const [cryptoAttempt, setCryptoAttempt] = useState(0)
 	const [cryptoTick, setCryptoTick] = useState(0)
-	const [localHistoryState, setLocalHistoryState] = useState<{ readable: boolean; empty: boolean }>({ readable: true, empty: false })
-	const chatCryptoAvail = chatCryptoAvailabilityOf(cryptoInputOf({ pgpUpgradeRetry, pgpMigrationRetry, offline: !chatOnline, localHistoryReadable: localHistoryState.readable, localHistoryEmpty: localHistoryState.empty }))
+	const [localHistoryRead, setLocalHistoryRead] = useState<LocalHistoryRead>({ kind: 'not_read' })
+	const localHistorySignal = historySignalOf(localHistoryRead)
+	useEffect(() => () => { chatCryptoDecryptGate.enabled = false }, [])
+	const chatCryptoAvail = chatCryptoAvailabilityOf(cryptoInputOf({ pgpUpgradeRetry, pgpMigrationRetry, offline: !chatOnline, localHistoryReadable: localHistorySignal.localHistoryReadable, localHistoryEmpty: localHistorySignal.localHistoryEmpty }))
 	const chatCryptoNotice = cryptoNoticeOf(chatCryptoAvail, cryptoAttempt)
 	const chatActionsRef = useRef(true)
 	chatActionsRef.current = cryptoActionsEnabled(chatCryptoAvail)
@@ -6836,6 +6841,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		const remoteStored = Array.isArray(myChat.messages) ? myChat.messages : []
 		const remote = await Promise.all(remoteStored.map(async message => {
 			if (message.fileMessage || !message.fileMessageCipher || !privateKey) return message
+			if (!chatCryptoDecryptGate.enabled) return message // Y.81 1: no local manifest decrypt while the chat crypto is not available
 			const fileMessage = await decryptLocalFileManifest(message.fileMessageCipher, privateKey)
 			return fileMessage ? { ...message, fileMessage } : message
 		}))

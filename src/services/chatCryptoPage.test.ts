@@ -2,7 +2,7 @@
  * Y.81 (CA-01 to CA-06) and Y.102 as seen by the chat page (batch 2). SYNTHETIC values only.
  */
 import { chatCryptoAvailabilityOf } from './chatCryptoRetry'
-import { cryptoActionsEnabled, cryptoInputOf, cryptoNoticeOf, nextCryptoRetry } from './chatCryptoPage'
+import { cryptoActionsEnabled, cryptoInputOf, cryptoNoticeOf, historyReadOf, historySignalOf, nextCryptoRetry } from './chatCryptoPage'
 
 const READY = { pgpUpgradeRetry: false, pgpMigrationRetry: false, offline: false, localHistoryReadable: true, localHistoryEmpty: false }
 const page = (over: Partial<typeof READY>) => chatCryptoAvailabilityOf(cryptoInputOf({ ...READY, ...over }))
@@ -123,7 +123,45 @@ describe('Y.81 gate and real history signal on the chat page (R45 blockers)', ()
 
 	it('the local history signal comes from the local library read, not a hard-coded value', () => {
 		expect(chat).not.toContain('localHistoryReadable: true, localHistoryEmpty: false }))')
-		expect(chat).toContain('localHistoryReadable: localHistoryState.readable')
-		expect(chat).toContain("setLocalHistoryState(page && page.source === 'local' ? { readable: true, empty: page.items.length === 0 } : { readable: false, empty: false })")
+		expect(chat).toContain('useEffect(() => () => { chatCryptoDecryptGate.enabled = false }, [])')
+		expect(chat).toContain('localHistoryReadable: localHistorySignal.localHistoryReadable')
+		expect(chat).toContain('setLocalHistoryRead(historyReadOf(page))')
+	})
+})
+
+describe('Y.81 and Y.102: the page history read result, and every private-key decrypt call site (R46)', () => {
+	const { readFileSync } = require('fs') as typeof import('fs')
+	const { join } = require('path') as typeof import('path')
+	const chat = readFileSync(join(__dirname, '..', 'pages', 'chat', 'chat.tsx'), 'utf8')
+
+	it('a local page with items is readable and not empty; an empty local page is readable and empty', () => {
+		expect(historySignalOf(historyReadOf({ source: 'local', items: [{}] }))).toEqual({ localHistoryReadable: true, localHistoryEmpty: false })
+		expect(historySignalOf(historyReadOf({ source: 'local', items: [] }))).toEqual({ localHistoryReadable: true, localHistoryEmpty: true })
+	})
+
+	it('a null page or a non-local source is unreadable, never an empty history', () => {
+		expect(historySignalOf(historyReadOf(null))).toEqual({ localHistoryReadable: false, localHistoryEmpty: false })
+		expect(historySignalOf(historyReadOf({ source: 'remote', items: [] }))).toEqual({ localHistoryReadable: false, localHistoryEmpty: false })
+	})
+
+	it('no read yet is not_read: no history notice is raised, and nothing is claimed as read', () => {
+		expect(historySignalOf({ kind: 'not_read' })).toEqual({ localHistoryReadable: true, localHistoryEmpty: false })
+	})
+
+	it('the page feeds its own read result, and a failed read is unreadable', () => {
+		expect(chat).toContain('setLocalHistoryRead(historyReadOf(page))')
+		expect(chat).toContain('const page = await openLocalChatPage(address, viewport).catch(() => null)')
+		expect(chat).toContain('localHistoryReadable: localHistorySignal.localHistoryReadable')
+		expect(chat).not.toContain('localHistoryReadable: true, localHistoryEmpty: false }))')
+	})
+
+	it('every chat-message decrypt call site is gated: voice fragments, chat file manifests, local file manifests', () => {
+		expect(chat).toContain('if (!chatCryptoDecryptGate.enabled) { setLoading(false); return }')
+		expect(chat).toContain('if (!chatCryptoDecryptGate.enabled) return')
+		expect(chat).toContain('if (!chatCryptoDecryptGate.enabled) return message')
+	})
+
+	it('the live voice frame decrypt is not a chat-message decrypt: it is listed for the owner decision, not gated here', () => {
+		expect(chat).toContain('decryptVoiceFrame(')
 	})
 })

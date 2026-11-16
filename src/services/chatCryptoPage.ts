@@ -59,3 +59,22 @@ export function nextCryptoRetry(retryAttempt: number, transition: 'offline_to_on
  * render from the same gate as the send actions. A disabled gate means no decrypt runs.
  */
 export const chatCryptoDecryptGate: { enabled: boolean } = { enabled: true }
+
+/**
+ * The page's own local history read result (R_db, Y.102). `not_read` is the honest state when the page has not run the local library read for
+ * this chat; it does not claim a read happened, and it raises no history notice (no failure was observed).
+ */
+export type LocalHistoryRead = { kind: 'read'; items: number } | { kind: 'unreadable' } | { kind: 'not_read' }
+
+/** A local library page: a local source with items. A null page or a non-local source is unreadable, never "empty". */
+export function historyReadOf(page: { source: string; items: readonly unknown[] } | null | undefined): LocalHistoryRead {
+	if (!page || page.source !== 'local') return { kind: 'unreadable' }
+	return { kind: 'read', items: page.items.length }
+}
+
+/** The Y.102 inputs: read with items is readable and not empty; read with no items is readable and empty; unreadable is not readable. */
+export function historySignalOf(read: LocalHistoryRead): { localHistoryReadable: boolean; localHistoryEmpty: boolean } {
+	if (read.kind === 'unreadable') return { localHistoryReadable: false, localHistoryEmpty: false }
+	if (read.kind === 'read') return { localHistoryReadable: true, localHistoryEmpty: read.items === 0 }
+	return { localHistoryReadable: true, localHistoryEmpty: false }
+}
