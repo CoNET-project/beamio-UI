@@ -14,6 +14,7 @@ import { storageUnavailableRoute } from '@/services/storageRoute'
 import { registerPendingSender } from '@/services/pendingServerSync'
 import { resumeDeferredWrite } from '@/services/shellRecordStore'
 import { installNativeNoKeyWatcher, openNativeKeyImport } from '@/services/nativeKeyState'
+import { onNativeImportResult } from '@/services/nativeImportResult'
 import { AppEntryNoKeyController } from './appEntryNoKeyController'
 import { NATIVE_WALLET_ESTABLISHED_EVENT } from '@/services/nativeWalletEstablished'
 import { NATIVE_FLOW_PENDING_EVENT } from '@/services/nativeFlowPending'
@@ -128,6 +129,25 @@ export default function AppEntryGate() {
 		return () => {
 			document.removeEventListener('visibilitychange', recheck)
 		}
+	}, [awaitingImportReturn])
+	// Y.95: the native import page reports its result. The result never enters the app by itself: the native wallet is read again with
+	// walletStatus (notifyNativeWalletReady), and the eoa is only remembered as the public address.
+	useEffect(() => {
+		if (!awaitingImportReturn) return
+		return onNativeImportResult(({ code, eoa }) => {
+			if (code === 'ok' || code === 'already_exists') {
+				if (eoa) rememberNativeEoa(eoa)
+				setNativeRecoveryNotice('')
+				notifyNativeWalletReady('')
+				return
+			}
+			if (code === 'cancelled') {
+				setNativeRecoveryNotice('')
+				return
+			}
+			// import_failed and bad_request
+			setNativeRecoveryNotice(tu('native_key_import_failed'))
+		})
 	}, [awaitingImportReturn])
 	const importWalletNative = async () => {
 		setNativeRecoveryNotice('')

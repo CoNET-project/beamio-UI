@@ -28,6 +28,11 @@ export const isNativeQueryReqId = (reqId: unknown): boolean =>
 	typeof reqId === 'number' && reqId >= NATIVE_QUERY_REQ_BASE && reqId < NATIVE_QUERY_REQ_END
 const IMPORT_TIMEOUT_MS = 10_000
 let importSeq = 0
+/** reqId of the last import open (Y.95): a nativeImportResult is accepted only with this reqId. */
+let openedImportReqId: number | null = null
+export function lastOpenedImportReqId(): number | null {
+	return openedImportReqId
+}
 
 export type NativeImportOpenResult = 'opened' | 'not_supported' | 'not_available' | 'failed' | 'unavailable' | 'timeout'
 
@@ -111,6 +116,7 @@ export function openNativeKeyImport(timeoutMs: number = IMPORT_TIMEOUT_MS): Prom
 	if (typeof window === 'undefined') return Promise.resolve('unavailable')
 	importSeq += 1
 	const reqId = IMPORT_REQ_BASE + importSeq
+	openedImportReqId = reqId
 	return new Promise((resolve) => {
 		let timer: ReturnType<typeof setTimeout> | undefined
 		const done = (result: NativeImportOpenResult) => {
