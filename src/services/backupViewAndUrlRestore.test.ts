@@ -31,7 +31,7 @@ function installShell(caps: string[], reply: Record<string, unknown>): void {
 			sent.push(cmd)
 			const send = (payload: Record<string, unknown>) =>
 				setTimeout(() => window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'chatModuleEvent', event: payload } })), 0)
-			if (cmd.type === 'hello') send({ type: 'ready', reqId: cmd.reqId, result: { capabilities: caps } })
+			if (cmd.type === 'hello') send({ type: 'ack', reqId: cmd.reqId, ok: true, result: { capabilities: caps } })
 			else if (cmd.type === NATIVE_BACKUP_VIEW_COMMAND) send({ ...reply, reqId: cmd.reqId })
 		},
 	}
@@ -52,7 +52,7 @@ describe('nativeWalletBackupView', () => {
 	})
 
 	it('sends only type, kind and reqId; an ack without a result is success (nothing comes back)', async () => {
-		installShell([NATIVE_KEYS_CAPABILITY], { type: 'ack', ok: true })
+		installShell([NATIVE_KEYS_CAPABILITY, 'wallet.backup-view.v1'], { type: 'ack', ok: true })
 		await expect(nativeWalletBackupView('recoveryCode')).resolves.toEqual({ ok: true })
 		const cmd = sent.find((c) => c.type === NATIVE_BACKUP_VIEW_COMMAND) as Sent
 		expect(Object.keys(cmd).sort()).toEqual(['kind', 'reqId', 'type'])
@@ -66,7 +66,7 @@ describe('nativeWalletBackupView', () => {
 	})
 
 	it('a refusal from the native layer returns its code', async () => {
-		installShell([NATIVE_KEYS_CAPABILITY], { type: 'ack', ok: false, error: 'user_cancelled' })
+		installShell([NATIVE_KEYS_CAPABILITY, 'wallet.backup-view.v1'], { type: 'ack', ok: false, error: 'user_cancelled' })
 		await expect(nativeWalletBackupView('privateKey')).resolves.toEqual({ ok: false, reason: 'user_cancelled' })
 	})
 })

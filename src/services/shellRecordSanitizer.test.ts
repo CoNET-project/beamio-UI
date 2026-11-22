@@ -2,7 +2,7 @@
  * (plan N): the page-side sanitizer for records that cross the native bridge. The EOA is kept, the PGP private fields are
  * removed from a copy, and the assertion refuses a payload that still has one.
  */
-import { assertNoPgpPrivate, eoaPrivateKeyPresent, pgpPrivatePaths, pgpPublicPaths, sanitizeForBridge, stripPgpPublicFromBeamio, stripWalletFields, utf8ByteLength, walletCopyPaths, withoutPeerPublicArmor } from './shellRecordSanitizer'
+import { assertNoPgpPrivate, eoaPrivateKeyPresent, secretFieldsPresent, pgpPrivatePaths, pgpPublicPaths, sanitizeForBridge, stripPgpPublicFromBeamio, stripWalletFields, utf8ByteLength, walletCopyPaths, withoutPeerPublicArmor } from './shellRecordSanitizer'
 
 const PGP = 'PGP-PRIV-ARMOR-XYZ'
 const record = () => ({
@@ -50,7 +50,7 @@ describe('shell record sanitizer (plan N)', () => {
 	})
 })
 
-describe('shell record sanitizer, additions (8, .5)', () => {
+describe('shell record sanitizer, additions (8, )', () => {
 	it('the chat private armor path is refused and removed from the copy', () => {
 		const rec = { profiles: [{ keyID: 'k', chats: [{ chatData: { privateArmored: 'X', publicArmored: 'P' } }] }] }
 		expect(pgpPrivatePaths(rec)).toEqual(['profiles[].chats[].chatData.privateArmored'])
@@ -113,6 +113,12 @@ describe('shell record sanitizer, additions (8, .5)', () => {
 		expect(eoaPrivateKeyPresent({ profiles: [{ privateKeyArmor: '0x2' }] })).toBe(true)
 		expect(eoaPrivateKeyPresent({ profiles: [{ keyID: 'k' }], mnemonicPhrase: 'w w w' })).toBe(false)
 		expect(eoaPrivateKeyPresent({ profiles: [{ privateKeyArmor: '' }] })).toBe(false)
+	})
+
+	it('rule J: secretFieldsPresent reports both a private key and a plaintext mnemonic as secrets (for stripping); it is no gate', () => {
+		expect(secretFieldsPresent({ profiles: [{ keyID: 'k' }], mnemonicPhrase: 'w w w' })).toEqual({ privateKey: false, mnemonic: true })
+		expect(secretFieldsPresent({ profiles: [{ privateKeyArmor: '0x2' }] })).toEqual({ privateKey: true, mnemonic: false })
+		expect(secretFieldsPresent({ profiles: [{ keyID: 'k' }] })).toEqual({ privateKey: false, mnemonic: false })
 	})
 
 	it('utf8ByteLength counts bytes, not characters', () => {

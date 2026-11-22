@@ -40,7 +40,7 @@ function installShell(ack: Record<string, unknown>, result?: Record<string, unkn
 					() => window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'chatModuleEvent', event: payload } })),
 					0,
 				)
-			if (cmd.type === 'hello') send({ type: 'ready', reqId: cmd.reqId, result: { capabilities: [] } })
+			if (cmd.type === 'hello') send({ type: 'ack', reqId: cmd.reqId, ok: true, result: { capabilities: [] } })
 			else if (cmd.type === NATIVE_NFC_UID_READ_COMMAND) {
 				send({ ...ack, reqId: cmd.reqId })
 				if (result) send(result)

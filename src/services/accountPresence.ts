@@ -1,5 +1,5 @@
 /**
- * Native account presence (Y.89, TS-01 to TS-06). Three answers from the walletStatus and identityPublic state the
+ * Native account presence. Three answers from the walletStatus and identityPublic state the
  * native layer already gives: has (keep the account), confirmed_none (both sides confirmed no wallet), unknown (retry, never
  * onboarding, never a deletion). No extra command.
  */
@@ -9,9 +9,9 @@ export type NativePresence = 'has' | 'confirmed_none' | 'unknown'
 
 export type NativePresenceInput = {
 	/** walletStatus status, or 'unknown' when the snapshot is not known. */
-	ws: 'unlocked' | 'locked' | 'not_ready' | 'no_key' | 'unknown'
-	/** walletStatus notReadyReason, read only on not_ready. */
-	reason?: 'g1_uninitialized' | 'unreadable'
+	ws: 'unlocked' | 'locked' | 'phrase_only' | 'not_ready' | 'no_key' | 'unknown'
+	/** walletStatus notReadyReason, read only on not_ready. key_only: the record is confirmed to hold no valid mnemonic (CONFIRMED_NONE). */
+	reason?: 'g1_uninitialized' | 'key_only' | 'unreadable'
 	/** identityPublic kPresent: true, false, or absent (undefined). */
 	kPresent?: boolean
 	/** The snapshot is not known (native answered not_ready for an unknown snapshot). */
@@ -21,14 +21,20 @@ export type NativePresenceInput = {
 export function nativePresence(input: NativePresenceInput): NativePresence {
 	// TS-05: an unknown snapshot is never a basis for a decision.
 	if (input.snapshotUnknown) return 'unknown'
-	// TS-03: an unlocked or locked wallet (with its account key) is present.
-	if (input.ws === 'unlocked' || input.ws === 'locked') return 'has'
+	// / LK-P7: an unlocked wallet (with its account key) is present. A locked wallet is NOT present on this page: the account is
+	// unknown until it is unlocked (Q5 A; SDK does not change the G2 shape, so the page holds this line).
+	if (input.ws === 'unlocked') return 'has'
+	// a phrase_only answer (the native record holds a mnemonic) with an eoa is present.
+	if (input.ws === 'phrase_only') return 'has'
 	if (input.ws === 'not_ready') {
-		// TS-02: an uninitialised record (G1) is present. TS-04: unreadable, or no reason, is unknown.
-		return input.reason === 'g1_uninitialized' ? 'has' : 'unknown'
+		// TS-02: an uninitialised record (G1) is present. key_only: the record holds no valid mnemonic (CONFIRMED_NONE).
+		// TS-04: unreadable, or no reason, or an unknown reason, is unknown.
+		if (input.reason === 'g1_uninitialized') return 'has'
+		if (input.reason === 'key_only') return 'confirmed_none'
+		return 'unknown'
 	}
 	if (input.ws === 'no_key') {
-		// Y.151 (PNK-01..05) supersedes Y.108 for kPresent true: only kPresent false is confirmed none. kPresent true is the native key
+		// (PNK-01..05) supersedes for kPresent true: only kPresent false is confirmed none. kPresent true is the native key
 		// held (recovery entry only, never none, never retried as unknown here); kPresent missing or not a boolean is unknown.
 		return input.kPresent === false ? 'confirmed_none' : 'unknown'
 	}
@@ -36,7 +42,7 @@ export function nativePresence(input: NativePresenceInput): NativePresence {
 }
 
 /**
- * Onboarding is entered only when the IDB side and the native side are both confirmed_none (Y.85 #3(c)).
+ * Onboarding is entered only when the IDB side and the native side are both confirmed_none (#3(c)).
  * Any unknown is retry_unknown: no onboarding and no deletion. Either side has an account: keep it.
  */
 export function onboardingAllowed(idb: NativePresence, native: NativePresence): boolean {
@@ -44,21 +50,21 @@ export function onboardingAllowed(idb: NativePresence, native: NativePresence): 
 }
 
 /**
- * IndexedDB side (Y.85 input `idb`). A key on the record is present; an empty store is confirmed none. Any other read state
+ * IndexedDB side. A key on the record is present; an empty store is confirmed none. Any other read state
  * (locked, unavailable, unfinished, a record without a key, a corrupt record) is unknown.
  */
 export function idbPresenceOf(signal: IdbSignal): NativePresence {
-	// Y.107 1 and 3: a readable mnemonic is has. A successful read with no mnemonic (an empty store, or an account record without a key)
+	// and 3: a readable mnemonic is has. A successful read with no mnemonic (an empty store, or an account record without a key)
 	// is confirmed none; residues (PGP, history, phase, COMMIT, INTENT, MARK, digest) never block it.
-	if (signal === 'key') return 'has'
+	if (signal === 'valid_mnemonic') return 'has'
 	if (signal === 'absent' || signal === 'account_without_key') return 'confirmed_none'
-	// Y.107 2: a real read error, a lock, not ready, or an entry that cannot be parsed or decrypted is unknown (retry).
+	//a real read error, a lock, not ready, or an entry that cannot be parsed or decrypted is unknown (retry).
 	return 'unknown'
 }
 
 /**
- * Native side (Y.89). `native` is the walletStatus answer; `kPresent` is the identityPublic kPresent of a no_key answer, read by
- * the caller (undefined when the capability identity.kpresent.v1 is not declared, which is unknown, Y.90 4).
+ * Native side. `native` is the walletStatus answer; `kPresent` is the identityPublic kPresent of a no_key answer, read by
+ * the caller.
  */
 export function nativePresenceOfState(native: NativeWalletStatusAnswer, kPresent: boolean | undefined): NativePresence {
 	if (native.status === 'locked' || native.status === 'unlocked') return nativePresence({ ws: native.status, snapshotUnknown: false })
@@ -70,11 +76,11 @@ export function nativePresenceOfState(native: NativeWalletStatusAnswer, kPresent
 /** The walletStatus answer shape the presence reads (queryNativeWalletStatus). Structural, so no native module is imported. */
 export type NativeWalletStatusAnswer =
 	| { status: 'no_key' | 'unknown' }
-	| { status: 'not_ready'; notReadyReason?: 'g1_uninitialized' | 'unreadable' }
-	| { status: 'locked' | 'unlocked'; eoa: string }
+	| { status: 'not_ready'; notReadyReason?: 'g1_uninitialized' | 'key_only' | 'unreadable' }
+	| { status: 'locked' | 'unlocked' | 'phrase_only'; eoa: string }
 
 /**
- * Y.85 account-reset state machine (r3rz). Order: (a) any unknown, a lock or a timeout is retry_unknown (no onboarding, no deletion);
+ * account-reset state machine (r3rz). Order: (a) any unknown, a lock or a timeout is retry_unknown (no onboarding, no deletion);
  * (b) either side has an account: continue_account; (c) both sides confirmed none: cleanup_old only when the user has confirmed the
  * recovery and the new account is established, otherwise onboarding. Entering onboarding deletes nothing.
  */
@@ -96,11 +102,11 @@ export function decideAccountReset(input: AccountResetInput): AccountResetDecisi
 }
 
 /**
- * Y.93 2: which side of the no-record entry a shell may consult, by the capabilities it reports.
- * - `browser`: no native side (IndexedDB only, Y.93 2a).
- * - `legacy_shell`: a shell that does not report identity.native-keys.v1: IndexedDB only, the single compatibility exception (Y.93 2b).
- * - `native_no_kpresent`: native-keys reported, identity.kpresent.v1 not reported: the native side is unknown; no creation entry (Y.93 2c).
- * - `native_full`: both reported: the two-sided judgement of Y.89 and Y.85 (Y.93 2d).
+ *which side of the no-record entry a shell may consult, by the capabilities it reports.
+ * - `browser`: no native side.
+ * - `legacy_shell`: a shell that does not report identity.native-keys.v1: IndexedDB only, the single compatibility exception.
+ * - `native_no_kpresent`: native-keys reported, identity.kpresent.v1 not reported: the native side is unknown; no creation entry.
+ * - `native_full`: both reported: the two-sided judgement of and.
  */
 export type ShellTier = 'browser' | 'legacy_shell' | 'native_no_kpresent' | 'native_full'
 
@@ -111,7 +117,7 @@ export function shellTierOf(input: { shell: boolean; nativeKeys: boolean; kprese
 }
 
 /**
- * The walletStatus answer shape (Y.94 3, PG-05, PG-06). The `status` key is the walletState of the answer: when it is missing the answer
+ * The walletStatus answer shape. The `status` key is the walletState of the answer: when it is missing the answer
  * is malformed and is unknown, never has (so a locked answer without its status key is not a basis for an account). Only a present
  * `locked` or `unlocked` with a valid account key (`eoa:workspace`) is has. `isAddress` checks the EOA (the caller passes ethers).
  */
@@ -120,10 +126,18 @@ export function parseWalletStatusResult(result: unknown, isAddress: (value: stri
 	const r = result as { status?: unknown; accountKey?: unknown; notReadyReason?: unknown }
 	const st = r.status
 	if (st === 'no_key') return { status: 'no_key' }
-	// `notReadyReason` is read only on a not_ready answer; any other value, or none, is unreadable (no field).
+	// `notReadyReason` is read only on a not_ready answer. An unknown reason, or none, is normalised to unreadable.
 	if (st === 'not_ready') {
 		const reason = r.notReadyReason
-		return reason === 'g1_uninitialized' || reason === 'unreadable' ? { status: 'not_ready', notReadyReason: reason } : { status: 'not_ready' }
+		return {
+			status: 'not_ready',
+			notReadyReason: reason === 'g1_uninitialized' || reason === 'key_only' || reason === 'unreadable' ? reason : 'unreadable',
+		}
+	}
+	if (st === 'phrase_only') {
+		const key = typeof r.accountKey === 'string' ? r.accountKey : ''
+		const eoa = key.split(':')[0]?.trim() ?? ''
+		return isAddress(eoa) ? { status: 'phrase_only', eoa: eoa.toLowerCase() } : { status: 'unknown' }
 	}
 	if (st === 'locked' || st === 'unlocked') {
 		const key = typeof r.accountKey === 'string' ? r.accountKey : ''

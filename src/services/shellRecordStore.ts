@@ -17,12 +17,15 @@
  * the change is applied to the record just read, at that record's revision. A field both sides changed keeps the page's edit when it
  * is page-editable; otherwise the store's value. The intent survives a restart and is retried with a backoff that never gives up.
  */
+import { diagnosticCode } from './diagnosticCodes'
+import { NOT_READY_BOUNDED_DELAYS_MS, notReadyClass } from './shellStoreWait'
 import { nextReqId } from './nativeChatRouteRegister'
 import { sendShellRecordCommand, type ShellRecordAnswer } from './shellRecordTransport'
 import { setDeferredLocalOnly } from './pendingServerSync'
 import { publishNativePwaLog } from '../utils/cashTreesNativePwaLog'
 import { assertNoPgpPrivate, BRIDGE_LIMIT_BYTES, canonicalizeProfileKeyIDs, pgpPublicPaths, sanitizeForBridge, shellWalletState, stripWalletFields, utf8ByteLength } from './shellRecordSanitizer'
 import { backoffDelayMs } from './retryBackoff'
+import { isMnemonicPhrase } from './walletCredential'
 import { notifyAppUpdateRequired } from './appUpdatePrompt'
 
 export const SHELL_RECORD_READ = 'shellRecordRead'
@@ -38,10 +41,10 @@ type Loose = Record<string, unknown>
 
 export type ShellRecordRead =
 	| { status: 'absent' }
-	| { status: 'ok'; record: Loose; rev: number; walletFieldsRedacted: boolean }
-	| { status: 'error'; reason: string }
+	| { status: 'ok'; record: Loose; rev: number; walletFieldsRedacted: boolean; copyValidated?: boolean; eoa?: string | null }
+	| { status: 'error'; reason: string; notReady?: { retryable: unknown; notReadyReason?: string; unreadableCause?: string; persistent: boolean } }
 
-export type ShellRecordWrite = { status: 'ok'; rev: number } | { status: 'conflict'; currentRev: number | null } | { status: 'error'; reason: string }
+export type ShellRecordWrite = { status: 'ok'; rev: number } | { status: 'conflict'; currentRev: number | null } | { status: 'error'; reason: string; notReady?: { retryable: unknown; notReadyReason?: string; persistent: boolean } }
 
 /**
  * The copy basis: the revision and the sanitized record the page's copy was built from. It is set by a read that feeds
@@ -79,15 +82,60 @@ export function buildShellRecordWriteCommand(reqId: number, record: Loose, rev: 
 }
 
 /** Reads the answer of a read. Only `ok` with an integer rev, or `absent`, is accepted; anything else is an error. */
+/**
+ * The classification fields of a read answer for the diagnostic line: the envelope field names, the
+ * result code, notReadyReason, retryable and unreadableCause, as categories only. A value that is not a short lower-case code is logged as `other`; no record, key or
+ * free text is ever logged. Returns a leading-space string, or '' when the answer carries none of them.
+ */
+export function shellReadDiagnosticFields(payload: Loose | null): string {
+	const r = (payload && typeof payload === 'object' && payload.result && typeof payload.result === 'object' ? payload.result : null) as Loose | null
+	const top = (payload && typeof payload === 'object' ? payload : {}) as Loose
+	const code = (v: unknown): string | null => (v === undefined || v === null ? null : diagnosticCode(v))
+	const parts: string[] = []
+	// the shape, as field names only: the envelope keys and the result code, so an unrecognised answer is visible in the log
+	const envelopeKeys = Object.keys(top).filter((k) => /^[A-Za-z_]{1,30}$/.test(k)).sort().join(',')
+	if (envelopeKeys) parts.push(`envelope=${envelopeKeys}`)
+	const resultCode = code(r?.code)
+	if (resultCode !== null) parts.push(`resultCode=${resultCode}`)
+	const notReady = code(r?.notReadyReason ?? top.notReadyReason)
+	const cause = code(r?.unreadableCause ?? top.unreadableCause)
+	const retryable = typeof (r?.retryable ?? top.retryable) === 'boolean' ? String(r?.retryable ?? top.retryable) : null
+	if (notReady !== null) parts.push(`notReadyReason=${notReady}`)
+	if (retryable !== null) parts.push(`retryable=${retryable}`)
+	if (cause !== null) parts.push(`unreadableCause=${cause}`)
+	return parts.length ? ' ' + parts.join(' ') : ''
+}
+
+/**
+ * The retryable flag of a superseded envelope not_ready: the envelope's boolean when present; otherwise by the reason's
+ * meaning (storage_locked and ambiguous_accounts are not retryable; g1_uninitialized is); otherwise bounded (true). Pure.
+ */
+export function legacyRetryable(payload: Loose): boolean {
+	if (typeof payload.retryable === 'boolean') return payload.retryable
+	if (payload.notReadyReason === 'storage_locked' || payload.notReadyReason === 'ambiguous_accounts') return false
+	return true
+}
+
 export function parseShellRecordRead(payload: Loose | null): ShellRecordRead {
 	//2: the ack envelope. ok:false is an envelope-level failure (error = the code). ok:true carries the answer in
 	// result.code: ok (with record), absent, error (with sub), migrating. Anything else, or an unknown code, fails closed.
 	if (!payload || payload.type !== 'ack') return { status: 'error', reason: 'native_unavailable' }
+	// / an envelope-level not_ready is not a valid shape.
+	// It carries no class, so it is an explicit error (zero class, notReadyClass), never the endless retry.
+	// (compatibility, the superseded form): retryable is taken from the envelope when it is a boolean; without it the answer is
+	// bounded (re-reads, then the terminal). Never an endless retry, never a data clear, a key change or an automatic create.
+	if (payload.ok !== true && payload.error === 'not_ready') return { status: 'error', reason: 'not_ready', notReady: { retryable: legacyRetryable(payload), notReadyReason: typeof payload.notReadyReason === 'string' ? payload.notReadyReason : undefined, persistent: false } }
+	// the superseded persistent form: the terminal; its notReadyReason is kept for the diagnostic when the envelope carries it
+	if (payload.ok !== true && payload.error === 'not_ready_persistent') return { status: 'error', reason: 'not_ready_persistent', notReady: { retryable: legacyRetryable(payload), notReadyReason: typeof payload.notReadyReason === 'string' ? payload.notReadyReason : undefined, persistent: true } }
 	if (payload.ok !== true) return { status: 'error', reason: typeof payload.error === 'string' ? payload.error : 'native_unavailable' }
 	const result = payload.result
 	if (!result || typeof result !== 'object') return { status: 'error', reason: 'bad_answer' }
 	const r = result as Loose
 	if (r.code === 'absent') return { status: 'absent' }
+	// / v4: not_ready is result.code under ok:true (with notReadyReason, retryable, unreadableCause); not_ready_persistent is
+	// result.code "error" with sub "not_ready_persistent". Both carry the class fields for the ceiling (notReadyClass).
+	if (r.code === 'not_ready') return { status: 'error', reason: 'not_ready', notReady: { retryable: r.retryable, notReadyReason: typeof r.notReadyReason === 'string' ? r.notReadyReason : undefined, unreadableCause: typeof r.unreadableCause === 'string' ? r.unreadableCause : undefined, persistent: false } }
+	if (r.code === 'error' && r.sub === 'not_ready_persistent') return { status: 'error', reason: 'not_ready_persistent', notReady: { retryable: r.retryable, notReadyReason: typeof r.notReadyReason === 'string' ? r.notReadyReason : undefined, unreadableCause: typeof r.unreadableCause === 'string' ? r.unreadableCause : undefined, persistent: true } }
 	if (r.code === 'error') return { status: 'error', reason: typeof r.sub === 'string' ? r.sub : 'error' }
 	if (r.code === 'ok') {
 		const record = r.record
@@ -101,23 +149,69 @@ export function parseShellRecordRead(payload: Loose | null): ShellRecordRead {
 		}
 		// a normal read always carries the W-class fields. A record without them is an error, never absent.
 		// the record state; a non-ok state is an error (a hold), never absent.
-		const state = shellWalletState(record)
-		if (state !== 'ok') return { status: 'error', reason: state }
+		// draft 21.6/21.8: copyValidated and eoa are read from the result (not the record). Only a boolean true counts; eoa is lower-case.
+		// A native-validated copy (G0) has no EOA private key in it (21.1): its account is checked by validatedCopyAccount, not here.
+		const copyValidated = r.copyValidated === true
+		const eoa = typeof r.eoa === 'string' && r.eoa.trim() ? r.eoa.trim().toLowerCase() : null
+		if (!copyValidated) {
+			const state = shellWalletState(record)
+			if (state !== 'ok') return { status: 'error', reason: state }
+		} else if (!Array.isArray((record as Loose).profiles)) {
+			return { status: 'error', reason: 'wallet_fields_missing' }
+		}
 		// walletFieldsRedacted is set only by an older native side; the current side does not send it.
-		return { status: 'ok', record: canonicalizeProfileKeyIDs(record as Loose), rev, walletFieldsRedacted: r.walletFieldsRedacted === true }
+		// the two fields are present only when the native side validated the copy (an unvalidated read keeps its shape).
+		return {
+			status: 'ok',
+			record: canonicalizeProfileKeyIDs(record as Loose),
+			rev,
+			walletFieldsRedacted: r.walletFieldsRedacted === true,
+			...(copyValidated ? { copyValidated, eoa } : {}),
+		}
 	}
 	return { status: 'error', reason: typeof r.code === 'string' ? r.code : 'bad_answer' }
 }
 
 /** Reads the answer of a write `ok` with the new rev, or `conflict` with currentRev, or an error code. */
 export function parseShellRecordWrite(payload: Loose | null): ShellRecordWrite {
+	// HC-LOCK L-WRITE: an envelope-level locked is the native lock: named so the storage read classifies it as native_locked.
+	if (payload && payload.type === 'ack' && payload.ok === false && payload.error === 'locked') return { status: 'error', reason: 'shell_record_locked' }
+	// a write answers not_ready only (no persistent form). The superseded envelope not_ready follows (legacyRetryable).
+	if (payload && payload.type === 'ack' && payload.ok === false && payload.error === 'not_ready') {
+		return { status: 'error', reason: 'not_ready', notReady: { retryable: legacyRetryable(payload), notReadyReason: typeof payload.notReadyReason === 'string' ? payload.notReadyReason : undefined, persistent: false } }
+	}
+	// an envelope error keeps its code: a refusal is then
+	// never retried (writeFailureDisposition). An envelope without a string error is native_unavailable.
+	if (payload && payload.type === 'ack' && payload.ok === false) {
+		return { status: 'error', reason: typeof payload.error === 'string' && payload.error.length > 0 ? payload.error : 'native_unavailable' }
+	}
 	if (!payload || payload.type !== 'ack' || payload.ok !== true) return { status: 'error', reason: 'native_unavailable' }
 	const result = payload.result
 	if (!result || typeof result !== 'object') return { status: 'error', reason: 'bad_answer' }
 	const r = result as Loose
 	if (r.code === 'ok' && typeof r.rev === 'number' && Number.isInteger(r.rev)) return { status: 'ok', rev: r.rev }
 	if (r.code === 'conflict') return { status: 'conflict', currentRev: typeof r.currentRev === 'number' ? r.currentRev : null }
+	if (r.code === 'not_ready') {
+		return { status: 'error', reason: 'not_ready', notReady: { retryable: r.retryable, notReadyReason: typeof r.notReadyReason === 'string' ? r.notReadyReason : undefined, persistent: false } }
+	}
 	return { status: 'error', reason: typeof r.code === 'string' ? r.code : 'bad_answer' }
+}
+
+/** The not_ready failure reason a write (or the probe read) carries into the deferred retry: the class of the ceiling. */
+export function writeNotReadyReason(parsed: { reason: string; notReady?: { retryable: unknown } }): string | null {
+	if (parsed.reason !== 'not_ready') return null
+	return `shell_record_not_ready_${notReadyClass({ persistent: false, retryable: parsed.notReady?.retryable })}`
+}
+
+/**
+ * The write's not_ready step: the f-th consecutive not_ready failure (f from 1) schedules re-write f after
+ * NOT_READY_BOUNDED_DELAYS_MS[f-1] while the class is bounded and f is within the five re-writes; otherwise the explicit error (the
+ * intent is kept, the user retries). Pure.
+ */
+export function notReadyWriteStep(f: number, cls: 'persistent' | 'bounded' | 'zero'): { kind: 'retry'; delayMs: number } | { kind: 'explicit' } {
+	if (cls !== 'bounded') return { kind: 'explicit' }
+	if (!Number.isInteger(f) || f < 1 || f > NOT_READY_BOUNDED_DELAYS_MS.length) return { kind: 'explicit' }
+	return { kind: 'retry', delayMs: NOT_READY_BOUNDED_DELAYS_MS[f - 1] }
 }
 
 /**
@@ -127,7 +221,11 @@ export function parseShellRecordWrite(payload: Loose | null): ShellRecordWrite {
  */
 export function shellRecordAsWalletRecord(r: ShellRecordRead): Loose | null {
 	if (r.status === 'absent') return null
-	if (r.status !== 'ok') throw new Error(`shell_record_${r.reason}`)
+	if (r.status !== 'ok') {
+		// the not_ready class travels in the message (shell_record_not_ready_<class>), so the storage read maps it to its ceiling
+		if (r.reason === 'not_ready' && r.notReady) throw new Error(`shell_record_not_ready_${notReadyClass({ persistent: r.notReady.persistent, retryable: r.notReady.retryable })}`)
+		throw new Error(`shell_record_${r.reason}`)
+	}
 	if (r.walletFieldsRedacted) throw new Error('shell_record_wallet_fields_redacted')
 	// the record state; only ok is entered. needs_native_recovery and wallet_fields_missing are holds, never onboarding.
 	const state = shellWalletState(r.record)
@@ -170,7 +268,7 @@ export type DeltaOp =
 	| { k: 'rmU'; p: string[]; c: string }
 
 /** A write the store did not take: the page's editable delta, the full copy (memory only, for a first write) and the attempts. */
-type DeferredWrite = { ours: Loose | null; ops: DeltaOp[]; rev: number | null; attempts: number; refused?: string }
+type DeferredWrite = { ours: Loose | null; ops: DeltaOp[]; rev: number | null; attempts: number; refused?: string; notReady?: number; exhausted?: boolean }
 
 const DELTA_VERSION = 1
 
@@ -179,10 +277,32 @@ let deferredTimer: ReturnType<typeof setTimeout> | null = null
 let retrying = false
 const WRITE_RETRY_MS = 3000
 /**
- * (-confirmed by the interface owner): a write refused for these codes is a failure. It is not success, the intent
+ *a write refused for these codes is a failure. It is not success, the intent
  * is not retried (no silent field drop and no automatic retry), and no other channel is used. Only the code is recorded.
  */
-const WRITE_REFUSAL_CODES: ReadonlySet<string> = new Set(['key_shaped_content', 'wallet_copy_not_approved'])
+const WRITE_REFUSAL_CODES: ReadonlySet<string> = new Set([
+	'key_shaped_content',
+	'wallet_copy_not_approved',
+	// envelope-level refusals: a bad request, a payload with a PGP private key and
+	// an untrusted origin are refusals of the request, never retried on any path
+	'bad_request',
+	'pgp_private_in_payload',
+	'origin_refused',
+])
+/**
+ * How a failed write is handled: 'refused' (a refusal of the request: kept, never retried), 'not_ready' (the
+ * not_ready ceiling), or 'retry' (the ordinary backoff). Pure.
+ */
+export function writeFailureDisposition(reason: string): 'refused' | 'not_ready' | 'retry' {
+	if (WRITE_REFUSAL_CODES.has(reason)) return 'refused'
+	if (reason.startsWith('shell_record_not_ready_')) return 'not_ready'
+	return 'retry'
+}
+
+/** Whether a write failure reason is a refusal of the request (never retried). Pure. */
+export function isWriteRefusalCode(code: string): boolean {
+	return WRITE_REFUSAL_CODES.has(code)
+}
 
 const isPlain = (v: unknown): v is Loose => v !== null && typeof v === 'object' && !Array.isArray(v)
 
@@ -369,7 +489,7 @@ function persistDeferred(): void {
 	if (deferred !== null) {
 		if (s) {
 			try {
-				s.setItem(DEFERRED_WRITE_KEY, JSON.stringify({ v: DELTA_VERSION, rev: deferred.rev, ops: deferred.ops, attempts: deferred.attempts, refused: deferred.refused ?? null }))
+				s.setItem(DEFERRED_WRITE_KEY, JSON.stringify({ v: DELTA_VERSION, rev: deferred.rev, ops: deferred.ops, ours: deferred.ours ?? null, attempts: deferred.attempts, refused: deferred.refused ?? null, notReady: deferred.notReady ?? 0, exhausted: deferred.exhausted ?? false }))
 			} catch {
 				// Quota: the intent is kept in memory only, and the page shows the pending notice. A stale stored copy is removed.
 				heldInMemoryOnly = true
@@ -398,14 +518,17 @@ function loadDeferred(): DeferredWrite | null {
 	try {
 		const raw = s.getItem(DEFERRED_WRITE_KEY)
 		if (!raw) return null
-		const o = JSON.parse(raw) as { v?: unknown; rev?: unknown; ops?: unknown; attempts?: unknown; refused?: unknown }
+		const o = JSON.parse(raw) as { v?: unknown; rev?: unknown; ops?: unknown; ours?: unknown; attempts?: unknown; refused?: unknown; notReady?: unknown; exhausted?: unknown }
 		if (o.v !== DELTA_VERSION || !Array.isArray(o.ops)) return null
 		return {
-			ours: null,
+			// the page's full copy of a first write survives a restart (it is the sanitized copy: no wallet field, no PGP private)
+			ours: o.ours && typeof o.ours === 'object' && !Array.isArray(o.ours) ? (o.ours as Loose) : null,
 			ops: o.ops as DeltaOp[],
 			rev: typeof o.rev === 'number' ? o.rev : null,
 			attempts: typeof o.attempts === 'number' ? o.attempts : 0,
 			...(typeof o.refused === 'string' && WRITE_REFUSAL_CODES.has(o.refused) ? { refused: o.refused } : {}),
+			...(typeof o.notReady === 'number' ? { notReady: o.notReady } : {}),
+			...(o.exhausted === true ? { exhausted: true } : {}),
 		}
 	} catch {
 		return null
@@ -432,6 +555,21 @@ function mergeIntentOps(a: DeltaOp[], b: DeltaOp[]): DeltaOp[] {
 }
 
 /** Keeps the page's change as the intent, merged with the intent it follows. */
+/**
+ * A not_ready failure of a direct write: the intent is deferred and the not_ready ceiling runs on it (five re-writes on
+ * 0.5, 1, 2, 4, 8 s for a retryable answer; the explicit error at once for a non-retryable one). The first timer uses the ceiling delay.
+ */
+function deferNotReadyWrite(ops: DeltaOp[], ours: Loose | null, reason: string): void {
+	deferWrite(ops, ours)
+	const d = deferred
+	if (d !== null) notReadyFailure(d, reason.slice('shell_record_not_ready_'.length) as 'persistent' | 'bounded' | 'zero')
+	if (deferredTimer !== null) {
+		clearTimeout(deferredTimer)
+		deferredTimer = null
+	}
+	scheduleDeferredRetry()
+}
+
 function deferWrite(ops: DeltaOp[], ours: Loose | null): void {
 	// A refused intent stays refused when more changes are merged into it: only a successful write clears the refusal.
 	deferred = {
@@ -451,20 +589,53 @@ function clearDeferred(pending: DeferredWrite): void {
 	persistDeferred()
 }
 
+/** A first write waiting for the native key (the gate is closed): no timer, no counted attempt. It is retried when the gate opens. */
+function waitingForNativeKey(pending: DeferredWrite): boolean {
+	return pending.ours !== null && basisRev === 0 && !firstWriteAllowed(pending.ours)
+}
+
 function scheduleDeferredRetry(): void {
 	if (deferredTimer !== null || retrying || deferred === null) return
+	if (waitingForNativeKey(deferred)) return
 	//a refused intent is not retried automatically (on a timer, after a restart or after a read).
 	if (deferred.refused !== undefined) return
-	const delay = backoffDelayMs(WRITE_RETRY_MS, deferred.attempts)
+	// the not_ready ceiling is exhausted: the explicit error; the user's retry starts a new ladder (retryDeferredWriteNow)
+	if (deferred.exhausted) return
+	const delay = deferred.notReady
+		? NOT_READY_BOUNDED_DELAYS_MS[Math.min(deferred.notReady, NOT_READY_BOUNDED_DELAYS_MS.length) - 1]
+		: backoffDelayMs(WRITE_RETRY_MS, deferred.attempts)
 	deferredTimer = setTimeout(() => {
 		deferredTimer = null
 		void retryDeferredWrite()
 	}, delay)
 }
 
+/** A not_ready failure of the deferred write: bounded re-writes on the ladder, then the explicit error. Nothing is cleared. */
+/**
+ * The state after one more not_ready write failure: the consecutive count rises by one; a bounded class within the five
+ * re-writes schedules the next (its delay), otherwise the explicit error (exhausted). Never a persistent class for a write. Pure.
+ */
+export function nextNotReadyState(prevCount: number, cls: 'persistent' | 'bounded' | 'zero'): { count: number; step: { kind: 'retry'; delayMs: number } | { kind: 'explicit' } } {
+	const count = prevCount + 1
+	return { count, step: notReadyWriteStep(count, cls) }
+}
+
+function notReadyFailure(pending: DeferredWrite, cls: 'persistent' | 'bounded' | 'zero'): void {
+	if (deferred !== pending) return
+	const { count: f, step } = nextNotReadyState(pending.notReady ?? 0, cls)
+	if (step.kind === 'retry') {
+		deferred = { ...pending, notReady: f }
+		publishNativePwaLog('info', `[shellRecord] write not_ready (bounded): re-write ${f} of ${NOT_READY_BOUNDED_DELAYS_MS.length} in ${step.delayMs} ms`)
+	} else {
+		deferred = { ...pending, notReady: f, exhausted: true }
+		publishNativePwaLog('warn', `[shellRecord] write not_ready (${cls}): explicit error; the intent is kept, nothing cleared or replaced; the user retries`)
+	}
+	persistDeferred()
+}
+
 function countAttempt(pending: DeferredWrite): void {
 	if (deferred !== pending) return
-	deferred = { ...pending, attempts: pending.attempts + 1 }
+	deferred = { ...pending, attempts: pending.attempts + 1, notReady: 0 }
 	persistDeferred()
 }
 
@@ -477,6 +648,16 @@ export function resumeDeferredWrite(): void {
 	scheduleDeferredRetry()
 }
 
+/** The deferred write retried now (the entry calls it once the native sync is confirmed; tests use it as the timer's effect). */
+export async function retryDeferredWriteNow(): Promise<void> {
+	// the user's retry after an explicit not_ready error: a fresh ladder (the intent is unchanged)
+	if (deferred !== null && deferred.exhausted) {
+		deferred = { ...deferred, exhausted: false, notReady: 0 }
+		persistDeferred()
+	}
+	await retryDeferredWrite()
+}
+
 async function retryDeferredWrite(): Promise<void> {
 	const pending = deferred ?? loadDeferred()
 	if (!pending) return
@@ -486,6 +667,17 @@ async function retryDeferredWrite(): Promise<void> {
 		// A probe read: it completes a read and the answer is merged here; it does not move the copy basis. Raw: the intent is applied here.
 		const read = await shellRecordRead({ probe: true, raw: true, source: 'deferred' })
 		if (read.status !== 'ok' && read.status !== 'absent') {
+			if (read.reason === 'not_ready') {
+				notReadyFailure(pending, notReadyClass({ persistent: false, retryable: read.notReady?.retryable }))
+				return
+			}
+			if (WRITE_REFUSAL_CODES.has(read.reason)) {
+				if (deferred === pending) {
+					deferred = { ...pending, attempts: pending.attempts + 1, refused: read.reason }
+					persistDeferred()
+				}
+				return
+			}
 			countAttempt(pending)
 			return
 		}
@@ -507,10 +699,16 @@ async function retryDeferredWrite(): Promise<void> {
 				countAttempt(pending)
 				return
 			}
+			// the gate is closed: nothing is written and the attempt is not counted (retried when the gate opens)
+			if (!firstWriteAllowed(pending.ours)) return
 			payload = pending.ours
 			rev = 0
 		}
 		const out = await writeAt(payload, rev)
+		if (out.status === 'failed' && writeFailureDisposition(out.reason) === 'not_ready') {
+			notReadyFailure(pending, out.reason.slice('shell_record_not_ready_'.length) as 'persistent' | 'bounded' | 'zero')
+			return
+		}
 		if (out.status === 'ok') {
 			// the copy basis does not move here. The page copy still derives from the basis it was made on; moving it to the
 			// merged record would make the next save treat the stale copy's values as page changes and overwrite the imported ones.
@@ -518,7 +716,7 @@ async function retryDeferredWrite(): Promise<void> {
 			clearDeferred(pending)
 			return
 		}
-		if (out.status === 'failed' && WRITE_REFUSAL_CODES.has(out.reason)) {
+		if (out.status === 'failed' && writeFailureDisposition(out.reason) === 'refused') {
 			//the store refused the write. A failure, never a success; the intent is kept with the code and not retried.
 			if (deferred === pending) {
 				deferred = { ...pending, attempts: pending.attempts + 1, refused: out.reason }
@@ -575,6 +773,8 @@ async function writeAt(payload: Loose, rev: number): Promise<WriteOutcome> {
 	if (parsed.status === 'ok') return { status: 'ok', rev: parsed.rev }
 	if (parsed.status === 'conflict') return { status: 'conflict' }
 	if (parsed.reason === 'migrating') return { status: 'migrating' }
+	const notReady = writeNotReadyReason(parsed)
+	if (notReady !== null) return { status: 'failed', reason: notReady }
 	return { status: 'failed', reason: parsed.reason }
 }
 
@@ -602,7 +802,7 @@ export async function shellRecordRead(options: { probe?: boolean; raw?: boolean;
 	const parsed = parseShellRecordRead(answer.payload)
 	publishNativePwaLog(
 		parsed.status === 'error' ? 'warn' : 'info',
-		`[shellRecordRead] returned source=${src} status=${parsed.status}${parsed.status === 'error' ? ` reason=${parsed.reason}` : ''} ms=${Date.now() - sentAt}`,
+		`[shellRecordRead] returned source=${src} status=${parsed.status}${parsed.status === 'error' ? ` reason=${diagnosticCode(parsed.reason)}` : ''}${shellReadDiagnosticFields(answer.payload)} ms=${Date.now() - sentAt}`,
 	)
 	if (parsed.status === 'ok' || parsed.status === 'absent') {
 		// A read that answered ok or absent completes the read: a write may follow.
@@ -704,6 +904,7 @@ async function applyRemovalsNow(removals: DeltaOp[]): Promise<boolean> {
 			noteApplied(removals)
 			return true
 		}
+		if (out.status === 'failed' && out.reason.startsWith('shell_record_not_ready_')) deferNotReadyWrite(removals, null, out.reason)
 		if (out.status === 'failed') throw new Error(out.reason)
 	}
 	deferWrite(removals, null)
@@ -717,6 +918,21 @@ async function applyRemovalsNow(removals: DeltaOp[]): Promise<boolean> {
  * intent and resolves; it is sent later on the record just read. Throws `not_read` before a read that feeds the copy, and the error code
  * for a refusal that is not a deferral.
  */
+/**
+ * 2026-11-20: a first write that creates the native record (the store is absent) waits for the native pwaWalletSync of the same
+ * account to be confirmed ok. Until then the page's copy has no key on the native side (the write strips the wallet fields), so a record
+ * created now would hold no key. The gate is in memory: it opens once per session, on the sync's confirmation.
+ */
+let firstWriteKeyEoa: string | null = null
+export function allowFirstNativeWrite(eoa: string): void {
+	firstWriteKeyEoa = String(eoa ?? '').trim().toLowerCase() || null
+}
+function firstWriteAllowed(rec: Loose): boolean {
+	if (firstWriteKeyEoa === null) return false
+	const first = Array.isArray(rec.profiles) ? (rec.profiles[0] as Loose | undefined) : undefined
+	return typeof first?.keyID === 'string' && first.keyID.trim().toLowerCase() === firstWriteKeyEoa
+}
+
 export async function shellRecordWrite(record: Loose): Promise<void> {
 	if (basisRev === null) throw new Error('not_read')
 	const ours = sanitizedCopy(record)
@@ -729,7 +945,11 @@ export async function shellRecordWrite(record: Loose): Promise<void> {
 		return
 	}
 	if (basisRev === 0) {
-		// The first write of a record (the store is absent): the page's full copy creates it.
+		// The first write of a record (the store is absent): the page's full copy creates it, once the native key is confirmed (see the gate).
+		if (!firstWriteAllowed(ours)) {
+			deferWrite([], ours)
+			return
+		}
 		const out = await writeAt(ours, 0)
 		if (out.status === 'ok') {
 			basisRev = out.rev
@@ -740,6 +960,7 @@ export async function shellRecordWrite(record: Loose): Promise<void> {
 			persistDeferred()
 			return
 		}
+		if (out.status === 'failed' && out.reason.startsWith('shell_record_not_ready_')) deferNotReadyWrite([], ours, out.reason)
 		if (out.status === 'failed') throw new Error(out.reason)
 		deferWrite([], ours)
 		return
@@ -777,6 +998,12 @@ export async function shellRecordWrite(record: Loose): Promise<void> {
 		persistDeferred()
 		return
 	}
+	// HC-LOCK L-WRITE: a locked write is not written and the change is kept (deferred), to be written after the unlock.
+	if (out.status === 'failed' && out.reason === 'shell_record_locked') {
+		deferWrite(writeOps, null)
+		throw new Error(out.reason)
+	}
+	if (out.status === 'failed' && out.reason.startsWith('shell_record_not_ready_')) deferNotReadyWrite(writeOps, null, out.reason)
 	if (out.status === 'failed') throw new Error(out.reason)
 	deferWrite(writeOps, null)
 }
@@ -803,4 +1030,99 @@ export function resetShellRecordForTest(keepStorage = false): void {
 	deferredTimer = null
 	deferred = null
 	if (!keepStorage) storageOrNull()?.removeItem(DEFERRED_WRITE_KEY)
+}
+
+/**
+ * Draft 22.3: the isolation of a key-only page copy, before the page writes a new account. The request is {type, reqId, keyID}. The answer is
+ * ok with quarantined true and an auditRef, or a refusal, or unknown (a read or write failure, or a native command that is not supported).
+ * Nothing is deleted by this command; the old copy is renamed and kept, with an audit entry (native side).
+ */
+export const SHELL_RECORD_QUARANTINE_KEY_ONLY = 'shellRecordQuarantineKeyOnly'
+export type KeyOnlyQuarantine =
+	| { status: 'quarantined'; auditRef: string }
+	| { status: 'refused'; reason: string }
+	| { status: 'unknown'; reason: string }
+
+export function buildQuarantineKeyOnlyCommand(reqId: number, keyID: string): { type: string; reqId: number; keyID: string } {
+	return { type: SHELL_RECORD_QUARANTINE_KEY_ONLY, reqId, keyID }
+}
+
+/** Pure: maps the transport answer of the isolation command to its outcome. Anything not clearly ok or refused is unknown (fail closed). */
+export function parseQuarantineAnswer(answer: ShellRecordAnswer): KeyOnlyQuarantine {
+	if (answer.kind !== 'payload') return { status: 'unknown', reason: transportReason(answer) }
+	const p = answer.payload as Loose | null
+	if (!p || p.type !== 'ack') return { status: 'unknown', reason: 'native_unavailable' }
+	if (p.ok !== true) return { status: 'unknown', reason: typeof p.error === 'string' ? p.error : 'native_unavailable' }
+	const r = p.result as Loose | null
+	if (!r || typeof r !== 'object') return { status: 'unknown', reason: 'bad_answer' }
+	if (r.code === 'ok' && r.quarantined === true && typeof r.auditRef === 'string' && r.auditRef.trim()) {
+		return { status: 'quarantined', auditRef: r.auditRef }
+	}
+	if (r.code === 'refused') return { status: 'refused', reason: typeof r.reason === 'string' ? r.reason : 'refused' }
+	return { status: 'unknown', reason: typeof r.reason === 'string' ? r.reason : 'bad_answer' }
+}
+
+/** Sends the isolation command for one key-only copy. `send` is injectable for the tests; the app uses the shell record transport. */
+export async function quarantineKeyOnlyShellRecord(
+	keyID: string,
+	send: (cmd: { type: string; reqId: number; keyID: string }, timeoutMs: number) => Promise<ShellRecordAnswer> = (cmd, t) => sendShellRecordCommand(cmd, t),
+): Promise<KeyOnlyQuarantine> {
+	const id = (keyID || '').trim().toLowerCase()
+	if (!/^0x[0-9a-f]{40}$/.test(id)) return { status: 'refused', reason: 'bad_key_id' }
+	const answer = await send(buildQuarantineKeyOnlyCommand(nextReqId(), id), TIMEOUT_MS)
+	return parseQuarantineAnswer(answer)
+}
+
+/**
+ * Draft 21.6 to 21.8: the page routes to /home on the native check only when the read carries copyValidated true (a boolean),
+ * eoa equal to the account keyID (lower case), and a mnemonic field in the record. The page never derives the key here.
+ * Pure. The record's W-class fields are not the marker.
+ */
+export function validatedCopyAccount(read: { copyValidated?: boolean; eoa?: string | null; record: Loose }): boolean {
+	if (read.copyValidated !== true) return false
+	const profiles = read.record.profiles
+	const first = Array.isArray(profiles) ? profiles[0] : undefined
+	const keyID = isPlain(first) && typeof first.keyID === 'string' ? first.keyID.trim().toLowerCase() : ''
+	if (!keyID || !read.eoa || read.eoa !== keyID) return false
+	// rule B (2026-11-17): the copy's mnemonic must pass the BIP-39 checksum (no derivation here); recoveryWords alone do not count.
+	// The keyID is checked against the native walletEoaAddress (read.eoa) above.
+	const phrase = typeof read.record.mnemonicPhrase === 'string' ? read.record.mnemonicPhrase.trim() : ''
+	return isMnemonicPhrase(phrase)
+}
+
+/**
+ * Draft 22.4: a fresh account write over a key-only copy (native no_key, no mnemonic, both sides confirmed) isolates the old copy first.
+ * `isKeyOnly` is the page's confirmation of the copy. A stored record that is not key-only is left to the editable-field path (no
+ * full write). Any read failure or refusal throws before anything is written. Returns whether the old copy was isolated.
+ */
+export async function prepareShellFreshWrite(
+	isKeyOnly: (rec: Loose) => boolean,
+	newKeyID: string | undefined,
+	send?: (cmd: { type: string; reqId: number; keyID: string }, timeoutMs: number) => Promise<ShellRecordAnswer>,
+): Promise<{ isolated: boolean }> {
+	// a probe: the decision does not move the copy basis (the isolation sets it when the old copy is gone).
+	const current = await shellRecordRead({ probe: true, source: 'probe' })
+	if (current.status === 'absent') return { isolated: false }
+	if (current.status !== 'ok') throw new Error(`fresh_write_read_${current.reason}`)
+	if (!isKeyOnly(current.record)) return { isolated: false }
+	const profiles = current.record.profiles
+	const first = Array.isArray(profiles) ? profiles[0] : undefined
+	const keyID = isPlain(first) && typeof first.keyID === 'string' ? first.keyID : ''
+	// the account being written is the one the copy holds (a restore of the same account): nothing is a new account, nothing is isolated.
+	if (newKeyID && keyID.trim().toLowerCase() === newKeyID.trim().toLowerCase()) return { isolated: false }
+	const out = await quarantineKeyOnlyShellRecord(keyID, send)
+	if (out.status !== 'quarantined') {
+		publishNativePwaLog('warn', `[shellRecord] key-only copy not isolated (${out.status}: ${out.status === 'refused' ? out.reason : 'retry'}); nothing written`)
+		throw new Error(`key_only_not_isolated_${out.status}`)
+	}
+	publishNativePwaLog('info', '[shellRecord] key-only copy isolated (audit written); the account is written as a new record')
+	// the old copy is gone from the store: the next write is the page's full copy at revision 0 (the store is absent).
+	basisRev = 0
+	basisRecord = null
+	blocked = false
+	ownEdits.clear()
+	ownRemovals.clear()
+	deferred = null
+	persistDeferred()
+	return { isolated: true }
 }

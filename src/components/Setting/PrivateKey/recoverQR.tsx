@@ -7,7 +7,8 @@ import { RegenerateRecover } from '@/services/beamio'
 import { useDaemonContext } from '@/providers/DaemonProvider'
 import { CoNET_Data } from '@/utils/globals'
 import { isShellContext } from '@/services/shellContext'
-import { nativeWalletBackupView } from '@/services/nativeSigning'
+import { backupViewErrorKey, nativeWalletBackupView } from '@/services/nativeSigning'
+import { tu } from '@/locale/beamioLocale'
 import RecoveryQRScreen from '@/pages/Home/RecoveryQRScreen'
 import { useNavigate } from 'react-router-dom'
 type Result = {
@@ -39,7 +40,7 @@ export default function RecoverQRReveal({ close }: Props) {
     if (isShellContext()) {
  // Shell: the recovery code is shown by the native layer; the page holds no account key.
       const out = await nativeWalletBackupView('recoveryCode')
-      if (!out.ok) setErrorText(out.reason)
+      if (!out.ok) setErrorText(tu(backupViewErrorKey(out.reason)))
       return out.ok
     }
     const temp = CoNET_Data

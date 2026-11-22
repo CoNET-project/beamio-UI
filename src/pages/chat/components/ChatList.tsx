@@ -21,7 +21,7 @@ import { claimedVoiceCallerAddress, claimedVoiceCallerTag, formatLookedUpBeamioT
 import { tu } from '@/locale/beamioLocale'
 import { chatShareLinkListPreview } from '@/utils/chatShareLinkPreview'
 import { chatGenericLinkListPreview } from '@/utils/chatGenericLinkPreview'
-import { findPhoneCallByIds, isVoiceCallOfferActive, isVoiceCallTerminal, parseVoiceCallSignal } from '@/utils/voiceCallSession'
+import { findPhoneCallByIds, isVoiceCallOfferActive, isVoiceCallTerminal, storedVoiceSignal } from '@/utils/voiceCallSession'
 import { isCashTreesNativeWebView } from '@/utils/cashTreesNativeNfc'
 import { DeliveryHealthBanner } from '@/components/DeliveryHealthBanner'
 
@@ -365,7 +365,7 @@ export default function ChatList({
 		if (isCashTreesNativeWebView()) return null
 		for (const item of items) {
 			const last = item.messages?.[item.messages.length - 1]
-			const signal = last?.from === 'them' && last.text ? parseVoiceCallSignal(last.text) : null
+			const signal = last?.from === 'them' && last.text ? storedVoiceSignal(last) : null
 			const phoneCall = signal
 				? (profiles?.[0]?.phoneCalls || []).find((row: PhoneCallRecord) =>
 					row.callId === signal.callId || row.sessionId === signal.sessionId)
@@ -643,7 +643,7 @@ export default function ChatList({
 
             const isFailed = last?.from === "me" && last?.status === "failed"
             const rawLast = last?.text?.trim() || ""
-            const voiceSignal = rawLast ? parseVoiceCallSignal(rawLast) : null
+            const voiceSignal = rawLast ? storedVoiceSignal(last) : null
             const voicePreview = voiceSignal
               ? voiceSignal.type === 'voice_call_offer_v1'
                 ? 'Incoming voice call'

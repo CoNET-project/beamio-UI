@@ -55,7 +55,11 @@ jest.mock('@/providers/DaemonProvider', () => {
 
 // Storage: the App's read and the gate's read both return the synthetic record.
 jest.mock('@/services/beamio', () => ({
+	setPageWritePermit: () => undefined, // 0.53.44: the session write gate (AppEntryGate); stub here
+	allowRestoreWrite: () => undefined,
+  endRestoreWriteWindow: () => undefined,
 	...jest.requireActual('@/services/beamio'),
+	checkStorageWithStatusWithTimeout: async () => ({ status: 'empty' }), // 0.53.39: jsdom has no IndexedDB; the page copy is confirmed empty unless the test sets it
 	checkStorage: () => Promise.resolve(mockRecord),
 	checkStorageWithTransientRetry: () => Promise.resolve({ status: 'loaded', data: mockRecord }),
 	sendPendingProfileSync: jest.fn(),
@@ -87,6 +91,8 @@ jest.mock('@/services/nativeRecovery', () => ({
 	recoveryOpenErrorKey: () => '',
 	nativeRecoveryCopyKey: () => null,
 	queryNativeWalletState: async () => 'present',
+	queryNativeWalletStatus: async () => ({ status: 'no_key' }), // 0.53.39 stub: the start route reads walletStatus
+	queryNativePasscodeStatus: async () => ({ walletState: await (async () => 'present')(), hasKey: 'not_reported' as const }),
 	queryNativeWalletStateSafe: async () => 'present',
 }))
 jest.mock('@/services/shellChatCapability', () => ({ ...jest.requireActual('@/services/shellChatCapability'), ensureShellChatState: async () => 'native_chat', shellChatBlockedNow: () => false }))

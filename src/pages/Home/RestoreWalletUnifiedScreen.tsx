@@ -1,7 +1,9 @@
 import { IpfsImg } from '@/components/IpfsImg';
+import { BEAMIO_TAG_MESSAGE_KEY, BEAMIO_TAG_PATTERN, normalizeBeamioTagInput } from '@/utils/beamioTagInput'
 import { FormEvent, useEffect, useState } from 'react'
 import { AppButton } from '@/components/button/AppButton'
-import { onWalletEvent, restoreWithRedeem, restoreWithUserPin } from '@/services/beamio'
+import { onWalletEvent, restoreWithRedeemDetailed, restoreWithUserPin } from '@/services/beamio'
+import { isRecoveryCodeFormat } from '@/services/recoveryCodeFormat'
 import { isShellContext } from '@/services/shellContext'
 import { nativeRecoveryCopyKey, nativeRecoveryOpen, onNativeRecoveryResult, recoveryOpenErrorKey } from '@/services/nativeRecovery'
 import { notifyNativeWalletReady, rememberNativeEoa, reachNativeWallet } from '@/services/nativeWallet'
@@ -83,9 +85,6 @@ export type RestoreWalletFlowPayload = {
 	beamioTag: string
 }
 
-function normalizeBeamioTagInput(raw: string): string {
-	return raw.trim().replace(/^@+/, '')
-}
 
 export type RestoreWalletUnifiedScreenProps = {
 	onClose: () => void
@@ -113,7 +112,7 @@ export default function RestoreWalletUnifiedScreen({
 	const [peekRecovery, setPeekRecovery] = useState(false)
 	/** Shell: the recovery code and PIN are native; this page shows no recovery code field. */
 	const shell = isShellContext()
-	//  (shell): the password login cannot succeed in a shell (the page holds no key; restoreWithUserPin is refused).
+	// (shell): the password login cannot succeed in a shell (the page holds no key; restoreWithUserPin is refused).
 	// A shell shows only the native recovery entry, whatever tab was requested.
 	const activeTab: RestoreTab = shell ? 'recovery' : tab
 
@@ -187,7 +186,7 @@ export default function RestoreWalletUnifiedScreen({
 			// In a shell a scan result is never written into the recovery code; the native recovery page scans.
 			if (shell) return
 			if (tab !== 'recovery') return
-			if (/^http/i.test(url)) {
+			if (/^http/i.test(url) || !isRecoveryCodeFormat(url)) {
 				setRecoveryError(tu('invalid_recovery_code_format'))
 				return
 			}
@@ -208,13 +207,13 @@ export default function RestoreWalletUnifiedScreen({
 	}, [recoveryError])
 
 	const formatBeamioName = () => {
-		let trimmed = username.trim().replace(/^@+/, '')
+		const trimmed = normalizeBeamioTagInput(username)
 		if (!trimmed) {
 			setLoginError(tu('please_enter_a_username'))
 			return ''
 		}
-		if (!/^[a-zA-Z0-9_.-]{3,26}$/.test(trimmed)) {
-			setLoginError(tu('use_3_26_letters_numbers_dots_underscore_or_hyphen'))
+		if (!BEAMIO_TAG_PATTERN.test(trimmed)) {
+			setLoginError(tu(BEAMIO_TAG_MESSAGE_KEY))
 			return ''
 		}
 		return trimmed
@@ -291,11 +290,17 @@ export default function RestoreWalletUnifiedScreen({
 		}
 		setRecoveryLoading(true)
 		try {
-			const canRestore = await restoreWithRedeem(recoveryCode, '')
-			if (!canRestore || typeof canRestore === 'boolean') {
+			// 2026-11-17: only a wrong code says "invalid"; a failed chain read or a derivation failure is not reported as a wrong code.
+			const outcome = await restoreWithRedeemDetailed(recoveryCode, '')
+			if (outcome.kind === 'invalid_code') {
 				setRecoveryError(tu('invalid_recovery_code'))
 				return
 			}
+			if (outcome.kind !== 'ok') {
+				setRecoveryError(tu('something_went_wrong_while_restoring_your_wallet'))
+				return
+			}
+			const canRestore = outcome.temp
 			await onRestore({
 				temp: canRestore,
 				beamioTag: canRestore?.beamio?.accountName || '',
@@ -312,7 +317,8 @@ export default function RestoreWalletUnifiedScreen({
 		// Defensive guard, not only by render condition: a shell never writes a scanned code into the recovery code.
 		if (shell) return
 		setTab('recovery')
-		if (/^http/i.test(code)) {
+		// rule 2026-11-16 (C-2): only the recovery code format fills the field; a mnemonic, a private key or a URL is refused here.
+		if (/^http/i.test(code) || !isRecoveryCodeFormat(code)) {
 			setRecoveryError(tu('invalid_recovery_code_format'))
 			return
 		}

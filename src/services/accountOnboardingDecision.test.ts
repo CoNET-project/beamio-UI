@@ -1,5 +1,5 @@
 /**
- * Owner decision (2026-11-16, unified across PWA, iOS and Android): with no mnemonic on either side the app enters onboarding directly; a
+ * (2026-11-16, unified across PWA, iOS and Android): with no mnemonic on either side the app enters onboarding directly; a
  * unknown, locked, not-ready or unreadable answer is a retry, never onboarding, however many retries were used; PGP alone never decides an
  * account; the cleanup of previous storage happens only after a confirmed recovery. SYNTHETIC values only.
  */
@@ -30,7 +30,7 @@ describe('no mnemonic on either side: direct onboarding, no intermediate screen'
 
 describe('a mnemonic on one side: the account continues on that side', () => {
 	it('only IDB has the key: continue', () => {
-		expect(decideAccountReset({ ...base, idb: idbPresenceOf('key'), native: 'confirmed_none' })).toBe('continue_account')
+		expect(decideAccountReset({ ...base, idb: idbPresenceOf('valid_mnemonic'), native: 'confirmed_none' })).toBe('continue_account')
 	})
 
 	it('only the native side has the key: continue', () => {
@@ -75,9 +75,9 @@ describe('unknown, locked, not ready, unreadable and timeout: retry, never onboa
 	})
 })
 
-describe('PGP alone never decides an account (Y.94)', () => {
+describe('PGP alone never decides an account', () => {
 	it('a missing PGP is not an input of the presence decision: a mnemonic on IDB still continues', () => {
-		expect(decideAccountReset({ ...base, idb: idbPresenceOf('key'), native: 'confirmed_none' })).toBe('continue_account')
+		expect(decideAccountReset({ ...base, idb: idbPresenceOf('valid_mnemonic'), native: 'confirmed_none' })).toBe('continue_account')
 	})
 })
 
@@ -91,7 +91,7 @@ describe('cleanup only after a confirmed recovery', () => {
 	})
 })
 
-describe('Y.107: residues never block onboarding; only a readable mnemonic is has; a failed read is unknown', () => {
+describe('residues never block onboarding; only a readable mnemonic is has; a failed read is unknown', () => {
 	it('a readable mnemonic on the IDB side is has: the original account continues, even when the native side confirms none', () => {
 		const idb = idbPresenceOf(idbSignalOf({ status: 'loaded', keyPresent: true }))
 		expect(idb).toBe('has')
@@ -104,8 +104,8 @@ describe('Y.107: residues never block onboarding; only a readable mnemonic is ha
 		expect(decideAccountReset({ ...base, idb, native: 'confirmed_none' })).toBe('onboarding')
 	})
 
-	// Y.151 (PNK-01..05) supersedes Y.108 for kPresent true: only kPresent false is confirmed none (onboarding); kPresent true is never none.
-	it('Y.151: no_key with kPresent false and IDB empty is onboarding; kPresent true is never onboarding', () => {
+	// (PNK-01..05) supersedes for kPresent true: only kPresent false is confirmed none (onboarding); kPresent true is never none.
+	it('no_key with kPresent false and IDB empty is onboarding; kPresent true is never onboarding', () => {
 		const none = nativePresence({ ws: 'no_key', kPresent: false, snapshotUnknown: false })
 		expect(none).toBe('confirmed_none')
 		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native: none })).toBe('onboarding')
@@ -114,18 +114,18 @@ describe('Y.107: residues never block onboarding; only a readable mnemonic is ha
 		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native: held })).not.toBe('onboarding')
 	})
 
-	it('no_key with kPresent missing is a read error: retry, never onboarding (Y.151)', () => {
+	it('no_key with kPresent missing is a read error: retry, never onboarding', () => {
 		const native = nativePresence({ ws: 'no_key', snapshotUnknown: false })
 		expect(native).toBe('unknown')
 		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('retry_unknown')
 	})
 
-	it('R43: a parseable document with no key and no account is a successful read with no mnemonic: IDB confirmed none, so onboarding', () => {
+	it('a parseable document with no key and no account is a successful read with no mnemonic: IDB confirmed none, so onboarding', () => {
 		expect(idbPresenceOf(idbSignalOf({ status: 'loaded' }))).toBe('confirmed_none')
 		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'loaded' })), native: 'confirmed_none' })).toBe('onboarding')
 	})
 
-	it('R43: an unparseable or structure-mismatched IDB entry (invalid_document) is corrupt, unknown: retry, never onboarding', () => {
+	it('an unparseable or structure-mismatched IDB entry (invalid_document) is corrupt, unknown: retry, never onboarding', () => {
 		expect(idbPresenceOf(idbSignalOf({ status: 'unavailable', reason: 'invalid_document' }))).toBe('unknown')
 		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'unavailable', reason: 'invalid_document' })), native: 'confirmed_none' })).toBe('retry_unknown')
 	})
@@ -142,19 +142,23 @@ describe('Y.107: residues never block onboarding; only a readable mnemonic is ha
 	})
 })
 
-describe('G2 (R45): a native walletStatus locked answer with a readable mnemonic continues the original account, never a passcode trap', () => {
+describe('G2: a native walletStatus locked answer with a readable mnemonic continues the original account, never a passcode trap', () => {
 	const { readFileSync } = require('fs') as typeof import('fs')
 	const { join } = require('path') as typeof import('path')
 
-	it('a locked native answer is has, so the account continues (Y.107 1)', () => {
+	it('a locked native answer is unknown, never a release: retry, not continue (LK-P7; the unlock branch handles the passcode)', () => {
 		const native = nativePresence({ ws: 'locked', snapshotUnknown: false })
-		expect(native).toBe('has')
-		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('continue_account')
+		expect(native).toBe('unknown')
+		expect(decideAccountReset({ ...base, idb: idbPresenceOf(idbSignalOf({ status: 'empty' })), native })).toBe('retry_unknown')
 	})
 
 	it('the passcode page stays keyed to walletState locked only (GY), and the continue branch takes the EOA from a locked or unlocked answer', () => {
 		const gate = readFileSync(join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
-		expect(gate).toContain("if (shellWalletState === 'locked' && identity === 'declared') {")
-		expect(gate).toContain("(shellNativeState.status === 'locked' || shellNativeState.status === 'unlocked') && 'eoa' in shellNativeState")
+		expect(gate).toContain("if (judged.action === 'unlock' && (shellWalletState === 'locked' || shellWalletStatus === 'locked')) {")
+		// superseded (spec item 42(2)): the continue EOA of a native answer is the pre-read's valid EOA (adoptPrereadMnemonic)
+		expect(gate).toContain('const pre = await queryNativeMnemonicPreread()')
+		//the pre-read valid path is decided by decidePrereadEntry; the phrase is adopted only when no validated copy exists
+		expect(gate).toContain('decidePrereadEntry(pageCopy, pre.eoa')
+		expect(gate).toContain('() => adoptPrereadMnemonic(pre.phrase, pre.eoa)')
 	})
 })

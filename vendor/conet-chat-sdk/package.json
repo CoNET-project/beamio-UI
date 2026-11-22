@@ -30,7 +30,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:voice": "tsx scripts/testVoiceReorder.ts && tsx scripts/testVoiceEntryPool.ts && tsx scripts/testVoicePeerWait.ts && tsx scripts/testInboundArmor.ts",
     "test:local": "tsx scripts/testLocalChatStore.ts",
-    "test": "npm run test:voice && npm run test:local && npm run test:signing",
+    "test:history": "tsx scripts/testHistorySyncAdopt.ts",
+    "test": "npm run test:voice && npm run test:local && npm run test:signing && npm run test:history",
     "test:signing": "tsx scripts/testWorkerSigning.ts"
   },
   "peerDependencies": {
@@ -49,7 +50,7 @@
   "bugs": {
     "url": "https://github.com/CoNET-project/chat-sdk/issues"
   },
-  "sideEffectsNote": "Worker entry (./worker) is a side-effectful module; import only inside a Worker context.",
+  "sideEffectsNote": "The package has no import-time side effects (sideEffects: false). The worker (./worker) starts only when the host calls startChatWorkerEntry(); the host wrapper is src/workers/chatSdkGossip/entry.ts. Do not rely on importing ./worker to start it.",
   "publishConfig": {
     "access": "public"
   },

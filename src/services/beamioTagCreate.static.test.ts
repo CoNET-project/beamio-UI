@@ -51,7 +51,8 @@ describe('wiring', () => {
 		expect(start).toBeGreaterThan(0)
 		const body = src.slice(start, src.indexOf('export const', start + 10))
 		const guard = body.indexOf('recoverAllowed(source, options.mustReuseKey === true)')
-		const create = body.indexOf("createOrGetWallet('')")
+		// createRecover creates through deps.createWallet (default: createOrGetWallet, the test seam of createRecover); the order is the same.
+		const create = body.indexOf("deps.createWallet('')")
 		expect(guard).toBeGreaterThan(0)
 		expect(create).toBeGreaterThan(guard)
 	})

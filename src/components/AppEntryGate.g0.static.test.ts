@@ -5,21 +5,20 @@
  */
 import { readFileSync } from 'fs'
 import { join } from 'path'
+import { judgeShellFromNative } from '../services/accountJudgement'
 
 const gate = readFileSync(join(__dirname, 'AppEntryGate.tsx'), 'utf8')
 const policy = readFileSync(join(__dirname, 'appEntryNoKeyPolicy.ts'), 'utf8')
 
 describe('G0: no_key does not send the user to onboarding by itself', () => {
-	it('the no_key branch continues to the page store read; it does not go to onboarding', () => {
-		const noKey = gate.indexOf("native.status !== 'no_key'")
-		const read = gate.indexOf('await checkStorageWithTransientRetry()')
-		expect(noKey).toBeGreaterThan(-1)
-		expect(read).toBeGreaterThan(noKey)
-		expect(gate.slice(noKey, read)).not.toContain('goOnboarding')
+	// The walletStatus no_key text branch was removed by cebd7e0; the rule now lives in the pure judgement (accountJudgement.test.ts,
+	// "walletStatus no_key is undetermined, never absent, never onboarding"): no_key without a confirmed empty store is retry.
+	it('a walletStatus no_key alone is undetermined (retry), never onboarding; the confirmed empty store is required', () => {
+		expect(judgeShellFromNative({ idb: 'absent', walletState: 'not_reported', walletStatus: 'no_key' })).toEqual({ account: 'undetermined', action: 'retry' })
 	})
 
 	it('onboarding follows only the store read (a confirmed empty store), after the read', () => {
-		const read = gate.indexOf('await checkStorageWithTransientRetry()')
+		const read = gate.indexOf('const storageResult = await checkStorageWithTransientRetry()')
 		const onboarding = gate.indexOf('goOnboarding(false)', read)
 		expect(onboarding).toBeGreaterThan(read)
 		expect(gate).toContain("noKeyCtl.storageRead(storageResult.status === 'empty')")

@@ -15,6 +15,9 @@ describe('AppEntryGate: undetermined is never onboarding', () => {
 		expect(router).not.toContain('goOnboarding(')
 	})
 	it('the judged undetermined branch still routes through the same router', () => {
-		expect(src).toContain("if (judged.account === 'undetermined') {\n\t\t\t\thandleStorageUnavailable('undetermined')")
+		// (b): in a shell the undetermined answer is the start wait; the browser keeps the retry screen (shell branch first)
+		expect(src).toContain("if (judged.account === 'undetermined') {")
+		expect(src).toContain("if (isShellContext()) startupWait('account judgement undetermined (shell): the start state, retry', 'read_failed')")
+		expect(src).toContain("else handleStorageUnavailable('undetermined')")
 	})
 })

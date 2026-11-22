@@ -2,19 +2,19 @@
  * Android sensitive methods on `window.BeamioShell`(11).
  *
  * - Page to shell: `BeamioShell.postMessage(JSON.stringify({action, reqId, args}))`. `args` is the object that the legacy method
- *   received as its JSON string, or the original object payload. A missing `args` means `{}`.
+ * received as its JSON string, or the original object payload. A missing `args` means `{}`.
  * - Shell to page: `BeamioShell.onmessage` gets a JSON string `{type:"ack", action, reqId, ok, result?, error?}`, exactly one per
- *   message. Only `queryInstalledApps`, `listInstalledWalletApps` (array of ids) and `startNativeVoiceMic` (boolean) carry a `result`.
+ * message. Only `queryInstalledApps`, `listInstalledWalletApps` (array of ids) and `startNativeVoiceMic` (boolean) carry a `result`.
  * - Follow-up results (scan, saved file, post result, call events, in-app browser closed, mic data) stay on the `cashtreesandroid`
  * event. The ack only says whether the shell accepted the request, so a page waits for the event where it waits today.
  * - Selection: a page uses `window.BeamioShell` when it is present and falls back to `CashTreesAndroid` only when it is not.
- *   iOS never uses this object.
+ * iOS never uses this object.
  *
  * Only the error code is logged for a refused ack; the payload is never logged.
  */
 import { publishNativePwaLog } from './cashTreesNativePwaLog'
 
-/** The 21 actions of.4:.2's list, minus scanRecoveryQr (deleted), plus notifyVoiceMicReady and queryIncomingCallOutcome. */
+/** The 21 actions of.4:.2's list, minus scanRecoveryQr (deleted), plus notifyVoiceMicReady, queryIncomingCallOutcome, the two ephemeral-key actions and incomingCallUnlockShown. */
 export const BEAMIO_SHELL_ACTIONS = [
 	'openURL',
 	'openInAppBrowser',
@@ -33,10 +33,19 @@ export const BEAMIO_SHELL_ACTIONS = [
 	'startSystemCall',
 	'reportIncomingSystemCall',
 	'endSystemCall',
+	// Local only: stop the ring, close the card and notification, clear the record. No uplink, no signature.
+	'dismissIncomingSystemCall',
 	'startNativeVoiceMic',
 	'stopNativeVoiceMic',
 	'notifyVoiceMicReady',
 	'queryIncomingCallOutcome',
+	// Local ephemeral keys for a call: the shell generates and holds the temporary PGP key and wallet;
+	// only the public channel fields come back. Prepare: {role, sid, needPgp} -> {ok, channel:{sid,key,wk,temp,tempPgpFpr,tempPgpArmor?}}.
+	// Errors not_ready | keygen_failed | bad_request | timeout (10 s, one retry at most). Forget drops the call's keys.
+	'voiceEphemeralPrepare',
+	'voiceEphemeralForget',
+	// Page to shell: sent when the incoming-call unlock entry becomes interactive. Payload {callId}.
+	'incomingCallUnlockShown',
 ] as const
 
 export type BeamioShellAction = (typeof BEAMIO_SHELL_ACTIONS)[number]

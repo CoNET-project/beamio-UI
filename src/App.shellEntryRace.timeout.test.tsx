@@ -28,6 +28,7 @@ jest.mock('@/utils/cashTreesNativeNfc', () => ({
 	openExternalUrl: jest.fn(),
 }))
 jest.mock('@/utils/cashTreesNativePwaLog', () => ({ publishNativePwaLog: jest.fn() }))
+import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
 
 // The daemon context: a small real store with the flags the bar reads. Everything else is a no-op function.
 jest.mock('@/locale/beamioLocale', () => ({ ...jest.requireActual('@/locale/beamioLocale'), tu: (key: string) => key, useTu: () => ({ tu: (key: string) => key, locale: 'en' }) }))
@@ -48,7 +49,11 @@ jest.mock('@/providers/DaemonProvider', () => {
 
 // Storage: the App's read and the gate's read both end the same way for a case.
 jest.mock('@/services/beamio', () => ({
+	setPageWritePermit: () => undefined, // 0.53.44: the session write gate (AppEntryGate); stub here
+	allowRestoreWrite: () => undefined,
+  endRestoreWriteWindow: () => undefined,
 	...jest.requireActual('@/services/beamio'),
+	checkStorageWithStatusWithTimeout: async () => ({ status: 'empty' }), // 0.53.39: jsdom has no IndexedDB; the page copy is confirmed empty unless the test sets it
 	checkStorage: () => (race.storage === 'null' ? Promise.resolve(null) : new Promise((r) => { race.releaseStorage = () => r(null) })),
 	checkStorageWithTransientRetry: () => (race.storage === 'null' ? Promise.resolve({ status: 'unavailable', reason: 'invalid_document' }) : new Promise((r) => { race.releaseStorage = () => r({ status: 'unavailable', reason: 'invalid_document' }) })),
 	sendPendingProfileSync: jest.fn(),
@@ -77,6 +82,8 @@ jest.mock('@/services/nativeRecovery', () => ({
 	recoveryOpenErrorKey: () => '',
 	nativeRecoveryCopyKey: () => null,
 	queryNativeWalletState: async () => 'present',
+	queryNativeWalletStatus: async () => ({ status: 'no_key' }), // 0.53.39 stub: the start route reads walletStatus
+	queryNativePasscodeStatus: async () => ({ walletState: await (async () => 'present')(), hasKey: 'not_reported' as const }),
 	queryNativeWalletStateSafe: async () => 'present',
 }))
 jest.mock('@/services/shellChatCapability', () => ({ ...jest.requireActual('@/services/shellChatCapability'), ensureShellChatState: async () => 'native_chat', shellChatBlockedNow: () => false }))
@@ -113,26 +120,38 @@ function renderApp() {
 	)
 }
 
-describe('A+B: a timeout (the read ends empty only after the native wallet has entered the app)', () => {
-	it('the bar waits for the account to be in the App state; then the chat starts, and each step runs once', async () => {
+describe('A+B: the page read is held; it is unknown after the 2 s limit; init runs no chat and no home', () => {
+	afterEach(() => {
+		jest.useRealTimers()
+		race.storage = 'null'
+		race.releaseStorage = undefined
+		mockChatStarts.length = 0
+		mockPushBinds.length = 0
+		mockAaEnsures.length = 0
+	})
+
+	it('the held page read does not start the chat or the home before the 2 s limit; after it the path is the unknown one (onboarding, no init)', async () => {
+		jest.useFakeTimers()
 		race.storage = 'late-null'
 		renderApp()
-		await waitFor(() => expect(race.nativeResolve).toBeDefined())
 		await act(async () => {
-			race.nativeResolve?.({ status: 'unlocked', eoa: EOA })
+			jest.advanceTimersByTime(1_000)
 		})
-		await waitFor(() => expect(race.releaseStorage).toBeDefined())
-		// the native entry wakes the init, which takes the account from the native seed in memory and puts it in the App's state
-		// before the bar shows. The storage read that is still held does not gate it any more.
-		await waitFor(() => expect(mockChatStarts.length).toBe(1), { timeout: 3000 })
-		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy(), { timeout: 3000 })
+		expect(mockChatStarts.length).toBe(0)
+		expect(screen.queryByRole('button', { name: 'search' })).toBeNull()
+		await act(async () => {
+			jest.advanceTimersByTime(1_500)
+		})
+		await act(async () => {
+			await Promise.resolve()
+		})
+		// init sent no chat init at any point: the read was unknown, not a home
+		expect(mockChatStarts.length).toBe(0)
+		expect(screen.queryByRole('button', { name: 'search' })).toBeNull()
+		// the held read answers late: still no chat from it
 		await act(async () => {
 			race.releaseStorage?.()
 		})
-		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy())
-		expect(mockChatStarts.length).toBe(1)
-		expect(mockPushBinds.length).toBe(1)
-		// the AA ensure runs once per init (the account effect only).
-		expect(mockAaEnsures.length).toBe(1)
+		expect(mockChatStarts.length).toBe(0)
 	})
 })

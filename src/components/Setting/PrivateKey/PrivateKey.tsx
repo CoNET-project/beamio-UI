@@ -5,7 +5,8 @@ import { Eye, EyeOff, Copy, Check, AlertTriangle } from 'lucide-react'
 import { AppButton } from '@/components/button/AppButton'
 import { restoreWithUserPin } from '@/services/beamio'
 import { isShellContext } from '@/services/shellContext'
-import { nativeWalletBackupView } from '@/services/nativeSigning'
+import { backupViewErrorKey, nativeWalletBackupView } from '@/services/nativeSigning'
+import { tu } from '@/locale/beamioLocale'
 import { useDaemonContext } from '@/providers/DaemonProvider'
 
 type Props = {
@@ -53,7 +54,7 @@ export default function PrivateKeyReveal({ privateKey, onClose }: Props) {
     if (isShellContext()) {
  // Shell: the native layer shows the key after its own password step; nothing is returned to the page.
       const out = await nativeWalletBackupView('privateKey')
-      if (!out.ok) setErrorText(out.reason)
+      if (!out.ok) setErrorText(tu(backupViewErrorKey(out.reason)))
       return null
     }
     if (!beamio?.accountName) {

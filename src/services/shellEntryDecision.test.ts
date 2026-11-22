@@ -35,8 +35,8 @@ describe('shellEntryFor', () => {
 		expect(shellEntryFor('missing', NO_KEY)).toBe('chat_unavailable')
 	})
 
-	it('capability missing but an account is locked or unlocked: enter the app on its public address (other features stay usable)', () => {
-		expect(shellEntryFor('missing', LOCKED)).toBe('enter_native')
+	it('capability missing and an unlocked account: enter the app on its public address (LK-P8); a locked account is never a release', () => {
+		expect(shellEntryFor('missing', LOCKED)).toBe('chat_unavailable')
 		expect(shellEntryFor('missing', UNLOCKED)).toBe('enter_native')
 	})
 
@@ -62,5 +62,29 @@ describe('the identity-missing init and entry decisions', () => {
 	it('capability missing with a known public address: the local home; without one: the unified state, never the import page', () => {
 		expect(missingIdentityNotReadyEntry(true)).toBe('local_home')
 		expect(missingIdentityNotReadyEntry(false)).toBe('unified_unavailable')
+	})
+})
+
+// account-select CAP-01/02/05/06/07: the identity entry display of a missing capability.
+describe('CAP display (account-select CAP-01/02/05/06/07): unified unavailable only on an explicit no key', () => {
+	const { identityEntryDisplay } = jest.requireActual<typeof import('./shellEntryDecision')>('./shellEntryDecision')
+	it('CAP-01: capability missing and native no_key: unified_unavailable', () => {
+		expect(identityEntryDisplay('missing', { status: 'no_key' })).toBe('unified_unavailable')
+	})
+	it('CAP-02: capability missing and native absent (the same as no_key, 58(2)(e)): unified_unavailable', () => {
+		// the PWA has no separate absent state: the native "absent" answer is reported as no_key
+		expect(identityEntryDisplay('missing', { status: 'no_key' })).toBe('unified_unavailable')
+	})
+	it('CAP-05: capability missing and native unanswered (unknown): none, the start stays in its startup state', () => {
+		expect(identityEntryDisplay('missing', { status: 'unknown' })).toBe('none')
+	})
+	it('CAP-06: capability missing and native not_ready (unreadable): none, not the unified state', () => {
+		expect(identityEntryDisplay('missing', { status: 'not_ready', notReadyReason: 'unreadable' })).toBe('none')
+	})
+	it('CAP-07: capability missing, native no_key, a valid PWA mnemonic: the display is unified_unavailable; the routing to the home is separate (not decided here)', () => {
+		expect(identityEntryDisplay('missing', { status: 'no_key' })).toBe('unified_unavailable')
+	})
+	it('a declared capability never shows the unified state', () => {
+		expect(identityEntryDisplay('declared', { status: 'no_key' })).toBe('none')
 	})
 })

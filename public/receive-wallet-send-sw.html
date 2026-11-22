@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
-<head><script>/* Project rule (no WebSocket), at page start: refuse the global constructor. A non-configurable property (a shell guard) is left as it is. */(function(){try{Object.defineProperty(window,'WebSocket',{value:function RefusedWebSocket(){throw new Error('websocket_disabled_by_project_rule')},writable:false,configurable:false,enumerable:false})}catch(_){}})();</script>
+<head><script>/* Project rule (no WebSocket), at page start: refuse the global constructor, then run the refusal probe (it opens no connection). A non-configurable property (a shell guard) is left as it is and the probe reports 'not_guarded'. The result is kept in window.__beamioWsProbe (R84). */(function(){var R=function RefusedWebSocket(){throw new Error('websocket_disabled_by_project_rule')};try{Object.defineProperty(window,'WebSocket',{value:R,writable:false,configurable:false,enumerable:false})}catch(_){}var p='not_guarded';if(window.WebSocket===R){try{new window.WebSocket();p='other'}catch(e){p=(e&&e.message==='websocket_disabled_by_project_rule')?'refused':'other'}}window.__beamioWsProbe=p;if(p!=='refused')console.error('[ws-guard] WebSocket refusal is not the project guard (probe='+p+')')})();</script>
 	<meta charset="utf-8" />
 	<meta
 		name="viewport"

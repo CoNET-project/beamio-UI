@@ -19,7 +19,7 @@ describe('chat.ts holds no AES key material from the account key', () => {
 	it('a new PGP key is generated only after the read-failure guard (blocksNewPgpKey) and never on a read error', () => {
 		// New account: after the read-failure guard in initBeamioPGPKeys.
 		const guard = CHAT.indexOf('blocksNewPgpKey(own.read)')
-		const create = CHAT.indexOf("generatePgpKey(profile.keyID,'')")
+		const create = CHAT.indexOf('firstOpenInWorker(profile, nodes)')
 		expect(guard).toBeGreaterThan(0)
 		expect(create).toBeGreaterThan(guard)
 	})

@@ -48,8 +48,8 @@ describe('a timed-out hello is unanswered', () => {
 })
 
 describe('the control: an answered hello that declares the capability is declared', () => {
-	it('a ready answer with identity.native-keys.v1 is declared', async () => {
-		stubShell((cmd) => ({ type: 'ready', reqId: cmd.reqId, result: { capabilities: ['identity.native-keys.v1'] } }))
+	it('a hello ack with identity.native-keys.v1 is declared', async () => {
+		stubShell((cmd) => ({ type: 'ack', reqId: cmd.reqId, ok: true, result: { capabilities: ['identity.native-keys.v1'] } }))
 		const probe = await probeNativeCapabilities(1_000)
 		expect(identityCapabilityFrom(probe)).toBe('declared')
 	})

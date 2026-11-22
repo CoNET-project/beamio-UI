@@ -43,7 +43,7 @@ describe('AppEntryGate: native recovery exit and storage decision', () => {
 		expect(g).toContain('window.setTimeout(() => void init(), step.delayMs)')
 		expect(g).toContain('splashDeadlineAction({ decided: decisionMadeRef.current, nativeWaiting: nativeWaitRef.current })')
 		expect(g).not.toContain('goOnboarding(false)\n\t\t\treturn\n\t\t}\n\t\tshowStorageUnavailable')
-		expect(read('../services/shellStoreWait.ts')).toMatch(/shell_record_\(migrating\|import_not_done\|legacy_store_unreadable\|not_ready\|timeout\|native_unavailable\)\\b/)
+		expect(read('../services/shellStoreWait.ts')).toMatch(/shell_record_\(migrating\|import_not_done\|not_ready\|timeout\|native_unavailable\)\\b/)
 	})
 
 	it('the approved notice is mounted on the account page, only while an unsynced item is queued', () => {

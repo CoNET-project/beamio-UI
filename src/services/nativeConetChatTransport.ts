@@ -34,6 +34,8 @@ import {
 	type ChatDaemonCapability,
 	type ChatDaemonFeatures,
 	type ChatDaemonHello,
+	FirstOpenRequest,
+	FirstOpenResult,
 } from '@conet.project/chat-sdk'
 import type {
 	BeamioChatClient,
@@ -733,6 +735,11 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 		return result && typeof result === 'object' ? result : {}
 	}
 
+	/** The automatic first open is browser-only: the shell keeps its native keys and never runs it here. */
+	async firstOpen(_request: FirstOpenRequest): Promise<FirstOpenResult> {
+		return { status: 'error', reason: 'unsupported' }
+	}
+
 	async queryNativeWake(contact: ChatRoute): Promise<boolean | null> {
 		try {
 			const result = await this.request<{ nativeWakeable?: boolean; ok?: boolean }>(
@@ -848,13 +855,21 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 		if (this.destroyed) return Promise.reject(new Error('native chat destroyed'))
 		const reqId = this.reqSeq++
 		const body = { ...cmd, reqId }
+		// Correlation (PWA side only): the log carries the command type and the reqId, never the payload.
+		const type = String(cmd.type)
+		const startedAt = Date.now()
+		this.log('info', `native chat request sent: type=${type} reqId=${reqId} limit=${timeoutMs}ms`)
 		return new Promise<T>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pending.delete(reqId)
-				reject(new Error(`native chat request timeout (${String(cmd.type)})`))
+				this.log('warn', `native chat request timeout: type=${type} reqId=${reqId} after=${Date.now() - startedAt}ms`)
+				reject(new Error(`native chat request timeout (${type})`))
 			}, timeoutMs)
 			this.pending.set(reqId, {
-				resolve: (v) => resolve(v as T),
+				resolve: (v) => {
+					this.log('info', `native chat request answered: type=${type} reqId=${reqId} ms=${Date.now() - startedAt}`)
+					resolve(v as T)
+				},
 				reject,
 				timer,
 			})
@@ -1036,7 +1051,11 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 		if (type === 'ready' || type === 'ack') {
 			const reqId = Number(msg.reqId)
 			const pending = this.pending.get(reqId)
-			if (!pending) return
+			if (!pending) {
+				// a reply after its request timed out, or an unknown reqId: logged (type and reqId only), nothing is resolved
+				this.log('warn', `native chat reply with no pending request: type=${type} reqId=${String(msg.reqId)} (late or unknown)`)
+				return
+			}
 			clearTimeout(pending.timer)
 			this.pending.delete(reqId)
 			if (type === 'ready' || msg.ok === true) {

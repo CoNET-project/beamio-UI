@@ -43,7 +43,7 @@ function installShell(): void {
 					0,
 				)
 			if (cmd.type === 'hello') {
-				if (helloCaps !== null) reply({ type: 'ready', reqId: cmd.reqId, result: { protocolVersion: 1, capabilities: helloCaps } })
+				if (helloCaps !== null) reply({ type: 'ack', reqId: cmd.reqId, ok: true, result: { protocolVersion: 1, capabilities: helloCaps } })
 			} else if (cmd.type === 'mailboxProbeSign' && probeAnswer) {
 				reply({ ...probeAnswer, reqId: cmd.reqId })
 			}

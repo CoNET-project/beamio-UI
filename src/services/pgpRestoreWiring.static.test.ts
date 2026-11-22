@@ -10,16 +10,16 @@ import { join } from 'path'
 
 const read = (rel: string) => readFileSync(join(__dirname, '..', '..', 'src', rel), 'utf8')
 
-describe(' wiring', () => {
+describe('wiring', () => {
 	const chat = read('services/chat.ts')
 
-	it('generatePgpKey is called twice: the new-account branch, and the user click in regeneratePgpKeyByUser', () => {
-		expect((chat.match(/generatePgpKey\(/g) ?? []).length).toBe(2)
+	it('generatePgpKey is called once: the user click in regeneratePgpKeyByUser (plan c: the page never generates the first-open key; the worker does)', () => {
+		expect((chat.match(/generatePgpKey\(/g) ?? []).length).toBe(1)
 	})
 
 	it('initBeamioPGPKeys classifies the restore before the new-account branch generates a key', () => {
 		const restore = chat.indexOf("classifyOwnPgp({ read: own.read, localKeyID: '', hasLocalKey: false })")
-		const newAccount = chat.indexOf("const keys = await generatePgpKey(profile.keyID,'')")
+		const newAccount = chat.indexOf('firstOpenInWorker(profile, nodes)')
 		expect(restore).toBeGreaterThan(0)
 		expect(newAccount).toBeGreaterThan(restore)
 	})
@@ -53,6 +53,7 @@ describe(' wiring', () => {
 
 	it('a restore failure is not retried automatically (no retry from an empty key read, nor from the start)', () => {
 		expect(chat).toMatch(/if \(!started && getPgpRestoreFailure\(\)\) \{/)
+		//a pending browser first-open (no chain record, the user's click awaited) returns without a retry, before the same retry call
 		expect(chat).toMatch(/if \(getPgpRestoreFailure\(\)\) return\n\t+\/\/ Chain key unreadable right now[^\n]*\n\t+scheduleChatRetry\('own chain key unreadable'/)
 		expect(chat).toMatch(/if \(getPgpRestoreFailure\(\)\) return\n\t\tscheduleChatRetry\('error'/)
 	})

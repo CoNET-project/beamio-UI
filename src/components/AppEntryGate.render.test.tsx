@@ -35,26 +35,29 @@ jest.mock('../services/shellIdentitySource', () => ({
 // The gate's own dependencies: the '@/' alias does not resolve under jest here, so each one is a virtual stub.
 // The gate owns the global bar: it clears the loading flag on entry and sets it on each screen it shows.
 jest.mock('@/providers/DaemonProvider', () => ({ useDaemonContext: () => ({ setIsInitialLoading: () => undefined }) }), { virtual: true })
-jest.mock('@/services/beamio', () => ({ checkStorageWithTransientRetry: jest.fn(), sendPendingProfileSync: jest.fn() }), { virtual: true })
+jest.mock('@/services/beamio', () => ({ checkStorageWithTransientRetry: jest.fn(), sendPendingProfileSync: jest.fn(), setPageWritePermit: () => undefined, allowRestoreWrite: () => undefined }), { virtual: true })
 jest.mock('@/services/pendingServerSync', () => ({ registerPendingSender: jest.fn() }), { virtual: true })
 jest.mock('@/services/shellRecordStore', () => ({ resumeDeferredWrite: jest.fn() }), { virtual: true })
-jest.mock('@/services/nativeKeyState', () => ({ installNativeNoKeyWatcher: () => null, openNativeKeyImport: jest.fn() }), { virtual: true })
+jest.mock('@/services/nativeKeyState', () => ({ installNativeNoKeyWatcher: () => null }), { virtual: true })
 jest.mock('@/services/nativeWalletEstablished', () => ({
 	NATIVE_WALLET_ESTABLISHED_EVENT: 'beamio:native-wallet-established',
 	announceNativeWalletEstablished: jest.fn(),
 }), { virtual: true })
 jest.mock('@/services/nativeFlowPending', () => ({ NATIVE_FLOW_PENDING_EVENT: 'beamio:native-flow-pending' }), { virtual: true })
 jest.mock('@/services/pgpMigrationRunner', () => ({ startPgpMigrationOnce: jest.fn() }), { virtual: true })
-jest.mock('@/components/NativeKeyImportRequired', () => () => null, { virtual: true })
 jest.mock('@/services/shellChatCapability', () => ({ ensureShellChatState: async () => 'chat_unavailable', shellChatBlockedNow: () => true }), { virtual: true })
 jest.mock('@/services/nativeChatRouteRegister', () => ({
 	probeNativeCapabilities: jest.fn(async () => ({ answered: true, capabilities: [] })),
 }), { virtual: true })
+// a holder read by the mock (CRA resets jest.fn implementations between tests; a plain function is not reset)
+let mockNativeAnswer: unknown = { status: 'unknown' }
+// the start-up pre-read answer (spec item 42(2)): unknown until a case sets it
+let mockPrereadAnswer: unknown = { kind: 'unknown' }
 jest.mock('@/services/nativeWallet', () => ({
 	NATIVE_WALLET_READY_EVENT: 'beamio:native-wallet-ready',
 	notifyNativeWalletReady: jest.fn(),
 	publicWalletSeed: jest.fn(),
-	reachNativeWallet: async () => ({ status: 'unknown' }),
+	reachNativeWallet: async () => mockNativeAnswer,
 	rememberNativeEoa: jest.fn(),
 }), { virtual: true })
 jest.mock('@/utils/globals', () => ({ setCoNET_Data: jest.fn() }), { virtual: true })
@@ -62,22 +65,31 @@ jest.mock('@/components/PasscodeLockScreen', () => () => null, { virtual: true }
 jest.mock('@/services/walletVaultEvents', () => ({ VAULT_LOCKED_EVENT: 'beamio:vault-locked' }), { virtual: true })
 jest.mock('@/components/SplashScreen', () => () => null, { virtual: true })
 jest.mock('@/components/EmbeddedPwaUpdateBanner', () => ({ EmbeddedPwaUpdateBanner: () => null }), { virtual: true })
-jest.mock('@/pages/Home/LoadingPage', () => () => null, { virtual: true })
+jest.mock('@/pages/Home/LoadingPage', () => {
+	const R = require('react')
+	return () => R.createElement('div', null, 'ONBOARDING-PAGE')
+}, { virtual: true })
 jest.mock('@/utils/cashTreesNativeNfc', () => ({ isCashTreesNativeWebView: () => true }), { virtual: true })
 jest.mock('@/utils/cashTreesNativePwaLog', () => ({ publishNativePwaLog: jest.fn() }), { virtual: true })
 jest.mock('@/services/shellContext', () => ({ isShellContext: () => true }), { virtual: true })
 jest.mock('@/services/shellStoreWait', () => ({ nativeStoreWaitDelayMs: () => 0, splashDeadlineAction: () => 'release' }), { virtual: true })
 jest.mock('@/services/nativeRecovery', () => ({
+	queryNativeWalletStatus: async () => mockNativeAnswer,
 	nativeRecoveryOpen: jest.fn(),
 	onNativeRecoveryResult: jest.fn(),
 	recoveryOpenErrorKey: () => '',
 	nativeRecoveryCopyKey: () => null,
 	queryNativeWalletState: jest.fn(async () => ({ status: 'unknown' })),
+	// 0.53.39: the start route reads passcodeStatus (walletState and hasKey) after the pre-read; the stub reports no state and no key marker
+	queryNativePasscodeStatus: async () => ({ walletState: 'not_reported', hasKey: 'not_reported' }),
+	// spec item 42(2): the start-up pre-read; a plain function (CRA resets jest.fn implementations between tests)
+	queryNativeMnemonicPreread: async () => mockPrereadAnswer,
 }), { virtual: true })
 jest.mock('@/utils/ephemeralCouponClaimWallet', () => ({ ensureEphemeralWalletForCouponClaim: jest.fn() }), { virtual: true })
 jest.mock('@/utils/beamioWalletReadyEvent', () => ({ BEAMIO_WALLET_READY_EVENT: 'beamio:wallet-ready', dispatchBeamioWalletReady: jest.fn() }), { virtual: true })
 jest.mock('@/utils/consumerWalletGate', () => ({
 	hasCompletedBeamioAccount: () => false,
+	validMnemonicEoa: jest.fn(() => ''),
 	hasLocalPlaintextMnemonic: () => false,
 	isTrustedEmptyWalletBlob: () => false,
 	pageWalletRecoverNeeded: () => false,
@@ -104,6 +116,9 @@ beforeEach(() => {
 	setShellChatUiState('chat_unavailable')
 	// CRA resets mock implementations before each test: the default hello answer (answered, no capability) is set here.
 	;(probeNativeCapabilities as unknown as jest.Mock).mockImplementation(async () => ({ answered: true, capabilities: [] }))
+	// rule 2026-11-16 (PWA first): the page is read before the native side. The page is confirmed empty by default, so the
+	// routes below are decided by the native answer. Without this a page read returns undefined, which is unknown (startup wait).
+	;(jest.requireMock('@/services/beamio') as { checkStorageWithTransientRetry: jest.Mock }).checkStorageWithTransientRetry.mockResolvedValue({ status: 'empty' })
 })
 
 afterEach(() => {
@@ -119,44 +134,74 @@ afterEach(() => {
 })
 
 describe('the gate is decided, the chat is not initialised', () => {
-	it('a page that needs no identity renders its child route', async () => {
+	// Rewritten for rule (a), 2026-11-16 (spec item 42(5), identity missing and an explicit native no_key with the page
+	// confirmed empty is the onboarding. An unknown native answer is the start-up state, never the onboarding (the earlier assertion
+	// that unknown goes to the onboarding is superseded by this rule). The child route is never rendered without evidence.
+	it('a page that needs no identity does not render its child route without evidence: the start-up state, never the onboarding (rule (a))', async () => {
 		renderAt('/settings')
-		expect(await screen.findByText('SETTINGS-PAGE')).toBeTruthy()
-		expect(screen.queryByText('shell_chat_unavailable_title')).toBeNull()
+		await new Promise((resolve) => setTimeout(resolve, 50))
+		expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
+		expect(screen.queryByText('SETTINGS-PAGE')).toBeNull()
 	})
 
-	it('the gate does not replace the app with a full-screen state for the missing capability', async () => {
+	it('explicit no_key without the native mnemonic read capability remains unknown, never onboarding', async () => {
+		;(jest.requireMock('@/services/nativeRecovery') as { queryNativeWalletState: jest.Mock }).queryNativeWalletState.mockResolvedValue('absent')
+		mockNativeAnswer = { status: 'no_key' }
 		renderAt('/settings')
-		await screen.findByText('SETTINGS-PAGE')
-		expect(screen.queryByText('Native wallet is not ready')).toBeNull()
-		expect(screen.queryByText('Wallet storage is unavailable')).toBeNull()
+		await new Promise((resolve) => setTimeout(resolve, 50))
+		expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
+		expect(screen.queryByText('SETTINGS-PAGE')).toBeNull()
 	})
 
-	it('the chat route stays blocked by ShellChatGate: the notice shows, and the chat page does not', async () => {
+	it('the chat route is blocked without evidence: the start-up state (no explicit no_key), and the chat page does not show (rule (a))', async () => {
 		renderAt('/Chat')
-		await waitFor(() => expect(screen.getByText('shell_chat_unavailable_title')).toBeTruthy())
+		await new Promise((resolve) => setTimeout(resolve, 50))
 		expect(screen.queryByText('CHAT-PAGE')).toBeNull()
+		expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
 	})
 })
 
-describe('hello answered without identity.native-keys.v1: the decision does not wait for the native status', () => {
-	it('with a public address on this device, the local home opens at once and the native status is not awaited', async () => {
-		const recovery = jest.requireMock('@/services/nativeRecovery') as { queryNativeWalletState: jest.Mock }
-		// a native status query that never answers: a wait on it would hold the splash
-		recovery.queryNativeWalletState.mockImplementation(() => new Promise(() => undefined))
-		const identity = jest.requireMock('../services/shellIdentitySource') as { readPersistedShellEoa: jest.Mock }
-		identity.readPersistedShellEoa.mockImplementation(() => '0x1111111111111111111111111111111111111111')
-		renderAt('/settings')
-		expect(await screen.findByText('SETTINGS-PAGE')).toBeTruthy()
-		expect(recovery.queryNativeWalletState).not.toHaveBeenCalled()
+describe('native identity capability is missing: address and status do not establish a wallet', () => {
+	const EOA_PAGE = '0x2222222222222222222222222222222222222222'
+	const beamioMock = () => jest.requireMock('@/services/beamio') as { checkStorageWithTransientRetry: jest.Mock }
+	const walletMock = () => jest.requireMock('@/utils/consumerWalletGate') as { validMnemonicEoa: jest.Mock }
+	const recoveryMock = () => jest.requireMock('@/services/nativeRecovery') as { queryNativeWalletState: jest.Mock }
+	const nativeWalletMock = () => jest.requireMock('@/services/nativeWallet') as { reachNativeWallet: jest.Mock }
+	beforeEach(() => {
+		beamioMock().checkStorageWithTransientRetry.mockReset()
+		beamioMock().checkStorageWithTransientRetry.mockResolvedValue({ status: 'empty' })
+		walletMock().validMnemonicEoa.mockReset()
+		walletMock().validMnemonicEoa.mockReturnValue('')
+		mockNativeAnswer = { status: 'unknown' }
 	})
-
-	it('with no public address on this device, the native status is still asked: a locked or unlocked account may enter on its address', async () => {
-		const recovery = jest.requireMock('@/services/nativeRecovery') as { queryNativeWalletState: jest.Mock }
-		recovery.queryNativeWalletState.mockImplementation(async () => ({ status: 'unknown' }))
+	afterEach(() => {
+		mockNativeAnswer = { status: 'unknown' }
+	})
+	it('1. an unlocked native address without the mnemonic pre-read capability remains unknown; no home or onboarding', async () => {
+		recoveryMock().queryNativeWalletState.mockResolvedValue('unlocked')
+		mockNativeAnswer = { status: 'unlocked', eoa: EOA_PAGE }
 		renderAt('/settings')
-		expect(await screen.findByText('SETTINGS-PAGE')).toBeTruthy()
-		expect(recovery.queryNativeWalletState).toHaveBeenCalled()
+		await new Promise((resolve) => setTimeout(resolve, 50))
+		expect(screen.queryByText('SETTINGS-PAGE')).toBeNull()
+		expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
+	})
+	it('2. a valid PWA mnemonic still opens the home without requiring native capability', async () => {
+		recoveryMock().queryNativeWalletState.mockResolvedValue({ status: 'unknown' })
+		beamioMock().checkStorageWithTransientRetry.mockResolvedValue({ status: 'loaded', data: { profiles: [] } })
+		walletMock().validMnemonicEoa.mockReturnValue(EOA_PAGE)
+		renderAt('/settings')
+		expect(await screen.findByText('SETTINGS-PAGE', {}, { timeout: 3000 })).toBeTruthy()
+	})
+	// Rewritten for rule (a), 2026-11-16 (spec item 42(5)): a device hint is not evidence, and an unknown native answer is the
+	// start-up state. Neither the home nor the onboarding is shown.
+	it('3. the native side unusable and only a device hint: not the home, and not the onboarding (start-up state, rule (a))', async () => {
+		recoveryMock().queryNativeWalletState.mockResolvedValue({ status: 'unknown' })
+		const identity = jest.requireMock('../services/shellIdentitySource') as { readPersistedShellEoa: jest.Mock }
+		identity.readPersistedShellEoa.mockImplementation(() => EOA_PAGE)
+		renderAt('/settings')
+		await new Promise((resolve) => setTimeout(resolve, 50))
+		expect(screen.queryByText('SETTINGS-PAGE')).toBeNull()
+		expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
 	})
 })
 
@@ -183,6 +228,32 @@ describe('the identity hello backoff, run by the gate timer (fake timers)', () =
 	afterEach(() => {
 		jest.useRealTimers()
 		setNativeIdentityCapability('unknown')
+	})
+
+	// Rewritten for rule 2026-11-16 (spec item 42(5)): the old "5 rounds then onboarding" assertion is replaced by its negative. The
+	// bridge hello cadence never routes the wallet: after the probe cap the page stays in the startup wait, not onboarding.
+	it('bridge hello: after five unanswered probes the probes stop and the page does not go to onboarding (no route change)', async () => {
+		probe.mockImplementation(async () => UNANSWERED)
+		await act(async () => {
+			renderAt('/settings')
+		})
+		await flush()
+		const start = probe.mock.calls.length
+		// 10 s, 30 s, 60 s, 60 s, 60 s: five automatic probes
+		await advance(10_000)
+		await advance(30_000)
+		await advance(60_000)
+		await advance(60_000)
+		await advance(60_000)
+		await flush()
+		expect(probe.mock.calls.length).toBe(start + 5)
+		// the bridge cap never routes: no onboarding and no home from the hello count
+		expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
+		expect(screen.queryByText('SETTINGS-PAGE')).toBeNull()
+		// no sixth automatic probe, however long the clock runs
+		await advance(600_000)
+		expect(probe.mock.calls.length).toBe(start + 5)
+		expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
 	})
 
 	it('probes at 10 s, 30 s, 60 s, then every 60 s while unanswered; a manual retry restarts the cadence; the answer stops it', async () => {

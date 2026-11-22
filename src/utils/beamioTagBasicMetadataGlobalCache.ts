@@ -28,8 +28,12 @@ type StoredEntry = {
 
 const memory = new Map<string, BeamioTagBasicMetadata>()
 
+/**
+ * 2026-11-17 rule (#1, UN-04/05): an address is case-insensitive, so its index key is lower case. A BeamioTag is case-sensitive on chain
+ * (keccak256 of the exact name), so its index key keeps the exact name. Alice and alice are two keys.
+ */
 function indexKey(kind: 'addr' | 'tag', value: string): string {
-	return `${PREFIX}${kind}:${value.toLowerCase()}`
+	return `${PREFIX}${kind}:${kind === 'addr' ? value.toLowerCase() : value}`
 }
 
 function parseEntry(raw: string): BeamioTagBasicMetadata | null {
@@ -60,23 +64,29 @@ function peekRaw(kind: 'addr' | 'tag', value: string): BeamioTagBasicMetadata | 
 	}
 }
 
-/** 按当前搜索词尝试命中：完整地址 → addr 索引；否则 → tag 索引（与 @ 无关的小写 tag） */
+/**
+ * 按当前搜索词尝试命中：完整地址 → addr 索引；否则 → tag 索引。The tag hit is exact: the cached username must equal the query as typed
+ * (after trim and the leading @). A different case is a miss and goes to the server; an old entry keyed in lower case for a
+ * name written in another case is also a miss (it is kept, not deleted or migrated).
+ */
 export function peekBeamioTagBasicMetadataForQuery(keyward: string): BeamioTagBasicMetadata | null {
 	const q: string = String(keyward ?? '').trim()
 	if (!q) return null
 	if (ethers.isAddress(q)) {
 		return peekRaw('addr', ethers.getAddress(q).toLowerCase())
 	}
-	const qTagSource = String(keyward ?? '').trim()
-	const tag = qTagSource.replace(/^@+/, '').toLowerCase()
+	const tag = String(keyward ?? '').trim().replace(/^@+/, '').trim()
 	if (!tag) return null
-	return peekRaw('tag', tag)
+	const hit = peekRaw('tag', tag)
+	if (!hit || (hit.username ?? '') !== tag) return null
+	return hit
 }
 
 export function rememberBeamioTagBasicMetadata(meta: BeamioTagBasicMetadata): void {
 	const addr = (meta.address || '').trim().toLowerCase()
 	if (!addr || !ethers.isAddress(addr)) return
-	const tag = (meta.username || '').trim().toLowerCase()
+	// the exact name as the server returned it
+	const tag = (meta.username || '').trim().replace(/^@+/, '')
 	const normAddr = ethers.getAddress(addr).toLowerCase()
 	const payload: StoredEntry = {
 		v: 1,

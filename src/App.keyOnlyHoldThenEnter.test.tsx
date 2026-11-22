@@ -49,7 +49,11 @@ jest.mock('@/providers/DaemonProvider', () => {
 
 // Storage: the App's read and the gate's read both end the same way for a case.
 jest.mock('@/services/beamio', () => ({
+	setPageWritePermit: () => undefined, // 0.53.44: the session write gate (AppEntryGate); stub here
+	allowRestoreWrite: () => undefined,
+  endRestoreWriteWindow: () => undefined,
 	...jest.requireActual('@/services/beamio'),
+	checkStorageWithStatusWithTimeout: async () => ({ status: 'empty' }), // 0.53.39: jsdom has no IndexedDB; the page copy is confirmed empty unless the test sets it
 	// The App's own read: nothing at the first init (the hold), a key-only record at the next one.
 	checkStorage: () => { (globalThis as any).__appReads = ((globalThis as any).__appReads || 0) + 1; return Promise.resolve((globalThis as any).__appReads === 1 ? null : { ChannelPartners: [], isReady: true, nonce: 0, referrals: [], ver: 1, beamio: { createdAt: 1, currency: 'USD', tax: '0', language: 'en' }, profiles: [{ keyID: '0x1111111111111111111111111111111111111111', privateKeyArmor: '0x' + '11'.repeat(32), isPrimary: true, index: 0, isNode: false, type: 'ethereum', referrer: null, tokens: [], webFilter: true, aaAccount: '' }] }) },
 	// The entry gate's read stays pending in this case: the key-only entry must show the bar by itself.
@@ -80,6 +84,8 @@ jest.mock('@/services/nativeRecovery', () => ({
 	recoveryOpenErrorKey: () => '',
 	nativeRecoveryCopyKey: () => null,
 	queryNativeWalletState: async () => 'present',
+	queryNativeWalletStatus: async () => ({ status: 'no_key' }), // 0.53.39 stub: the start route reads walletStatus
+	queryNativePasscodeStatus: async () => ({ walletState: await (async () => 'present')(), hasKey: 'not_reported' as const }),
 	queryNativeWalletStateSafe: async () => 'present',
 }))
 jest.mock('@/services/shellChatCapability', () => ({ ...jest.requireActual('@/services/shellChatCapability'), ensureShellChatState: async () => 'native_chat', shellChatBlockedNow: () => false }))
@@ -120,7 +126,9 @@ function renderApp() {
 const publishNativePwaLog = (): jest.Mock => require('@/utils/cashTreesNativePwaLog').publishNativePwaLog
 
 describe('a hold, then a key-only entry in the same session', () => {
-	it('the bar shows after the key-only entry, although the first init held the flag', async () => {
+	// Old expectation (before 2026-11-17): "the bar shows after the key-only entry, although the first init held the flag".
+	// New: a key without a valid mnemonic is never an entry; the bar stays hidden.
+	it('a key-only record with no valid mnemonic is not an entry, even after the wallet-ready event: the bar stays hidden', async () => {
 		;(globalThis as any).__appReads = 0
 		renderApp()
 		// The first init reads nothing and holds the bar (the loading flag stays set).
@@ -131,7 +139,13 @@ describe('a hold, then a key-only entry in the same session', () => {
 		await act(async () => {
 			window.dispatchEvent(new Event('beamio:wallet-ready'))
 		})
-		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy(), { timeout: 3000 })
-		expect(publishNativePwaLog().mock.calls.some((c: unknown[]) => String(c[1]).includes('key-only account (no local mnemonic) — app entered'))).toBe(true)
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 50))
+		})
+		expect(screen.queryByRole('button', { name: 'search' })).toBeNull()
+		expect(publishNativePwaLog().mock.calls.some((c: unknown[]) => String(c[1]).includes('key-only account (no local mnemonic) — app entered'))).toBe(false)
+		// rule: not an account, so no push is bound for it and no chat starts
+		expect(mockPushBinds).toHaveLength(0)
+		expect(mockChatStarts).toHaveLength(0)
 	})
 })

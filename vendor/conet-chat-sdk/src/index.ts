@@ -9,7 +9,7 @@
  * ```ts
  * import { createBeamioChatClient } from '@conet.project/chat-sdk'
  * const client = createBeamioChatClient(config, {
- *   workerFactory: => new Worker(new URL('@conet.project/chat-sdk/worker', import.meta.url), { type: 'module' }),
+ * workerFactory: => new Worker(new URL('@conet.project/chat-sdk/worker', import.meta.url), { type: 'module' }),
  * })
  * await client.init()
  * client.on('message', (env) => addNewMessage(env.line)) // host serial queue + checkSign
@@ -17,6 +17,7 @@
  */
 
 export { createBeamioChatClient } from './client.js'
+export { runFirstOpenInWorker } from './client.js'
 export type { BeamioChatClientOptions } from './client.js'
 
 export {
@@ -49,6 +50,7 @@ export type {
 	VoicePeerChannel,
 } from './voice-v3.js'
 export type { VoiceOfferArgs } from './protocol.js'
+export type { FirstOpenRequest, FirstOpenResult } from './protocol.js'
 export type { AccountSignFn, AccountSignRequest, AccountSigning } from './signer.js'
 export { createAccountSigning } from './signer.js'
 export {
@@ -154,5 +156,31 @@ export type {
 	Viewport as ChatLocalViewport,
 } from './local/types.js'
 
-/** Local-library key derivation for the wallet layer . The wallet layer derives; the store receives subkeys. */
+/** Local-library key derivation for the wallet layer. The wallet layer derives; the store receives subkeys. */
 export { deriveLocalKeys, deriveRootDb, kcvOf, sendKeyFromRecord, stableIdFromSendKey, convBlindOf, cidBlindOf, layoutKeyBlindOf } from './local/keys.js'
+
+/** The automatic first open and the claim gate. */
+export {
+	chainReadFromLookup,
+	chainBackupFromRead,
+	restoreKindFromRead,
+	firstOpenDecision,
+	isFirstOpenCandidate,
+	classifyLocalIdentity,
+	wellFormedPublicArmor,
+	withFirstOpenLock,
+	runFirstOpen,
+	generatePgpKeyPair,
+} from './firstOpen.js'
+export type {
+	ChatInitStatus,
+	ChainPgpRead,
+	ChainBackupRead,
+	RestoreKind,
+	FirstOpenDecision,
+	RegisterClass,
+	PendingKey,
+	FirstOpenInputs,
+	FirstOpenDeps,
+	ChatInitResult,
+} from './firstOpen.js'

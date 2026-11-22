@@ -1,5 +1,5 @@
 /**
- * Public identity from the native layer (adopted by the project owner 2026-11-13). The page reads the public
+ * Public identity from the native layer. The page reads the public
  * material of the account with `identityPublic` (G2 only, read-only). No key, passphrase, recovery code, mnemonic or backup text
  * ever comes back: the result carries only the EOA, the account key, and the public PGP and route material.
  *
@@ -51,9 +51,11 @@ export type NativeIdentityPublic =
 			ownRouteArmoredPublicKey?: string
 	  }
 	| { kind: 'no_key'; kPresent?: boolean }
+	/** HC-LOCK: the native lock. Not identity missing and not a bad identity; the caller takes the unlock branch. */
+	| { kind: 'locked' }
 	| { kind: 'not_ready' | 'bad_request' | 'key_over_bridge_refused' | 'unavailable' | 'bad_identity' }
 
-/** Y.90: the top-level kPresent of an ok:false no_key answer. Read only when the shell declares identity.kpresent.v1; otherwise absent. */
+/**: the top-level kPresent of an ok:false no_key answer. Read only when the shell declares identity.kpresent.v1; otherwise absent. */
 export const IDENTITY_KPRESENT_CAPABILITY = 'identity.kpresent.v1'
 export function kPresentFromNoKeyAnswer(payload: unknown, capabilities: readonly string[]): boolean | undefined {
 	if (!capabilities.includes(IDENTITY_KPRESENT_CAPABILITY)) return undefined
@@ -144,6 +146,8 @@ export async function readNativeIdentityPublic(timeoutMs: number = TIMEOUT_MS): 
 	switch (p.error) {
 		case 'no_key':
 			return { kind: 'no_key', kPresent: kPresentFromNoKeyAnswer(p, capabilities) }
+		case 'locked':
+			return { kind: 'locked' }
 		case 'not_ready':
 		case 'bad_request':
 		case 'key_over_bridge_refused':

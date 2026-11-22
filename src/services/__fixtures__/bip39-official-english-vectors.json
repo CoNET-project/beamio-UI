@@ -1,0 +1,35 @@
+{
+  "header": {
+    "purpose": "BIP-39 official English test vectors used by the mnemonic-to-EOA tests (test support only; never funded, never on chain).",
+    "source": "trezor/python-mnemonic, vectors.json, English section: https://github.com/trezor/python-mnemonic/blob/master/vectors.json",
+    "entries_checked_against_source": [
+      "zero-12",
+      "legal-12",
+      "zero-18",
+      "zero-24"
+    ],
+    "note": "Each entry's mnemonic is re-derived from its entropy at test time and must match. Other test phrases are generated at run time by the loader; none is stored here."
+  },
+  "entries": [
+    {
+      "id": "zero-12",
+      "entropy": "00000000000000000000000000000000",
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+    },
+    {
+      "id": "legal-12",
+      "entropy": "7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
+      "mnemonic": "legal winner thank year wave sausage worth useful legal winner thank yellow"
+    },
+    {
+      "id": "zero-18",
+      "entropy": "000000000000000000000000000000000000000000000000",
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon agent"
+    },
+    {
+      "id": "zero-24",
+      "entropy": "0000000000000000000000000000000000000000000000000000000000000000",
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+    }
+  ]
+}

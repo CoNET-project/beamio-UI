@@ -63,3 +63,19 @@ export const webSocketConstructorIsRefused = (): boolean => scope.WebSocket === 
 
 /** Informational: a shell guard declared itself via the flag. It does not change what this module does. */
 export const shellGuardDeclared = (): boolean => scope[SHELL_WS_GUARD_FLAG] === true
+
+/**
+ * Runtime refusal probe. It constructs the global WebSocket without a URL. With the project refusal installed, the
+ * construction is refused before any network use and the probe answers 'refused'. 'not_guarded' means the global is not the project
+ * refusal (a shell guard, or none). 'other' is any other answer. The probe never opens a connection.
+ */
+export type WebSocketProbeResult = 'refused' | 'not_guarded' | 'other'
+export const probeWebSocketRefusal = (): WebSocketProbeResult => {
+	if (scope.WebSocket !== RefusedWebSocket) return 'not_guarded'
+	try {
+		new (scope.WebSocket as new () => object)()
+		return 'other'
+	} catch (e) {
+		return (e as Error)?.message === WEBSOCKET_REFUSAL ? 'refused' : 'other'
+	}
+}

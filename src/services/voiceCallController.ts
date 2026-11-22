@@ -1,6 +1,8 @@
 import { markCallTiming, timeCallStep } from '@/utils/callTiming'
 import { cachedReadKey, cachedWallet } from '@/utils/dialKeyCache'
 import { mailboxNodeIps } from '@/utils/dialPathHelpers'
+import { callAllowed } from './callCapability'
+import { getCallCapabilityState } from './callCapabilityRuntime'
 import { createMessage, encrypt, enums } from 'openpgp'
 import {
 	createVoiceSessionKey,
@@ -309,6 +311,8 @@ export function createVoiceCallController(options: VoiceCallControllerOptions) {
 	 * the callee creates all four channels when it answers.
 	 */
 	const startOutgoing = async (): Promise<VoiceCallChannel | null> => {
+		// Fail closed: a shell that is old, or not yet answered, does not start a call.
+		if (!callAllowed(getCallCapabilityState())) return null
 		const ringId = randomMailboxVoiceSessionId()
 		const uiKey = createVoiceSessionKey()
 		const ownRoute = getOwnMailboxRouteArmor()
@@ -426,6 +430,7 @@ export function createVoiceCallController(options: VoiceCallControllerOptions) {
 	 * pick) and send the accept to the caller's mailbox as a chat message.
 	 */
 	const acceptIncoming = async (offer: VoiceCallSignal): Promise<VoiceCallChannel | null> => {
+		if (!callAllowed(getCallCapabilityState())) return null
 		// Native shell owns Accept + temporary media (AES accept + AudioRecord/Track).
 		// PWA must not start worker listen or chat-send accept on shell.
 		if (isCashTreesNativeWebView()) {

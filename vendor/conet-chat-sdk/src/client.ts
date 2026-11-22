@@ -5,7 +5,7 @@
  *
  * The host supplies the Worker instance (via `workerFactory`) so the SDK stays
  * bundler-agnostic: CRA/Vite/webpack each create the worker their own way, e.g.
- *   new Worker(new URL('@beamio/chat-sdk/worker', import.meta.url), { type: 'module' })
+ * new Worker(new URL('@beamio/chat-sdk/worker', import.meta.url), { type: 'module' })
  */
 
 import type {
@@ -36,6 +36,8 @@ import { CHAT_DAEMON_PROTOCOL_VERSION } from './protocol.js'
 import type {
 	ChatDaemonHello,
 	VoiceOfferArgs,
+	FirstOpenRequest,
+	FirstOpenResult,
 	WorkerInbound,
 	WorkerInitPayload,
 	WorkerOutbound,
@@ -173,9 +175,17 @@ class BeamioChatClientImpl implements BeamioChatClient {
 		return this.historyBridge
 	}
 
+	/** The last page-side step of init: where a start stalled. Read by the page when the ready watchdog fires. */
+	private startStepName: 'idle' | 'worker_created' | 'nodes_loaded' | 'init_sent' | 'ready' = 'idle'
+
+	get startStep(): string {
+		return this.startStepName
+	}
+
 	async init(): Promise<void> {
 		if (this.worker) return
 		this.worker = this.options.workerFactory()
+		this.startStepName = 'worker_created'
 		this.worker.addEventListener('message', (ev: MessageEvent<WorkerOutbound>) => this.onWorkerMessage(ev.data))
 		this.worker.addEventListener('error', (ev: ErrorEvent) => {
 			const detail = ev.message || 'unknown worker error'
@@ -188,6 +198,7 @@ class BeamioChatClientImpl implements BeamioChatClient {
 			this.rejectPending(error)
 		})
 		this.nodes = await this.config.getNodes().catch(() => [])
+		this.startStepName = 'nodes_loaded'
 		this.routes = []
 		const payload: WorkerInitPayload = {
 			identity: workerIdentity(this.config.identity),
@@ -206,7 +217,9 @@ class BeamioChatClientImpl implements BeamioChatClient {
 		// PGP unlock plus the first mailbox listen can exceed the default 20s
 		// worker RPC budget. Destroying the worker at that point leaves the
 		// next voice call with no live listen.
+		this.startStepName = 'init_sent'
 		await this.request<void>({ type: 'init', reqId: 0, payload }, 180_000)
+		this.startStepName = 'ready'
 	}
 
 	/** `hello` (protocol v1). Null when the worker is not running or did not answer. */
@@ -267,6 +280,10 @@ class BeamioChatClientImpl implements BeamioChatClient {
 	/** After presence: true/false when the mailbox lookup is trusted; null when it is not. */
 	async queryNativeWake(contact: ChatRoute): Promise<boolean | null> {
 		return this.request<boolean | null>({ type: 'queryNativeWake', reqId: 0, contact })
+	}
+
+	async firstOpen(request: FirstOpenRequest): Promise<FirstOpenResult> {
+		return this.request<FirstOpenResult>({ type: 'firstOpen', reqId: 0, request }, 60_000)
 	}
 
 	/** Encrypt & POST an arbitrary mailbox command (e.g. gossip_delivery_ack) to route B via entry C ≠ B. */
@@ -511,4 +528,46 @@ export function createBeamioChatClient(
 	): Promise<boolean>
 } {
 	return new BeamioChatClientImpl(config, options)
+}
+
+/**
+ * The automatic first open in its own worker (plan step c). The gossip client is not started yet at the key stage, so this creates a worker
+ * for the one command and ends it. The worker's account signatures (registration) are answered by `signAccount` (the host's signer). The
+ * answer is the status and the key ID only; the worker is terminated after the answer, the timeout or a refusal.
+ */
+export function runFirstOpenInWorker(
+	workerFactory: () => Worker,
+	request: FirstOpenRequest,
+	signAccount: (req: import('./signer.js').AccountSignRequest) => Promise<string>,
+	timeoutMs = 90_000,
+): Promise<FirstOpenResult> {
+	return new Promise<FirstOpenResult>((resolve, reject) => {
+		const worker = workerFactory()
+		const reqId = 1
+		let settled = false
+		const finish = (fn: () => void) => {
+			if (settled) return
+			settled = true
+			clearTimeout(timer)
+			worker.terminate()
+			fn()
+		}
+		const timer = setTimeout(() => finish(() => reject(new Error('first_open_timeout'))), timeoutMs)
+		worker.onmessage = (ev: MessageEvent) => {
+			const msg = ev.data as { type?: string; reqId?: number; ok?: boolean; result?: FirstOpenResult; error?: string; request?: import('./signer.js').AccountSignRequest }
+			if (msg?.type === 'signRequest') {
+				const sreq = msg.reqId as number
+				void signAccount(msg.request as import('./signer.js').AccountSignRequest)
+					.then((signature) => worker.postMessage({ type: 'signResponse', reqId: sreq, ok: true, signature }))
+					.catch(() => worker.postMessage({ type: 'signResponse', reqId: sreq, ok: false, error: 'sign_refused' }))
+				return
+			}
+			if (msg?.type === 'ack' && msg.reqId === reqId) {
+				if (msg.ok && msg.result) finish(() => resolve(msg.result as FirstOpenResult))
+				else finish(() => reject(new Error(msg.error || 'first_open_failed')))
+			}
+		}
+		worker.onerror = () => finish(() => reject(new Error('first_open_worker_error')))
+		worker.postMessage({ type: 'firstOpen', reqId, request })
+	})
 }

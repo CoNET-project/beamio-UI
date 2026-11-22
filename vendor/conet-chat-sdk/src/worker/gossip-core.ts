@@ -4,10 +4,10 @@
  * freeze in SilentPassUI `services/chat.ts` L945-955 inbound decrypt).
  *
  * Ported from SilentPassUI `services/chat.ts`:
- *  - `startGossip` (SSE connect/reconnect, entry health, single in-flight read)
- *  - inbound decrypt → emit host-ready line
- *  - `sendMessage` (encrypt → POST to entry A ≠ B)
- *  - `wallet_online_query` presence (encrypt to mailbox B route key, POST via C ≠ B)
+ * - `startGossip` (SSE connect/reconnect, entry health, single in-flight read)
+ * - inbound decrypt → emit host-ready line
+ * - `sendMessage` (encrypt → POST to entry A ≠ B)
+ * - `wallet_online_query` presence (encrypt to mailbox B route key, POST via C ≠ B)
  *
  * Routing rules preserved (repo `conet-p2p-mailbox-routing-protocol`,
  * `beamio-conet-chat-protocol`, `src/docs/gitbook/l0/si-developer-guide.md`):
@@ -82,6 +82,67 @@ import {
 } from '../group.js'
 import type { GroupTombstoneV1 } from '../types.js'
 import { armorToString, buildPostBody, encryptOpaqueVoiceCommand, encryptRouteCommand, encryptVoiceChunkLiteral, wrapArmorToEntryRoute, wrapArmorToMailboxWork } from '../envelope.js'
+
+/**
+ * Step timeouts of the SSE start. A step that does not answer in time fails with a named error (`sign_timeout` or
+ * `wrap_timeout`). The start-up path logs the class and retries with the existing backoff; a wrap timeout relaunches the listen like any
+ * other connect failure. Key material is never part of these messages.
+ */
+export const LISTEN_SIGN_TIMEOUT_MS = 20_000
+export const WRAP_TIMEOUT_MS = 10_000
+
+export type ListenStep = 'sign' | 'wrap'
+
+export class ListenStepError extends Error {
+	constructor(readonly step: ListenStep) {
+		super(`${step}_timeout`)
+		this.name = 'ListenStepError'
+	}
+}
+
+/** Rejects with ListenStepError(step) when `p` has not settled within `ms`. The late result of `p` is ignored. */
+export function withStepTimeout<T>(p: Promise<T>, step: ListenStep, ms: number): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined
+	return Promise.race([
+		p,
+		new Promise<never>((_, reject) => {
+			timer = setTimeout(() => reject(new ListenStepError(step)), ms)
+		}),
+	]).finally(() => clearTimeout(timer))
+}
+
+/** The class of a start-up error for the log: a named step timeout, a failed fetch, or other (message not logged). */
+export function listenErrorClass(ex: unknown): 'sign_timeout' | 'wrap_timeout' | 'fetch_failed' | 'other' {
+	if (ex instanceof ListenStepError) return ex.step === 'sign' ? 'sign_timeout' : 'wrap_timeout'
+	const msg = (ex as { message?: unknown })?.message
+	if (typeof msg === 'string' && /failed to fetch|networkerror|fetch failed/i.test(msg)) return 'fetch_failed'
+	return 'other'
+}
+
+/**
+ * A message that may be shown or logged: armor blocks, long hex and long base64 runs are removed, and the text is cut.
+ * Used only for the `other` class; the named classes never carry a message.
+ */
+export function sanitizeErrorMessage(msg: string): string {
+	return String(msg ?? '')
+		.replace(/-----BEGIN PGP[\s\S]*?-----END PGP[^\n]*/g, '[armor]')
+		.replace(/0x[0-9a-fA-F]{8,}/g, '0x…')
+		.replace(/[A-Za-z0-9+/=_-]{32,}/g, '…')
+		.slice(0, 120)
+}
+
+/** The start-up error log line: the class for every named class; the sanitized message only for `other`. */
+export function listenErrorLogLine(ex: unknown): string {
+	const cls = listenErrorClass(ex)
+	if (cls !== 'other') return `startListen error [${cls}]`
+	const msg = (ex as { message?: unknown })?.message
+	return `startListen error [other]: ${sanitizeErrorMessage(typeof msg === 'string' ? msg : String(ex))}`
+}
+
+/** The status reason: the class only. The raw message is never a status reason. */
+export function listenStatusReason(ex: unknown): string {
+	return listenErrorClass(ex)
+}
 import {
 	VOICE_KIND_AUDIO,
 	VOICE_KIND_CONTROL,
@@ -420,7 +481,7 @@ export class GossipCore {
 			// Fresh stream key per listen: B seals every frame with it, so the
 			// entry relaying the SSE cannot read the recipient key ID.
 			const streamKey = await createMailboxStreamKey()
-			const innerArmor = await encryptRouteCommand(
+			const innerArmor = await withStepTimeout(encryptRouteCommand(
 				this.wallet,
 				{
 					command: 'mailbox_listen',
@@ -429,7 +490,7 @@ export class GossipCore {
 					streamKey: streamKey.base64,
 				},
 				ownRouteKey,
-			)
+			), 'sign', LISTEN_SIGN_TIMEOUT_MS)
 			this.listenStreamKey = streamKey.key
 			this.listenStreamFailures = 0
 
@@ -451,9 +512,9 @@ export class GossipCore {
 
 			this.spawnGossip(healthyNodes, innerArmor, rootSignal)
 		} catch (ex) {
-			this.emit.log('error', `startListen error: ${(ex as Error)?.message ?? String(ex)}`)
+			this.emit.log('error', listenErrorLogLine(ex))
 			this.clearListen('connect_failed')
-			this.emit.status('error', (ex as Error)?.message)
+			this.emit.status('error', listenStatusReason(ex))
 			setTimeout(() => void this.startListen(), 6_000)
 		}
 	}
@@ -528,8 +589,8 @@ export class GossipCore {
 			let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
 			let pendingRead: Promise<ReadableStreamReadResult<Uint8Array>> | null = null
 			try {
-				const armored = await wrapArmorToEntryRoute(innerArmor, node.armoredPublicKey)
 				connectTimer = setTimeout(() => controller.abort('connect_timeout'), config.connectTimeout)
+				const armored = await withStepTimeout(wrapArmorToEntryRoute(innerArmor, node.armoredPublicKey), 'wrap', WRAP_TIMEOUT_MS)
 				const res = await fetch(url, {
 					method: 'POST',
 					headers: {
@@ -610,7 +671,7 @@ export class GossipCore {
 				if (GOSSIP_STOP_REASONS.has(msg)) return
 				if ((err as { name?: string })?.name === 'AbortError' && rootSignal.aborted) return
 				if ((err as { name?: string })?.name !== 'AbortError') {
-					this.emit.log('warn', `SSE error (${node.domain}): ${msg}`)
+					this.emit.log('warn', `SSE error (${node.domain}): ${sanitizeErrorMessage(msg)}`)
 				}
 				if (msg === 'connect_timeout' || msg === 'idle_timeout' || msg === 'Failed to fetch') {
 					markGossipNodeBad(node.domain)

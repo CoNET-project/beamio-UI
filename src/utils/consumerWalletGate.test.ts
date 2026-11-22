@@ -9,13 +9,14 @@ const withEoaNoMnemonic = { profiles: [{ keyID: EOA, privateKeyArmor: 'ARMOR' }]
 const withMnemonicNoEoaKeyless = { profiles: [{ keyID: EOA }], mnemonicPhrase: 'w w w', beamio: { accountName: 'alice' } } as any
 
 describe('scheme A: the shell never routes to page recovery; the EOA key is the native account', () => {
-	it('shell: an EOA key without a plaintext mnemonic is entered, not recovered', () => {
+	// Reviewed 2026-11-17: the expectation is a routing flag only (no page recovery). The account is decided by the native walletEoaAddress, not by this record.
+	it('shell: an EOA key without a plaintext mnemonic is not a page recovery (the native side decides the account; the page record alone is not an account)', () => {
 		expect(pageWalletRecoverNeeded(withEoaNoMnemonic, true)).toBe(false)
 		expect(pagePlaintextMnemonicMissing(withEoaNoMnemonic, true)).toBe(false)
 	})
 
-	it('browser: the old rule holds (a registered account without a plaintext mnemonic is recovered)', () => {
-		expect(pageWalletRecoverNeeded(withEoaNoMnemonic, false)).toBe(true)
+	it('rule E: in the browser a key-only record (no mnemonic) is onboarding, not recovery; the record is kept (nothing is written here)', () => {
+		expect(pageWalletRecoverNeeded(withEoaNoMnemonic, false)).toBe(false)
 		expect(pagePlaintextMnemonicMissing(withEoaNoMnemonic, false)).toBe(true)
 	})
 

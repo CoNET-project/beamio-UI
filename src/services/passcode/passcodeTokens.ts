@@ -1,4 +1,4 @@
-/** Visual tokens (passcode-tokens.v1.json, copied from the interface owner's file). Used by the PWA; the shells generate constants from the same file. */
+/** Visual tokens (passcode-tokens.v1.json, copied from the interface maintainers' file). Used by the PWA; the shells generate constants from the same file. */
 import tokens from './passcode-tokens.v1.json'
 
 export interface PasscodeTokens {

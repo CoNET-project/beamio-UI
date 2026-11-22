@@ -1,70 +1,38 @@
 /**
- * Locked page for a native shell with no key. The page asks the shell to open its import screen and never
- * takes a key. SYNTHETIC: no key material in this file.
+ * @jest-environment node
+ *
+ * Spec item 41 and rule (b) (2026-11-16): the native import entry is retired. The locked page NativeKeyImportRequired is deleted,
+ * and no production source of the PWA holds an import entry, an import command or its copy. Rewritten from the render test of the
+ * import button: the entry is asserted absent. Source check only; no key material is used.
  */
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import NativeKeyImportRequired from './NativeKeyImportRequired'
-import { openNativeKeyImport, readNativeWalletStatus } from '../services/nativeKeyState'
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
+import { join } from 'path'
 
-jest.mock('../services/nativeKeyState', () => ({
-	openNativeKeyImport: jest.fn(),
-	readNativeWalletStatus: jest.fn(),
-}))
+const SRC = join(__dirname, '..')
 
-// The copy comes from the locale files (checked in locale tests); here the key is returned so the test sees which line shows.
-jest.mock('../locale/beamioLocale', () => ({
-	tu: (key: string) => key,
-}))
+function productionSources(dir: string, out: string[] = []): string[] {
+	for (const name of readdirSync(dir)) {
+		const full = join(dir, name)
+		if (statSync(full).isDirectory()) {
+			if (name !== '__fixtures__' && name !== 'node_modules') productionSources(full, out)
+			continue
+		}
+		if (/\.(ts|tsx)$/.test(name) && !/\.test\.|\.static\.test\./.test(name)) out.push(full)
+	}
+	return out
+}
 
-const openMock = openNativeKeyImport as jest.MockedFunction<typeof openNativeKeyImport>
-const statusMock = readNativeWalletStatus as jest.MockedFunction<typeof readNativeWalletStatus>
-
-beforeEach(() => {
-	openMock.mockReset()
-	statusMock.mockReset()
-})
-
-describe('NativeKeyImportRequired', () => {
-	it('shows no text input: the key is typed only on the native import screen', () => {
-		const { container } = render(<NativeKeyImportRequired />)
-		expect(container.querySelector('input, textarea')).toBeNull()
+describe('the native import entry does not exist (spec item 41, rule (b))', () => {
+	it('the locked import page file is deleted', () => {
+		expect(existsSync(join(__dirname, 'NativeKeyImportRequired.tsx'))).toBe(false)
 	})
 
-	it('the import button asks the shell to open its import screen, and shows no error when it opens', async () => {
-		openMock.mockResolvedValue('opened')
-		render(<NativeKeyImportRequired />)
-		fireEvent.click(screen.getAllByRole('button')[0])
-		await waitFor(() => expect(openMock).toHaveBeenCalledTimes(1))
-		expect(screen.queryByRole('alert')).toBeNull()
-	})
-
-	it('a refused or unavailable import screen shows the failure line', async () => {
-		openMock.mockResolvedValue('not_supported')
-		render(<NativeKeyImportRequired />)
-		fireEvent.click(screen.getAllByRole('button')[0])
-		expect(await screen.findByRole('alert')).toBeTruthy()
-	})
-
-	it('after the import screen opens, walletStatus is read only once the page is visible again', async () => {
-		openMock.mockResolvedValue('opened')
-		statusMock.mockResolvedValue('no_key')
-		render(<NativeKeyImportRequired />)
-		fireEvent.click(screen.getAllByRole('button')[0])
-		await waitFor(() => expect(openMock).toHaveBeenCalledTimes(1))
-		// Let the opened result land and the return listeners attach.
-		await act(async () => {
-			await new Promise((r) => setTimeout(r, 0))
-		})
-		expect(statusMock).not.toHaveBeenCalled()
-		document.dispatchEvent(new Event('visibilitychange'))
-		await waitFor(() => expect(statusMock).toHaveBeenCalledTimes(1))
-	})
-
-	it('a not_available import screen shows the failure line and reads no status', async () => {
-		openMock.mockResolvedValue('not_available')
-		render(<NativeKeyImportRequired />)
-		fireEvent.click(screen.getAllByRole('button')[0])
-		expect(await screen.findByRole('alert')).toBeTruthy()
-		expect(statusMock).not.toHaveBeenCalled()
+	it('no production source calls openNativeKeyImport, sends nativeImportOpen, or shows the import copy', () => {
+		const hits: string[] = []
+		for (const file of productionSources(SRC)) {
+			const text = readFileSync(file, 'utf8')
+			if (/openNativeKeyImport|nativeImportOpen|native_key_required_import|NativeKeyImportRequired/.test(text)) hits.push(file)
+		}
+		expect(hits).toEqual([])
 	})
 })

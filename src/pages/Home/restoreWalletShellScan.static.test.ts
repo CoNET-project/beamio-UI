@@ -45,7 +45,7 @@ describe('the restore page in a shell does not scan and does not write a scan re
 		const submitAt = src.indexOf('const handleRecoverySubmit = async (e: FormEvent) => {')
 		expect(submitAt).toBeGreaterThan(0)
 		const shellGuard = src.indexOf('if (shell) {', submitAt)
-		const pageRestore = src.indexOf('restoreWithRedeem(recoveryCode', submitAt)
+		const pageRestore = src.indexOf('restoreWithRedeemDetailed(recoveryCode', submitAt)
 		expect(shellGuard).toBeGreaterThan(submitAt)
 		expect(pageRestore).toBeGreaterThan(shellGuard)
 		expect(src.slice(shellGuard, shellGuard + 80)).toContain('await openNativeRecovery()')

@@ -64,7 +64,7 @@ describe('the bridge and the wallet wire the latch', () => {
 
 	it('the listen start checks the latch before it sends init', () => {
 		const guard = bridge.indexOf('initLatch.skipInit(p.eoaAddress)')
-		const init = bridge.indexOf('await client.init()', guard)
+		const init = bridge.indexOf('client.init()', guard) // the init may sit inside the ready watchdog
 		expect(guard).toBeGreaterThan(0)
 		expect(init).toBeGreaterThan(guard)
 	})

@@ -11,8 +11,38 @@ import { PASSCODE_TOKENS as T } from '../services/passcode/passcodeTokens'
 import { applyFlowEvent, startFlow, type FlowSnapshot } from '../services/passcode/passcodeFlow'
 import { ERROR_TEXT, WRONG_TEXT, backoffText, formatCooldown } from '../services/passcode/passcodeMessages'
 import PasscodeDotInput from './passcode/PasscodeDotInput'
+import { afterUiUnlock, type UiUnlockNativeDeps } from '../services/passcode/uiUnlockNative'
+import { probeNativeCapabilities, requestNativeAck } from '../services/nativeChatRouteRegister'
+import { lockWalletSession } from '../services/passcode/walletVault'
+import { isShellContext } from '../services/shellContext'
+import { accountEoaFor } from '../services/gossipAckSign'
+import { resolveSigningPrivateKeyArmor } from '../utils/resolveSigningPrivateKeyArmor'
+import { CoNET_Data } from '../utils/globals'
 
-export default function PasscodeLockScreen({ onUnlocked }: { onUnlocked: () => void }) {
+/** The native unlock answer wait. A missing answer holds the lock, it never unlocks. */
+const NATIVE_UNLOCK_TIMEOUT_MS = 8000
+
+/** The native side deps for the UI unlock step (the shell's capability declaration gates every native call). */
+const nativeUnlockDeps = (): UiUnlockNativeDeps => ({
+	probe: () => probeNativeCapabilities(),
+	send: async (cmd) => {
+		const answer = await requestNativeAck(cmd, NATIVE_UNLOCK_TIMEOUT_MS, cmd.reqId as number)
+		return answer.kind === 'payload' ? answer.payload : null
+	},
+})
+
+/** The current account's address (public), from the unlocked profile. Null when none is loaded. */
+const currentAccountEoa = (): string | null => {
+	try {
+		const eoa = accountEoaFor(resolveSigningPrivateKeyArmor(CoNET_Data?.profiles?.[0] as never))
+		return eoa ? eoa.toLowerCase() : null
+	} catch {
+		return null
+	}
+}
+
+/**: `lock` 'native' is a native-side lock; the forgot-passcode path is offered only for the page lock. */
+export default function PasscodeLockScreen({ onUnlocked, lock = 'page', onNativeMismatch }: { onUnlocked: () => void; lock?: 'page' | 'native'; onNativeMismatch?: () => void }) {
 	const [snap, setSnap] = useState<FlowSnapshot>(() => startFlow('unlock'))
 	const [digits, setDigits] = useState('')
 	const [notice, setNotice] = useState('')
@@ -54,9 +84,28 @@ export default function PasscodeLockScreen({ onUnlocked }: { onUnlocked: () => v
 		try {
 			const res = await unlockWalletVaultWithPasscode(digits)
 			if (res.ok) {
+				const passcode = digits
 				setDigits('')
 				setSnap(applyFlowEvent(snap, 'submit_match'))
-				onUnlocked()
+				// The page unlock succeeded. The native side is checked before the app content mounts.
+				const outcome = await afterUiUnlock({ shell: isShellContext(), eoa: currentAccountEoa(), passcode }, nativeUnlockDeps())
+				if (outcome === 'continue') {
+					onUnlocked()
+					return
+				}
+				// mismatch: the account-conflict flow path is not yet located; until then this maps to the existing
+				// eoa_mismatch page (fail closed: no continue, no copy of another account is used).
+				if (outcome === 'mismatch') {
+					// the approved account-conflict flow: this account's operations stop; no copy of another account is used
+					onNativeMismatch?.()
+					return
+				}
+				// hold: the page's unlock (unlockWalletVaultWithPasscode) keeps only the passcode session key (walletVault session.pc);
+				// the decrypted data it reads is discarded and not kept (the function returns ok only). lockWalletSession() drops that key,
+				// so the wallet is locked again. The lock stays on screen (fail closed); the next unlock runs the whole check again.
+				lockWalletSession()
+				setNotice(ERROR_TEXT)
+				setSnap(startFlow('unlock'))
 				return
 			}
 			if (res.reason === 'wrong_passcode' || res.reason === 'backoff') {
@@ -176,7 +225,7 @@ export default function PasscodeLockScreen({ onUnlocked }: { onUnlocked: () => v
 					</p>
 				)}
 
-				{!forgot && (
+				{!forgot && lock === 'page' && (
 					<button type="button" onClick={() => setForgot(true)} style={{ marginTop: 24, minHeight: T.touch.minTarget, fontSize: T.font.caption.size, color: T.color.fgMuted, textDecoration: 'underline' }}>
 						Forgot passcode?
 					</button>

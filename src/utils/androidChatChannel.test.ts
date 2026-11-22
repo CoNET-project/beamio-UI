@@ -17,11 +17,57 @@ jest.mock('./cashTreesNativePwaLog', () => ({
 }))
 
 const w = window as unknown as { BeamioChat?: unknown; CashTreesAndroid?: unknown }
+const realTop = window.top
+
+function setTop(value: unknown) {
+	Object.defineProperty(window, 'top', { value, configurable: true })
+}
 
 afterEach(() => {
 	delete w.BeamioChat
 	delete w.CashTreesAndroid
+	setTop(realTop)
 	;(publishNativePwaLog as jest.Mock).mockReset()
+})
+
+describe('trusted top frame only (0.52.935 rule, carried into 0.53.30)', () => {
+	it('same-origin child frame with window.BeamioChat: kind is not beamio, nothing is sent, the receiver is a no-op', () => {
+		setTop({}) // a different window object: a child frame
+		const host: { postMessage?: unknown; onmessage?: unknown } = { postMessage: jest.fn() }
+		w.BeamioChat = host
+		expect(androidChatChannelKind()).toBe('none')
+		expect(postAndroidChatCommand({ type: 'walletStatus', reqId: 1 })).toBe(false)
+		expect(postAndroidSignResponse({ reqId: 1, ok: true })).toBe(false)
+		expect(host.postMessage).not.toHaveBeenCalled()
+		expect(installBeamioChatReceiver()).toBeNull()
+		expect(host.onmessage).toBeUndefined()
+	})
+
+	it('cross-origin child frame (reading window.top throws) with window.BeamioChat: not trusted, nothing is sent', () => {
+		Object.defineProperty(window, 'top', {
+			configurable: true,
+			get() {
+				throw new Error('SecurityError')
+			},
+		})
+		const host: { postMessage?: unknown; onmessage?: unknown } = { postMessage: jest.fn() }
+		w.BeamioChat = host
+		expect(androidChatChannelKind()).toBe('none')
+		expect(postAndroidChatCommand({ type: 'walletStatus', reqId: 2 })).toBe(false)
+		expect(host.postMessage).not.toHaveBeenCalled()
+		expect(installBeamioChatReceiver()).toBeNull()
+	})
+
+	it('top frame (window.top === window.self) with window.BeamioChat: trusted, the channel and receiver are used', () => {
+		setTop(window.self)
+		const host: { postMessage?: unknown; onmessage?: unknown } = { postMessage: jest.fn() }
+		w.BeamioChat = host
+		expect(androidChatChannelKind()).toBe('beamio')
+		expect(postAndroidChatCommand({ type: 'walletStatus', reqId: 3 })).toBe(true)
+		expect(host.postMessage).toHaveBeenCalledTimes(1)
+		expect(installBeamioChatReceiver()).not.toBeNull()
+		expect(host.onmessage).toEqual(expect.any(Function))
+	})
 })
 
 describe('channel selection', () => {

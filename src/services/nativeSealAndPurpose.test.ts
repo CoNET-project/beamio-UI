@@ -34,7 +34,7 @@ function installShell(caps: string[], reply: Record<string, unknown>): void {
 			sent.push(cmd)
 			const send = (payload: Record<string, unknown>) =>
 				setTimeout(() => window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'chatModuleEvent', event: payload } })), 0)
-			if (cmd.type === 'hello') send({ type: 'ready', reqId: cmd.reqId, result: { capabilities: caps } })
+			if (cmd.type === 'hello') send({ type: 'ack', reqId: cmd.reqId, ok: true, result: { capabilities: caps } })
 			else if (cmd.type === NATIVE_ACCOUNT_SEAL_COMMAND) send({ ...reply, reqId: cmd.reqId })
 		},
 	}

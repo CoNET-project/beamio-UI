@@ -48,15 +48,17 @@ describe('shell: both sides decide', () => {
 		expect(judgeShell('absent', 'not_ready')).toEqual(UND)
 	})
 	it('IndexedDB holds a key, native absent: an existing account', () => {
-		expect(judgeShell('key', 'absent')).toEqual(HAS)
+		expect(judgeShell('valid_mnemonic', 'absent')).toEqual(HAS)
 	})
-	it('IndexedDB absent, native present (G1): an existing account', () => {
-		expect(judgeShell('absent', 'present')).toEqual(HAS)
+	// 0.53.39: a native `present` is a record, not an account; without a valid page mnemonic it is retry.
+	it('IndexedDB absent, native present (G1), no valid mnemonic: undetermined (retry), not an account', () => {
+		expect(judgeShell('absent', 'present')).toEqual(UND)
+		expect(judgeShell('valid_mnemonic', 'present')).toEqual(HAS)
 	})
 	it('IndexedDB not fully read, native absent: undetermined (one side absent is not enough)', () => {
 		expect(judgeShell('unfinished', 'absent')).toEqual(UND)
 	})
-	it('native not ready, then present: undetermined first, then an existing account; never onboarding on the way', () => {
+	it('native not ready, then present without a page mnemonic: undetermined throughout; never onboarding on the way', () => {
 		const sequence: Array<[Parameters<typeof judgeShell>[0], NativeWalletState]> = [
 			['absent', 'not_ready'],
 			['absent', 'not_ready'],
@@ -65,7 +67,7 @@ describe('shell: both sides decide', () => {
 		const judged = sequence.map(([idb, native]) => judgeShell(idb, native))
 		expect(judged[0]).toEqual(UND)
 		expect(judged[1]).toEqual(UND)
-		expect(judged[2]).toEqual(HAS)
+		expect(judged[2]).toEqual(UND)
 		expect(judged.some((j) => j.action === 'onboard')).toBe(false)
 	})
 	it('native corrupt: undetermined; nothing is deleted, overwritten or created', () => {
@@ -74,10 +76,11 @@ describe('shell: both sides decide', () => {
 	})
 	it('native locked (iOS passcode lock): undetermined, the passcode page, judged again after the unlock', () => {
 		expect(judgeShell('absent', 'locked')).toEqual(UNLOCK)
-		expect(judgeShell('key', 'locked')).toEqual(UNLOCK)
+		// 0.53.39: a valid PWA mnemonic enters /home whatever the native lock state.
+		expect(judgeShell('valid_mnemonic', 'locked')).toEqual(HAS)
 	})
-	it('covering upgrade, IndexedDB not read yet, native present: an existing account, not the create or restore page', () => {
-		expect(judgeShell('unfinished', 'present')).toEqual(HAS)
+	it('covering upgrade, IndexedDB not read yet, native present: undetermined (retry), not the create or restore page', () => {
+		expect(judgeShell('unfinished', 'present')).toEqual(UND)
 	})
 	it('covering upgrade, IndexedDB not read yet, native not ready: undetermined', () => {
 		expect(judgeShell('unfinished', 'not_ready')).toEqual(UND)
@@ -108,10 +111,11 @@ describe('the passcodeStatus answer carries only set, locked, hasKey and walletS
 
 
 describe('the page side of the pointer-empty judgement', () => {
-	it('the pointer is empty and exactly one key is stored: walletState present, an existing account; the page enters on the native account', () => {
-		// walletState present (G1), walletStatus unlocked with the account: enter. No IndexedDB record is needed.
-		expect(judgeShellFromNative({ idb: 'unfinished', walletState: 'present', walletStatus: 'unlocked' })).toEqual(HAS)
-		expect(judgeShellFromNative({ idb: 'absent', walletState: 'present', walletStatus: 'not_ready' })).toEqual(HAS)
+	it('the pointer is empty and exactly one key is stored: an existing account only with a valid page mnemonic; a native present alone is retry', () => {
+		// 0.53.39: walletState present with a valid page mnemonic enters; without one it is retry.
+		expect(judgeShellFromNative({ idb: 'valid_mnemonic', walletState: 'present', walletStatus: 'unlocked' })).toEqual(HAS)
+		expect(judgeShellFromNative({ idb: 'unfinished', walletState: 'present', walletStatus: 'unlocked' })).toEqual(UND)
+		expect(judgeShellFromNative({ idb: 'absent', walletState: 'present', walletStatus: 'not_ready' })).toEqual(UND)
 	})
 	it('the pointer is empty and several keys are stored: walletState not_ready, undetermined; never onboarding, never the absent answer', () => {
 		// walletStatus no_key must not turn a not_ready walletState into absent: the page reads walletState.
@@ -125,7 +129,7 @@ describe('the page side of the pointer-empty judgement', () => {
 		expect(judgeShellFromNative({ idb: 'absent', walletState: 'not_reported', walletStatus: 'not_ready' })).toEqual(UND)
 	})
 	it('a valid IndexedDB key still makes an existing account on the not-reported route, and nothing else does', () => {
-		expect(judgeShellFromNative({ idb: 'key', walletState: 'not_reported', walletStatus: 'no_key' })).toEqual(HAS)
+		expect(judgeShellFromNative({ idb: 'valid_mnemonic', walletState: 'not_reported', walletStatus: 'no_key' })).toEqual(HAS)
 		expect(judgeShellFromNative({ idb: 'account_without_key', walletState: 'not_reported', walletStatus: 'no_key' })).toEqual(UND)
 	})
 })
@@ -151,24 +155,26 @@ describe('the account creation page never replaces a confirmed local key (overwr
 	})
 })
 
-describe('shell: an IndexedDB key never opens the app over a native state that is not present', () => {
-	it('native not ready with a key in IndexedDB: the gate keeps, nothing enters', () => {
-		expect(judgeShell('key', 'not_ready')).toEqual(UND)
+// 0.53.39: a valid PWA mnemonic in IndexedDB enters /home whatever the native state is. The native
+// lock or readiness only gates the native reads, writes and sync. The earlier cases (kept by the gate) are revised to this rule.
+describe('shell: a valid IndexedDB mnemonic enters /home whatever the native state', () => {
+	it('native not ready with a key in IndexedDB: enters /home (the native sync waits, the PWA is not held)', () => {
+		expect(judgeShell('valid_mnemonic', 'not_ready')).toEqual(HAS)
 	})
-	it('native unavailable with a key in IndexedDB: the gate keeps', () => {
-		expect(judgeShell('key', 'unavailable')).toEqual(UND)
+	it('native unavailable with a key in IndexedDB: enters /home', () => {
+		expect(judgeShell('valid_mnemonic', 'unavailable')).toEqual(HAS)
 	})
-	it('native corrupt with a key in IndexedDB: the gate keeps (error page), no entry', () => {
-		expect(judgeShell('key', 'corrupt')).toEqual(UND)
+	it('native corrupt with a key in IndexedDB: enters /home (the native record is reported as sync state, not as an entry block)', () => {
+		expect(judgeShell('valid_mnemonic', 'corrupt')).toEqual(HAS)
 	})
-	it('native unknown: the gate keeps whatever IndexedDB holds', () => {
-		expect(judgeShell('key', 'unknown')).toEqual(UND)
+	it('native unknown with a key in IndexedDB: enters /home', () => {
+		expect(judgeShell('valid_mnemonic', 'unknown')).toEqual(HAS)
 	})
 	it('a locked page store shows the passcode page before a native present record enters', () => {
 		expect(judgeShell('locked', 'present')).toEqual(UNLOCK)
 	})
-	it('native absent with a key in IndexedDB: the known inconsistency enters as today', () => {
-		expect(judgeShell('key', 'absent')).toEqual(HAS)
+	it('native absent with a key in IndexedDB: enters as today', () => {
+		expect(judgeShell('valid_mnemonic', 'absent')).toEqual(HAS)
 	})
 	it('native absent and IndexedDB absent: onboarding (the only confirmed no-account case)', () => {
 		expect(judgeShell('absent', 'absent')).toEqual(NO)

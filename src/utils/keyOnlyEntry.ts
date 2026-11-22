@@ -1,14 +1,16 @@
 /**
- * (key-only entry): the App's init decides what a key-only record means for the shell chrome. A record with a
- * private key and no local mnemonic enters the app (the global bar and search show; see App's init). A record with neither a key
- * nor a mnemonic is not an entry: the loading flag stays set, so the bar stays hidden while the entry gate shows its own state
- * (storage unavailable, recovery). Browser build only: a shell build decides elsewhere.
+ * (key-only entry): a record with no valid mnemonic is not an entry, with or without a private key. The App does not hold the loading flag for it and binds no push; the entry gate decides (onboarding when both
+ * sides confirm none; retry on unknown). Browser build only: a shell build decides elsewhere.
  */
-import { hasLocalPlaintextMnemonic, hasLocalPrivateKeyArmor } from '@/utils/consumerWalletGate'
+import { hasLocalPlaintextMnemonic } from '@/utils/consumerWalletGate'
 
-export type KeyOnlyEntry = 'not_key_only' | 'enter_key_only' | 'hold_no_key'
+// 2026-11-17: a key without a valid mnemonic is not an account in the browser either.
+// It is never an entry: the gate decides (onboarding when the local store confirms none; unknown is kept and retried). The name is kept
+// for the call sites; the App's branch no longer holds the loading flag.
+export type KeyOnlyEntry = 'not_key_only' | 'hold_no_key'
 
 export function keyOnlyEntryDecision(data: encrypt_keys_object | null | undefined, shell: boolean): KeyOnlyEntry {
 	if (shell || hasLocalPlaintextMnemonic(data)) return 'not_key_only'
-	return hasLocalPrivateKeyArmor(data) ? 'enter_key_only' : 'hold_no_key'
+	// no valid mnemonic (with or without a key): held, the gate decides
+	return 'hold_no_key'
 }

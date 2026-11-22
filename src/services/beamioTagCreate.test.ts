@@ -9,7 +9,9 @@ describe('route: key without BeamioTag goes to the Create Beamio ID page', () =>
 	it('browser, existing key, no completed account: create page', () => {
 		expect(beamioTagCreateNeeded({ shell: false, presence: 'has_account', completedAccount: false, hasMnemonic: true })).toBe(true)
 	})
-	it('browser, key only (no recovery phrase): not the create page; the existing route enters the app', () => {
+	// Old expectation (before 2026-11-17): "browser, key only (no recovery phrase): not the create page; the existing route enters the app".
+	// The value is unchanged (not the create page); the route is no longer an entry: the browser gate judges no account and onboards.
+	it('browser, key only (no recovery phrase): not the create page; not an entry (onboarding, 2026-11-17)', () => {
 		expect(beamioTagCreateNeeded({ shell: false, presence: 'has_account', completedAccount: false, hasMnemonic: false })).toBe(false)
 	})
 	it('browser, existing key, completed account: not this route (enter the app)', () => {

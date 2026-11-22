@@ -62,6 +62,7 @@ function fakeDeps(identity: NativeIdentityPublic, overrides: Partial<ShellChatSt
 			restorePgp: async (): Promise<PgpRestoreOutcome> => ({ ok: false, code: 'unavailable', failure: null }),
 			showPgpFailure: (code) => rec('showPgpFailure', code),
 			showChatUnavailable: () => rec('showChatUnavailable'),
+			showIdentityPending: () => rec('showIdentityPending'),
 			...overrides,
 	}
 	return { deps, calls }
@@ -143,7 +144,7 @@ describe('shell chat start stops with a state, and never starts without the publ
 
 describe('pgpReady false: the state is read by pgpRestoreEvaluate; a restore runs only after an ok evaluation', () => {
 	const NO_PGP: NativeIdentityPublic = { kind: 'ok', eoa: EOA, accountKey: `${EOA}:default`, pgpReady: false }
-	const ok = { kind: 'evaluated' as const, state: 'ok' as const, failureCode: null, offerEntry: false }
+	const ok = { kind: 'evaluated' as const, state: 'ok' as const, failureCode: null, offerEntry: false, legacy: 'unknown' as const, chain: 'unknown' as const }
 
 	it('evaluation ok: pgpRestore runs once, and the start is retried', async () => {
 		const restorePgp = jest.fn(async (): Promise<PgpRestoreOutcome> => ({ ok: true }))
@@ -157,7 +158,7 @@ describe('pgpReady false: the state is read by pgpRestoreEvaluate; a restore run
 	it('evaluation failed: the failure is shown with its code; no restore and no retry', async () => {
 		const restorePgp = jest.fn(async (): Promise<PgpRestoreOutcome> => ({ ok: true }))
 		const { deps, calls } = fakeDeps(NO_PGP, {
-			evaluatePgp: async () => ({ kind: 'evaluated', state: 'failed', failureCode: 'pgp_backup_missing', offerEntry: true }),
+			evaluatePgp: async () => ({ kind: 'evaluated', state: 'failed', failureCode: 'pgp_backup_missing', offerEntry: true, legacy: 'unknown', chain: 'unknown' }),
 			restorePgp,
 		})
 		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_failed')
@@ -166,10 +167,31 @@ describe('pgpReady false: the state is read by pgpRestoreEvaluate; a restore run
 		expect(calls.retry).toBeUndefined()
 	})
 
-	it('first identity: no restore, no retry, no failure prompt (the user creates it from the entry)', async () => {
+	it('first identity not confirmed (the fields are missing, unknown or not ABSENT/unregistered): no create entry, the identity is pending', async () => {
+		const restorePgp = jest.fn(async (): Promise<PgpRestoreOutcome> => ({ ok: true }))
+		const cases = [
+			{ legacy: 'unknown', chain: 'unknown' },
+			{ legacy: 'ABSENT', chain: 'registered' },
+			{ legacy: 'PRESENT', chain: 'unregistered' },
+			{ legacy: 'UNREADABLE', chain: 'unregistered' },
+		] as const
+		for (const c of cases) {
+			const { deps, calls } = fakeDeps(NO_PGP, {
+				evaluatePgp: async () => ({ kind: 'evaluated', state: 'first_identity', failureCode: null, offerEntry: true, legacy: c.legacy, chain: c.chain }),
+				restorePgp,
+			})
+			await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_identity_pending')
+			expect(calls.setFirstIdentity[calls.setFirstIdentity.length - 1]).toEqual([false])
+			expect(calls.showIdentityPending).toEqual([[]])
+			expect(calls.showChatUnavailable).toBeUndefined()
+		}
+		expect(restorePgp).not.toHaveBeenCalled()
+	})
+
+	it('first identity confirmed (legacy ABSENT, chain unregistered): no restore, no retry, no failure prompt (the user creates it from the entry)', async () => {
 		const restorePgp = jest.fn(async (): Promise<PgpRestoreOutcome> => ({ ok: true }))
 		const { deps, calls } = fakeDeps(NO_PGP, {
-			evaluatePgp: async () => ({ kind: 'evaluated', state: 'first_identity', failureCode: null, offerEntry: true }),
+			evaluatePgp: async () => ({ kind: 'evaluated', state: 'first_identity', failureCode: null, offerEntry: true, legacy: 'ABSENT', chain: 'unregistered' }),
 			restorePgp,
 		})
 		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_first_identity')

@@ -80,7 +80,7 @@ describe('start path: every boot request is bounded', () => {
 	})
 
 	test('the App init side calls are bounded and fall back (provision and locale sync)', () => {
-		expect(app).toMatch(/withBootTimeout\(bootstrapProfileLocaleCurrencyIfUnset\(bo, pk\), BOOT_LOCALE_SYNC_TIMEOUT_MS, bo\)/)
+		expect(app).toMatch(/withBootTimeout\(bootstrapProfileLocaleCurrencyIfUnset\(bo\), BOOT_LOCALE_SYNC_TIMEOUT_MS, bo\)/)
 		expect(app).toMatch(/withBootTimeout\(ensureEphemeralWalletForCouponClaim\(\), BOOT_PROVISION_TIMEOUT_MS, null\)/)
 	})
 })

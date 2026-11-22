@@ -3,11 +3,11 @@
  * through `sendShellRecordCommand` only. The page never calls the chat module or the window object for them.
  *
  * The choice, in order
- *  1. `window.BeamioShellRecord` is injected (defined, even if it cannot be used): only it is used. There is no fallback to the chat
- *     channel. If it cannot be used the answer is `unavailable`.
- *  2. Not injected, iOS, and the chat module channel exists: the chat module channel.
- *  3. Not injected, Android: `not_supported`. Android never uses the chat module channel for the shell record.
- *  4. No channel (a browser, or a shell without the channel): `none`.
+ * 1. `window.BeamioShellRecord` is injected (defined, even if it cannot be used): only it is used. There is no fallback to the chat
+ * channel. If it cannot be used the answer is `unavailable`.
+ * 2. Not injected, iOS, and the chat module channel exists: the chat module channel.
+ * 3. Not injected, Android: `not_supported`. Android never uses the chat module channel for the shell record.
+ * 4. No channel (a browser, or a shell without the channel): `none`.
  *
  * Replies: they come on the injected object's `onmessage` (or the chat module event, on iOS), in the ack envelope, and are
  * matched by reqId. A reply with an unknown reqId, a duplicate, a non-ack, or a malformed one is ignored and the request keeps waiting.
@@ -91,10 +91,13 @@ const originAllowed = (list: string[] | null): boolean => list === null || list.
 
 // ---- replies --------------------------------------------------------------------------------------------------------------
 
-/** A reply is well formed when it is an ack with a result (ok) or with a string error (not ok). */
-function wellFormedAck(data: Loose): boolean {
+/**
+ * A reply is well formed when it is an ack with a result (ok) or with a string error (not ok). `bareOk`:
+ * an ok ack with no result object is well formed too; the spec gives the reply as a code, not a result.
+ */
+function wellFormedAck(data: Loose, bareOk = false): boolean {
 	if (data.type !== 'ack') return false
-	if (data.ok === true) return isPlain(data.result)
+	if (data.ok === true) return bareOk || isPlain(data.result)
 	if (data.ok === false) return typeof data.error === 'string'
 	return false
 }
@@ -112,7 +115,7 @@ function parseReply(data: unknown): Loose | null {
 }
 
 /** One open request: the reply that answers it (the first valid one). */
-type OpenRequest = { deliver: (payload: Loose) => void }
+type OpenRequest = { deliver: (payload: Loose) => void; bareOk: boolean }
 
 /** Open requests on the injected object, by reqId. A request whose reqId is open is never sent again. */
 const hostOpen = new Map<unknown, OpenRequest>()
@@ -126,12 +129,12 @@ function ensureHostListener(host: InjectedHost): void {
 		if (!data) return
 		const open = hostOpen.get(data.reqId)
 		if (!open) return // unknown reqId, a late or a duplicate reply
-		if (!wellFormedAck(data)) return // malformed: the request keeps waiting
+		if (!wellFormedAck(data, open.bareOk)) return // malformed: the request keeps waiting
 		open.deliver(data)
 	}
 }
 
-function sendViaHost(host: InjectedHost, cmd: Loose, timeoutMs: number): Promise<ShellRecordAnswer> {
+function sendViaHost(host: InjectedHost, cmd: Loose, timeoutMs: number, bareOk = false): Promise<ShellRecordAnswer> {
 	const reqId = cmd.reqId
 	if (hostOpen.has(reqId)) return Promise.resolve({ kind: 'unavailable' })
 	return new Promise((resolve) => {
@@ -141,7 +144,7 @@ function sendViaHost(host: InjectedHost, cmd: Loose, timeoutMs: number): Promise
 			if (timer !== undefined) clearTimeout(timer)
 			resolve(answer)
 		}
-		const entry: OpenRequest = { deliver: (payload) => finish({ kind: 'payload', payload }) }
+		const entry: OpenRequest = { deliver: (payload) => finish({ kind: 'payload', payload }), bareOk }
 		hostOpen.set(reqId, entry)
 		ensureHostListener(host)
 		timer = setTimeout(() => finish({ kind: 'timeout' }), timeoutMs)
@@ -163,11 +166,11 @@ function chatListener(ev: Event): void {
 	if (!payload) return
 	const open = chatOpen.get(payload.reqId)
 	if (!open) return
-	if (!wellFormedAck(payload)) return
+	if (!wellFormedAck(payload, open.bareOk)) return
 	open.deliver(payload)
 }
 
-function sendViaChat(cmd: Loose, timeoutMs: number): Promise<ShellRecordAnswer> {
+function sendViaChat(cmd: Loose, timeoutMs: number, bareOk = false): Promise<ShellRecordAnswer> {
 	const reqId = cmd.reqId
 	if (chatOpen.has(reqId)) return Promise.resolve({ kind: 'unavailable' })
 	return new Promise((resolve) => {
@@ -181,7 +184,7 @@ function sendViaChat(cmd: Loose, timeoutMs: number): Promise<ShellRecordAnswer> 
 			}
 			resolve(answer)
 		}
-		const entry: OpenRequest = { deliver: (payload) => finish({ kind: 'payload', payload }) }
+		const entry: OpenRequest = { deliver: (payload) => finish({ kind: 'payload', payload }), bareOk }
 		chatOpen.set(reqId, entry)
 		if (!chatListening) {
 			for (const name of NATIVE_EVENT_NAMES) window.addEventListener(name, chatListener)
@@ -203,6 +206,8 @@ function sendViaChat(cmd: Loose, timeoutMs: number): Promise<ShellRecordAnswer> 
  * channel; without the window channel the answer is `not_supported` (Android) or `none` (browser).
  */
 export function sendWindowOnlyCommand(cmd: Loose, timeoutMs: number = SHELL_RECORD_REPLY_TIMEOUT_MS): Promise<ShellRecordAnswer> {
+	// review (2026-11-17): the window-only commands are for the trusted top frame; a child frame sends nothing
+	if (!inTrustedTopFrame()) return Promise.resolve({ kind: 'unavailable' })
 	const kind = shellRecordTransportKind()
 	if (kind !== 'window') return Promise.resolve({ kind: kind === 'none' ? 'none' : 'not_supported' })
 	return sendShellRecordCommand(cmd, timeoutMs)
@@ -213,17 +218,40 @@ export function sendWindowOnlyCommand(cmd: Loose, timeoutMs: number = SHELL_RECO
  * back: an injected object that cannot be used answers `unavailable`; a refused origin answers `origin_refused` without sending.
  */
 export function sendShellRecordCommand(cmd: Loose, timeoutMs: number = SHELL_RECORD_REPLY_TIMEOUT_MS): Promise<ShellRecordAnswer> {
+	return sendOverTransport(cmd, timeoutMs, false)
+}
+
+/**
+ *`pwaWalletSync` and `nativeMnemonicPreread` over the same transports. Every ok reply carries a result (the spec's
+ * envelope); the bare-ok allowance is not used. The same origin check and reqId matching apply; nothing falls back.
+ */
+export function sendShellWalletSyncCommand(cmd: Loose, timeoutMs: number = SHELL_RECORD_REPLY_TIMEOUT_MS): Promise<ShellRecordAnswer> {
+	// review (2026-11-17): pwaWalletSync and nativeMnemonicPreread are for the trusted top frame only (a page-side gate; the shell has its own)
+	if (!inTrustedTopFrame()) return Promise.resolve({ kind: 'unavailable' })
+	return sendOverTransport(cmd, timeoutMs, false)
+}
+
+/** The page is the top frame of its window (a child frame, e.g. an embedded page, is not trusted for these commands). */
+function inTrustedTopFrame(): boolean {
+	try {
+		return typeof window !== 'undefined' && window.top === window.self
+	} catch {
+		return false
+	}
+}
+
+function sendOverTransport(cmd: Loose, timeoutMs: number, bareOk: boolean): Promise<ShellRecordAnswer> {
 	const kind = shellRecordTransportKind()
 	if (kind === 'window') {
 		const value = injectedObject()
 		const host = value !== null && typeof value === 'object' ? (value as InjectedHost) : null
 		if (!originAllowed(allowedOriginsFor(host))) return Promise.resolve({ kind: 'origin_refused' })
 		if (host === null || typeof host.postMessage !== 'function') return Promise.resolve({ kind: 'unavailable' })
-		return sendViaHost(host, cmd, timeoutMs)
+		return sendViaHost(host, cmd, timeoutMs, bareOk)
 	}
 	if (kind === 'chat') {
 		if (!originAllowed(allowedOriginsFor(null))) return Promise.resolve({ kind: 'origin_refused' })
-		return sendViaChat(cmd, timeoutMs)
+		return sendViaChat(cmd, timeoutMs, bareOk)
 	}
 	return Promise.resolve({ kind: kind === 'not_supported' ? 'not_supported' : 'none' })
 }

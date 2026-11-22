@@ -10,12 +10,12 @@ const UND = { account: 'undetermined', action: 'retry' }
 
 describe('not_reported with a valid IndexedDB EOA key is an existing account', () => {
 	it('key, no walletStatus signal (no_key) → has account', () => {
-		expect(judgeShellFromNative({ idb: 'key', walletState: 'not_reported', walletStatus: 'no_key' })).toEqual(HAS)
+		expect(judgeShellFromNative({ idb: 'valid_mnemonic', walletState: 'not_reported', walletStatus: 'no_key' })).toEqual(HAS)
 	})
 	it('key with any walletStatus → has account (the IndexedDB record is a valid record on its own)', () => {
 		const statuses: NativeWalletStatus[] = ['no_key', 'not_ready', 'unknown', 'locked', 'unlocked']
 		for (const walletStatus of statuses) {
-			expect(judgeShellFromNative({ idb: 'key', walletState: 'not_reported', walletStatus })).toEqual(HAS)
+			expect(judgeShellFromNative({ idb: 'valid_mnemonic', walletState: 'not_reported', walletStatus })).toEqual(HAS)
 		}
 	})
 })
@@ -25,13 +25,14 @@ describe('not_reported with an old walletStatus locked or unlocked (carries an E
 		expect(judgeShellFromNative({ idb: 'absent', walletState: 'not_reported', walletStatus: 'unlocked' })).toEqual(HAS)
 	})
 	it('IndexedDB absent, walletStatus locked → has account, enter', () => {
-		expect(judgeShellFromNative({ idb: 'absent', walletState: 'not_reported', walletStatus: 'locked' })).toEqual(HAS)
+		// LK-P6: a locked walletStatus is the unlock branch, never an entry
+		expect(judgeShellFromNative({ idb: 'absent', walletState: 'not_reported', walletStatus: 'locked' })).toEqual({ account: 'undetermined', action: 'unlock' })
 	})
 	it('IndexedDB did not open (unavailable), walletStatus unlocked → has account (the native record is valid)', () => {
 		expect(judgeShellFromNative({ idb: 'unavailable', walletState: 'not_reported', walletStatus: 'unlocked' })).toEqual(HAS)
 	})
 	it('IndexedDB unfinished, walletStatus locked → has account', () => {
-		expect(judgeShellFromNative({ idb: 'unfinished', walletState: 'not_reported', walletStatus: 'locked' })).toEqual(HAS)
+		expect(judgeShellFromNative({ idb: 'unfinished', walletState: 'not_reported', walletStatus: 'locked' })).toEqual({ account: 'undetermined', action: 'unlock' })
 	})
 })
 

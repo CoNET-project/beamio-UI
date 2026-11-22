@@ -2,16 +2,16 @@
  * Encrypted fragmented IPFS history — runs inside the Worker.
  *
  * Design (repo plan `beamio_chat_sdk`, on-chain head pointer variant):
- *  - master   = keccak256(EOA_sign("beamio.chat.history.v1|chainId|eoa"))  (private key never leaves worker)
- *  - indexKey = HKDF(master, "index-enc")       → AES-256-GCM of the ordered index manifest
- *  - fragment ratchet: k_i = HKDF(master, `frag|${seq}|${cid_{i-1}}`), cid_{-1}=HKDF(master,"frag-genesis")
- *      cipher_i = AES-GCM(k_i, plaintext_i); cid_i = keccak256(cipher_i) → content-addressed IPFS fragment.
- *      All cid_{i-1} recorded in the index → any k_i is O(1) derivable (newest-first restore).
- *  - HEAD POINTER (mutable): the encrypted index cipher is itself a content-addressed IPFS fragment
- *      (indexHash = keccak256(cipher)). The *latest* indexHash is recorded on-chain in `ChatIndexRegistry`
- *      via an EIP-712 `SetPointer(owner,indexHash,ts,seq,nonce)` signed offline by the EOA; a gasless API
- *      relayer pays gas. Only the owner's signature can move the owner's pointer (write right = private key).
- *      Read path is pure RPC `getPointer(eoa)` (no mutable server state). Replaces the old `point-${L}` alias.
+ * - master = keccak256(EOA_sign("beamio.chat.history.v1|chainId|eoa")) (private key never leaves worker)
+ * - indexKey = HKDF(master, "index-enc") → AES-256-GCM of the ordered index manifest
+ * - fragment ratchet: k_i = HKDF(master, `frag|${seq}|${cid_{i-1}}`), cid_{-1}=HKDF(master,"frag-genesis")
+ * cipher_i = AES-GCM(k_i, plaintext_i); cid_i = keccak256(cipher_i) → content-addressed IPFS fragment.
+ * All cid_{i-1} recorded in the index → any k_i is O(1) derivable (newest-first restore).
+ * - HEAD POINTER (mutable): the encrypted index cipher is itself a content-addressed IPFS fragment
+ * (indexHash = keccak256(cipher)). The *latest* indexHash is recorded on-chain in `ChatIndexRegistry`
+ * via an EIP-712 `SetPointer(owner,indexHash,ts,seq,nonce)` signed offline by the EOA; a gasless API
+ * relayer pays gas. Only the owner's signature can move the owner's pointer (write right = private key).
+ * Read path is pure RPC `getPointer(eoa)` (no mutable server state). Replaces the old `point-${L}` alias.
  *
  * Trust rule: a failed/untrusted network read must NOT clobber the local IndexedDB
  * mirror (repo `beamio-trusted-vs-untrusted-fetch`).
@@ -411,6 +411,19 @@ export class HistoryStore {
 				return false
 			}
 			const nextManifest = { ...parsed, updatedAt: Date.now(), records }
+			// The remote index already holds exactly these records (same order, same cids): adopt it locally.
+			// Re-uploading it would only mint a new cipher for the same content and move the on-chain pointer again
+			// (a storageFragment write and a relayed pointer write on every fresh device or cleared mirror).
+			const sameAsRemote = records.length === remote.length && records.every((record, index) => record.cid === remote[index]?.cid)
+			if (sameAsRemote) {
+				if (this.opts.persistence && this.indexKey) {
+					const localCipher = await aesGcmEncryptString(this.indexKey, JSON.stringify(nextManifest))
+					await this.opts.persistence.set(this.localIndexKey(), localCipher)
+				}
+				this.manifest = nextManifest
+				this.syncedIndexHash = pointer.indexHash
+				return true
+			}
 			const persisted = await this.persistManifest(nextManifest, { requireRemoteCommit: Boolean(this.opts.apiBaseUrl) })
 			if (persisted) this.syncedIndexHash = pointer.indexHash
 			return persisted
@@ -864,9 +877,9 @@ export class HistoryStore {
 
 	/**
 	 * Migrate PWA-A history into the encrypted library.
-	 *  running →  import (dedupe by stable_id) →  digests per conversation →  complete with the
-	 * verified digest →  read-back on a freshly opened library. Any failure keeps the old copies (no deletion).
-	 *  (rewriting profile and Cache API copies, deleting plain/frag/index keys) is NOT run here; see the receipt.
+	 * running → import (dedupe by stable_id) → digests per conversation → complete with the
+	 * verified digest → read-back on a freshly opened library. Any failure keeps the old copies (no deletion).
+	 * (rewriting profile and Cache API copies, deleting plain/frag/index keys) is NOT run here; see the receipt.
 	 * `extra` carries the profile `chats[].messages` copies from the page.
 	 */
 	async migrateLocal(extra: Array<{ peer: string; dir: 'in' | 'out'; ts: number; sendId?: string; body: string; pending?: boolean }>): Promise<{ verified: boolean; conversations: number }> {
@@ -943,7 +956,7 @@ export class HistoryStore {
 		return store.getMigrationState()
 	}
 
-	/**from now on the UI reads only from the library. Allowed only after  (state complete). */
+	/**from now on the UI reads only from the library. Allowed only after (state complete). */
 	async switchLocal(): Promise<boolean> {
 		const store = await this.ensureLocal()
 		if ((await store.getMigrationState()) !== 'complete') return false
@@ -954,7 +967,7 @@ export class HistoryStore {
 
 	/**
 	 * worker part: delete this account's plaintext `plain:` keys. frag: and index: are ciphertext
-	 * and stay. Allowed only after  (state switched). Returns the number of keys removed.
+	 * and stay. Allowed only after (state switched). Returns the number of keys removed.
 	 */
 	async purgePlainKeys(): Promise<number> {
 		const store = await this.ensureLocal()
@@ -1017,7 +1030,7 @@ export class HistoryStore {
 		this.localStore?.lock()
 		this.localStore = null
 		this.localReady = null
-		//  step 3: overwrite key material before releasing it
+		// step 3: overwrite key material before releasing it
 		this.clearLocalKeys()
 		if (this.master) this.master.fill(0)
 		if (this.indexKey) this.indexKey.fill(0)

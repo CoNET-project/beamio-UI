@@ -2,7 +2,7 @@ import { resolveRecipientForSend, isHeldRouteCode, resolveTrustedRoute, refreshR
 import { chatHeldBannerText, chatHeldLabelText, callHeldText, sendFailedDetailText } from "@/services/recipientCopy"
 import { formatFingerprintForCompare, readStoredKeyFingerprint, storedKeyFingerprint } from "@/utils/pgpFingerprint"
 import { oneTimeVerifyPromptDue } from "@/services/verifyPrompt"
-import React, { useEffect, useMemo, useRef, useState, useLayoutEffect, useCallback, startTransition } from "react"
+import React, { useEffect, useMemo, useRef, useState, useLayoutEffect, useCallback, startTransition, useSyncExternalStore } from "react"
 import { isShellContext } from '@/services/shellContext'
 import { probeHasSigner } from '@/services/mailboxProbeSigning'
 import { CHAT_WINDOW_INITIAL, anchoredScrollTop, hiddenCount, nextWindowCount, shouldExpandWindow, viewportForScroller, windowTail } from "@/utils/chatWindow"
@@ -18,6 +18,8 @@ import { ethers } from "ethers"
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf"
 import { checkSign, emitReactionAsNewMessage, createMembershipActivatedCard, sendVoiceCallOffer } from '@/services/chat'
 import { backfillChatMessagesToHistory, mergeHistoryEntriesIntoMessages, mirrorChatMessageToHistory } from '@/services/chatHistoryMirror'
+import { nextPeerChatData, routeFieldsDiffer, applyPeerRouteToRows } from '@/services/peerRouteRecord'
+import { recordVerifyTrace } from '@/services/verifyTrace'
 import { IpfsImg } from '@/components/IpfsImg'
 import { publishMinimizedVoiceCallWindow } from '@/utils/minimizedVoiceCallWindow'
 import {
@@ -99,7 +101,9 @@ import {
 } from '@/services/chatWorkerBridge'
 import { PlusActionMenu } from "./components/PlusActionMenu"
 import { useDaemonContext } from "@/providers/DaemonProvider"
-import { storeSystemData, AuthorizationSign } from '@/services/beamio'
+import { storeSystemData, storeSystemDataAndWait, readStoredProfilesForVerify, AuthorizationSign } from '@/services/beamio'
+import { heldWireFromMessage } from '@/services/heldWire'
+import { gateCopyWithStore, heldBubble, nextMemoryTrustWriter, verifyModeDecision, type HeldBubble, type MemoryTrustWriter } from '@/utils/verifiedTrustGate'
 import { useBeamioTagDatabase } from '@/providers/BeamioTagDatabaseProvider'
 import { fiatPrefix } from '@/services/currency'
 import { beginCallTiming, markCallTiming, timeCallStep } from '@/utils/callTiming'
@@ -125,6 +129,8 @@ import {
 } from '@/utils/chatGenericLinkPreview'
 import { ingestAaMultisigFromChat } from '@/utils/aaMultisigIngest'
 import { noteNativeCallAnswered as noteCallAnsweredHere } from '@/utils/voiceCallSession'
+import { voiceOfferDedup } from '@/utils/voiceOfferDedup'
+import { clearConnectedCallIfMatches, setConnectedCall } from '@/utils/nativeCallHangup'
 import { getAaMultisigTaskAny } from '@/utils/aaMultisigLocalStore'
 import {
 	formatMultisigSignatureProgress,
@@ -135,6 +141,8 @@ import {
 } from '@/utils/aaMultisigTaskUi'
 import type { AaMultisigChatPreview } from '@/utils/aaMultisigChatPreview'
 import { tu } from '@/locale/beamioLocale'
+import { getCallCapabilityState, probeCallCapabilityNow, subscribeCallCapabilityState } from '@/services/callCapabilityRuntime'
+import { callAllowed } from '@/services/callCapability'
 import { getPgpMigrationState, subscribePgpMigrationState } from '@/services/pgpMigrationRunner'
 import { installPgpUpgradeStateListener, pgpUpgradeRetryVisible, subscribePgpUpgradeState } from '@/services/pgpUpgradeState'
 import { chatCryptoDecryptGate, cryptoActionsEnabled, cryptoInputOf, cryptoNoticeOf, historyReadOf, historySignalOf, nextCryptoRetry, type LocalHistoryRead } from '@/services/chatCryptoPage'
@@ -151,7 +159,6 @@ import {
 	encryptVoiceFrame,
 	registerBrowserVoiceCallProbe,
 	claimIncomingVoiceCallReport,
-	applyNativeIncomingVoiceOfferFromLine,
 	reportNativeIncomingSystemCall,
 	hasReportedIncomingVoiceCall,
 	isVoiceCallProtocolMessage,
@@ -161,6 +168,8 @@ import {
 	isVoiceCallOfferActive,
 	isVoiceCallOfferRinging,
 	parseVoiceCallSignal,
+	storedVoiceSignal,
+	offerReplacesLiveCall,
 	randomVoiceId,
 	recoverVoiceCallOfferSigner,
 	lookupIncomingVoiceOffer,
@@ -911,7 +920,7 @@ function VoiceMessagePlayer({ manifest: manifestProp, isMe }: { manifest: VoiceM
 		setUrl(null)
 		setError(null)
 		setLoading(true)
-		if (!chatCryptoDecryptGate.enabled) { setLoading(false); return } // Y.81 1: no decrypt while the chat crypto is not available
+		if (!chatCryptoDecryptGate.enabled) { setLoading(false); return } // no decrypt while the chat crypto is not available
 		void decryptVoiceFragment(manifest, controller.signal)
 			.then(blob => {
 				if (cancelled) return
@@ -1428,7 +1437,7 @@ function ChatFileMessagePlayer({ manifest: manifestProp, isMe }: { manifest: Cha
 		setArchiveBlob(null)
 		setImageFullscreen(false)
 		setPdfFullscreen(false)
-		if (!chatCryptoDecryptGate.enabled) return // Y.81 1: no decrypt while the chat crypto is not available
+		if (!chatCryptoDecryptGate.enabled) return // no decrypt while the chat crypto is not available
 		void decryptChatFileManifest(manifest, controller.signal)
 			.then(result => {
 				setFiles(result)
@@ -2098,7 +2107,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	const [libraryOlderPending, setLibraryOlderPending] = useState(false)
 	const [historyRereadTick, setHistoryRereadTick] = useState(0)
 	const [localHistoryRead, setLocalHistoryRead] = useState<LocalHistoryRead>({ kind: 'not_read' })
-	// R48: a history client not ready yet (not_read) is read again once it is ready: 1 s steps, up to 10 times; the read result replaces not_read.
+	//a history client not ready yet (not_read) is read again once it is ready: 1 s steps, up to 10 times; the read result replaces not_read.
 	useEffect(() => {
 		if (localHistoryRead.kind !== 'not_read' || historyRereadTick >= 10) return
 		const timer = window.setTimeout(() => setHistoryRereadTick((t) => t + 1), 1000)
@@ -2120,9 +2129,9 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 				innerWidth: window.innerWidth,
 				innerHeight: window.innerHeight,
 			})
-			// a failed read is unreadable (Y.102 3), never a silent empty history
+			// a failed read is unreadable, never a silent empty history
 			const page = await openLocalChatPage(address, viewport).catch(() => null)
-			// the page's own read result, for every chat (Y.102): a read without items is empty, a failed or non-local read is unreadable
+			// the page's own read result, for every chat: a read without items is empty, a failed or non-local read is unreadable
 			if (!cancelled) setLocalHistoryRead(historyReadOf(await readLocalChatHistory(address, viewport)))
 			if (!migrated || cancelled || !page || page.source !== 'local') return
 			setLibraryOlderPending(page.olderState === 'pending')
@@ -2387,7 +2396,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		onVoiceCallActive?.(voiceCallState === 'outgoing')
 	}, [onVoiceCallActive, voiceCallState])
 
-	// The call surface is owned by this mounted Chat instance.  Do not infer
+	// The call surface is owned by this mounted Chat instance. Do not infer
 	// "minimized" from a transient thread/router state: opening the call can
 	// update the parent chat state before the relay has finished, which used to
 	// hide the PWA call surface and leave only the "Calling" bubble visible.
@@ -2463,10 +2472,10 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	// the migration retry notice (approved copy) shows only in the retryable state of the shell's background run.
 	const [pgpMigrationRetry, setPgpMigrationRetry] = useState(() => getPgpMigrationState() === 'retryable')
 	const [pgpMigrationRetryDismissed, setPgpMigrationRetryDismissed] = useState(false)
-	// Y.62 pgpUpgradeState: only pgp_migration_retry shows the non-blocking notice; the other codes change no screen.
+	// pgpUpgradeState: only pgp_migration_retry shows the non-blocking notice; the other codes change no screen.
 	const [pgpUpgradeRetry, setPgpUpgradeRetry] = useState(() => { installPgpUpgradeStateListener(); return pgpUpgradeRetryVisible() })
 	useEffect(() => subscribePgpUpgradeState((code) => setPgpUpgradeRetry(code === 'pgp_migration_retry')), [])
-	// Y.81 (batch 2): one chat-crypto notice and an action gate. The history signal is a placeholder until the page reads it (readable, not empty).
+	// (batch 2): one chat-crypto notice and an action gate. The history signal is a placeholder until the page reads it (readable, not empty).
 	const [chatOnline, setChatOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine !== false)
 	const [cryptoAttempt, setCryptoAttempt] = useState(0)
 	const [cryptoTick, setCryptoTick] = useState(0)
@@ -2478,7 +2487,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	chatActionsRef.current = cryptoActionsEnabled(chatCryptoAvail)
 	chatCryptoDecryptGate.enabled = chatActionsRef.current
 	const chatCryptoActionsOn = chatActionsRef.current
-	// Y.81 2: 30 s, 2 min, 10 min; then only the manual retry. Each retry re-reads the PGP state.
+	//30 s, 2 min, 10 min; then only the manual retry. Each retry re-reads the PGP state.
 	useEffect(() => {
 		if (chatCryptoNotice === null) { setCryptoAttempt(0); return }
 		if (chatCryptoNotice === 'chat_crypto_still_retrying') return
@@ -2492,7 +2501,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		setPgpUpgradeRetry(pgpUpgradeRetryVisible())
 		setPgpMigrationRetry(getPgpMigrationState() === 'retryable')
 	}, [cryptoTick])
-	// Y.81 2 (CA-06): a network back online retries once, at once.
+	// (CA-06): a network back online retries once, at once.
 	useEffect(() => {
 		const up = () => { setChatOnline(true); setCryptoTick((t) => t + 1) }
 		const down = () => setChatOnline(false)
@@ -3226,6 +3235,11 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		}
 		voicePeerRouteRef.current = route
 		voicePeerWalletRef.current = typeof toAddress === 'string' ? toAddress.trim() : ''
+		// Fail closed and visible: a shell that is not compatible does not dial; the same update prompt shows.
+		if (!callAllowed(await probeCallCapabilityNow())) {
+			failDial(tu('call.upgrade.chat'))
+			return
+		}
 		markCallTiming('route-ready')
 		try {
 			const mailboxAligned = await timeCallStep('mailbox-aligned', () =>
@@ -3748,7 +3762,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		if (inboundMessages.length === 0) return
 		let newestActiveOffer: VoiceCallSignal | null = null
 		for (const message of inboundMessages) {
-			const signal = parseVoiceCallSignal(message.text)
+			const signal = storedVoiceSignal(message)
 			if (signal?.type !== 'voice_call_offer_v1' || !isVoiceCallOfferActive(signal)) continue
 			const timestamp = normalizeVoiceTimestampMs(signal.timestamp || signal.createdAt)
 			const previousTimestamp = newestActiveOffer
@@ -3762,16 +3776,23 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 				voiceCallPeerSessionRef.current || '',
 				voiceCallSessionRef.current || '',
 			].filter(Boolean))
-			const replacesLiveCall = liveSessions.size > 0 && !liveSessions.has(newestActiveOffer.sessionId)
-			if (replacesLiveCall) detachLocalVoiceCall()
+			// Only a ringing offer that is not the current call and arrived after the current call started may detach it (a dial or
+			// another live call is never torn down by an older or unrelated offer).
+			const currentStartMs = normalizeVoiceTimestampMs(voiceCallOfferRef.current?.timestamp)
+			if (offerReplacesLiveCall(newestActiveOffer, liveSessions, currentStartMs)) detachLocalVoiceCall()
 		}
 		for (const latest of inboundMessages) {
 			try {
-			const signal = parseVoiceCallSignal(latest.text)
+			const signal = storedVoiceSignal(latest)
 			if (!signal) continue
 			const callerEoa = recoverVoiceCallOfferSigner(signal)
+			// The chat page only shows an offer that the admission already took (read-only check; the App's ring path admits).
+			// It never admits, so the two browser paths cannot race for the admission.
+			const chatOfferAdmitted = signal.type === 'voice_call_offer_v1' && isVoiceCallOfferRinging(signal)
+				&& voiceOfferDedup.isAdmitted(signal.callId, signal.sessionId)
 			if (
 				signal.type === 'voice_call_offer_v1' &&
+				chatOfferAdmitted &&
 				(callerEoa || claimedVoiceCallerTag(signal) || claimedVoiceCallerAddress(signal)) &&
 				typeof signal.callId === 'string' && signal.callId.length > 0 &&
 				typeof signal.sessionId === 'string' && signal.sessionId.length > 0 &&
@@ -3813,6 +3834,13 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 						username = rows.find((row) => (row.address || '').toLowerCase() === provenAddress)?.username
 					}
 					const tag = formatLookedUpBeamioTag(username)
+					// A looked-up tag that differs from the declared one revokes the ring: the page layer closes, no report.
+					const declaredTagLater = claimedVoiceCallerTag(signal)
+					if (declaredTagLater && tag && declaredTagLater.toLowerCase() !== tag.toLowerCase()) {
+						setIncomingVoiceOffer(previous => sameCallId(previous?.sessionId, signal.sessionId) ? null : previous)
+						setIncomingCaller(null)
+						return
+					}
 					const nextMismatch = voiceCallClaimMismatchesKey(signal, provenAddress, tag, true)
 					const nextClaim = {
 						claimedTag: nextMismatch ? claimedVoiceCallerTag(signal) : '',
@@ -3844,7 +3872,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 						createdAt: Date.now(),
 						expiresAt: signal.expiresAt,
 					})
-					applyNativeIncomingVoiceOfferFromLine(latest.text)
+					// Admitted above: the one native report for this offer (applyNative would admit it a second time).
 					reportNativeIncomingSystemCall(
 							nativeIncomingSystemCallPayload({
 							callId: signal.callId,
@@ -4026,6 +4054,14 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 					? 'Voice calling requires the contact to register Chat encryption first.'
 					: 'Voice calling could not resolve the contact mailbox route. Please try again.',
 			)
+			setVoiceCallConnecting(false)
+			setVoiceCallState('idle')
+			setIncomingVoiceAction('idle')
+			return
+		}
+		if (!callAllowed(await probeCallCapabilityNow())) {
+			// Fail closed and visible: the incoming call is not answered; the update prompt shows.
+			setVoiceError(tu('call.upgrade.incoming'))
 			setVoiceCallConnecting(false)
 			setVoiceCallState('idle')
 			setIncomingVoiceAction('idle')
@@ -4452,12 +4488,15 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		// Snapshot before clearing — native Accept never creates a controller, so
 		// hangup must still reach the dialer via AES + Chat when notifyPeer.
 		const offerForHangup = voiceCallOfferRef.current
+		clearConnectedCallIfMatches(offerForHangup?.callId, offerForHangup?.sessionId || voiceCallSessionRef.current || undefined)
 		const peerRouteForHangup = String(voicePeerRouteRef.current || '').trim()
 		voiceCallOfferRef.current = null
 		voiceCallSessionRef.current = null
 		voiceCallPeerSessionRef.current = null
 		const controller = voiceControllerRef.current
 		voiceControllerRef.current = null
+		// A connected call (answered) ends its system call locally on hang-up. The PWA sends voice_end_v1 itself (controller.end).
+		const wasConnectedHangup = voiceCallAnsweredRef.current
 		setVoiceError(null)
 		setVoiceCallConnecting(false)
 		setVoiceCallMinimized(false)
@@ -4519,6 +4558,13 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 				}
 			}
 			if (sessionId) await stopWorkerVoiceListen(sessionId)
+		}
+		// A connected call ends its system call on hang-up, for both the controller and the no-controller path.
+		if (wasConnectedHangup && offerForHangup?.callId && offerForHangup.sessionId) {
+			dispatchNativeSystemCallAction('endSystemCall', {
+				callId: offerForHangup.callId,
+				sessionId: offerForHangup.sessionId,
+			})
 		}
 		voiceCaptureStopRef.current?.()
 		voiceCaptureStopRef.current = null
@@ -4618,7 +4664,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	useEffect(() => {
 		const latest = [...messages].reverse().find((message) => message.from === 'them' && message.text)
 		if (!latest?.text || !incomingVoiceOffer) return
-		const signal = parseVoiceCallSignal(latest.text)
+		const signal = storedVoiceSignal(latest)
 		if (
 			signal?.type === 'voice_end_v1' &&
 			sameCallId(signal.sessionId, incomingVoiceOffer.sessionId)
@@ -4677,7 +4723,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		for (let index = messages.length - 1; index >= 0; index -= 1) {
 			const message = messages[index]
 			if (message.from !== 'them' || !message.text) continue
-			const signal = parseVoiceCallSignal(message.text)
+			const signal = storedVoiceSignal(message)
 			const peerStatus = signal?.type === 'voice_call_reject_v1'
 				? 'declined'
 				: signal?.type === 'voice_call_timeout_v1'
@@ -4713,7 +4759,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		for (let index = messages.length - 1; index >= 0; index -= 1) {
 			const message = messages[index]
 			if (message.from !== 'them' || !message.text) continue
-			const signal = parseVoiceCallSignal(message.text)
+			const signal = storedVoiceSignal(message)
 			if (signal?.type !== 'voice_end_v1' || !sameCallId(signal.callId, offer.callId)) continue
 			const mark = Number(signal.timestamp || signal.createdAt)
 			if (
@@ -4729,6 +4775,38 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	}, [endVoiceCall, messages, voiceCallState])
 
 	const endVoiceCallRef = useRef(endVoiceCall)
+	// The connected call is registered for the App's native hang-up watcher, so it works without this page mounted.
+	// The registration ends when the call is no longer connected (any end path sets voiceCallAnswered back to false), so a
+	// later native event for the same handles is a no-op. Unmounting does not clear it: the call may still be connected.
+	const registeredCallRef = useRef<{ callId: string; sessionId: string } | null>(null)
+	const pageUnmountedRef = useRef(false)
+	// Order matters: this mount effect (which resets the flag for React.StrictMode's simulated remount) is declared before the
+	// unmount marker and the registration effect below, so the dev-only remount sees the flag cleared.
+	useEffect(() => {
+		pageUnmountedRef.current = false
+		return () => { pageUnmountedRef.current = true }
+	}, [])
+	useEffect(() => {
+		if (!voiceCallAnswered) {
+			const registered = registeredCallRef.current
+			if (registered) clearConnectedCallIfMatches(registered.callId, registered.sessionId)
+			registeredCallRef.current = null
+			return
+		}
+		const offer = voiceCallOfferRef.current
+		const sessionId = offer?.sessionId || voiceCallSessionRef.current || ''
+		if (!offer?.callId || !sessionId) return
+		const callId = offer.callId
+		registeredCallRef.current = { callId, sessionId }
+		setConnectedCall({ callId, sessionId, end: () => { void endVoiceCallRef.current('ended', true, { callId, sessionId }) } })
+		// Cleanup runs when the connected state changes (the call is no longer connected). It does not run on unmount: a page
+		// unmount keeps the registration (the call may still be connected, see the release notes).
+		return () => {
+			if (pageUnmountedRef.current) return
+			clearConnectedCallIfMatches(callId, sessionId)
+			registeredCallRef.current = null
+		}
+	}, [voiceCallAnswered])
 	endVoiceCallRef.current = endVoiceCall
 	// Browser busy: a new offer while this page has a call up is answered "busy" (App.tsx).
 	useEffect(() => {
@@ -5926,6 +6004,17 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	const lastSendCodeRef = useRef<string | undefined>(undefined)
 	/** the fingerprint read with the last held send (shown for the comparison; undefined when sent). */
 	const lastSendHeldRef = useRef<HeldKey | undefined>(undefined)
+	/** Where the memory copy's verified fingerprint came from, for the QA trace only. */
+	const memVerifiedWriterRef = useRef<MemoryTrustWriter>('none')
+	/** The stored verified fingerprint of this contact: the held bubbles follow it. Re-read when the route or trust is written. */
+	const [storedVerifiedFp, setStoredVerifiedFp] = useState<string | null>(null)
+	useEffect(() => {
+		let cancelled = false
+		void storedVerifiedFingerprintOf((chatData.address || '').trim()).then((fp) => { if (!cancelled) setStoredVerifiedFp(fp) }).catch(() => undefined)
+		return () => { cancelled = true }
+	}, [chatData.address, routeHydrateGen])
+	/** The bubble of a held message: the stored trust decides between "Not verified yet" and the send-again state. */
+	const heldBubbleOf = (m: { sendFingerprint?: string | null }): HeldBubble => heldBubble({ sendFingerprint: m.sendFingerprint, storedVerified: storedVerifiedFp, storedKeyFingerprint })
 	/**held sends (route_unconfirmed) by message id: the text, the number of retries so far, and the timer of the next retry. */
 	const heldSendsRef = useRef(new Map<string, { text: string; attempt: number; timer?: number; pinned?: HeldKey }>())
 	useEffect(() => () => {
@@ -5968,14 +6057,26 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		}
 	}, [chatData.address])
 
-	/** "Verified, continue": the key on screen is written as verified (with its fingerprint), and the prompt is not shown again for this contact. */
-	function confirmVerifyPrompt() {
+	/**
+	 * "Verified, continue": the key on screen is written as verified (with its fingerprint), the prompt is not shown again for this contact,
+	 * and the held messages of this chat are sent again. Each is read again: it goes out only on the verified key.
+	 */
+	async function confirmVerifyPrompt() {
 		const held = verifyPrompt
 		setVerifyPrompt(null)
 		if (!held) return
 		const current = chatDataRef.current
-		applyPeerRoute(current, held, true)
+		recordVerifyTrace('verify-confirm', { heldMessages: (messagesRef.current || []).filter(m => m.status === 'first_fetch_pending').length })
+		const saved = await applyPeerRoute(current, held, true)
 		patchStoredChatRow(current.address, { verifyPromptSeen: true })
+		// The held messages go out only when the trust is stored: the send gate then reads the stored value.
+		if (saved) await resendHeldAfterTrust()
+	}
+
+	/** The held text messages of this chat are sent again after the user's verification (a key read now that is not the verified one holds again). */
+	async function resendHeldAfterTrust(): Promise<void> {
+		const ids = (messagesRef.current || []).filter(m => m.status === 'first_fetch_pending' && m.id).map(m => m.id as string)
+		for (const id of ids) await retryHeldSend(id, 'fresh')
 	}
 
 	/** "Later": the prompt is not shown again for this contact (persisted per contact). */
@@ -6034,76 +6135,78 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	}
 
 	/** Writes a refreshed key and route to the chat copy, the profile state and the stored record. */
-	function applyPeerRoute(current: chatData, r: { publicArmored: string; routersArmoreds: string; routePgpKeyID?: string; fingerprint?: string }, trusted = false) {
+	function applyPeerRoute(current: chatData, r: { publicArmored: string; routersArmoreds: string; routePgpKeyID?: string; fingerprint?: string }, trusted = false): Promise<boolean> {
 		const addr = (current.address || '').trim()
-		const addrLower = addr.toLowerCase()
-		if (!current.chatData) {
-			current.chatData = { publicArmored: '', routersArmoreds: '', online: false, routePgpKeyID: '' }
-		}
-		const cd = current.chatData
-		cd.publicArmored = r.publicArmored
-		cd.routersArmoreds = r.routersArmoreds
-		if (r.routePgpKeyID) cd.routePgpKeyID = r.routePgpKeyID
-		if (r.fingerprint) cd.keyFingerprint = storedKeyFingerprint(r.fingerprint)
-		// only the user's own verification (trusted) writes the verified fingerprint.
-		if (trusted && r.fingerprint) cd.verifiedFingerprint = storedKeyFingerprint(r.fingerprint)
+		// A new object, never a change in place: the stored row may hold the same chatData object as the copy. The comparison below
+		// is made against the object before the write, so a trust write is persisted.
+		const before = current.chatData
+		const next = nextPeerChatData(before, r, trusted)
+		const moved = routeFieldsDiffer(before, next)
+		current.chatData = next as chatData['chatData']
+		memVerifiedWriterRef.current = nextMemoryTrustWriter(memVerifiedWriterRef.current, { trusted, hadVerified: !!before?.verifiedFingerprint, hasVerified: !!next.verifiedFingerprint })
+		recordVerifyTrace('trust-write', { trusted, moved, verified: !!next.verifiedFingerprint })
 		setRouteHydrateGen(g => g + 1)
-		const apply = (chats: chatData[]): { next: chatData[]; changed: boolean } => {
-			let changed = false
-			const next = chats.map(row => {
-				if (String(row?.address || '').toLowerCase() !== addrLower) return row
-				const old = row.chatData
-				if (
-					old?.routersArmoreds === cd.routersArmoreds &&
-					old?.publicArmored === cd.publicArmored &&
-					old?.routePgpKeyID === cd.routePgpKeyID &&
-						old?.keyFingerprint === cd.keyFingerprint &&
-						old?.verifiedFingerprint === cd.verifiedFingerprint
-				) {
-					return row
-				}
-				changed = true
-				return {
-					...row,
-					chatData: {
-						...(old || { publicArmored: '', routersArmoreds: '', online: false, routePgpKeyID: '' }),
-						routersArmoreds: cd.routersArmoreds,
-						publicArmored: cd.publicArmored,
-						routePgpKeyID: cd.routePgpKeyID || old?.routePgpKeyID || '',
-							// the fingerprints are stored with the copy, so a reload keeps the comparison baseline and the verified key.
-							keyFingerprint: cd.keyFingerprint ?? old?.keyFingerprint,
-							verifiedFingerprint: cd.verifiedFingerprint ?? old?.verifiedFingerprint,
-					},
-				}
-			})
-			return { next, changed }
-		}
 		setProfiles(prev => {
 			if (!prev?.length) return prev
 			const cur = prev[0]
-			const chats = Array.isArray(cur?.chats) ? cur.chats : []
-			const { next, changed } = apply(chats)
+			const { rows, changed } = applyPeerRouteToRows(Array.isArray(cur?.chats) ? cur.chats : [], addr, next, moved || trusted)
 			if (!changed) return prev
 			const nextProfiles = [...prev]
-			nextProfiles[0] = { ...cur, chats: next }
+			nextProfiles[0] = { ...cur, chats: rows }
 			return nextProfiles
 		})
+		let persisted: Promise<boolean> = Promise.resolve(true)
 		const stored = CoNET_Data
 		if (stored?.profiles?.length) {
 			const cur = stored.profiles[0]
-			const chats = Array.isArray(cur?.chats) ? cur.chats : []
-			const { next, changed } = apply(chats)
+			const { rows, changed } = applyPeerRouteToRows(Array.isArray(cur?.chats) ? cur.chats : [], addr, next, moved || trusted)
 			if (changed) {
 				const nextProfiles = [...stored.profiles]
-				nextProfiles[0] = { ...cur, chats: next }
+				nextProfiles[0] = { ...cur, chats: rows }
 				stored.profiles = nextProfiles
 				setCoNET_Data(stored)
-				void storeSystemData()
+				// A trust write waits for the write to land: a failed save is reported, never silent.
+				if (trusted) persisted = storeSystemDataAndWait()
+				else void storeSystemData()
 			}
 		}
+		if (trusted) {
+			void persisted.then(async (saved) => {
+				recordVerifyTrace('trust-persist', { trusted, verified: !!next.verifiedFingerprint, saved })
+				if (!saved) setChatError('The verified key could not be saved on this device. Verify again.')
+				if (process.env.REACT_APP_BEAMIO_BOOT_TRACE === 'true') {
+					// QA only: read the stored profile back and record whether the row holds the verified fingerprint (no content is recorded)
+					const profiles = await readStoredProfilesForVerify()
+					const first = Array.isArray(profiles) ? (profiles[0] as { chats?: Array<{ address?: string; chatData?: { verifiedFingerprint?: string } }> } | undefined) : undefined
+					const row = (first?.chats ?? []).find(c => String(c?.address || '').toLowerCase() === addr.toLowerCase())
+					recordVerifyTrace('trust-readback', { saved, found: !!row?.chatData?.verifiedFingerprint, rows: first?.chats?.length ?? 0 })
+				}
+			})
+		}
+		return persisted
 	}
 
 	/** the send to the chat's recipient. The key comes from the chat copy or AddressPGP; a failed send re-reads the key and route once. */
+	/**
+	 * The verified fingerprint of this contact in the STORED row (null when none, or when the row cannot be read). The send gate uses only this
+	 * value: a value that exists only in the page's memory copy is not trust.
+	 */
+	async function storedVerifiedFingerprintOf(addr: string): Promise<string | null> {
+		const profiles = await readStoredProfilesForVerify()
+		const first = Array.isArray(profiles) ? (profiles[0] as { chats?: Array<{ address?: string; chatData?: { verifiedFingerprint?: string } }> } | undefined) : undefined
+		const row = (first?.chats ?? []).find(c => String(c?.address || '').toLowerCase() === addr.toLowerCase())
+		return row?.chatData?.verifiedFingerprint || null
+	}
+
+	/** The send gate's copy of the contact, with the stored trust. Traced with booleans only (QA): memory, stored and the last memory writer. */
+	async function trustGateCopy(current: chatData): Promise<chatData> {
+		const addr = (current.address || '').trim()
+		const stored = await storedVerifiedFingerprintOf(addr).catch(() => null)
+		const { gate, trace } = gateCopyWithStore(current, stored, memVerifiedWriterRef.current)
+		recordVerifyTrace('trust-gate', trace)
+		return gate
+	}
+
 	async function sendChatToRecipient(text: string, opts?: { viaCachedRoute?: boolean; pinned?: HeldKey }): Promise<boolean> {
 		const current = chatDataRef.current
 		const send = (pgp: string, body: string, pk: string, nodes: typeof allNodes) => sendMessage(pgp, body, pk, nodes ?? [])
@@ -6117,8 +6220,8 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 				onAccepted: (pinned) => applyPeerRoute(current, pinned, true),
 			})
 			: opts?.viaCachedRoute
-				? await sendViaCachedRoute(current, text, privateKey, allNodes ?? [], { send })
-				: await sendWithFreshRoute(current, text, privateKey, allNodes ?? [], {
+				? await sendViaCachedRoute(await trustGateCopy(current), text, privateKey, allNodes ?? [], { send })
+				: await sendWithFreshRoute(await trustGateCopy(current), text, privateKey, allNodes ?? [], {
 					fetchKeys: lookupRecipientRecord,
 					send,
 					onRefreshed: (r) => applyPeerRoute(current, r),
@@ -6134,7 +6237,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		return false
 	}
 
-	/**  /.5a: a held send is tried again after 30 s, 2 min and 10 min; after that only the user's choice moves it. */
+	/** /.5a: a held send is tried again after 30 s, 2 min and 10 min; after that only the user's choice moves it. */
 	function scheduleHeldSend(tempId: string) {
 		const held = heldSendsRef.current.get(tempId)
 		if (!held) return
@@ -6164,29 +6267,59 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	}
 
 	/**
+	 * The held wire of a text message that has no held record in memory (after a reload or a new page). The payload is the one a text send built:
+	 * the stored message carries the same fields. Other kinds of message are not rebuilt.
+	 */
+	function heldRecordFromMessage(tempId: string): { text: string; attempt: number } | null {
+		const m = (messagesRef.current || []).find(x => x.id === tempId)
+		const text = m ? heldWireFromMessage(m) : null
+		return text === null ? null : { text, attempt: 0 }
+	}
+
+	/**
 	 * Sends a held message again. `verify` and `accept` send the key the user saw on screen (no new fetch); `fresh` reads the route again;
 	 * `cached` sends on the chat copy and marks it as an unconfirmed route (send anyway).
 	 */
 	async function retryHeldSend(tempId: string, mode: 'fresh' | 'cached' | 'accept' | 'verify') {
-		const held = heldSendsRef.current.get(tempId)
+		// BCHAT 40: "Verify and send" with no key on screen (after a reload) never sends. The key is read once; a first contact opens the
+		// verify panel, and only "Verified, continue" writes the trust (which then resends on the stored trust).
+		if ((mode === 'verify' || mode === 'accept') && !heldSendsRef.current.get(tempId)?.pinned) {
+			const cur = chatDataRef.current
+			const trust = await resolveTrustedRoute(await trustGateCopy(cur), lookupRecipientRecord)
+			const code = trust.ok ? 'ok' : trust.code === 'first_fetch_pending' ? 'first_fetch_pending' : 'other'
+			if (verifyModeDecision({ mode, hasPinned: false, trust: code }) === 'open_panel' && !trust.ok && trust.held) {
+				recordVerifyTrace('held-retry', { mode: 'panel', pinned: false })
+				setVerifyPrompt(trust.held)
+				return
+			}
+		}
+		let held = heldSendsRef.current.get(tempId)
 		if (!held) {
-			// The held record is in memory only: after a restart the key and text are gone, so the user sends again (visible, not silent).
-			setChatError(tu('chat.held.lost'))
-			return
+			const rebuilt = heldRecordFromMessage(tempId)
+			recordVerifyTrace('held-rebuild', { rebuilt: !!rebuilt })
+			if (!rebuilt) {
+				// Not in memory and not a text that can be rebuilt: the user sends again (visible, not silent).
+				setChatError(tu('chat.held.lost'))
+				return
+			}
+			held = rebuilt
+			heldSendsRef.current.set(tempId, held)
 		}
 		if (held.timer !== undefined) window.clearTimeout(held.timer)
 		held.timer = undefined
-		const pinned = mode === 'verify' || mode === 'accept' ? held.pinned : undefined
-		if ((mode === 'verify' || mode === 'accept') && !pinned) {
-			setChatError(tu('chat.held.lost'))
-			return
-		}
-		const ok = await sendChatToRecipient(held.text, { viaCachedRoute: mode === 'cached', pinned })
+		const wantsPinned = mode === 'verify' || mode === 'accept'
+		const pinned = wantsPinned ? held.pinned : undefined
+		// No key in memory (a reload, or a new page): the key is read again. Trust is never written by a send: a held key opens the verify panel,
+		// and "Verified, continue" writes the trust.
+		const effective: 'fresh' | 'cached' | 'accept' | 'verify' = wantsPinned && !pinned ? 'fresh' : mode
+		recordVerifyTrace('held-retry', { mode: effective, pinned: !!pinned })
+		const ok = await sendChatToRecipient(held.text, { viaCachedRoute: effective === 'cached', pinned })
 		const code = lastSendCodeRef.current
 		const heldKey = lastSendHeldRef.current
+		recordVerifyTrace('held-retry', { mode: effective, ok, code: code ?? '' })
 		const next: ChatMessage[] = (messagesRef.current || []).map(m => {
 			if (m.id !== tempId) return m
-			if (ok) return { ...m, status: 'sent' as const, sendError: undefined, sendFingerprint: undefined, sentViaUnconfirmedRoute: mode === 'cached' ? true : m.sentViaUnconfirmedRoute }
+			if (ok) return { ...m, status: 'sent' as const, sendError: undefined, sendFingerprint: undefined, sentViaUnconfirmedRoute: effective === 'cached' ? true : m.sentViaUnconfirmedRoute }
 			return { ...m, status: statusOfUnsentCode(code), sendError: code, sendFingerprint: heldKey?.fingerprint }
 		})
 		messagesRef.current = next
@@ -6204,6 +6337,8 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		} else if (isHeldRouteCode(code)) {
 			// Held again on the key read now: the user acts on that key (the one shown next).
 			held.pinned = heldKey
+			// A first contact read without a key in memory: the verify panel shows that key for comparison, and only its confirmation writes trust.
+			if (wantsPinned && !pinned && code === 'first_fetch_pending' && heldKey) setVerifyPrompt(heldKey)
 		} else {
 			heldSendsRef.current.delete(tempId)
 		}
@@ -6767,7 +6902,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	}, [voiceSending])
 
 	const sendVoiceDraft = useCallback(async () => {
-		if (!chatActionsRef.current) return // Y.81 1: encryption actions disabled while the chat crypto is not available
+		if (!chatActionsRef.current) return // encryption actions disabled while the chat crypto is not available
 		if (!voiceDraftBlob || voiceSending || !profiles?.[0]?.privateKeyArmor) return
 		setVoiceSending(true)
 		setVoiceError(null)
@@ -6849,7 +6984,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		const remoteStored = Array.isArray(myChat.messages) ? myChat.messages : []
 		const remote = await Promise.all(remoteStored.map(async message => {
 			if (message.fileMessage || !message.fileMessageCipher || !privateKey) return message
-			if (!chatCryptoDecryptGate.enabled) return message // Y.81 1: no local manifest decrypt while the chat crypto is not available
+			if (!chatCryptoDecryptGate.enabled) return message // no local manifest decrypt while the chat crypto is not available
 			const fileMessage = await decryptLocalFileManifest(message.fileMessageCipher, privateKey)
 			return fileMessage ? { ...message, fileMessage } : message
 		}))
@@ -7612,7 +7747,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	}
 
 	const sendFileDrafts = useCallback(async () => {
-		if (!chatActionsRef.current) return // Y.81 1: encryption actions disabled while the chat crypto is not available
+		if (!chatActionsRef.current) return // encryption actions disabled while the chat crypto is not available
 		const ready = fileJobs.filter(job => job.status === 'ready' && job.manifest)
 		if (!ready.length || (!privateKey && !isShellContext()) || !allNodes?.length) return
 		for (const job of ready) {
@@ -7657,7 +7792,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	}, [allNodes, chatData, fileJobs, privateKey])
 
 	async function send() {
-		if (!chatActionsRef.current) return // Y.81 1: encryption actions disabled while the chat crypto is not available
+		if (!chatActionsRef.current) return // encryption actions disabled while the chat crypto is not available
 		const temp = CoNET_Data
 		if (!temp || !profiles?.length) return
 		if (!toAddress || !hasRoute) return
@@ -7765,7 +7900,7 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 	}
 
 	const sendAll = useCallback(async () => {
-		if (!chatActionsRef.current) return // Y.81 1: encryption actions disabled while the chat crypto is not available
+		if (!chatActionsRef.current) return // encryption actions disabled while the chat crypto is not available
 		const value = (inputRef.current?.value ?? text).trim()
 		if (value) {
 			await send()
@@ -8097,6 +8232,11 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 		? `${voicePeerAddress.slice(0, 6)}…${voicePeerAddress.slice(-4)}`
 		: ''
 
+
+  // Call capability: an old shell shows the banner; calls are refused in the controller.
+  const callCapState = useSyncExternalStore(subscribeCallCapabilityState, getCallCapabilityState, getCallCapabilityState)
+	// Entering /chat re-probes the shell: a fresh hello decides.
+	useEffect(() => { void probeCallCapabilityNow() }, [])
   return (
 		<div
 			ref={setChatRootEl}
@@ -8106,6 +8246,16 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 			onDragLeave={handleChatFileDragLeave}
 			onDrop={handleChatFileDrop}
 		>
+			{voiceCallState === 'idle' && !voiceCallConnecting && callCapState === 'loading' ? (
+				<div role="status" aria-busy="true" className="absolute inset-x-0 top-0 z-[70] bg-slate-100 px-4 pb-2 pt-[max(0.5rem,env(safe-area-inset-top,0px))] text-center text-sm font-semibold text-slate-600">
+					{tu('call.checking')}
+				</div>
+			) : null}
+			{voiceCallState === 'idle' && !voiceCallConnecting && callCapState === 'old_shell' ? (
+				<div role="status" className="absolute inset-x-0 top-0 z-[70] bg-amber-100 px-4 pb-2 pt-[max(0.5rem,env(safe-area-inset-top,0px))] text-center text-sm font-semibold text-amber-900">
+					<span>{tu('call.upgrade.chat')}</span>
+									</div>
+			) : null}
 			<ChatHeaderIOS
 				layerRef={setHeaderLayerRef}
 				beamioer={peerProfile}
@@ -8118,8 +8268,9 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 				avatarSrc={peerAvatar}
 				onCall={voiceCallState === 'outgoing' ? endOrDismissVoiceCall : startVoiceCall}
 				onPhoneHistory={() => navigate('/phone')}
-				callBusy={voiceCallState === 'outgoing'}
-				callLoading={voiceCallConnecting && voiceCallState === 'outgoing'}
+				// While the capability probe runs the call button is disabled.
+				callBusy={voiceCallState === 'outgoing' || callCapState === 'loading'}
+				callLoading={(voiceCallConnecting && voiceCallState === 'outgoing') || callCapState === 'loading'}
 			/>
 			{showContactProfile && peerProfile?.address ? (
 				<div className="fixed inset-0 z-[9999] flex flex-col overflow-hidden bg-white dark:bg-slate-900">
@@ -9264,7 +9415,15 @@ export default function Chat({ onBack, chatData, privateKey, autoVoiceCallAction
 													>
 														Failed · Tap to retry</button>
 													)}{m.sendError && m.status === "failed" && <span className="ml-1 text-[11px] text-rose-600">{sendFailedDetailText(m.sendError)}</span>}
-													{m.status === "first_fetch_pending" && m.id && (
+													{m.status === "first_fetch_pending" && m.id && heldBubbleOf(m) === "trusted_resend" && (
+														<span className="ml-1 inline-flex flex-col gap-1 text-[11px]">
+															<span className="text-emerald-700">{chatHeldLabelText("trusted_resend")}</span>
+															<span className="inline-flex gap-2">
+																<button type="button" className="text-[#1652f0] underline" onClick={() => void retryHeldSend(m.id as string, 'fresh')}>{tu("chat.held.action.retry")}</button>
+															</span>
+														</span>
+													)}
+													{m.status === "first_fetch_pending" && m.id && heldBubbleOf(m) !== "trusted_resend" && (
 														<span className="ml-1 inline-flex flex-col gap-1 text-[11px]">
 															<span className="text-amber-700">{chatHeldLabelText("first_fetch_pending")}</span>
 															{m.sendFingerprint && (<span className="font-mono break-all text-[10px] text-slate-600">{tu("chat.held.fingerprint.caption")}: {formatFingerprintForCompare(m.sendFingerprint)}</span>)}

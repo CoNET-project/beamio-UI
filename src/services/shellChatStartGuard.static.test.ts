@@ -28,7 +28,7 @@ describe('initChat in a shell', () => {
 		const shell = body.indexOf('if (isShellContext()) {')
 		const keyCheck = body.indexOf('initChat abort: privateKeyArmor invalid or missing')
 		const ownChain = body.indexOf('getOwnKeysFromCoNETPGPSC(profile.privateKeyArmor)')
-		const register = body.indexOf('regiestChatRoute(profile.privateKeyArmor')
+		const register = body.indexOf('regiestChatRouteOutcome(profile.privateKeyArmor')
 		expect(keyCheck).toBeGreaterThan(shell)
 		expect(ownChain).toBeGreaterThan(shell)
 		expect(register).toBeGreaterThan(shell)

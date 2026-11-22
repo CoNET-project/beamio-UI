@@ -136,7 +136,8 @@ describe('+ : the read as the wallet record (absent is the only onboarding; ever
 		expect(shellRecordAsWalletRecord({ status: 'absent' })).toBeNull()
 	})
 
-	it('case 1: the record exists with the EOA key bound to the account: entered (no @beamioTag or account name needed)', () => {
+	// [读层] 读层只表示可解析，账户判定在启动分类层（只有私钥不算账户：见 App.entryPoints P-01、D1 与 pageRecordDecision 的 “A: a readable key without a mnemonic is not an account”）。
+	it('[读层] case 1: the record exists with the EOA key bound to the account: parsed and returned (read layer; the startup layer still decides the account)', () => {
 		const rec = { rev: 2, profiles: [{ keyID: ADDR, privateKeyArmor: KEY }] }
 		expect(shellRecordAsWalletRecord(ok(rec))).toBe(rec)
 		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: rec } })).toMatchObject({ status: 'ok' })
@@ -151,7 +152,8 @@ describe('+ : the read as the wallet record (absent is the only onboarding; ever
 		})
 	})
 
-	it('case 3: only a mnemonic, no EOA key: needs_native_recovery (the mnemonic does not count)', () => {
+	// [读层] 读层的 needs_native_recovery 是读取结果；账户判定与“只有私钥/地址不算账户”在启动分类层（App.entryPoints P-01、D1；pageRecordDecision not_account）。
+	it('[读层] case 3: only a mnemonic, no EOA key: needs_native_recovery at the read layer (startup classification owns the account decision)', () => {
 		const rec = { rev: 2, profiles: [{ keyID: ADDR }], mnemonicPhrase: 'w w w' }
 		expect(() => shellRecordAsWalletRecord(ok(rec))).toThrow('shell_record_needs_native_recovery')
 	})
@@ -208,7 +210,8 @@ describe('+ : the read as the wallet record (absent is the only onboarding; ever
 		expect(() => shellRecordAsWalletRecord(ok(rec))).toThrow('shell_record_duplicate_profiles')
 	})
 
-	it('another account after the account profile does not make a duplicate (the account is profiles[0])', () => {
+	// [读层] 读层只判记录形态；账户是否存在由启动分类层决定（App.entryPoints P-01、D1）。
+	it('[读层] another account after the account profile does not make a duplicate (the account is profiles[0])', () => {
 		const rec = { rev: 2, profiles: [{ keyID: ADDR, privateKeyArmor: KEY }, { keyID: ADDR_2, privateKeyArmor: KEY_2 }] }
 		expect(shellRecordAsWalletRecord(ok(rec))).toBe(rec)
 	})

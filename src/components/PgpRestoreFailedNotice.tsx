@@ -1,6 +1,6 @@
 /**
- * The Chat route after a PGP restore failure (plan A). The copy is a draft for the PWA integration owner; the
- * English copy waits for the interface owner. The page never generates a key by itself: the button is the only way, and it
+ * The Chat route after a PGP restore failure (plan A). The copy is a draft pending the PWA integration review; the
+ * English copy waits for the interface review. The page never generates a key by itself: the button is the only way, and it
  * is the user's click. The rule is the same in a browser and in a shell: a browser generates and registers in the page
  * (the approved exception), a shell calls the native layer. Wallet and asset pages are not affected.
  *
@@ -8,7 +8,7 @@
  * so the not_ready notice shows its body only, with no button. The not_supported defence stays: an answer of not_supported shows
  * "not supported in this version"and hides the button for this session, with no retry.
  *
- * TEST BENCH (transitional): the shell's generate command is provisional until the interface owner confirms it.
+ * TEST BENCH (transitional): the shell's generate command is provisional until the interface maintainers confirm it.
  */
 import { useState } from 'react'
 import { tu } from '../locale/beamioLocale'
@@ -17,6 +17,7 @@ import { nativeGenerateNewPgpKey } from '../services/nativePgpRestore'
 import { shellAccountKeyOrEmpty } from '../services/nativeIdentityPublic'
 import { regeneratePgpKeyByUser } from '../services/chat'
 import type { PgpRestoreFailure } from '../services/pgpRestore'
+import { pgpCreateEligible } from '../services/pgpIdentityEligibility'
 
 /** The replacement button is not shown for class 4 until the native replacement exists. */
 export function showsReplaceButton(code: PgpRestoreFailure): boolean {
@@ -58,7 +59,9 @@ export default function PgpRestoreFailedNotice({ code: _code }: { code: PgpResto
 		setFailedReason(!result.ok && 'reason' in result ? result.reason : null)
 	}
 
-	const hideButton = unsupported || !showsReplaceButton(_code)
+	// RULING 617d3dd9: in a shell the create action is shown only for a confirmed first identity (same rule in every build)
+	const shellNotEligible = isShellContext() && !pgpCreateEligible(shellAccountKeyOrEmpty())
+	const hideButton = unsupported || !showsReplaceButton(_code) || shellNotEligible
 
 	return (
 		<div role="status" className="flex min-h-0 flex-1 flex-col items-center justify-center bg-[#071126] px-6 text-center text-white">

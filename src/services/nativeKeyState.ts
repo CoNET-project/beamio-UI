@@ -2,22 +2,22 @@
  * Native wallet key state and the import route.
  *
  * - A shell with no key for the account answers a wallet or chat command with ack `{type: "ack", reqId, ok: false, error: "no_key"}`.
- *   `installNativeNoKeyWatcher` reports that, and the gate shows the locked page with the import route. Nothing is asked for or
- *   received here: no key, mnemonic or PGP armor is read by the page.
- * - `openNativeKeyImport` sends `{type: "nativeImportOpen", reqId}` (no other field) on the chat-module channel. The shell opens
- * its own secure import screen and answers with an ack. The key is typed only on that native screen.
+ * `installNativeNoKeyWatcher` reports that, and the gate shows the locked page with the import route. Nothing is asked for or
+ * received here: no key, mnemonic or PGP armor is read by the page.
+ * - The native import screen is retired: no command opens a native key import, and the page never takes a typed key.
  *
  * Wire format: the same chat-module channel the native chat transports use. iOS: `CashTreesIOS.chatModuleCommand({action,
  * command})`. Android: `CashTreesAndroid.chatModuleCommand(JSON)`. Events come back on `cashtreesios` / `cashtreesandroid` as
  * `chatModuleEvent` details. The transfer channel is retired and is not used here.
  */
 import { postAndroidChatCommand } from '../utils/androidChatChannel'
+import { IMPORT_REQ_BASE } from './reqIdSpaces'
 
 export const NO_KEY_ERROR = 'no_key'
-export const NATIVE_IMPORT_OPEN = 'nativeImportOpen'
 export const NATIVE_EVENT_NAMES = ['cashtreesios', 'cashtreesandroid'] as const
 /** Import acks use their own reqId range, so they never match a pending request of a chat transport. */
-const IMPORT_REQ_BASE = 900_000_000
+// 0.53.39: the import base is 880000000 (a preventive choice; see reqIdSpaces.ts for the ranges).
+export { IMPORT_REQ_BASE }
 /**
  * Gate queries use one reqId range: identityPublic and the PGP evaluate, restore and create commands.
  * A refusal in this range (for example `no_key` from a query) never decides the app entry; the entry reads walletStatus.
@@ -28,13 +28,6 @@ export const isNativeQueryReqId = (reqId: unknown): boolean =>
 	typeof reqId === 'number' && reqId >= NATIVE_QUERY_REQ_BASE && reqId < NATIVE_QUERY_REQ_END
 const IMPORT_TIMEOUT_MS = 10_000
 let importSeq = 0
-/** reqId of the last import open (Y.95): a nativeImportResult is accepted only with this reqId. */
-let openedImportReqId: number | null = null
-export function lastOpenedImportReqId(): number | null {
-	return openedImportReqId
-}
-
-export type NativeImportOpenResult = 'opened' | 'not_supported' | 'not_available' | 'failed' | 'unavailable' | 'timeout'
 
 type Loose = Record<string, unknown>
 
@@ -106,45 +99,6 @@ export function buildGlobalDestroyCommand(): { type: 'destroy'; reqId: number } 
 /** Sends the logout / lock teardown through the running shell. False when no shell channel takes it. */
 export function sendGlobalDestroyOnLogout(): boolean {
 	return postChatModuleCommand(buildGlobalDestroyCommand())
-}
-
-/**
- * Asks the shell to open its native import screen. Resolves with the ack result only; the imported key never reaches this page.
- * Outside a shell it resolves `unavailable` at once.
- */
-export function openNativeKeyImport(timeoutMs: number = IMPORT_TIMEOUT_MS): Promise<NativeImportOpenResult> {
-	if (typeof window === 'undefined') return Promise.resolve('unavailable')
-	importSeq += 1
-	const reqId = IMPORT_REQ_BASE + importSeq
-	openedImportReqId = reqId
-	return new Promise((resolve) => {
-		let timer: ReturnType<typeof setTimeout> | undefined
-		const done = (result: NativeImportOpenResult) => {
-			for (const name of NATIVE_EVENT_NAMES) window.removeEventListener(name, listener)
-			if (timer !== undefined) clearTimeout(timer)
-			resolve(result)
-		}
-		const listener = (ev: Event) => {
-			const payload = eventPayloadOf(ev)
-			if (!payload || payload.type !== 'ack' || Number(payload.reqId) !== reqId) return
-			if (payload.ok === true) {
-				done('opened')
-				return
-			}
-			// not_supported: the shell has no import page. not_available: the page cannot open right now.
-			const error = payload.error
-			done(error === 'not_supported' ? 'not_supported' : error === 'not_available' ? 'not_available' : 'failed')
-		}
-		for (const name of NATIVE_EVENT_NAMES) window.addEventListener(name, listener)
-		timer = setTimeout(() => done('timeout'), timeoutMs)
-		let sent = false
-		try {
-			sent = postChatModuleCommand({ type: NATIVE_IMPORT_OPEN, reqId })
-		} catch {
-			sent = false
-		}
-		if (!sent) done('unavailable')
-	})
 }
 
 /** Wallet state from `walletStatus`: G0 `no_key`, G1 `not_ready`, G2 `locked` or `unlocked`. */

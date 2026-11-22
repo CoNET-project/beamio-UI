@@ -17,7 +17,7 @@
  *    the entry). Clients never set `X-CoNET-Hop-Sigs`.
  */
 
-import type { VoiceOfferArgs } from './protocol.js'
+import type { FirstOpenRequest, FirstOpenResult, VoiceOfferArgs } from './protocol.js'
 import type { VoiceCallV3Config } from './voice-v3.js'
 import type { AccountSignFn } from './signer.js'
 
@@ -477,6 +477,8 @@ export interface BeamioChatHistory {
 }
 
 export interface BeamioChatClient {
+  /** The last page-side step of a worker start (the ready watchdog reads it). Native clients have no worker start and leave it unset. */
+  readonly startStep?: string
 	init(): Promise<void>
 	/**
 	 * Protocol v1 `hello`: the daemon's protocol version, SDK version and
@@ -516,6 +518,8 @@ export interface BeamioChatClient {
 	queryPresence(contacts: ChatRoute[]): Promise<Record<string, boolean>>
 	/** Trusted native-wake answer, or null when the mailbox lookup failed. */
 	queryNativeWake(contact: ChatRoute): Promise<boolean | null>
+	/** Automatic first open (browser worker): status and key ID only. A shell answers `unsupported`. */
+	firstOpen(request: FirstOpenRequest): Promise<FirstOpenResult>
 	/** Update the set of contacts to listen for and probe. */
 	setRoutes(routes: ChatRoute[]): void
 	history: BeamioChatHistory

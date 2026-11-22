@@ -168,3 +168,123 @@ export const parseVoiceChannelsWire = (raw: unknown): VoiceChannelsWire | null =
 
 /** A short random AES key for the page's own frames (never leaves this device). */
 export const newVoiceUiKey = (): string => bytesToBase64(crypto.getRandomValues(new Uint8Array(32)))
+
+// ---------------------------------------------------------------------------
+// Alternative A: each channel's temporary wallet is generated
+// by the party that uses it, with a CSPRNG, and never leaves that device. Messages
+// carry only the temporary ADDRESS and an authorization signed by the channel's
+// user EOA. The private key (tk) is never sent, not even encrypted.
+// ---------------------------------------------------------------------------
+
+/** The channel labels of the caller listens on cv/cV, the callee on ev/eV. */
+export type VoiceChannelLabel = 'cv' | 'cV' | 'ev' | 'eV'
+
+/**
+ * The authorization a channel user's EOA signs over a temporary address.
+ * `validUntil` is in MILLISECONDS (the same unit as Date.now() and the offer's expiresAt in ms); the pay's notAfter is in seconds.
+ */
+export type VoiceChannelAuth = {
+	from: string
+	validUntil: number
+	sig: string
+}
+
+/**
+ * A temporary wallet for one channel, created here by a CSPRNG (ethers createRandom
+ * uses crypto random bytes). `privateKey` stays in memory on this device; only
+ * `address` may be sent.
+ */
+export const newTemporaryChannelWallet = (): { address: string; privateKey: string } => {
+	const temp = ethers.Wallet.createRandom()
+	return { address: temp.address, privateKey: temp.privateKey }
+}
+
+/** The canonical text the channel user's EOA signs. */
+export const voiceAuthText = (f: {
+	callId: string
+	sessionId: string
+	channel: VoiceChannelLabel
+	temp: string
+	/** The temporary PGP public key fingerprint (lower-case hex), or '' when the channel has no user-side PGP. */
+	tempPgpFpr: string
+	from: string
+	validUntil: number
+}): string =>
+	[
+		'CoNET voice_pgp_auth_v1',
+		`callId:${f.callId}`,
+		`sessionId:${f.sessionId}`,
+		`channel:${f.channel}`,
+		`temp:${f.temp.toLowerCase()}`,
+		`tempPgpFpr:${f.tempPgpFpr.toLowerCase()}`,
+		`from:${f.from.toLowerCase()}`,
+		`validUntil:${f.validUntil}`,
+	].join('\n')
+
+/**
+ * The channel user signs the authorization. The auth object is {from, validUntil, sig} only: the fingerprint
+ * `tempPgpFpr` is the channel's top-level field, rebuilt by the verifier into the canonical text.
+ */
+export const signVoiceAuth = async (
+	signer: Pick<AccountSigning, 'address' | 'signMessage'>,
+	f: { callId: string; sessionId: string; channel: VoiceChannelLabel; temp: string; tempPgpFpr?: string; validUntil: number },
+): Promise<VoiceChannelAuth> => {
+	const from = signer.address.toLowerCase()
+	const fields = { ...f, tempPgpFpr: f.tempPgpFpr ?? '', from }
+	const sig = await signer.signMessage(voiceAuthText(fields))
+	return { from, validUntil: f.validUntil, sig }
+}
+
+/**
+ * Verifies an authorization: the signature must recover `from`, `from` must be the expected
+ * user EOA, `validUntil` must not have passed (`nowMs`, default Date.now()), and `validUntil` must not be later than the offer's
+ * `expiresAt` (also ms). Returns false otherwise (the caller drops the message silently).
+ */
+export const verifyVoiceAuth = (
+	auth: VoiceChannelAuth | null | undefined,
+	/** The channel's top-level fields; `tempPgpFpr` is the value the canonical is rebuilt with. */
+	f: { callId: string; sessionId: string; channel: VoiceChannelLabel; temp: string; tempPgpFpr: string },
+	expectedFrom: string,
+	nowMs: number = Date.now(),
+	/** The offer's expiresAt in ms: a validUntil later than this is refused. */
+	expiresAtMs?: number,
+): boolean => {
+	if (!auth || typeof auth.sig !== 'string' || typeof auth.from !== 'string') return false
+	// auth carries exactly {from, validUntil, sig}: any other field is refused.
+	const keys = Object.keys(auth).sort().join(',')
+	if (keys !== 'from,sig,validUntil') return false
+	// The fingerprint is lower-case 40-hex, or the empty placeholder. No normalisation: anything else is refused.
+	if (typeof f.tempPgpFpr !== 'string' || (f.tempPgpFpr !== '' && !/^[0-9a-f]{40}$/.test(f.tempPgpFpr))) return false
+	if (!Number.isSafeInteger(auth.validUntil) || auth.validUntil < nowMs) return false
+	if (expiresAtMs !== undefined && auth.validUntil > expiresAtMs) return false
+	if (auth.from.toLowerCase() !== expectedFrom.toLowerCase()) return false
+	try {
+		const recovered = ethers.verifyMessage(
+			voiceAuthText({ ...f, from: auth.from, validUntil: auth.validUntil }),
+			auth.sig,
+		)
+		return recovered.toLowerCase() === auth.from.toLowerCase()
+	} catch {
+		return false
+	}
+}
+
+export const verifyVoicePayFor = (
+	pay: VoicePayAuth | null | undefined,
+	temp: string,
+	expectedPayer: string,
+	nowSec = Math.floor(Date.now() / 1000),
+): boolean => {
+	if (!pay || typeof pay.sig !== 'string' || typeof pay.payer !== 'string') return false
+	if (pay.payer.toLowerCase() !== expectedPayer.toLowerCase()) return false
+	if (!Number.isSafeInteger(pay.notAfter) || pay.notAfter <= nowSec) return false
+	try {
+		const recovered = ethers.verifyMessage(
+			voicePayText(temp, pay.notAfter, pay.maxBytes, pay.maxSeconds),
+			pay.sig,
+		)
+		return recovered.toLowerCase() === expectedPayer.toLowerCase()
+	} catch {
+		return false
+	}
+}

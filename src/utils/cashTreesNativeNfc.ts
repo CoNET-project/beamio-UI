@@ -735,7 +735,8 @@ export function dispatchNativeSystemCallAction(
 		| 'reportIncomingSystemCall'
 		| 'queryIncomingCallOutcome'
 		| 'cacheCallerAvatars'
-		| 'endSystemCall',
+		| 'endSystemCall'
+		| 'dismissIncomingSystemCall',
 	payload: Record<string, unknown>,
 ): boolean {
 	const w = cashTreesNativeWindow()

@@ -33,7 +33,7 @@ beforeEach(() => {
 			if (cmd.type !== 'hello' || helloReply === 'silent') return
 			const payload =
 				helloReply === 'declared'
-					? { type: 'ready', reqId: cmd.reqId, result: { capabilities: ['identity.native-keys.v1'] } }
+					? { type: 'ack', reqId: cmd.reqId, ok: true, result: { capabilities: ['identity.native-keys.v1'] } }
 					: { type: 'ack', reqId: cmd.reqId, ok: false, error: 'unknown_command', result: { capabilities: ['identity.native-keys.v1'] } }
 			window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'chatModuleEvent', event: payload } }))
 		},

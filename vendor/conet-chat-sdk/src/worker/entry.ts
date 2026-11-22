@@ -15,6 +15,8 @@ import { HistoryStore } from './history.js'
 import { createWorkerSignRelay } from './remote-sign.js'
 import { createAccountSigning } from '../signer.js'
 import type { WorkerSignRequest, WorkerSignResponse } from '../protocol.js'
+import { generatePgpKeyPair } from '../firstOpen.js'
+import { makeWorkerFirstOpenEnv, runFirstOpenCommand } from './first-open.js'
 
 const ctx = globalThis as unknown as {
 	postMessage: (msg: WorkerOutbound) => void
@@ -35,6 +37,8 @@ const signRelay = createWorkerSignRelay(postSignRequest)
 let gossip: GossipCore | null = null
 let history: HistoryStore | null = null
 let pendingLocalUnlock: { kIdHex: string; kIdxHex: string; dekHex: string } | null = null
+/** Worker-local store for the first open (pending copy, refusal). IndexedDB in the browser. */
+let firstOpenStore: ReturnType<typeof createWorkerPersistence> | null = null
 let historySyncTimer: ReturnType<typeof setTimeout> | null = null
 
 const HISTORY_SYNC_DELAY_MS = 30_000
@@ -392,6 +396,27 @@ async function handle(cmd: WorkerInbound): Promise<void> {
 			}
 			return
 		}
+		case 'firstOpen': {
+			try {
+				firstOpenStore = firstOpenStore ?? createWorkerPersistence()
+				const req = cmd.request
+				const env = makeWorkerFirstOpenEnv({
+					conetRpcUrl: req.conetRpcUrl,
+					chainId: req.chainId,
+					pgpManagerAddress: req.pgpManagerAddress,
+					apiBaseUrl: req.apiBaseUrl,
+					sealKey: req.sealKey,
+					store: firstOpenStore,
+					signMessage: (message) => createAccountSigning(req.eoa, signRelay.request).signMessage(message),
+					generateKeys: (eoa) => generatePgpKeyPair(eoa),
+				})
+				const result = await runFirstOpenCommand(req, env)
+				post({ type: 'ack', reqId: cmd.reqId, ok: true, result })
+			} catch (ex) {
+				post({ type: 'ack', reqId: cmd.reqId, ok: false, error: (ex as Error)?.message ?? String(ex) })
+			}
+			return
+		}
 		case 'voiceFrame': {
 			try {
 				const ok = await gossip!.sendVoiceFrame(cmd.routerArmoredPublicKey, cmd.frame)
@@ -454,13 +479,17 @@ async function handle(cmd: WorkerInbound): Promise<void> {
 	}
 }
 
-ctx.addEventListener('message', (ev: MessageEvent<WorkerInbound>) => {
-	const data = ev.data as unknown as { type?: unknown }
-	if (data && data.type === 'signResponse') {
-		signRelay.onResponse(ev.data as unknown as WorkerSignResponse)
-		return
-	}
-	void handle(ev.data)
-})
-
-export {}
+/**
+ * Starts the worker: attaches the message listener. The host calls this once from its worker wrapper. Importing this module has no
+ * side effect, so a bundler with `sideEffects: false` cannot drop the listener: the start is an explicit call, not an import.
+ */
+export function startChatWorkerEntry(): void {
+	ctx.addEventListener('message', (ev: MessageEvent<WorkerInbound>) => {
+		const data = ev.data as unknown as { type?: unknown }
+		if (data && data.type === 'signResponse') {
+			signRelay.onResponse(ev.data as unknown as WorkerSignResponse)
+			return
+		}
+		void handle(ev.data)
+	})
+}

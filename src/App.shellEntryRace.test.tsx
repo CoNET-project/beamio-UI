@@ -15,11 +15,17 @@ const App = require('./App').default
 const { DaemonProvider } = require('@/providers/DaemonProvider')
 
 const EOA = '0x1111111111111111111111111111111111111111'
+// Spec pre-read: a valid answer must derive its EOA from the phrase, so the phrase is the public BIP-39 test vector.
+const SAMPLE_PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+const SAMPLE_EOA = '0x9858effd232b4033e47d90003d41ec34ecaeda94'
 
 // Controlled by each case: how the App's storage read ends, and when the native wallet arrives.
-const race: { storage: 'null' | 'late-null'; storageResolve?: (v: unknown) => void; nativeResolve?: (v: unknown) => void; releaseStorage?: () => void } = { storage: 'null' }
+const race: { storage: 'null' | 'late-null'; storageResolve?: (v: unknown) => void; nativeResolve?: (v: unknown) => void; prereadResolve?: (v: unknown) => void; releaseStorage?: () => void } = { storage: 'null' }
 
 jest.mock('@/services/shellContext', () => ({ isShellContext: () => true }))
+// jsdom cannot derive a wallet (its Uint8Array is another realm than ethers'); the derivation is covered in the node tests. The route is what this file checks.
+jest.mock('@/services/shellSessionSigner', () => ({ ...jest.requireActual('@/services/shellSessionSigner'), holdShellSessionFromPhrase: () => ({ kind: 'ok' }) }))
+jest.mock('@/services/recoveredMnemonicRecord', () => ({ ...jest.requireActual('@/services/recoveredMnemonicRecord'), checkRecoveredRecord: () => 'valid' }))
 jest.mock('@/utils/cashTreesNativeNfc', () => ({
 	isCashTreesNativeWebView: () => true,
 	getCashTreesNativeNfcBridge: () => null,
@@ -48,14 +54,20 @@ jest.mock('@/providers/DaemonProvider', () => {
 
 // Storage: the App's read and the gate's read both end the same way for a case.
 jest.mock('@/services/beamio', () => ({
+	setPageWritePermit: () => undefined, // 0.53.44: the session write gate (AppEntryGate); stub here
+	allowRestoreWrite: () => undefined,
+  endRestoreWriteWindow: () => undefined,
 	...jest.requireActual('@/services/beamio'),
 	checkStorage: () => (race.storage === 'null' ? Promise.resolve(null) : new Promise((r) => { race.releaseStorage = () => r(null) })),
-	checkStorageWithTransientRetry: () => (race.storage === 'null' ? Promise.resolve({ status: 'unavailable', reason: 'invalid_document' }) : new Promise((r) => { race.releaseStorage = () => r({ status: 'unavailable', reason: 'invalid_document' }) })),
+	// 0.53.39: the page copy status the pre-read path reads. 'null' is a confirmed empty page (no record); otherwise the read is unknown (jsdom has no IndexedDB).
+	checkStorageWithStatusWithTimeout: async () => (race.storage === 'null' ? { status: 'empty' } : { status: 'unavailable', reason: 'timeout' }),
+	checkStorageWithTransientRetry: () => (race.storage === 'null' ? Promise.resolve({ status: 'empty' }) : new Promise((r) => { race.releaseStorage = () => r({ status: 'unavailable', reason: 'invalid_document' }) })),
 	sendPendingProfileSync: jest.fn(),
 	getUserInfo: async () => ({ accountName: 'synthtag' }),
 	getUserInfoLookup: async () => ({ status: 'ok', info: { accountName: 'synthtag' } }),
 	storeSystemData: async () => undefined,
-	storeSystemDataAndWait: async () => undefined,
+	storeSystemDataAndWait: async () => true,
+	readStoredRecordForVerify: async () => ({ mnemonicPhrase: SAMPLE_PHRASE }),
 	ensureProfilePrivateKeyArmorFromMnemonic: (x: unknown) => x,
 	bootstrapProfileLocaleCurrencyIfUnset: async (x: unknown) => x,
 	readWalletRecordForOnboardingGate: async () => null,
@@ -77,10 +89,13 @@ jest.mock('@/services/nativeRecovery', () => ({
 	recoveryOpenErrorKey: () => '',
 	nativeRecoveryCopyKey: () => null,
 	queryNativeWalletState: async () => 'present',
+	queryNativeWalletStatus: async () => ({ status: 'no_key' }), // 0.53.39 stub: the start route reads walletStatus
+	queryNativePasscodeStatus: async () => ({ walletState: await (async () => 'present')(), hasKey: 'not_reported' as const }),
 	queryNativeWalletStateSafe: async () => 'present',
+	queryNativeMnemonicPreread: () => new Promise((r) => { race.prereadResolve = r }),
 }))
 jest.mock('@/services/shellChatCapability', () => ({ ...jest.requireActual('@/services/shellChatCapability'), ensureShellChatState: async () => 'native_chat', shellChatBlockedNow: () => false }))
-jest.mock('@/services/nativeChatRouteRegister', () => ({ ...jest.requireActual('@/services/nativeChatRouteRegister'), probeNativeCapabilities: async () => ({ answered: true, capabilities: [] }) }))
+jest.mock('@/services/nativeChatRouteRegister', () => ({ ...jest.requireActual('@/services/nativeChatRouteRegister'), probeNativeCapabilities: async () => ({ answered: true, capabilities: ['identity.native-keys.v1'] }) }))
 // Modules that build a worker from import.meta (not loadable under jest here): every export is an inert stub.
 jest.mock('@/workers/beamioTag/client', () => mockDeepStub())
 jest.mock('@/workers/appDaemon/client', () => mockDeepStub())
@@ -117,12 +132,12 @@ describe('A+B: no record, or a failed read (the read ends empty before the nativ
 	it('the bar shows after the native-wallet entry; the chat starts, the push bind and the AA ensure run once each', async () => {
 		race.storage = 'null'
 		renderApp()
-		await waitFor(() => expect(race.nativeResolve).toBeDefined())
+		await waitFor(() => expect(race.prereadResolve).toBeDefined())
 		await act(async () => {
-			race.nativeResolve?.({ status: 'unlocked', eoa: EOA })
+			race.prereadResolve?.({ kind: 'valid', eoa: SAMPLE_EOA, phrase: SAMPLE_PHRASE })
 		})
 		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy(), { timeout: 3000 })
-		//  The init runs once. The chat start is the route to the PGP restore; the push bind and the AA ensure
+		// The init runs once. The chat start is the route to the PGP restore; the push bind and the AA ensure
 		// are counted so a second init would show.
 		await waitFor(() => expect(mockChatStarts.length).toBe(1))
 		expect(mockPushBinds.length).toBe(1)

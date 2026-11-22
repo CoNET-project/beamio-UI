@@ -1,6 +1,6 @@
 /**
  * The unified "chat unavailable" state of a shell without the capability (option A). The copy is a draft, to be
- * confirmed by the PWA integration owner. It is not a lock page (that is for `no_key` only) and it holds no key.
+ * confirmed by the PWA integration maintainer. It is not a lock page (that is for `no_key` only) and it holds no key.
  *
  * TEST BENCH (transitional): this is the stage before the native commands exist. It is not the final shell form;
  * the identity entries are re-pointed to the native commands one by one (plan in-shell-no-page-keys, step 2).
@@ -24,7 +24,7 @@ function usePgpTemporary(): boolean {
 
 /**
  * -6 / (1.1): the PGP source is temporarily unavailable. The chat retries on its own on the 30 s, 2 min, 10 min ladder;
- * when that is spent the notice stays and offers a manual retry. The copy is locale keys (owner may change it).
+ * when that is spent the notice stays and offers a manual retry. The copy is locale keys.
  */
 export function ShellPgpTemporaryNotice() {
 	const stopped = useSyncExternalStore(subscribeShellPgpTemporary, getShellPgpTemporaryStopped, getShellPgpTemporaryStopped)
@@ -102,6 +102,18 @@ export function useShellIdentityPending(): boolean {
 }
 
 /**no identity source after a restart. The page shows "retry later" and guesses nothing. */
+/** The chat identity is pending (RULING 617d3dd9): the copy says so; it is not an app-update notice. */
+export function ShellIdentityPendingNotice() {
+	return (
+		<div role="status" className="flex min-h-0 flex-1 flex-col items-center justify-center bg-[#071126] px-6 text-center text-white">
+			<div className="w-full max-w-md rounded-3xl border border-white/15 bg-white/10 p-6 shadow-2xl backdrop-blur-xl">
+				<h1 className="text-xl font-semibold">{tu('chat.identity_pending.title')}</h1>
+				<p className="mt-2 text-sm leading-6 text-white/85">{tu('chat.identity_pending.body')}</p>
+			</div>
+		</div>
+	)
+}
+
 export function ShellIdentityRetryNotice() {
 	return (
 		<div role="status" className="flex min-h-0 flex-1 flex-col items-center justify-center bg-[#071126] px-6 text-center text-white">
@@ -127,6 +139,7 @@ export function ShellChatGate({ children }: { children: ReactNode }) {
 	if (closed) return <ShellIdentityClosedNotice />
 	if (retriesStopped) return <ShellRetryExhaustedNotice />
 	if (state === 'chat_unavailable') return <ShellChatUnavailableNotice />
+	if (state === 'identity_pending') return <ShellIdentityPendingNotice />
 	if (identityPending) return <ShellIdentityRetryNotice />
 	if (pgpTemporary) return <ShellPgpTemporaryNotice />
 	if (pgp) return <PgpRestoreFailedNotice code={pgp} />

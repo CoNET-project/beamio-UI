@@ -252,6 +252,37 @@ export interface QueryPresenceCommand {
 	contacts: ChatRoute[]
 }
 /** Answer: `ack.result` = boolean | null (TS) or `{ ok, nativeWakeable }` (native). */
+/**
+ * Automatic first open (browser worker). The page passes the encrypt-only sealing CryptoKey (structured clone) and the public inputs; the
+ * worker generates, seals, signs and registers, and answers with the status and the key ID only. No private key crosses back.
+ */
+export interface FirstOpenRequest {
+	eoa: string
+	sealKey: CryptoKey
+	pgpManagerAddress: string
+	/** The chain RPC and the chain ID for the AddressPGP reads, and the cluster API base for the registration POST. Carried by the request, so
+	 *  the first open does not depend on the gossip client's init (which runs after the key stage). */
+	conetRpcUrl: string
+	chainId: number
+	apiBaseUrl: string
+	ruleVersion: string
+	/** The page holds a complete chat key that the first open did not create (an old identity: never replaced). */
+	localOldIdentity: boolean
+	/** The mailbox the page already knows and verified, if any. */
+	currentMailbox: { routeKeyID: string; routeArmor: string } | null
+	/** Recorded-candidate nodes from the page's node list (public data). */
+	nodes: { domain: string; armoredPublicKey: string }[]
+}
+export interface FirstOpenResult {
+	status: 'ready' | 'pending_confirm' | 'unknown' | 'restore_failed' | 'registering' | 'error'
+	keyID?: string
+	reason?: string
+}
+export interface FirstOpenCommand {
+	type: 'firstOpen'
+	reqId: number
+	request: FirstOpenRequest
+}
 export interface QueryNativeWakeCommand {
 	type: 'queryNativeWake'
 	reqId: number
@@ -411,6 +442,7 @@ export type ChatDaemonCommand =
 	| IssueGroupTombstoneCommand
 	| QueryPresenceCommand
 	| QueryNativeWakeCommand
+	| FirstOpenCommand
 	| HistoryLoadCommand
 	| HistoryReadCommand
 	| HistoryLocalOpenCommand
@@ -696,6 +728,13 @@ export const COMMAND_PRIVACY: Record<ChatDaemonCommandType, CommandPrivacy> = {
 			'Contact mailbox: querier wallet (signed `wallet_online_query.walletAddress`) + target wallet. Entry C ≠ B: querier IP + ciphertext.',
 		rules: [19, 21],
 		gap: 'Known exception (rule 21): the contact mailbox learns who asks. To be solved with web3://; do not patch ad hoc.',
+	},
+	firstOpen: {
+		walletSignature: ['apiRelay'],
+		viaEntry: true,
+		nodeSees: 'Registration POST to the cluster API (wallet, keyID, public armor, sealed backup, route key ID, signature): the same fields as regiestChatRoute. The backup is ciphertext; the account EOA and the RPC reads (searchKey, getEncryptedPrivateKey) are public.',
+		rules: [14, 16, 18, 19, 22],
+		gap: 'Browser only. The shell answers unsupported. Real worker and chain check is with the BCHAT browser test seat.',
 	},
 	queryNativeWake: {
 		walletSignature: ['peerMailbox'],

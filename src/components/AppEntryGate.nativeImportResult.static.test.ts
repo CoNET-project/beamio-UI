@@ -1,27 +1,24 @@
 /**
  * @jest-environment node
  *
- * Y.95 at the gate (source check): the import result is consumed while the import page is open, the result never enters the app by
- * itself (it asks for a walletStatus read), and the eoa is only remembered as the public address. Reads the source only.
+ * Spec item 41 (2026-11-16): the gate no longer consumes nativeImportResult. The import-return effect, the reload on
+ * visibilitychange and the import result handler are deleted, and the gate never calls the native import page. Rewritten from the
+ * source checks, which required that subscription; those assertions are superseded. Reads the source only.
  */
 import fs from 'fs'
 import path from 'path'
 
 const src = fs.readFileSync(path.join(__dirname, 'AppEntryGate.tsx'), 'utf8')
 
-describe('AppEntryGate consumes nativeImportResult (Y.95)', () => {
-	it('subscribes while the import page is open, and handles ok, already_exists, cancelled and failures', () => {
-		expect(src).toMatch(/onNativeImportResult\(\(\{ code, eoa \}\)/)
-		expect(src).toMatch(/if \(!awaitingImportReturn\) return/)
-		expect(src).toMatch(/code === 'ok' \|\| code === 'already_exists'/)
-		expect(src).toMatch(/code === 'cancelled'/)
+describe('AppEntryGate does not consume nativeImportResult', () => {
+	it('no subscription to the import result and no import-return state remain', () => {
+		expect(src).not.toMatch(/onNativeImportResult/)
+		expect(src).not.toMatch(/awaitingImportReturn/)
+		expect(src).not.toMatch(/nativeImportResult/)
 	})
 
-	it('a result asks for a walletStatus read; it does not enter the app or sign anything by itself', () => {
-		const start = src.indexOf('onNativeImportResult(({ code, eoa })')
-		const block = src.slice(start, src.indexOf('}, [awaitingImportReturn])', start))
-		expect(block).toContain("notifyNativeWalletReady('')")
-		expect(block).toContain('rememberNativeEoa(eoa)')
-		expect(block).not.toMatch(/applyNativeWallet|applyLocalWallet|enterApp\(|goOnboarding|storeSystemData|privateKey/)
+	it('the gate does not open the import page or send nativeImportOpen', () => {
+		expect(src).not.toMatch(/openNativeKeyImport/)
+		expect(src).not.toMatch(/nativeImportOpen/)
 	})
 })

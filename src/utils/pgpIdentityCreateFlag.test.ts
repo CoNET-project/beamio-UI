@@ -6,6 +6,7 @@ import fs from 'fs'
 import path from 'path'
 import { pgpIdentityCreateEnabledFor, PGP_IDENTITY_CREATE_ENABLED } from './pgpIdentityCreateFlag'
 import { PGP_IDENTITY_CREATE_ENABLED as FROM_COMMAND_PATH, nativeGenerateNewPgpKey } from '../services/nativePgpRestore'
+import { grantPgpCreateEligibility } from '../services/pgpIdentityEligibility'
 
 const ROOT = path.resolve(__dirname, '..', '..')
 const scripts = (JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as { scripts: Record<string, string> }).scripts
@@ -49,7 +50,12 @@ describe('the command path reads the same switch', () => {
 		expect(FROM_COMMAND_PATH).toBe(PGP_IDENTITY_CREATE_ENABLED)
 	})
 
-	it('with the switch off, the create call is refused before any command is sent', async () => {
+	it('without the first-identity eligibility the create call is refused before any command is sent (RULING 617d3dd9)', async () => {
+		await expect(nativeGenerateNewPgpKey('0x' + '11'.repeat(20))).resolves.toEqual({ ok: false, reason: 'not_eligible' })
+	})
+
+	it('with the eligibility and the switch off, the create call is refused as not_enabled before any command is sent', async () => {
+		grantPgpCreateEligibility('0x' + '11'.repeat(20))
 		await expect(nativeGenerateNewPgpKey('0x' + '11'.repeat(20))).resolves.toEqual({ ok: false, reason: 'not_enabled' })
 	})
 })

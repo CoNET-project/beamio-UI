@@ -1,0 +1,111 @@
+{
+  "schema": "phrase-route-vectors.v3",
+  "date": "2026-11-21",
+  "basis": "页面 valid 直接进 /home；仅原生明确 no_key 才 onboarding；页面助记词与 keyID 不符不 onboarding；派生失败判为 unknown。",
+  "note": "合成状态；期望值由人工写定。页面与原生两侧状态按启动路由判定。",
+  "cases": [
+    {
+      "id": "PHR-05a-page-valid-native-absent-to-home",
+      "description": "页面有有效助记词（valid），原生 absent（pre absent、walletState absent、walletStatus no_key、hasKey 非 true）：进入 /home；不进 onboarding；不新建钱包；不覆盖页面副本",
+      "state": {
+        "page": "valid",
+        "native": {
+          "pre": "absent",
+          "walletState": "absent",
+          "walletStatus": "no_key",
+          "hasKey": false
+        }
+      },
+      "expect": {
+        "route": "home",
+        "onboarding": false,
+        "createWallet": false,
+        "pageCopyOverwritten": false,
+        "nativeWriteBack": "not_done_out_of_scope"
+      }
+    },
+    {
+      "id": "PHR-05b-page-unreadable-native-absent-retry",
+      "description": "页面副本读失败或不确定（unknown/unreadable），原生 absent：不进 onboarding；走既有重试提示；不新建；不覆盖",
+      "state": {
+        "page": "unknown",
+        "native": {
+          "pre": "absent",
+          "walletState": "absent",
+          "walletStatus": "no_key",
+          "hasKey": false
+        }
+      },
+      "expect": {
+        "route": "start_hold_retry_prompt",
+        "onboarding": false,
+        "createWallet": false,
+        "pageCopyOverwritten": false,
+        "autoRetryLoop": false
+      }
+    },
+    {
+      "id": "PHR-05c-keyid-mismatch-native-absent-undetermined-retry",
+      "description": "页面助记词推导的 EOA 与记录 keyID 不符（E7-1 confirmed_empty，仅表示“不采用该副本”），原生 absent：不进 onboarding，不新建，不改写；走 undetermined 重试提示",
+      "state": {
+        "page": "mnemonic_keyid_mismatch",
+        "pageCopyE71": "confirmed_empty",
+        "native": {
+          "pre": "absent",
+          "walletState": "absent",
+          "walletStatus": "no_key",
+          "hasKey": false
+        }
+      },
+      "expect": {
+        "route": "start_hold_retry_prompt",
+        "notReadyState": "undetermined",
+        "onboarding": false,
+        "createWallet": false,
+        "pageCopyOverwritten": false,
+        "confirmedEmptyUsedAsOnboardingBasis": false
+      }
+    },
+    {
+      "id": "PHR-05d-page-absent-native-absent-onboarding",
+      "description": "对照组：页面确认为空（absent），原生确认 absent（no_key）：允许进入 onboarding（既有规则）",
+      "state": {
+        "page": "absent",
+        "native": {
+          "pre": "absent",
+          "walletState": "absent",
+          "walletStatus": "no_key",
+          "hasKey": false
+        }
+      },
+      "expect": {
+        "route": "onboarding",
+        "onboarding": true,
+        "createWallet": "allowed"
+      }
+    },
+    {
+      "id": "PHR-05e-derivation-exception-unknown-native-absent-retry",
+      "description": "页面助记词推导/解码/读取抛异常＝unknown，不得判为 confirmed_empty；原生 absent：不进 onboarding，不新建，不改写，走 start_hold_retry_prompt",
+      "state": {
+        "page": "derivation_exception",
+        "pageCopyE71": "unknown",
+        "native": {
+          "pre": "absent",
+          "walletState": "absent",
+          "walletStatus": "no_key",
+          "hasKey": false
+        }
+      },
+      "expect": {
+        "route": "start_hold_retry_prompt",
+        "onboarding": false,
+        "createWallet": false,
+        "pageCopyOverwritten": false,
+        "nativeRecordOverwritten": false,
+        "confirmedEmptyAssigned": false
+      }
+    }
+  ],
+  "supersedes": "phrase-route-vectors.v2.json（v2 原件不改）；新增 PHR-05e（推导/解码/读取异常＝unknown，不得 confirmed_empty）"
+}

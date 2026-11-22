@@ -11,22 +11,24 @@ const gate = fs.readFileSync(path.join(__dirname, 'AppEntryGate.tsx'), 'utf8')
 
 describe('AppEntryGate and the missing identity capability', () => {
 	it('the capability state comes from the hello probe and the decision is the shared pure function', () => {
-		expect(gate).toContain("import { identityCapabilityFrom, missingIdentityNotReadyEntry, MIGRATION_RETRY_SCREEN, NATIVE_RETRY_SCREEN, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'")
+		// Rewritten for rule 2026-11-16: missingIdentityNotReadyEntry (the identity-missing local-home exit) is retired; the page is read first.
+		expect(gate).toContain("import { identityCapabilityFrom, identityEntryDisplay, MIGRATION_RETRY_SCREEN, NATIVE_RETRY_SCREEN, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'")
 		expect(gate).toContain('identityCapabilityFrom(await probeNativeCapabilities())')
 	})
 
-	it('a missing capability decides before any native status wait (the status queries have 10 s timeouts)', () => {
-		const missing = gate.indexOf("if (identity === 'missing') {")
-		const statusWait = gate.indexOf('shellWalletState = await queryNativeWalletState()')
-		expect(missing).toBeGreaterThan(0)
-		expect(statusWait).toBeGreaterThan(missing)
-		expect(gate.slice(missing, statusWait)).toContain('missingIdentityNotReadyEntry(Boolean(persisted))')
+	// Rewritten for rule 2026-11-16 (PWA first): the page mnemonic is read before the hello and before the native status wait; the
+	// status queries have 10 s timeouts and never decide a valid page mnemonic.
+	it('the page is read before the hello, and the hello before the native passcode status read (the status queries have 10 s timeouts)', () => {
+		const page = gate.indexOf('withTimeout(readPageMnemonic(), SHELL_PAGE_READ_TIMEOUT_MS')
+		const hello = gate.indexOf('identity = await shellIdentityState()')
+		const statusRead = gate.indexOf('const passcode = await queryNativePasscodeStatus()')
+		expect(page).toBeGreaterThan(0)
+		expect(hello).toBeGreaterThan(page)
+		expect(statusRead).toBeGreaterThan(hello)
 	})
 
-	it('the missing capability is carried as the same code (IDENTITY_CAPABILITY_MISSING) into the gate state', () => {
-		expect(gate).toContain("import { IDENTITY_CAPABILITY_MISSING } from '@/services/bridgeGuard'")
-		expect(gate).toContain('showStorageUnavailable(IDENTITY_CAPABILITY_MISSING)')
-	})
+	// The "missing capability carried as IDENTITY_CAPABILITY_MISSING into the gate state" pin was deleted on purpose: cebd7e0 removed the
+	// showStorageUnavailable(IDENTITY_CAPABILITY_MISSING) producers, and a missing capability is now the start wait.
 
 	it('the missing capability does not replace the app: the gate is decided and renders its children (Outlet)', () => {
 		expect(gate).toContain('if (reason === IDENTITY_CAPABILITY_MISSING) {')
@@ -47,15 +49,19 @@ describe('AppEntryGate and the missing identity capability', () => {
 		expect(app).toContain('<Route path="/settings" element={<MyWallet />} />')
 	})
 
-	it('the check runs before the no_key branch, so a shell without the capability never reaches the page-wallet path', () => {
-		const check = gate.indexOf('shellEntryFor(identity, native)')
-		const noKey = gate.indexOf("[AppEntryGate] native wallet: no key")
+	it('the capability check runs before the pre-read and before the page-wallet path, so a shell without the capability never reaches it', () => {
+		const check = gate.indexOf('if (!identityDeclared) {')
+		const pre = gate.indexOf('const pre = await queryNativeMnemonicPreread()')
+		const pageWalletPath = gate.indexOf('const storageResult = await checkStorageWithTransientRetry()')
 		expect(check).toBeGreaterThan(0)
-		expect(noKey).toBeGreaterThan(check)
+		expect(pre).toBeGreaterThan(check)
+		expect(pageWalletPath).toBeGreaterThan(check)
 	})
 
-	it('a real not-ready keeps the existing prompt: the native_wallet_ reason and its copy are unchanged', () => {
-		expect(gate).toContain("showStorageUnavailable(`native_wallet_${native.status}`)")
+	// Rewritten for rule 2026-11-16 (spec item 42(2)(3)): a real not-ready is unknown, so it no longer sets the native_wallet_ reason.
+	// The screen copy stays in the file for the reason's render mapping.
+	it('a real not-ready is the startup wait: the native_wallet_ reason is not set, and its copy stays', () => {
+		expect(gate).not.toContain("showStorageUnavailable(`native_wallet_${native.status}`)")
 		expect(gate).toContain('<h1 className="text-xl font-semibold">Native wallet is not ready</h1>')
 	})
 })

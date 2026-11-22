@@ -1,17 +1,22 @@
 /**
  * @jest-environment node
  *
- * The page record against the native account. Public zero-entropy addresses only; no key material.
+ * The page record against the native account. SYNTHETIC values only: the phrase is the public BIP-39 test vector, and the native EOA is the
+ * address it derives to. rule A (2026-11-17): a readable valid mnemonic is use; a readable key or address is not an account (not_account, the
+ * pre-read decides); a sealed credential whose content is not readable here is a retry (hold until it unlocks).
  */
-import { decidePageRecord, type PageRecordRead } from './pageRecordDecision'
+import { decidePageRecord, shellRecordReadState, type PageRecordRead } from './pageRecordDecision'
 
-const EOA = '0x' + 'ab'.repeat(20)
+const PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+const EOA = '0x9858effd232b4033e47d90003d41ec34ecaeda94'
 const OTHER = '0x' + '2'.repeat(40)
 const BLOB = 'sealed-credential-blob'
 const ok = { kind: 'address' as const, eoa: EOA }
+const KEY = '0x' + '1'.repeat(64)
+
 const loaded = (over: Record<string, unknown> = {}): PageRecordRead => ({
 	status: 'loaded',
-	data: { profiles: [{ keyID: EOA }], walletCredentialBlob: BLOB, ...over },
+	data: { profiles: [{ keyID: EOA }], mnemonicPhrase: PHRASE, ...over },
 })
 
 describe('page record decision', () => {
@@ -34,30 +39,35 @@ describe('page record decision', () => {
 		expect(decidePageRecord({ status: 'empty' }, ok, EOA)).toBe('empty')
 	})
 
-	it('a record with a sealed credential for the native account is used', () => {
+	it('A: a readable valid mnemonic whose derived EOA is the keyID and the native account is use', () => {
 		expect(decidePageRecord(loaded(), ok, EOA)).toBe('use')
 	})
 
-	it('a record with a page-held key for the native account is used', () => {
-		expect(
-			decidePageRecord({ status: 'loaded', data: { profiles: [{ keyID: EOA, privateKeyArmor: '0x' + '1'.repeat(64) }] } }, ok, EOA),
-		).toBe('use')
+	it('A: a readable key without a mnemonic is not an account (not_account, the pre-read decides), and nothing is used', () => {
+		expect(decidePageRecord({ status: 'loaded', data: { profiles: [{ keyID: EOA, privateKeyArmor: KEY }] } }, ok, EOA)).toBe('not_account')
+	})
+
+	it('A: a readable address without a mnemonic or key is not an account (not_account)', () => {
+		expect(decidePageRecord({ status: 'loaded', data: { profiles: [{ keyID: EOA }] } }, ok, EOA)).toBe('not_account')
+	})
+
+	it('C (page-local): a plaintext mnemonic that does not derive to the keyID is not an account (not_account), never used', () => {
+		expect(decidePageRecord(loaded({ mnemonicPhrase: 'w w w' }), ok, EOA)).toBe('not_account')
+	})
+
+	it('D (provisional): a sealed credential whose content is not readable here is a hold (retry), never used', () => {
+		expect(decidePageRecord({ status: 'loaded', data: { profiles: [{ keyID: EOA }], walletCredentialBlob: BLOB } }, ok, EOA)).toBe('retry')
 	})
 
 	it('a record for another account is eoa_mismatch (not used, not replaced)', () => {
 		expect(decidePageRecord(loaded({ profiles: [{ keyID: OTHER }] }), ok, EOA)).toBe('eoa_mismatch')
 	})
-
-	it('a record with neither a sealed credential nor a key is a retry, not a copy', () => {
-		expect(decidePageRecord(loaded({ walletCredentialBlob: '' }), ok, EOA)).toBe('retry')
-	})
 })
 
 describe('shell record read: the main read path', () => {
-	const { shellRecordReadState } = jest.requireActual<typeof import('./pageRecordDecision')>('./pageRecordDecision')
-	const rec = { profiles: [{ keyID: EOA }], walletCredentialBlob: BLOB }
+	const rec = { profiles: [{ keyID: EOA }], mnemonicPhrase: PHRASE }
 
-	it('a record for the native account with a credential is used', () => {
+	it('A: a record with a valid mnemonic for the native account is used', () => {
 		expect(shellRecordReadState(rec, ok)).toEqual({ kind: 'use' })
 	})
 
@@ -69,30 +79,33 @@ describe('shell record read: the main read path', () => {
 		expect(shellRecordReadState(rec, { kind: 'refused', code: 'timeout' })).toEqual({ kind: 'unavailable', reason: 'native_retry' })
 	})
 
-	it('a record with no credential is native_retry, never used', () => {
-		expect(shellRecordReadState({ profiles: [{ keyID: EOA }] }, ok)).toEqual({ kind: 'unavailable', reason: 'native_retry' })
+	it('D: a sealed credential (the native-sealed phrase, waiting for unlock) is a hold on the read path, never onboarding', () => {
+		expect(shellRecordReadState({ profiles: [{ keyID: EOA }], walletCredentialBlob: BLOB }, ok)).toEqual({ kind: 'unavailable', reason: 'native_retry' })
+	})
+
+	it('A: a key-only or address-only record is not_account on the read path (never used; nothing is written)', () => {
+		expect(shellRecordReadState({ profiles: [{ keyID: EOA, privateKeyArmor: KEY }] }, ok)).toEqual({ kind: 'not_account' })
+		expect(shellRecordReadState({ profiles: [{ keyID: EOA }] }, ok)).toEqual({ kind: 'not_account' })
 	})
 })
 
 describe('native refusal codes on the page record decision', () => {
-	const { shellRecordReadState: readState } = jest.requireActual<typeof import('./pageRecordDecision')>('./pageRecordDecision')
-	const rec = { profiles: [{ keyID: EOA }], walletCredentialBlob: BLOB }
+	const rec = { profiles: [{ keyID: EOA }], mnemonicPhrase: PHRASE }
 
 	it('not_trusted is an update prompt, on the entry and on the copy', () => {
 		const refused = { kind: 'refused' as const, code: 'not_trusted' }
 		expect(decidePageRecord({ status: 'empty' }, refused, EOA)).toBe('update_required')
 		expect(decidePageRecord(loaded(), refused, EOA)).toBe('update_required')
-		expect(readState(rec, refused)).toEqual({ kind: 'unavailable', reason: 'app_update_required' })
+		expect(shellRecordReadState(rec, refused)).toEqual({ kind: 'unavailable', reason: 'app_update_required' })
 	})
 
 	it('origin_refused is an origin error: a record-unavailable state, never an update prompt', () => {
 		const refused = { kind: 'refused' as const, code: 'origin_refused' }
 		expect(decidePageRecord({ status: 'empty' }, refused, EOA)).toBe('record_unavailable')
-		expect(readState(rec, refused)).toEqual({ kind: 'unavailable', reason: 'native_record' })
+		expect(shellRecordReadState(rec, refused)).toEqual({ kind: 'unavailable', reason: 'native_record' })
 	})
 
 	it('any other refusal stays a retry', () => {
-		expect(readState(rec, { kind: 'refused', code: 'locked' })).toEqual({ kind: 'unavailable', reason: 'native_retry' })
+		expect(shellRecordReadState(rec, { kind: 'refused', code: 'locked' })).toEqual({ kind: 'unavailable', reason: 'native_retry' })
 	})
 })
-

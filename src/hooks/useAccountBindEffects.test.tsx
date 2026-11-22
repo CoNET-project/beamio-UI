@@ -35,8 +35,10 @@ jest.mock('@/locale/beamioLocale', () => ({ tu: (key: string) => key }))
 jest.mock('@/services/beamio', () => ({}))
 jest.mock('@/utils/globals', () => ({}))
 
-// Synthetic test values: a plain address, a second address for the AA, and a placeholder key string (the resolver mock returns it).
-const EOA = '0x1111111111111111111111111111111111111111'
+// Synthetic test values: a second address for the AA, and a placeholder key string (the resolver mock returns it).
+// EOA is the address derived from the public BIP-39 test vector (abandon … about), so the account fixtures below are valid accounts.
+const EOA = '0x9858effd232b4033e47d90003d41ec34ecaeda94'
+const PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
 const AA = '0x2222222222222222222222222222222222222222'
 const KEY = `0x${'11'.repeat(32)}`
 
@@ -44,6 +46,9 @@ const KEY = `0x${'11'.repeat(32)}`
 const noAaProfile = () => [{ keyID: EOA, privateKeyArmor: KEY }]
 /** The same profile with an AA that differs from the EOA: the share-referee bind is the path that runs. */
 const withAaProfile = () => [{ keyID: EOA, aaAccount: AA, privateKeyArmor: KEY }]
+/** Control fixtures: a valid account (mnemonic whose derived EOA equals keyID), so the zero-call result is not a key-only artefact. */
+const accountNoAaProfile = () => [{ keyID: EOA, mnemonicPhrase: PHRASE, privateKeyArmor: KEY }]
+const accountWithAaProfile = () => [{ keyID: EOA, aaAccount: AA, mnemonicPhrase: PHRASE, privateKeyArmor: KEY }]
 
 const ensureAa = ensureConetAaForProfileAndPersist as unknown as jest.Mock
 const bindInvite = bindStashedAgentInviteReferrerIfNeeded as unknown as jest.Mock
@@ -81,13 +86,13 @@ describe('a key-only account makes no AA ensure and no bind call (a′)', () => 
 	})
 
 	it('control, not key-only: the same profile makes the AA ensure and the invite bind', () => {
-		runHook(noAaProfile(), false)
+		runHook(accountNoAaProfile(), false)
 		expect(ensureAa).toHaveBeenCalledTimes(1)
 		expect(bindInvite).toHaveBeenCalledWith(EOA)
 	})
 
 	it('control, not key-only: a profile with a differing AA makes the share-referee bind', () => {
-		runHook(withAaProfile(), false)
+		runHook(accountWithAaProfile(), false)
 		expect(bindShare).toHaveBeenCalledWith(KEY)
 	})
 

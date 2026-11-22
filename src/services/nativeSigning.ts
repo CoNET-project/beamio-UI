@@ -5,10 +5,10 @@
  * crosses the bridge, and nothing is sent unless the shell declares `identity.native-keys.v1` (option A: no page-key
  * fallback in a shell). In a browser the account key is the approved exception and is used on the page.
  *
- * Command names and shapes are provisional until the interface owner confirms them in the new spec:
+ * Command names and shapes are provisional until the interface maintainers confirm them in the new spec:
  * - `gossipSign` { type, reqId, message } -> ack result.signature (kind `gossip`)
  * - `gossipSign` { type, reqId, kind, message, inboundGeneration } -> ack result.signature (envelope | group;)
- *   - `signMessage` { type, reqId, kind, message }           -> ack result.signature   (kind selfAuth)
+ * - `signMessage` { type, reqId, kind, message } -> ack result.signature (kind selfAuth)
  */
 import { ethers } from 'ethers'
 import { NATIVE_KEYS_CAPABILITY } from './shellChatState'
@@ -195,8 +195,28 @@ export async function nativeSealOrEmpty(purposeId: string, plaintext: string): P
 export const NATIVE_BACKUP_VIEW_COMMAND = 'walletBackupView'
 export type BackupViewKind = 'privateKey' | 'mnemonic' | 'recoveryCode'
 
+/**
+ * (Android review, this batch): no native error reason is shown to the user. An unknown_command (the command is absent in the
+ * bridge) or not_supported gives the neutral "update the app" copy; any other error gives the neutral failure copy. Never retried.
+ */
+export function backupViewErrorKey(reason: string): 'native_backup_view_unsupported' | 'native_backup_view_failed' {
+	return reason === 'unknown_command' || reason === 'not_supported' || reason === 'unsupported_build' ? 'native_backup_view_unsupported' : 'native_backup_view_failed'
+}
+
+/**
+ * (2026-11-18, MERGE-EDITS A23): the capability wallet.backup-view.v1 gates walletBackupView. A shell that declares
+ * identity.native-keys.v1 but not wallet.backup-view.v1 gets no command: the neutral update copy. A shell that declares it sends the
+ * command; unknown_command or not_supported from it is the same neutral copy. A shell never falls back to a page view of the key or the
+ * phrase. A shell without identity.native-keys.v1 keeps its previous behaviour (the command goes through sendNativeCommand as before).
+ */
+export const WALLET_BACKUP_VIEW_CAPABILITY = 'wallet.backup-view.v1'
+
 export async function nativeWalletBackupView(kind: BackupViewKind): Promise<{ ok: true } | { ok: false; reason: string }> {
 	if (kind !== 'privateKey' && kind !== 'mnemonic' && kind !== 'recoveryCode') return { ok: false, reason: 'kind_not_allowed' }
+	const probe = await probeNativeCapabilities()
+	const declaresKeys = probe.answered && probe.capabilities.includes(NATIVE_KEYS_CAPABILITY)
+	if (declaresKeys && !probe.capabilities.includes(WALLET_BACKUP_VIEW_CAPABILITY)) return { ok: false, reason: 'unsupported_build' }
 	const out = await sendNativeCommand({ type: NATIVE_BACKUP_VIEW_COMMAND, kind })
+	if (!out.ok && (out.reason === 'unknown_command' || out.reason === 'not_supported')) return { ok: false, reason: 'unsupported_build' }
 	return out.ok ? { ok: true } : out
 }

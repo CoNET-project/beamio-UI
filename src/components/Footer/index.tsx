@@ -1,6 +1,7 @@
 // Footer/index.tsx
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
+import { runDropletSequence, type DropletControls } from './dropletSequence'
 import { motion, useAnimation } from 'framer-motion'
 import { CoNET_Data, setCoNET_Data } from '../../utils/globals'
 import { ReactComponent as ShoppingIconGrey } from './assets/shopping-1-icon.grey.svg'
@@ -403,6 +404,14 @@ const Footer = ({ visible }: { visible: boolean }) => {
 	}, [setChatSearchOpen, setShowFooter])
 
 	//					紅色氣泡表示
+	const mountedRef = useRef(false)
+	useEffect(() => {
+		mountedRef.current = true
+		return () => {
+			mountedRef.current = false
+		}
+	}, [])
+
 	useEffect(() => {
 		if (!shouldRender) return
 
@@ -413,59 +422,17 @@ const Footer = ({ visible }: { visible: boolean }) => {
 		}
 
 		let cancelled = false
-
-		const run = async () => {
-			dropletControls.set({
-				opacity: 1,
-				x: `${Math.max(0, prevIndexRef.current) * 100}%`,
-				borderRadius: 12,
-				scaleX: 0.5,
-				scaleY: 0.5,
-			})
-
-			setPhase('moving')
-
-			await dropletControls.start({
-				opacity: 1,
-				borderRadius: 12,
-				scaleX: 1.10,
-				scaleY: 0.90,
-				transition: {
-					duration: 0.12,
-					ease: [0.55, 0.0, 1.0, 0.45],
-				},
-			})
-			setPhase('settling')
-			if (cancelled) return
-
-			await dropletControls.start({
-				borderRadius: 12,
-				scaleX: 1.272,
-				scaleY: 1.152,
-				transition: {
-					duration: 0.14,
-					ease: [0.55, 0.0, 1.0, 0.45],
-				},
-			})
-
-			await dropletControls.start({
-				borderRadius: 12,
-				scaleX: 1,
-				scaleY: 1,
-				transition: {
-					duration: 0.55,
-					ease: [0.2, 0.9, 0.2, 1],
-				},
-			})
-
-			if (cancelled) return
-			setPhase('idle')
-		}
-
-		run()
+		const isLive = () => !cancelled && mountedRef.current
+		void runDropletSequence({
+			controls: dropletControls as unknown as DropletControls,
+			isLive,
+			startX: Math.max(0, prevIndexRef.current),
+			setPhase,
+		})
 
 		return () => {
 			cancelled = true
+			dropletControls.stop()
 		}
 	}, [activeIndex, shouldRender, dropletControls])
 

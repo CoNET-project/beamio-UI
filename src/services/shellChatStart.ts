@@ -6,6 +6,7 @@
 import type { NativeIdentityPublic } from './nativeIdentityPublic'
 import type { PgpEvaluation, PgpRestoreOutcome } from './nativePgpRestore'
 import type { PgpRestoreFailure } from './pgpRestore'
+import { firstIdentityConfirmed, grantPgpCreateEligibility, revokePgpCreateEligibility } from './pgpIdentityEligibility'
 
 export type ShellStartResult =
 	| 'started'
@@ -18,6 +19,7 @@ export type ShellStartResult =
 	| 'pgp_restored'
 	| 'pgp_failed'
 	| 'pgp_first_identity'
+	| 'pgp_identity_pending'
 	| 'chat_unavailable'
 	| 'identity_closed'
 	| 'failed'
@@ -71,6 +73,8 @@ export interface ShellChatStartDeps {
 	showPgpFailure: (code: PgpRestoreFailure) => void
 	/** the unified chat-unavailable state (option A), the same screen as a missing identity capability. */
 	showChatUnavailable: () => void
+	/** the chat identity is pending (not a first identity, not confirmed): its own notice, not the app-update notice. */
+	showIdentityPending: () => void
 	/**
 	 * Schedules another start. `failure`(the default) counts toward the retry limit; `continue`is a step that
 	 * succeeded and goes on (a restored PGP, a completed G1 init), and it does not count.
@@ -252,9 +256,19 @@ async function evaluateMissingPgp(deps: ShellChatStartDeps, accountKey: string):
 		return 'pgp_not_ready'
 	}
 	if (ev.state === 'first_identity') {
-		deps.setFirstIdentity(true)
-		deps.log('info', 'shell chat: no chain record and no backup (first identity); the user creates it from the entry')
-		return 'pgp_first_identity'
+		// RULING 617d3dd9: a first identity needs the legacy report ABSENT and an unregistered chain. Anything else (a field missing, unknown,
+		// PRESENT, UNREADABLE, registered) is not a first identity: no create entry, and the identity waits for a restore.
+		if (firstIdentityConfirmed(ev)) {
+			grantPgpCreateEligibility(accountKey)
+			deps.setFirstIdentity(true)
+			deps.log('info', 'shell chat: legacy ABSENT and chain unregistered (first identity); the user creates it from the entry')
+			return 'pgp_first_identity'
+		}
+		revokePgpCreateEligibility(accountKey)
+		deps.setFirstIdentity(false)
+		deps.log('info', 'shell chat: first identity not confirmed (legacy, chain or a field unknown): no create entry; the identity is pending')
+		deps.showIdentityPending()
+		return 'pgp_identity_pending'
 	}
 	if (ev.state === 'failed') {
 		if (ev.failureCode) deps.showPgpFailure(ev.failureCode)

@@ -19,7 +19,9 @@ describe('G1: the import route waits for the shell capability', () => {
 		expect(hello).toBeGreaterThan(-1)
 		const block = gate.slice(hello, hello + 400)
 		expect(block).toContain("noKeyCtl.capabilityResolved(state === 'native_chat')")
-		expect(block.indexOf('capabilityResolved')).toBeLessThan(block.indexOf('setNativeNoKey(true)'))
+		// rule (b), spec item 41: the held no_key now enters the onboarding (goOnboarding) instead of the retired import route (setNativeNoKey).
+		expect(block).toContain('goOnboarding(false)')
+		expect(block.indexOf('capabilityResolved')).toBeLessThan(block.indexOf('goOnboarding(false)'))
 	})
 
 	it('the controller holds a no_key while the capability is unknown and never shows it when blocked', () => {

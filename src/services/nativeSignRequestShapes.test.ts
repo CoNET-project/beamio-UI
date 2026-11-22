@@ -49,7 +49,7 @@ function installShell(caps: string[]): void {
 			sent.push(cmd)
 			const send = (payload: Record<string, unknown>) =>
 				setTimeout(() => window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'chatModuleEvent', event: payload } })), 0)
-			if (cmd.type === 'hello') send({ type: 'ready', reqId: cmd.reqId, result: { capabilities: caps } })
+			if (cmd.type === 'hello') send({ type: 'ack', reqId: cmd.reqId, ok: true, result: { capabilities: caps } })
 			if (cmd.type === 'gossipSign') send({ type: 'ack', ok: true, result: { signature: SIG }, reqId: cmd.reqId })
 		},
 	}
@@ -152,7 +152,7 @@ describe('an older shell keeps its old wait: the signing path waits 30 s, one at
 							() =>
 								window.dispatchEvent(
 									new CustomEvent('cashtreesios', {
-										detail: { action: 'chatModuleEvent', event: { type: 'ready', reqId: cmd.reqId, result: { capabilities: [NATIVE_KEYS_CAPABILITY] } } },
+										detail: { action: 'chatModuleEvent', event: { type: 'ack', reqId: cmd.reqId, ok: true, result: { capabilities: [NATIVE_KEYS_CAPABILITY] } } },
 									}),
 								),
 							0,

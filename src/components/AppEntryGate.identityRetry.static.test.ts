@@ -25,8 +25,10 @@ describe('AppEntryGate: the unanswered hello is probed on the cadence and retrie
 		expect(gate).toContain('onClick={() => requestNativeIdentityRetry()}')
 	})
 
-	it('with a public address on the device an unanswered hello opens the local home on it', () => {
-		expect(gate).toContain('applyLocalWallet(persisted)')
+	// Rewritten for rule 2026-11-16 (spec item 42(5)): an unanswered hello never routes. A valid page mnemonic is the one route.
+	it('an unanswered hello never opens the home by itself: only a valid page mnemonic does (applyLocalWallet(first.eoa))', () => {
+		expect(gate).toContain('applyLocalWallet(first.eoa)')
+		expect(gate).not.toContain('applyLocalWallet(persisted)')
 	})
 })
 

@@ -3,9 +3,9 @@
  *
  * - A shell that did not answer `hello` is `unanswered`: the existing native-status path decides, as before.
  * - A shell that answered without the capability is `missing`. Its chat is unavailable (the unified state, existing copy), nothing
- *   identity-bearing is sent, and the page never holds a key. It is not the not-ready state and not G0, so it does not reach the
- *   page-wallet path, not even for `no_key`. A native account that is already locked or unlocked still enters the app on its public
- *   address, so the other wallet features stay usable; the chat route shows the unavailable state.
+ * identity-bearing is sent, and the page never holds a key. It is not the not-ready state and not G0, so it does not reach the
+ * page-wallet path, not even for `no_key`. A native account that is already locked or unlocked still enters the app on its public
+ * address, so the other wallet features stay usable; the chat route shows the unavailable state.
  *
  * Pure: the probe answer and the native status are passed in.
  */
@@ -29,7 +29,7 @@ export type ShellEntry = 'native_status' | 'enter_native' | 'chat_unavailable'
 
 export function shellEntryFor(identity: IdentityCapabilityState, native: NativeWalletState): ShellEntry {
 	if (identity === 'declared') return 'native_status'
-	if (native.status === 'locked' || native.status === 'unlocked') return 'enter_native'
+	if (native.status === 'unlocked') return 'enter_native'
 	return 'chat_unavailable'
 }
 
@@ -52,4 +52,17 @@ export const MIGRATION_RETRY_SCREEN = 'migration_retry'
  */
 export function missingIdentityNotReadyEntry(eoaKnown: boolean): 'local_home' | 'unified_unavailable' {
 	return eoaKnown ? 'local_home' : 'unified_unavailable'
+}
+
+/**
+ * CAP display rule. The identity entry shows the unified "unavailable" state only
+ * when the capability is missing AND the native side explicitly answers no key (absent is the same as no_key, 58(2)(e)). An unanswered or
+ * not-ready native shows no unified state (`none`): the start stays in its startup state. A declared capability never shows it. This is a
+ * display rule only; it does not route (CAP-04/07: a valid PWA mnemonic still goes to the home).
+ */
+export type IdentityEntryDisplay = 'unified_unavailable' | 'none'
+
+export function identityEntryDisplay(identity: IdentityCapabilityState, native: NativeWalletState): IdentityEntryDisplay {
+	if (identity !== 'missing') return 'none'
+	return native.status === 'no_key' ? 'unified_unavailable' : 'none'
 }

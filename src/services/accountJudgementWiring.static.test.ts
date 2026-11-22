@@ -4,6 +4,7 @@
  */
 import fs from 'fs'
 import path from 'path'
+import { judgeShell, judgeShellFromNative } from './accountJudgement'
 
 const beamio = fs.readFileSync(path.join(__dirname, 'beamio.ts'), 'utf8')
 const gate = fs.readFileSync(path.join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
@@ -21,22 +22,27 @@ describe('the storage read: a BeamioTag without a key is undetermined, not loade
 describe('the native state: walletState from passcodeStatus is the only basis ', () => {
 	it('the query sends passcodeStatus and reads walletState through the strict parser', () => {
 		expect(native).toContain("export const NATIVE_PASSCODE_STATUS_COMMAND = 'passcodeStatus'")
-		expect(native).toContain('return parsePasscodeStatus(p.result)')
+		expect(native).toContain('const walletState = parsePasscodeStatus(p.result)')
 	})
 })
 
 describe('the gate: judged from the read and walletState; undetermined never onboards; locked shows the passcode page (GY)', () => {
-	it('the shell reads walletState first; a locked walletState shows the passcode page, judged again after the unlock', () => {
-		expect(gate).toContain('shellWalletState = await queryNativeWalletState()')
-		expect(gate).toContain("if (shellWalletState === 'locked' && identity === 'declared') {")
+	it('the shell reads walletState first (one passcodeStatus read); a locked walletState shows the passcode page, judged again after the unlock', () => {
+		expect(gate).toContain('const passcode = await queryNativePasscodeStatus()')
+		expect(gate).toContain('shellWalletState = passcode.walletState')
+		// the locked state is the unlock action of the judgement (accountJudgement.test.ts, "native locked: undetermined, the passcode page")
+		expect(judgeShell('absent', 'locked')).toEqual({ account: 'undetermined', action: 'unlock' })
+		expect(gate).toContain("if (judged.action === 'unlock' && (shellWalletState === 'locked' || shellWalletStatus === 'locked')) {")
 	})
 	it('a build without walletState keeps the existing route (not_reported); a reported state is judged by judgeShell', () => {
-		expect(gate).toContain("if (shellWalletState === 'not_reported') {")
-		expect(gate).toContain("judgeShellFromNative({ idb, walletState: shellWalletState ?? 'not_reported', walletStatus: shellWalletStatus })")
+		expect(gate).toContain("walletState: shellWalletState ?? 'not_reported',")
+		expect(judgeShellFromNative({ idb: 'valid_mnemonic', walletState: 'not_reported', walletStatus: 'unknown' })).toEqual({ account: 'has_account', action: 'enter' })
+		expect(judgeShellFromNative({ idb: 'absent', walletState: 'not_reported', walletStatus: 'no_key' }).action).toBe('retry')
+		expect(judgeShellFromNative({ idb: 'absent', walletState: 'absent', walletStatus: 'unknown' })).toEqual({ account: 'no_account', action: 'onboard' })
 	})
 	it('undetermined shows the retry screen; the create or restore page is reached only from no_account', () => {
 		expect(gate).toContain("if (judged.account === 'undetermined') {")
-		expect(gate).toContain("handleStorageUnavailable('undetermined')")
+		expect(gate).toContain("else handleStorageUnavailable('undetermined')")
 		expect(gate).toContain("const provisioned = presence === 'no_account'")
 	})
 	it('an existing account with no record on the device retries; it never reaches the create page', () => {

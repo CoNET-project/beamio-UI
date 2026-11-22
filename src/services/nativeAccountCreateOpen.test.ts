@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * nativeAccountCreateOpen sends `{type, reqId, account}` (spec §25.46.3 / §25.52Z.2). `account` is the public BeamioTag
+ * nativeAccountCreateOpen sends `{type, reqId, account}`. `account` is the public BeamioTag
  * the page creates, never a credential. The shell does not build this command; the page sends it.
  */
 import { NATIVE_ACCOUNT_CREATE_OPEN_COMMAND, nativeAccountCreateOpen } from './nativeRecovery'
@@ -28,7 +28,7 @@ function installShell(): void {
 			sent.push(cmd)
 			const send = (payload: Record<string, unknown>) =>
 				setTimeout(() => window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'chatModuleEvent', event: payload } })), 0)
-			if (cmd.type === 'hello') send({ type: 'ready', reqId: cmd.reqId, result: { capabilities: ['identity.native-keys.v1'] } })
+			if (cmd.type === 'hello') send({ type: 'ack', reqId: cmd.reqId, ok: true, result: { capabilities: ['identity.native-keys.v1'] } })
 			else if (cmd.type === NATIVE_ACCOUNT_CREATE_OPEN_COMMAND) send({ type: 'ack', ok: true, page: 'opened', reqId: cmd.reqId })
 		},
 	}
@@ -68,7 +68,7 @@ describe('nativeAccountCreateOpen request fields', () => {
 	})
 })
 
-describe('account pre-check before the native open (§25.52Z.2)', () => {
+describe('account pre-check before the native open', () => {
 	it.each([
 		['alice_01', true],
 		['0x' + 'ab'.repeat(20), true],

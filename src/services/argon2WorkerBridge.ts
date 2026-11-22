@@ -67,6 +67,8 @@ function ensureWorker(): Worker | null {
 	try {
 		worker = new Worker(new URL('../workers/argon2/entry.ts', import.meta.url), {
 			type: 'module',
+			// the chunk name: a named chunk is identified in the build
+			name: 'beamio-argon2',
 		})
 		worker.onmessage = (ev: MessageEvent<Argon2idWorkerResponse>) => {
 			const msg = ev.data

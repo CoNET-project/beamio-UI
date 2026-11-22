@@ -12,9 +12,13 @@ describe('option A guards', () => {
 	it('initChat starts nothing, and reads no key, before the shell answer says native_chat', () => {
 		const src = read('services/chat.ts')
 		const guard = src.indexOf("if (isShellContext() && (await ensureShellChatState()) !== 'native_chat') {")
-		const start = src.indexOf('initChatInProgress = true')
+		// The shell flag is taken before the first await (wrapper, unlock restart commit): the flag starts nothing by itself.
+		// What must follow the shell answer is every start: the native chat start and the gossip flag.
+		const start = src.indexOf('startShellChatFromNativeIdentity(shellChatStartDeps(')
+		const gossipOn = src.indexOf('setGossip(true)', guard)
 		expect(guard).toBeGreaterThan(0)
 		expect(start).toBeGreaterThan(guard)
+		expect(gossipOn).toBeGreaterThan(guard)
 	})
 
 	it('the native / worker listen is refused in a blocked shell', () => {

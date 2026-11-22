@@ -18,7 +18,7 @@ export type BuildKind = 'web' | 'shell'
 export type ChatMode = 'browser' | 'native' | 'unavailable'
 export type RouteRegisterPath = 'page_signing_browser_exception' | 'native_chatRouteRegister' | 'native_unavailable_no_fallback'
 export type PayloadSent = 'page_only' | 'public_fields_only' | 'none'
-export type UiState = 'browser_chat' | 'native_chat' | 'chat_unavailable'
+export type UiState = 'browser_chat' | 'native_chat' | 'chat_unavailable' | 'identity_pending'
 
 export type ShellInput = {
 	buildKind: BuildKind

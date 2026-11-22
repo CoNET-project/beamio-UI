@@ -81,7 +81,6 @@ import {
 import { routeDiscoverMerchantDeepLink } from '@/utils/routeDiscoverMerchantDeepLink'
 import { stashAgentInviteIntroducerFromCurrentUrl } from '@/utils/agentInviteIntroducerStash'
 import { bindStashedAgentInviteReferrerIfNeeded } from '@/utils/agentInviteReferrerBind'
-import { cleanupAfterOnboardingRecovery } from '@/services/accountCleanupPending'
 
 
 const APP_VERSION = (packageJson as { version?: string }).version ?? ''
@@ -262,7 +261,7 @@ function OnboardLocalePicker() {
 }
 
 /** Must stay module-scoped: an inline component inside LoadingPage gets a new `type` every parent render → full remount and marquee reset. */
-function InitialEntrySplash({
+export function InitialEntrySplash({
 	appVersion,
 	isStandalone,
 	onGetStarted,
@@ -428,6 +427,14 @@ type Props = {
 	bootCoNETData?: encrypt_keys_object | null
 	/** the account holds a key but no completed BeamioTag: open the Create Beamio ID page directly (it reuses the key). */
 	requireBeamioTagCreate?: boolean
+	/** 0.53.44: the explicit completion of the account creation (CreateUsernamePinScreen). AppEntryGate opens the page write gate here. */
+	onNewAccountCreated?: () => void
+		/** 0.53.44: a restore (recovery or onboarding restore) starts its write: AppEntryGate opens the restore write window. */
+		onRestoreWriteStart?: () => void
+		/** 0.53.44: the restore write ended (ok = the init completed). AppEntryGate closes the window and opens the gate only on a consistent read-back. */
+		onRestoreWriteEnd?: (ok: boolean, temp: encrypt_keys_object | null | undefined) => void | Promise<void>
+	/** The hold page's restore button. Opens the existing restore screen at once (no onboarding entry, no create). */
+	openRestoreFromHold?: boolean
 }
 
 const TOP_OFFSET = "calc(env(safe-area-inset-top) + 4rem)"
@@ -525,7 +532,18 @@ function parseRedeemFromUrl(): { cardAddress: string; redeemCode: string } | nul
 	}
 }
 
-export default function BeamioOnboardingModal({ home, onInitComplete, requireWalletRecover = false, bootResolved = false, bootCoNETData = null, requireBeamioTagCreate = false }: Props) {
+export default function BeamioOnboardingModal({ home, onInitComplete, requireWalletRecover = false, bootResolved = false, bootCoNETData = null, requireBeamioTagCreate = false, onNewAccountCreated, onRestoreWriteStart, onRestoreWriteEnd, openRestoreFromHold = false }: Props) {
+	/** 0.53.44: the restore write runs inside the restore window; AppEntryGate opens the page gate only after its read-back. */
+	const runRestoreWrite = async (temp: encrypt_keys_object | null | undefined, write: () => Promise<unknown>): Promise<void> => {
+		onRestoreWriteStart?.()
+		let ok = false
+		try {
+			await write()
+			ok = true
+		} finally {
+			await onRestoreWriteEnd?.(ok, temp)
+		}
+	}
 	const { setDarkModle, darkModle, beamio, power, setProfiles, setBeamio, setPayTag, isInitialLoading, 
 		setAllNodes, setGossip, gossip,
 		setIsInitialLoading, myAddress, setMyAddress, usdcbalance, setShowFooter, setCharts } = useDaemonContext()
@@ -821,6 +839,14 @@ export default function BeamioOnboardingModal({ home, onInitComplete, requireWal
 		// the URL and keeps them in memory for this one restore attempt.
 		const legacyRestore = takeLegacyRestoreLink()
 		const run = async () => {
+			// From the hold page the existing restore screen opens directly (same state as the recover route below).
+			if (openRestoreFromHold) {
+				setIsInitialEntry(false)
+				setSettingsOpen('RestoreWalletScreen')
+				setHasCheckedUrl(true)
+				onInitComplete?.()
+				return
+			}
 			const ephemeralReady = await ensureEphemeralWalletForCouponClaim()
 			if (ephemeralReady) {
 				await init(ephemeralReady)
@@ -1383,6 +1409,8 @@ export default function BeamioOnboardingModal({ home, onInitComplete, requireWal
 							
 							{
 								settingsOpen === 'CreateUsernamePinScreen' && <CreateUsernamePinScreen ref={createUsernameRef} isRedeemFlow={!!redeemFromUrl} onRequestClose={requireBeamioTagCreate ? undefined : () => setSettingsOpen('')} reuseExistingKey={requireBeamioTagCreate} onCreatingWalletChange={setCreateWalletLoading} close={qr => {
+									// 0.53.44: the account creation is complete: the page write gate opens before any onboarding save (persistAndVerifyLocalWallet, init).
+									onNewAccountCreated?.()
 									setQrDataUrl(qr.qrDataUrl)
 									setRecoveryCode(qr.passcode)
 									setBeamioTag(qr.beamioTag ?? '')
@@ -1510,17 +1538,18 @@ export default function BeamioOnboardingModal({ home, onInitComplete, requireWal
 											setRestoreFromUrlMasterKey('')
 											setRestoreFromUrlBeamioTag('')
 											if (!hasLocalPlaintextMnemonic(temp)) {
+												// 2026-11-17: a silent return left the user with no result; say so, and save nothing.
+												window.alert(tu('something_went_wrong_while_restoring_your_wallet'))
 												return
 											}
 											if (requireWalletRecover) {
 												// Same as Recovery Next: persist locally and enter the app.
 												// Do not hold Unlock on registry retries or the chat worker.
-												await init(temp, {
+												await runRestoreWrite(temp, () => init(temp, {
 													dontClose: true,
 													deferChat: true,
 													accountName: beamioTag,
-												})
-												void cleanupAfterOnboardingRecovery(temp)
+												}))
 												home()
 												return
 											}
@@ -1528,7 +1557,7 @@ export default function BeamioOnboardingModal({ home, onInitComplete, requireWal
 											// "Save your Recovery Code": save locally, then show You're All Set.
 											const restoredTag = beamioTag || temp?.beamio?.accountName || ''
 											try {
-												await init(temp, { dontClose: true, deferChat: true, accountName: restoredTag })
+												await runRestoreWrite(temp, () => init(temp, { dontClose: true, deferChat: true, accountName: restoredTag }))
 											} catch (ex) {
 												console.error('[LoadingPage] restore init persist failed:', ex)
 												window.alert(
@@ -1538,7 +1567,6 @@ export default function BeamioOnboardingModal({ home, onInitComplete, requireWal
 												)
 												return
 											}
-											void cleanupAfterOnboardingRecovery(temp)
 											setTemp(temp)
 											setBeamioTag(restoredTag)
 											if (peekPendingDiscoverMerchantIntent()) {

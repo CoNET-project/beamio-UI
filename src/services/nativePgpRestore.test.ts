@@ -5,6 +5,7 @@
  * idempotency key for create). Answers and events are read by their codes; no key, armor, passphrase or backup is sent or read.
  * SYNTHETIC values only.
  */
+import { grantPgpCreateEligibility } from './pgpIdentityEligibility'
 import {
 	evaluateNativePgpRestore,
 	nativeGenerateNewPgpKey,
@@ -52,7 +53,8 @@ function installShell(caps: string[]): void {
 			const send = (payload: Record<string, unknown>) =>
 				setTimeout(() => window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'chatModuleEvent', event: payload } })), 0)
 			if (cmd.type === 'hello') {
-				send({ type: 'ready', reqId: cmd.reqId, result: { capabilities: caps } })
+				// the hello answer is an ack carrying ack.result.capabilities (the init ready event is not the hello answer)
+				send({ type: 'ack', reqId: cmd.reqId, ok: true, result: { capabilities: caps } })
 				return
 			}
 			const r = replyFor(cmd)
@@ -80,7 +82,7 @@ describe('evaluate (pgpRestoreEvaluate): read-only', () => {
 			cmd.type === NATIVE_PGP_EVALUATE_COMMAND
 				? { ack: { type: 'ack', ok: true, result: { state: 'ok', failureClass: null, code: 'ok', offerEntry: false } } }
 				: null
-		await expect(evaluateNativePgpRestore(ACCOUNT)).resolves.toEqual({ kind: 'evaluated', state: 'ok', failureCode: null, offerEntry: false })
+		await expect(evaluateNativePgpRestore(ACCOUNT)).resolves.toEqual({ kind: 'evaluated', state: 'ok', failureCode: null, offerEntry: false, legacy: 'unknown', chain: 'unknown' })
 		const cmd = sentOf(NATIVE_PGP_EVALUATE_COMMAND)[0]
 		expect(Object.keys(cmd).sort()).toEqual(['accountKey', 'reqId', 'type'])
 		expect(cmd.accountKey).toBe(ACCOUNT)
@@ -96,6 +98,8 @@ describe('evaluate (pgpRestoreEvaluate): read-only', () => {
 			state: 'failed',
 			failureCode: 'pgp_backup_missing',
 			offerEntry: true,
+			legacy: 'unknown',
+			chain: 'unknown',
 		})
 	})
 
@@ -143,6 +147,8 @@ describe('parsePgpEvaluateResult: only known values are accepted', () => {
 			state: 'first_identity',
 			failureCode: null,
 			offerEntry: true,
+			legacy: 'unknown',
+			chain: 'unknown',
 		})
 		expect(parsePgpEvaluateResult({ state: 'undetermined' })).toMatchObject({ kind: 'evaluated', state: 'undetermined', failureCode: null })
 	})
@@ -237,13 +243,15 @@ describe('create (pgpIdentityCreate): the user click only', () => {
 	})
 })
 
-describe('pgpIdentityCreate is off until the owner approves the chain write', () => {
+describe('pgpIdentityCreate is off until approval for the chain write', () => {
 	it('the flag is false', () => {
 		expect(PGP_IDENTITY_CREATE_ENABLED).toBe(false)
 	})
 
-	it('while off, the click returns not_enabled and sends no command at all', async () => {
+	it('without the first-identity eligibility the click returns not_eligible and sends no command; with eligibility and the switch off, not_enabled', async () => {
 		installShell([NATIVE_KEYS_CAPABILITY])
+		await expect(nativeGenerateNewPgpKey(ACCOUNT, 'idem-0006')).resolves.toEqual({ ok: false, reason: 'not_eligible' })
+		grantPgpCreateEligibility(ACCOUNT)
 		await expect(nativeGenerateNewPgpKey(ACCOUNT, 'idem-0006')).resolves.toEqual({ ok: false, reason: 'not_enabled' })
 		expect(sent).toHaveLength(0)
 	})
@@ -266,5 +274,18 @@ describe('the evaluate result is in the ack: result.code, no result event (-4)',
 		installShell([NATIVE_KEYS_CAPABILITY])
 		replyFor = (cmd) => (cmd.type === NATIVE_PGP_EVALUATE_COMMAND ? { ack: { type: 'ack', ok: true, code: 'pgp_source_unavailable', result: { accepted: true } } } : null)
 		await expect(evaluateNativePgpRestore(ACCOUNT)).resolves.toEqual({ kind: 'unavailable' })
+	})
+
+	// not_ready is unknown and retryable, never a refusal and never a missing key.
+	it('not_ready as the ack error is the temporary source state (retried, no new PGP)', async () => {
+		installShell([NATIVE_KEYS_CAPABILITY])
+		replyFor = (cmd) => (cmd.type === NATIVE_PGP_EVALUATE_COMMAND ? { ack: { type: 'ack', ok: false, error: 'not_ready' } } : null)
+		await expect(evaluateNativePgpRestore(ACCOUNT)).resolves.toEqual({ kind: 'source_unavailable' })
+	})
+
+	it('not_ready as result.code is the temporary source state', async () => {
+		installShell([NATIVE_KEYS_CAPABILITY])
+		replyFor = (cmd) => (cmd.type === NATIVE_PGP_EVALUATE_COMMAND ? { ack: { type: 'ack', ok: true, result: { state: 'undetermined', failureClass: null, code: 'not_ready', offerEntry: false } } } : null)
+		await expect(evaluateNativePgpRestore(ACCOUNT)).resolves.toEqual({ kind: 'source_unavailable' })
 	})
 })

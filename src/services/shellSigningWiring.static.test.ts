@@ -54,7 +54,7 @@ describe('chat route registration refuses the page key in a shell', () => {
 	const chat = read('src/services/chat.ts')
 
 	it('regiestChatRoute refuses first in a shell; the shell registers through the native command', () => {
-		const fn = chat.indexOf('export const regiestChatRoute = async (')
+		const fn = chat.indexOf('export const regiestChatRouteOutcome = async (')
 		const refusal = chat.indexOf('if (isShellContext()) {', fn)
 		const sign = chat.indexOf('new ethers.Wallet(privateKey)', fn)
 		expect(fn).toBeGreaterThan(0)

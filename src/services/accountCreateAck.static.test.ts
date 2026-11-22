@@ -1,5 +1,5 @@
 /**
- * /, checked on the source (SYNTHETIC; no values): the create screen follows the page and walletStatus rules (G1 and G2 do not
+ * /, checked on the source: the create screen follows the page and walletStatus rules (G1 and G2 do not
  * retry; G0 has the 15 s wait and the terminal copy after three); the chat page shows the one-time prompt only for a first fetch with no verified
  * key, persists dismissal per contact, and writes the key on screen as verified.
  */
@@ -29,7 +29,7 @@ describe('the account-create ack rules on the create screen', () => {
 		expect(s).toContain("if (opened.page === 'opened') {")
 		expect(s).toContain('setNativeOpening(true)')
 		expect(s).toContain("tu('create_account_opening')")
-		expect(s).toContain('waiting for the result event')
+		expect(s).toContain('waiting for the nested result event')
 	})
 
 	it('the open call is not repeated with the same reqId: each call is a new open, and there is no automatic retry', () => {

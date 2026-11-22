@@ -4,7 +4,7 @@
  * - Browser (not a shell): the page signs the registration with the account key (EIP-191). This is the approved exception
  * Scope: the browser only, this one call.
  * - Shell: the native layer signs and returns the fields and the signature (`nativeChatRouteRegister`). The page checks the
- *   result and posts it unchanged. A failure never falls back to the page key and never sends HTTP.
+ * result and posts it unchanged. A failure never falls back to the page key and never sends HTTP.
  *
  * Pure: the signers and the POST are passed in.
  */
@@ -37,16 +37,37 @@ export const NATIVE_RESULT_KEYS = [
 /**
  * Browser path. The signature comes from the page signer; the server flag decides the outcome. Only the browser calls this.
  */
+/**
+ * The class of one HTTP answer of the registration POST: 2xx is accepted; 4xx is refused and is never retried
+ * automatically; 5xx is a server failure and is retried with the backoff; no answer is a network failure, also retried with the backoff.
+ */
+export type RegisterHttpClass = 'accepted' | 'refused' | 'server' | 'network'
+
+export function classifyRegisterStatus(status: number | null): RegisterHttpClass {
+	if (status === null) return 'network'
+	if (status >= 200 && status < 300) return 'accepted'
+	if (status >= 400 && status < 500) return 'refused'
+	if (status >= 500 && status < 600) return 'server'
+	return 'network'
+}
+
 export async function submitBrowserChatRouteRegister(
 	fields: RouteRegisterFields,
 	deps: {
 		signInPage: (fields: RouteRegisterFields) => Promise<string>
-		post: (body: Record<string, unknown>) => Promise<{ ok: boolean }>
+		post: (body: Record<string, unknown>) => Promise<{ ok: boolean; status?: number | null }>
 	},
 ): Promise<RouteRegisterOutcome> {
 	const signature = await deps.signInPage(fields)
 	const res = await deps.post({ ...fields, signature })
-	return res.ok ? { ok: true } : { ok: false, reason: 'server_rejected' }
+	if (res.ok) return { ok: true }
+	// no status reported (an older caller): the same reason as before
+	if (res.status === undefined) return { ok: false, reason: 'server_rejected' }
+	const cls = classifyRegisterStatus(res.status)
+	if (cls === 'refused') return { ok: false, reason: 'refused_4xx' }
+	if (cls === 'server') return { ok: false, reason: 'server_5xx' }
+	if (cls === 'network') return { ok: false, reason: 'network' }
+	return { ok: false, reason: 'server_rejected' }
 }
 
 /**
@@ -55,7 +76,7 @@ export async function submitBrowserChatRouteRegister(
  */
 export function judgeNativeRegisterResult(result: Record<string, unknown>): 'ok' | 'bad_ack' | 'submitted' {
 	const keys = Object.keys(result)
-	// Y.61: the native layer registered the route itself. Its result is only {code:"submitted"}; the page posts nothing.
+	//the native layer registered the route itself. Its result is only {code:"submitted"}; the page posts nothing.
 	if (keys.length === 1 && keys[0] === 'code' && result.code === 'submitted') return 'submitted'
 	if (keys.length !== NATIVE_RESULT_KEYS.length) return 'bad_ack'
 	for (let i = 0; i < keys.length; i++) if (keys[i] !== NATIVE_RESULT_KEYS[i]) return 'bad_ack'

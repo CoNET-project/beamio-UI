@@ -27,26 +27,27 @@ jest.mock('../../utils/globals', () => ({}))
 const app = readFileSync(join(__dirname, '..', '..', 'App.tsx'), 'utf8')
 
 /** The key-only entry branch of the init: from its condition to its closing brace (two tabs deep in App.tsx). */
+// 2026-11-17: the key-only enter branch is gone; no valid mnemonic is not an entry.
 function keyOnlyBranch(): string {
-	const start = app.indexOf("if (keyOnlyEntry === 'enter_key_only') {")
+	const start = app.indexOf("if (keyOnlyEntry === 'hold_no_key') {")
 	expect(start).toBeGreaterThan(-1)
 	const end = app.indexOf('\n\t\t}', start)
 	expect(end).toBeGreaterThan(start)
 	return app.slice(start, end)
 }
 
-describe('a key-only account enters the app with the global bar', () => {
-	it('the key-only init branch does not set the loading flag', () => {
-		expect(keyOnlyBranch()).not.toMatch(/setIsInitialLoading\(true\)/)
+// rule: a key without a valid mnemonic is not an entry. The branch does not
+// hold the loading flag and does not bind push; the entry gate decides onboarding or retry.
+describe('a key without a valid mnemonic is not an entry: no loading hold, no push bind, the gate decides', () => {
+	it('the enter_key_only branch is removed from the App', () => {
+		expect(app).not.toContain("enter_key_only")
 	})
 
-	it('the branch keeps the profile hydration and the push binding, and does not start gossip', () => {
+	it('the branch does not hold the loading flag, does not bind push, and starts no chat', () => {
 		const branch = keyOnlyBranch()
-		expect(branch).toContain('setProfiles(profiles)')
-		expect(branch).toContain('ensurePushDeviceTokenListener()')
-		expect(branch).toContain('ensureNativePushBoundForWallet(profiles[0])')
+		expect(branch).not.toMatch(/setIsInitialLoading\(true\)/)
+		expect(branch).not.toContain('ensureNativePushBoundForWallet')
 		expect(branch).not.toMatch(/initChat\(/)
-		expect(branch).toMatch(/return\s*$/)
 	})
 
 	it('the App wiring is unchanged: Footer follows the loading flag', () => {

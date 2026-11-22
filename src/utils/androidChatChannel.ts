@@ -23,9 +23,22 @@ type BeamioChatHost = {
 	onmessage?: ((ev: unknown) => void) | null
 }
 
-/** The new channel object, when the shell injected it. */
+/**
+ * True only in the top frame. A child frame never uses the new channel, even when the shell injected it. A cross-origin
+ * `window.top` access throws, which counts as not trusted.
+ */
+export function isTrustedTopFrame(): boolean {
+	if (typeof window === 'undefined') return false
+	try {
+		return window.top === window.self
+	} catch {
+		return false
+	}
+}
+
+/** The new channel object, when the trusted top frame has it. A child frame gets null, so its receiver is a no-op. */
 export function beamioChatHost(): BeamioChatHost | null {
-	if (typeof window === 'undefined') return null
+	if (!isTrustedTopFrame()) return null
 	const host = (window as unknown as { BeamioChat?: unknown }).BeamioChat
 	return host && typeof host === 'object' ? (host as BeamioChatHost) : null
 }

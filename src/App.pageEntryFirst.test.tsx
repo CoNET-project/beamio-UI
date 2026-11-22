@@ -16,8 +16,9 @@ const { DaemonProvider } = require('@/providers/DaemonProvider')
 
 /** A synthetic account record with a local mnemonic (a not-key-only account), as the storage read returns it. */
 const mockRecord = {
-	profiles: [{ keyID: '0x1111111111111111111111111111111111111111', isPrimary: true, referrer: null, isNode: false, type: 'ethereum', webFilter: true, tokens: [], privateKeyArmor: `0x${'11'.repeat(32)}`, chats: [] }],
-	mnemonicPhrase: 'synthetic words for the page entry test',
+	profiles: [{ keyID: '0x9858effd232b4033e47d90003d41ec34ecaeda94', isPrimary: true, referrer: null, isNode: false, type: 'ethereum', webFilter: true, tokens: [], privateKeyArmor: `0x${'11'.repeat(32)}`, chats: [] }],
+	// a valid BIP39 phrase (1423/1428: the account evidence is a valid mnemonic; this is the standard test phrase, not a real wallet)
+	mnemonicPhrase: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
 	beamio: { accountName: 'synthtag' },
 	isReady: true,
 }
@@ -53,8 +54,19 @@ jest.mock('@/providers/DaemonProvider', () => {
 })
 
 // Storage: the App's first read is held (then empty); the gate's read and the later App reads return the record.
+// jsdom cannot run ethers' derivation (cross-realm Buffer); the real hasValidMnemonic is tested in the node environment.
+jest.mock('@/utils/consumerWalletGate', () => ({
+	...jest.requireActual('@/utils/consumerWalletGate'),
+	hasValidMnemonic: (d: { mnemonicPhrase?: unknown } | null | undefined) => Boolean(d && typeof d.mnemonicPhrase === 'string' && d.mnemonicPhrase.trim()),
+	// the page's valid mnemonic derives this EOA (the standard test phrase; the derivation itself is covered in the node tests)
+	validMnemonicEoa: (d: { mnemonicPhrase?: unknown } | null | undefined) => (d && typeof d.mnemonicPhrase === 'string' && d.mnemonicPhrase.trim() ? '0x9858effd232b4033e47d90003d41ec34ecaeda94' : ''),
+}))
 jest.mock('@/services/beamio', () => ({
+	setPageWritePermit: () => undefined, // 0.53.44: the session write gate (AppEntryGate); stub here
+	allowRestoreWrite: () => undefined,
+  endRestoreWriteWindow: () => undefined,
 	...jest.requireActual('@/services/beamio'),
+	checkStorageWithStatusWithTimeout: async () => ({ status: 'empty' }), // 0.53.39: jsdom has no IndexedDB; the page copy is confirmed empty unless the test sets it
 	checkStorage: () => {
 		mockRace.storageCalls += 1
 		if (mockRace.storageCalls === 1) return new Promise((r) => { mockRace.releaseFirstRead = r })
@@ -88,7 +100,10 @@ jest.mock('@/services/nativeRecovery', () => ({
 	recoveryOpenErrorKey: () => '',
 	nativeRecoveryCopyKey: () => null,
 	queryNativeWalletState: async () => 'not_reported',
+	queryNativeWalletStatus: async () => ({ status: 'no_key' }), // 0.53.39 stub: the start route reads walletStatus
+	queryNativePasscodeStatus: async () => ({ walletState: await (async () => 'not_reported')(), hasKey: 'not_reported' as const }),
 	queryNativeWalletStateSafe: async () => 'not_reported',
+	queryNativeMnemonicPreread: async () => ({ kind: 'unknown' }),
 }))
 jest.mock('@/services/shellChatCapability', () => ({ ...jest.requireActual('@/services/shellChatCapability'), ensureShellChatState: async () => 'native_chat', shellChatBlockedNow: () => false }))
 jest.mock('@/services/nativeChatRouteRegister', () => ({ ...jest.requireActual('@/services/nativeChatRouteRegister'), probeNativeCapabilities: async () => ({ answered: true, capabilities: ['identity.native-keys.v1'] }) }))
@@ -127,7 +142,8 @@ describe('a page-record entry before the init storage read keeps its wake-up', (
 	it('the entry is logged, the init read then ends empty; the bar shows and the chat starts once', async () => {
 		renderApp()
 		// The gate has entered on the page record while the App's first read is still in flight.
-		await waitFor(() => expect(mockLogs.some((m) => m.includes('[AppEntryGate] storage hasAccount'))).toBe(true))
+		// rule 2026-11-16 (PWA first): the gate's entry on the page record is the valid-mnemonic route (the page is read before any native ask)
+		await waitFor(() => expect(mockLogs.some((m) => m.includes('[AppEntryGate] page mnemonic is valid'))).toBe(true))
 		await act(async () => {
 			mockRace.releaseFirstRead?.(null)
 		})

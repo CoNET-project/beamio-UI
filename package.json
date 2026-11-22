@@ -1,6 +1,6 @@
 {
 	"name": "Beamio",
-	"version": "0.53.7",
+	"version": "0.53.43",
 	"private": true,
 	"homepage": "/app",
 	"dependencies": {
@@ -72,13 +72,15 @@
 	},
 	"scripts": {
 		"start": "craco start",
-		"build:react": "CI=false env=production node node_modules/.bin/craco build",
+		"prebuild:react": "npm --prefix vendor/conet-chat-sdk ci --ignore-scripts && npm --prefix vendor/conet-chat-sdk run build",
+		"build:react": "CI=false env=production node node_modules/.bin/craco build && node scripts/check-worker-chunks.js \"${BUILD_PATH:-build}\" $([ \"$REACT_APP_SHELL_BUILD\" = true ] && echo --shell) && node scripts/check-ws-guard-build.js \"${BUILD_PATH:-build}\"",
 		"build:embedded": "PUBLIC_URL=/ npm run build:react",
-		"build:qa-embedded": "REACT_APP_PGP_IDENTITY_CREATE_ENABLED=true npm run build:embedded",
-		"build:shell-embedded": "REACT_APP_SHELL_BUILD=true PUBLIC_URL=/ npm run build:react",
-		"build:shell-qa-embedded": "REACT_APP_SHELL_BUILD=true REACT_APP_PGP_IDENTITY_CREATE_ENABLED=true PUBLIC_URL=/ npm run build:react",
+		"build:qa-embedded": "REACT_APP_BEAMIO_BOOT_TRACE=true REACT_APP_PGP_IDENTITY_CREATE_ENABLED=true GENERATE_SOURCEMAP=false npm run build:embedded",
+		"build:shell-embedded": "REACT_APP_SHELL_BUILD=true PUBLIC_URL=/ npm run build:react && node scripts/inject-qa-update-json.js build && node scripts/check-shell-terminal-single-copy.js build",
+		"build:shell-qa-embedded": "GENERATE_SOURCEMAP=false REACT_APP_BEAMIO_BOOT_TRACE=true REACT_APP_SHELL_BUILD=true REACT_APP_PGP_IDENTITY_CREATE_ENABLED=true PUBLIC_URL=/ npm run build:react && node scripts/inject-qa-update-json.js build && node scripts/check-shell-terminal-single-copy.js build",
 		"test": "craco test",
 		"eject": "react-scripts eject",
+		"build:qa-candidate": "npm --prefix vendor/conet-chat-sdk run build && GENERATE_SOURCEMAP=false PUBLIC_URL=/ npm run build:react",
 		"build": "npm run build:react"
 	},
 	"eslintConfig": {
@@ -110,6 +112,7 @@
 		"@types/react-copy-to-clipboard": "^5.0.7",
 		"@types/styled-components": "^5.1.34",
 		"cbor-x": "^1.6.0",
+		"fake-indexeddb": "^6.2.8",
 		"typescript": "^5.6.3"
 	},
 	"overrides": {

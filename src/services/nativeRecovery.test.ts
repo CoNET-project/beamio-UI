@@ -36,7 +36,7 @@ function installShell(reply: Record<string, unknown>): void {
 			sent.push(cmd)
 			const send = (payload: Record<string, unknown>) =>
 				setTimeout(() => window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'chatModuleEvent', event: payload } })), 0)
-			if (cmd.type === 'hello') send({ type: 'ready', reqId: cmd.reqId, result: { capabilities: [] } })
+			if (cmd.type === 'hello') send({ type: 'ack', reqId: cmd.reqId, ok: true, result: { capabilities: [] } })
 			else if (cmd.type === NATIVE_RECOVERY_OPEN_COMMAND) send({ ...reply, reqId: cmd.reqId })
 		},
 	}
@@ -203,7 +203,7 @@ describe('recoveryOpenErrorKey (the line shown when the native page cannot open)
 	})
 })
 
-describe('B7 reqId filter (§25.52Y.48, PM ruling)', () => {
+describe('B7 reqId filter', () => {
 	it('delivers a result whose reqId is the open request reqId, and discards a mismatched one', async () => {
 		installShell({ type: 'ack', ok: true })
 		const got: unknown[] = []

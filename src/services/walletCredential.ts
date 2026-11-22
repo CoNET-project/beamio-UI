@@ -73,7 +73,7 @@ export function useMnemonicOnce<T>(credential: Extract<WalletCredentialAnswer, {
 	}
 }
 
-export type PageCopyAction = 'none' | 'store_blob' | 'update_required' | 'retry' | 'eoa_mismatch' | 'record_unavailable' | 'native_key_missing'
+export type PageCopyAction = 'none' | 'store_blob' | 'update_required' | 'retry' | 'eoa_mismatch' | 'record_unavailable' | 'native_key_missing' | 'locked'
 
 /**
  * Whether a loaded page record belongs to the native account. The first profile's keyID must be a valid address equal to the
@@ -94,6 +94,9 @@ export function pageRecordAccountMatches(record: { profiles?: unknown } | null |
  */
 export function pageCopyAction(input: { pageRecordPresent: boolean; eoa: string; answer: WalletCredentialAnswer }): PageCopyAction {
 	if (input.pageRecordPresent) return 'none'
+	// HC-LOCK CRED-B1: a locked native side is the lock, not a failure: nothing is asked again here and nothing is stored;
+	// the page waits for the unlock, it does not retry in a loop.
+	if (input.answer.kind === 'refused' && input.answer.code === 'locked') return 'locked'
 	if (input.answer.kind === 'refused') return input.answer.code === 'not_trusted' ? 'update_required' : 'retry'
 	if (input.answer.eoa !== input.eoa.toLowerCase()) return 'retry'
 	return input.answer.blob ? 'store_blob' : 'retry'

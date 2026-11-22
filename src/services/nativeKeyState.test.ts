@@ -2,7 +2,7 @@
  * Native no-key watcher and the native import route. SYNTHETIC values only: reqIds and
  * shell objects are made up for this file. No key material is sent or read.
  */
-import { installNativeNoKeyWatcher, isNoKeyAck, NATIVE_QUERY_REQ_BASE, NATIVE_QUERY_REQ_END, openNativeKeyImport, readNativeWalletStatus } from './nativeKeyState'
+import { installNativeNoKeyWatcher, isNoKeyAck, NATIVE_QUERY_REQ_BASE, NATIVE_QUERY_REQ_END, readNativeWalletStatus } from './nativeKeyState'
 
 // Loose view of the shell globals: the declared shell types are not used, so each test can install its own fake shell.
 const w = window as unknown as { CashTreesIOS?: unknown; CashTreesAndroid?: unknown }
@@ -63,76 +63,13 @@ describe('installNativeNoKeyWatcher', () => {
 	})
 })
 
-describe('openNativeKeyImport', () => {
-	it('resolves unavailable outside a shell, and sends nothing', async () => {
-		expect(await openNativeKeyImport(50)).toBe('unavailable')
-	})
-
-	it('iOS: sends only type and reqId on the chat-module channel, and resolves opened on an ok ack', async () => {
-		const seen: Array<{ action: string; command: Record<string, unknown> }> = []
-		w.CashTreesIOS = {
-			chatModuleCommand: (p: { action: string; command: Record<string, unknown> }) => {
-				seen.push(p)
-				chatEvent('cashtreesios', { type: 'ack', reqId: p.command.reqId, ok: true })
-			},
-		}
-		expect(await openNativeKeyImport(50)).toBe('opened')
-		expect(seen).toHaveLength(1)
-		expect(seen[0].action).toBe('chatModuleCommand')
-		expect(Object.keys(seen[0].command).sort()).toEqual(['reqId', 'type'])
-		expect(seen[0].command.type).toBe('nativeImportOpen')
-		expect(typeof seen[0].command.reqId).toBe('number')
-	})
-
-	it('maps a refused ack: not_supported stays distinct, any other error is failed', async () => {
-		w.CashTreesIOS = {
-			chatModuleCommand: (p: { command: { reqId: number } }) =>
-				chatEvent('cashtreesios', { type: 'ack', reqId: p.command.reqId, ok: false, error: 'not_supported' }),
-		}
-		expect(await openNativeKeyImport(50)).toBe('not_supported')
-		w.CashTreesIOS = {
-			chatModuleCommand: (p: { command: { reqId: number } }) =>
-				chatEvent('cashtreesios', { type: 'ack', reqId: p.command.reqId, ok: false, error: 'not_available' }),
-		}
-		expect(await openNativeKeyImport(50)).toBe('not_available')
-		w.CashTreesIOS = {
-			chatModuleCommand: (p: { command: { reqId: number } }) =>
-				chatEvent('cashtreesios', { type: 'ack', reqId: p.command.reqId, ok: false, error: 'native_busy' }),
-		}
-		expect(await openNativeKeyImport(50)).toBe('failed')
-	})
-
-	it('an ack for another reqId does not resolve the request; without any ack it times out', async () => {
-		w.CashTreesIOS = {
-			chatModuleCommand: (p: { command: { reqId: number } }) =>
-				chatEvent('cashtreesios', { type: 'ack', reqId: p.command.reqId + 1, ok: true }),
-		}
-		expect(await openNativeKeyImport(20)).toBe('timeout')
-	})
-
-	it('a refused channel call resolves unavailable and does not throw', async () => {
-		w.CashTreesIOS = {
-			chatModuleCommand: () => {
-				throw new Error('bridge down')
-			},
-		}
-		expect(await openNativeKeyImport(50)).toBe('unavailable')
-	})
-
-	it('Android: sends the command as JSON on CashTreesAndroid.chatModuleCommand', async () => {
-		const sent: string[] = []
-		w.CashTreesAndroid = {
-			chatModuleCommand: (json: string) => {
-				sent.push(json)
-				const cmd = JSON.parse(json) as { reqId: number }
-				chatEvent('cashtreesandroid', { type: 'ack', reqId: cmd.reqId, ok: true })
-			},
-		}
-		expect(await openNativeKeyImport(50)).toBe('opened')
-		expect(sent).toHaveLength(1)
-		const cmd = JSON.parse(sent[0]) as Record<string, unknown>
-		expect(Object.keys(cmd).sort()).toEqual(['reqId', 'type'])
-		expect(cmd.type).toBe('nativeImportOpen')
+// Spec item 41 (2026-11-16): the native import screen is retired. The opener (openNativeKeyImport, nativeImportOpen) is deleted, so
+// its six result cases are superseded and replaced by an absence assertion. The walletStatus read below is unchanged.
+describe('the native import opener is retired', () => {
+	it('nativeKeyState no longer exports an import opener or sends nativeImportOpen', () => {
+		const ns = jest.requireActual('./nativeKeyState') as Record<string, unknown>
+		expect(ns).not.toHaveProperty('openNativeKeyImport')
+		expect(ns).not.toHaveProperty('NATIVE_IMPORT_OPEN')
 	})
 })
 

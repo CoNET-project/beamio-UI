@@ -83,6 +83,8 @@ export class AppDaemonWorkerClient {
 		if (this.worker) return
 		this.worker = new Worker(new URL('./entry.ts', import.meta.url), {
 			type: 'module',
+			// the chunk name: a named chunk is identified in the build
+			name: 'beamio-app-daemon',
 		})
 		this.worker.onmessage = (ev: MessageEvent<AppDaemonWorkerOutbound>) => {
 			this.handleOutbound(ev.data)

@@ -52,7 +52,11 @@ jest.mock('@/providers/DaemonProvider', () => {
 
 // Storage: the App's read and the gate's read both return the synthetic record.
 jest.mock('@/services/beamio', () => ({
+	setPageWritePermit: () => undefined, // 0.53.44: the session write gate (AppEntryGate); stub here
+	allowRestoreWrite: () => undefined,
+  endRestoreWriteWindow: () => undefined,
 	...jest.requireActual('@/services/beamio'),
+	checkStorageWithStatusWithTimeout: async () => ({ status: 'empty' }), // 0.53.39: jsdom has no IndexedDB; the page copy is confirmed empty unless the test sets it
 	checkStorage: () => { mockStorageReads += 1; return Promise.resolve(mockStorageReads <= 2 ? null : mockRecord) },
 	checkStorageWithTransientRetry: () => Promise.resolve({ status: 'loaded', data: mockRecord }),
 	sendPendingProfileSync: jest.fn(),
@@ -81,6 +85,8 @@ jest.mock('@/services/nativeRecovery', () => ({
 	recoveryOpenErrorKey: () => '',
 	nativeRecoveryCopyKey: () => null,
 	queryNativeWalletState: async () => 'present',
+	queryNativeWalletStatus: async () => ({ status: 'no_key' }), // 0.53.39 stub: the start route reads walletStatus
+	queryNativePasscodeStatus: async () => ({ walletState: await (async () => 'present')(), hasKey: 'not_reported' as const }),
 	queryNativeWalletStateSafe: async () => 'present',
 }))
 jest.mock('@/services/shellChatCapability', () => ({ ...jest.requireActual('@/services/shellChatCapability'), ensureShellChatState: async () => 'native_chat', shellChatBlockedNow: () => false }))
@@ -121,9 +127,10 @@ function renderApp() {
 describe('an empty shell read is read again, bounded', () => {
 	it('the first two reads are empty; the third returns the account and the chat starts, with no wake-up', async () => {
 		renderApp()
-		await waitFor(() => expect(mockChatStarts.length).toBe(1), { timeout: 8000 })
+		// step 5: the re-reads back off 2 s, then 4 s (the third read at about 6 s)
+		await waitFor(() => expect(mockChatStarts.length).toBe(1), { timeout: 12000 })
 		expect(mockStorageReads).toBeGreaterThanOrEqual(3)
 		// the bar is rendered on the render after the chat starts: wait for it, rather than assert it on the same tick.
-		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy(), { timeout: 8000 })
-	})
+		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy(), { timeout: 12000 })
+	}, 20000)
 })

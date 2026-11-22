@@ -15,7 +15,7 @@ async function decryptOnMainThread(body: Blob, isText: boolean, key: string, iv:
 }
 
 const bridge = createChatMediaBridge({
-	createWorker: () => new Worker(new URL('../workers/chatMedia/entry.ts', import.meta.url), { type: 'module' }) as unknown as WorkerLike,
+	createWorker: () => new Worker(new URL('../workers/chatMedia/entry.ts', import.meta.url), { type: 'module', name: 'beamio-chat-media' }) as unknown as WorkerLike,
 	fallback: decryptOnMainThread,
 })
 

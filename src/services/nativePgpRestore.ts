@@ -1,12 +1,12 @@
 /**
- * plan A, PWA side (approved by the owner 2026-11-13). The page sends three commands and reads
+ * plan A, PWA side. The page sends three commands and reads
  * the answers. It never sends a key, an armor, a passphrase, a backup or a chain basis, and it never generates, registers or
  * overwrites a PGP key by itself. The native layer decides every state and writes every key.
  *
  * - `pgpRestoreEvaluate`: read-only evaluation. Run when identityPublic answers `pgpReady: false`. It is not a restore.
  * - `pgpRestore`: restores the original identity, but only after an evaluation said `ok` (the native layer checks the fingerprint).
  * - `pgpIdentityCreate`: the user's explicit click on the failure entry. The native layer shows its own confirmation and decides
- *   the mode (replace or first identity); the page does not choose it.
+ * the mode (replace or first identity); the page does not choose it.
  *
  * Every command is sent with `{type, reqId, accountKey}` (plus `idempotencyKey` for create) and nothing else. Answers and events
  * carry no key material; the codes are the ones in.
@@ -16,6 +16,7 @@ import { probeNativeCapabilities, requestNativeAck } from './nativeChatRouteRegi
 import { eventPayloadOf, NATIVE_EVENT_NAMES, NATIVE_QUERY_REQ_BASE } from './nativeKeyState'
 import type { PgpRestoreFailure } from './pgpRestore'
 import { PGP_IDENTITY_CREATE_ENABLED } from '../utils/pgpIdentityCreateFlag'
+import { CHAIN_REGISTRATION_STATES, LEGACY_REPORT_STATES, pgpCreateEligible, type ChainRegistrationState, type LegacyReportState } from './pgpIdentityEligibility'
 
 export const NATIVE_PGP_EVALUATE_COMMAND = 'pgpRestoreEvaluate'
 export const NATIVE_PGP_RESTORE_COMMAND = 'pgpRestore'
@@ -50,7 +51,6 @@ const REFUSAL_CODES: readonly string[] = [
 	'confirmation_not_native',
 	'account_mismatch',
 	'no_key',
-	'not_ready',
 	'locked',
 	'already_exists',
 	'pending_exists',
@@ -74,11 +74,18 @@ export function failureCodeOf(cls: PgpFailureClass): PgpRestoreFailure {
 }
 
 export type PgpEvaluation =
-	| { kind: 'evaluated'; state: PgpEvalState; failureCode: PgpRestoreFailure | null; offerEntry: boolean }
+	| { kind: 'evaluated'; state: PgpEvalState; failureCode: PgpRestoreFailure | null; offerEntry: boolean; legacy?: LegacyReportState; chain?: ChainRegistrationState }
 	| { kind: 'refused'; code: string }
 	| { kind: 'unavailable' }
 	/**1: a temporary state (undetermined). Retried, never terminal, never a missing PGP. */
 	| { kind: 'source_unavailable' }
+
+/** The legacy and chain fields (RULING 617d3dd9): a missing or unknown value is unknown, never a confirmation. */
+function fieldsOf(r: Loose): { legacy: LegacyReportState; chain: ChainRegistrationState } {
+	const legacy = typeof r.legacy === 'string' && LEGACY_REPORT_STATES.includes(r.legacy) ? (r.legacy as LegacyReportState) : 'unknown'
+	const chain = typeof r.chain === 'string' && CHAIN_REGISTRATION_STATES.includes(r.chain) ? (r.chain as ChainRegistrationState) : 'unknown'
+	return { legacy, chain }
+}
 
 /** Reads the evaluation result. Only the known fields are read; a value that is not in the spec is `unavailable`, never echoed. */
 export function parsePgpEvaluateResult(result: unknown): PgpEvaluation {
@@ -89,10 +96,10 @@ export function parsePgpEvaluateResult(result: unknown): PgpEvaluation {
 	const cls = r.failureClass
 	if (cls === null || cls === undefined) {
 		if (state === 'failed') return { kind: 'unavailable' }
-		return { kind: 'evaluated', state, failureCode: null, offerEntry: r.offerEntry === true }
+		return { kind: 'evaluated', state, failureCode: null, offerEntry: r.offerEntry === true, ...fieldsOf(r) }
 	}
 	if (typeof cls !== 'string' || !FAILURE_CLASSES.includes(cls)) return { kind: 'unavailable' }
-	return { kind: 'evaluated', state, failureCode: failureCodeOf(cls as PgpFailureClass), offerEntry: r.offerEntry === true }
+	return { kind: 'evaluated', state, failureCode: failureCodeOf(cls as PgpFailureClass), offerEntry: r.offerEntry === true, ...fieldsOf(r) }
 }
 
 /** Sends one PGP command as an ack request. The reply is an ack envelope; anything else is `unavailable`. */
@@ -103,6 +110,9 @@ async function ackFor(cmd: Loose, timeoutMs: number, reqId: number): Promise<{ k
 	if (p.type !== 'ack') return { kind: 'unavailable' }
 	if (p.ok === true) return { kind: 'ok', result: p.result }
 	const code = typeof p.error === 'string' ? p.error : ''
+	// not_ready is unknown and retryable: the code is returned as-is and evaluate maps it to the temporary
+	// source state (never a terminal result).
+	if (code === PGP_NOT_READY) return { kind: 'refused', code }
 	return REFUSAL_CODES.includes(code) ? { kind: 'refused', code } : { kind: 'refused', code: 'unknown_ack' }
 }
 
@@ -135,10 +145,16 @@ function waitForResult(eventType: string, reqId: number, timeoutMs: number): { p
 
 /** The code of a temporary source state (1.1): retried, not a terminal result. It appears as the ack error or in result.code. */
 export const PGP_SOURCE_UNAVAILABLE = 'pgp_source_unavailable'
+/**
+ *43608b3d): `not_ready` is unknown and retryable. It is the same temporary state as pgp_source_unavailable: no
+ * missing key is concluded, no new PGP is generated, no success is shown, and the usual backoff and manual retry apply.
+ */
+export const PGP_NOT_READY = 'not_ready'
+const isTemporarySourceCode = (code: string): boolean => code === PGP_SOURCE_UNAVAILABLE || code === PGP_NOT_READY
 
 /** The evaluation of an answer body (the event or the ack's result): the temporary source state, or the state the body carries. */
 function evaluationOf(body: Loose): PgpEvaluation {
-	if (body.code === PGP_SOURCE_UNAVAILABLE) return { kind: 'source_unavailable' }
+	if (typeof body.code === 'string' && isTemporarySourceCode(body.code)) return { kind: 'source_unavailable' }
 	return parsePgpEvaluateResult(body)
 }
 
@@ -153,7 +169,7 @@ export async function evaluateNativePgpRestore(accountKey: string): Promise<PgpE
 	const reqId = nextPgpReqId()
 	const a = await ackFor({ type: NATIVE_PGP_EVALUATE_COMMAND, accountKey }, EVALUATE_TIMEOUT_MS, reqId)
 	if (a.kind === 'unavailable') return { kind: 'unavailable' }
-	if (a.kind === 'refused') return a.code === PGP_SOURCE_UNAVAILABLE ? { kind: 'source_unavailable' } : { kind: 'refused', code: a.code }
+	if (a.kind === 'refused') return isTemporarySourceCode(a.code) ? { kind: 'source_unavailable' } : { kind: 'refused', code: a.code }
 	const body = a.result && typeof a.result === 'object' ? (a.result as Loose) : null
 	if (!body) return { kind: 'unavailable' }
 	return evaluationOf(body)
@@ -215,6 +231,8 @@ export function newIdempotencyKey(): string {
 export { PGP_IDENTITY_CREATE_ENABLED }
 
 export async function nativeGenerateNewPgpKey(accountKey: string, idempotencyKey: string = newIdempotencyKey()): Promise<PgpCreateOutcome> {
+	// RULING 617d3dd9: the command is refused without the first-identity confirmation, in every build (no send).
+	if (!pgpCreateEligible(accountKey)) return { ok: false, reason: 'not_eligible' }
 	if (!PGP_IDENTITY_CREATE_ENABLED) return { ok: false, reason: 'not_enabled' }
 	return sendNativePgpIdentityCreate(accountKey, idempotencyKey)
 }

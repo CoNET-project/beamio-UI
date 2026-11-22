@@ -2,10 +2,10 @@
  * PGP private-key blob ciphers (禁止 2).
  *
  * Two formats live on the AddressPGP record (`encrypKeyArmored`, read by `getEncryptedPrivateKey()`):
- *   - legacy: base64(IV[12] || AES-GCM ciphertext) with the key SHA-256(password), where the password is the account
- *     private-key string. The account key is the key material. Read only once, to migrate (wallet module).
- *   - v2: "BPK2:" + base64(IV[12] || AES-GCM ciphertext) with the sub-key DEK-local, derived from R_db by walletCore.
- *     The account key is never used as cipher key material for this blob.
+ * - legacy: base64(IV[12] || AES-GCM ciphertext) with the key SHA-256(password), where the password is the account
+ * private-key string. The account key is the key material. Read only once, to migrate (wallet module).
+ * - v2: "BPK2:" + base64(IV[12] || AES-GCM ciphertext) with the sub-key DEK-local, derived from R_db by walletCore.
+ * The account key is never used as cipher key material for this blob.
  *
  * This file is pure: it receives keys as bytes or strings from its caller and returns blobs or plaintext. It never
  * logs. The caller (walletCore) decides which key is passed in. Text is UTF-8 with no TextEncoder dependency.
@@ -21,7 +21,11 @@ export const PGP_BLOB_V2_PREFIX = 'BPK2:'
  */
 export const PGP_BLOB_V2_WRITES_ENABLED = false
 
-/** Fixed message layout the registration endpoint verifies (x402sdk `chatRouteAuth.ts`). Do not change without the server. */
+/**
+ * Fixed message layout the registration endpoint verifies (x402sdk `chatRouteAuth.ts`). Do not change without the server.
+ * The text fields are trimmed exactly as the endpoint trims them (`str`): a PGP armor with a trailing newline is hashed
+ * without it on both sides, so the signature matches the request the endpoint accepts.
+ */
 export const buildRegiestChatRouteMessage = (p: {
 	wallet: string
 	keyID: string
@@ -31,16 +35,19 @@ export const buildRegiestChatRouteMessage = (p: {
 	timestamp: number
 	nonce: string
 	keccak: (s: string) => string
-}): string => [
-	'Beamio regiestChatRoute',
-	`wallet:${p.wallet.toLowerCase()}`,
-	`keyID:${p.keyID}`,
-	`publicKeyArmoredHash:${p.keccak(p.publicKeyArmored)}`,
-	`encrypKeyArmoredHash:${p.keccak(p.encrypKeyArmored)}`,
-	`routeKeyID:${p.routeKeyID}`,
-	`timestamp:${p.timestamp}`,
-	`nonce:${p.nonce.toLowerCase()}`,
-].join('\n')
+}): string => {
+	const t = (v: string) => String(v ?? '').trim()
+	return [
+		'Beamio regiestChatRoute',
+		`wallet:${t(p.wallet).toLowerCase()}`,
+		`keyID:${t(p.keyID)}`,
+		`publicKeyArmoredHash:${p.keccak(t(p.publicKeyArmored))}`,
+		`encrypKeyArmoredHash:${p.keccak(t(p.encrypKeyArmored))}`,
+		`routeKeyID:${t(p.routeKeyID)}`,
+		`timestamp:${p.timestamp}`,
+		`nonce:${t(p.nonce).toLowerCase()}`,
+	].join('\n')
+}
 
 export function isPgpBlobV2(blob: unknown): blob is string {
 	return typeof blob === 'string' && blob.startsWith(PGP_BLOB_V2_PREFIX)

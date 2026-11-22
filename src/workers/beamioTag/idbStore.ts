@@ -14,9 +14,24 @@ const META_STORE = 'meta'
 
 let dbPromise: Promise<IDBDatabase> | null = null
 
+/** A blocked or stalled open fails after this time, with a named error: it never hangs silently. */
+export const OPEN_DB_TIMEOUT_MS = 10_000
+export const OPEN_DB_BLOCKED = 'beamio_tag_db_blocked'
+export const OPEN_DB_TIMEOUT = 'beamio_tag_db_open_timeout'
+
 function openDb(): Promise<IDBDatabase> {
 	if (dbPromise) return dbPromise
-	dbPromise = new Promise((resolve, reject) => {
+	const pending = new Promise<IDBDatabase>((resolve, reject) => {
+		let settled = false
+		const fail = (err: Error) => {
+			if (settled) return
+			settled = true
+			clearTimeout(timer)
+			// a later call opens the database again (the failure is not cached)
+			dbPromise = null
+			reject(err)
+		}
+		const timer = setTimeout(() => fail(new Error(OPEN_DB_TIMEOUT)), OPEN_DB_TIMEOUT_MS)
 		const req = indexedDB.open(DB_NAME, DB_VERSION)
 		req.onupgradeneeded = (ev) => {
 			const db = req.result
@@ -36,10 +51,22 @@ function openDb(): Promise<IDBDatabase> {
 				}
 			}
 		}
-		req.onsuccess = () => resolve(req.result)
-		req.onerror = () => reject(req.error)
+		// another open connection blocks the upgrade: report it instead of waiting forever
+		req.onblocked = () => fail(new Error(OPEN_DB_BLOCKED))
+		req.onsuccess = () => {
+			// the open gave up earlier: close the late connection, do not keep it
+			if (settled) {
+				req.result.close()
+				return
+			}
+			settled = true
+			clearTimeout(timer)
+			resolve(req.result)
+		}
+		req.onerror = () => fail(req.error ?? new Error('beamio_tag_db_open_error'))
 	})
-	return dbPromise
+	dbPromise = pending
+	return pending
 }
 
 function rowId(partition: string, addressLower: string): string {

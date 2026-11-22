@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * Regression (PM request, Android review): every native open gets a fresh reqId, including a retry after a failed open.
+ * Regression: every native open gets a fresh reqId, including a retry after a failed open.
  * The shell de-duplicates by reqId (N-31–42), so a retry that reuses an id would be treated as the same request.
  * The fake shell answers each open with the next scripted reply and records the reqId it was sent.
  */
@@ -36,7 +36,7 @@ function installShell(): void {
 			sent.push(cmd)
 			const send = (payload: Record<string, unknown>) =>
 				setTimeout(() => window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'chatModuleEvent', event: payload } })), 0)
-			if (cmd.type === 'hello') send({ type: 'ready', reqId: cmd.reqId, result: { capabilities: ['identity.native-keys.v1'] } })
+			if (cmd.type === 'hello') send({ type: 'ack', reqId: cmd.reqId, ok: true, result: { capabilities: ['identity.native-keys.v1'] } })
 			else if (cmd.type === NATIVE_RECOVERY_OPEN_COMMAND || cmd.type === NATIVE_ACCOUNT_CREATE_OPEN_COMMAND) {
 				const next = replies.shift() ?? { type: 'ack', ok: true, page: 'opened' }
 				send({ ...next, reqId: cmd.reqId })

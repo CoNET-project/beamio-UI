@@ -1,13 +1,13 @@
 /**
- * the unavailable screen for needs_native_recovery has the native import page as its main
- * guide (nativeImportOpen). The recovery-code entry (nativeRecoveryOpen) stays as a secondary link. The
- * copy keys are existing ones. Source guard; no key or passcode value is used.
+ * The unavailable screen for needs_native_recovery (spec item 41, rule (b) 2026-11-16). The native import entry is retired:
+ * the screen offers the recovery-code entry (nativeRecoveryOpen) as its only action, and no source calls openNativeKeyImport or the
+ * nativeImportOpen command. Rewritten from the import-first guide: the earlier assertions that required the import button are superseded.
+ * The copy keys are existing ones. Source guard; no key or passcode value is used.
  */
-import { readFileSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 
 const gate = readFileSync(join(__dirname, 'AppEntryGate.tsx'), 'utf8')
-const noKey = readFileSync(join(__dirname, 'NativeKeyImportRequired.tsx'), 'utf8')
 
 const block = (() => {
 	const at = gate.indexOf("{storageUnavailable === 'native_recovery_needed' ? (")
@@ -15,70 +15,70 @@ const block = (() => {
 	return gate.slice(at, gate.indexOf(') : null}', at) + 1)
 })()
 
-describe('the unavailable screen guides to the native import page first', () => {
-	it('the main button is the import button and calls the import handler (nativeImportOpen)', () => {
-		const main = block.indexOf("onClick={() => void importWalletNative()}")
-		expect(main).toBeGreaterThan(0)
-		expect(block.slice(0, main)).toContain('type="button"')
-		expect(block.indexOf("tu('native_key_required_import')")).toBeGreaterThan(0)
-		expect(block.indexOf("tu('native_key_required_import')")).toBeLessThan(block.indexOf("tu('use_recovery_code')"))
+describe('the unavailable screen offers the recovery code only (item 41: the import entry is retired)', () => {
+	it('the screen has no import button and no import handler (native_key_required_import, importWalletNative)', () => {
+		expect(block).not.toContain("tu('native_key_required_import')")
+		expect(block).not.toContain('importWalletNative')
+		expect(gate).not.toContain('importWalletNative')
 	})
 
-	it('the import handler sends nativeImportOpen and waits for the return only when the page opened', () => {
-		expect(gate).toContain("import { installNativeNoKeyWatcher, NO_KEY_ERROR, openNativeKeyImport } from '@/services/nativeKeyState'")
-		const at = gate.indexOf('const importWalletNative = async () => {')
-		expect(at).toBeGreaterThan(0)
-		const body = gate.slice(at, at + 300)
-		expect(body).toContain('await openNativeKeyImport()')
-		expect(body).toContain("if (out === 'opened') setAwaitingImportReturn(true)")
-		expect(body).toContain("else setNativeRecoveryNotice(tu('native_key_import_failed'))")
+	it('the gate does not import openNativeKeyImport or the import result, and no import-return effect remains', () => {
+		expect(gate).not.toContain('openNativeKeyImport')
+		expect(gate).not.toContain('onNativeImportResult')
+		expect(gate).not.toContain('awaitingImportReturn')
+		expect(gate).not.toContain('nativeImportOpen')
 	})
 
-	it('the recovery-code entry remains as a secondary link (underlined text, not the primary white button)', () => {
+	it('the recovery-code entry is the only action of the screen (nativeRecoveryOpen, use_recovery_code)', () => {
 		const rec = block.indexOf("tu('use_recovery_code')")
 		expect(rec).toBeGreaterThan(0)
-		const before = block.slice(0, rec)
-		expect(before.lastIndexOf('className="px-3 py-3 text-sm text-white/75 underline"')).toBeGreaterThan(before.lastIndexOf('<button'))
 		expect(block).toContain('nativeRecoveryOpen()')
 	})
 
-	it('the secondary link has a tap area of at least 44x44 points by padding alone (text-sm line 20px + py-3 = 44px); its copy and colour are unchanged', () => {
+	it('the action has a tap area of at least 44 points by padding alone (text-sm line 20px + py-3 = 44px)', () => {
 		const rec = block.indexOf("tu('use_recovery_code')")
 		const before = block.slice(0, rec)
 		const cls = before.slice(before.lastIndexOf('className="'), before.lastIndexOf('>') + 1)
-		expect(cls).toContain('px-3')
 		expect(cls).toContain('py-3')
-		expect(cls).toContain('text-sm text-white/75 underline')
+		expect(cls).toContain('bg-white')
 	})
 
-	it('the no_key page (NativeKeyImportRequired) keeps the import button as its main guide', () => {
-		expect(noKey).toContain("tu('native_key_required_import')")
-		expect(noKey).toContain('openNativeKeyImport')
+	it('the no_key page is retired: NativeKeyImportRequired.tsx is deleted and the no_key answer enters the onboarding (rule (b))', () => {
+		expect(existsSync(join(__dirname, 'NativeKeyImportRequired.tsx'))).toBe(false)
+		expect(gate).not.toContain('NativeKeyImportRequired')
+		expect(gate).toContain('// rule (b), spec item 42(2): both sides confirmed no mnemonic.')
 	})
 
-	it('the return of the import page reloads the app once on visibilitychange only; the new code does not read walletStatus directly (the reloaded boot reads it by the existing path)', () => {
-		expect(gate).toContain("if (document.visibilityState !== 'visible') return\n\t\t\twindow.location.reload()")
+	it('no visibilitychange reload for an import return remains, and the gate reads no walletStatus of its own', () => {
+		expect(gate).not.toContain("document.addEventListener('visibilitychange', recheck)")
 		expect(gate).not.toMatch(/readNativeWalletStatus/)
 		expect(gate).not.toContain("window.addEventListener('focus', recheck)")
 	})
 })
 
-describe('the copy keys used on the unavailable screen exist in both locales', () => {
-	const keys = ['native_key_required_import', 'native_key_import_failed', 'use_recovery_code']
+describe('the import copy keys are removed from both locales, the recovery copy key stays (item 41)', () => {
+	const retired = [
+		'native_key_required_title',
+		'native_key_required_body',
+		'native_key_required_import',
+		'native_key_required_retry',
+		'native_key_import_failed',
+	]
 	const localeDir = join(__dirname, '..', 'locale')
 	for (const f of ['en.json', 'zh-CN.json']) {
-		it(`${f} has ${keys.join(', ')}`, () => {
+		it(`${f} has no import copy key, and keeps use_recovery_code`, () => {
 			const found = new Set<string>()
 			const walk = (node: unknown): void => {
 				if (node && typeof node === 'object') {
 					for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
-						if (keys.includes(k) && typeof v === 'string' && v.length > 0) found.add(k)
+						if (typeof v === 'string' && v.length > 0) found.add(k)
 						walk(v)
 					}
 				}
 			}
 			walk(JSON.parse(readFileSync(join(localeDir, f), 'utf8')))
-			for (const k of keys) expect(found.has(k)).toBe(true)
+			for (const k of retired) expect(found.has(k)).toBe(false)
+			expect(found.has('use_recovery_code')).toBe(true)
 		})
 	}
 })

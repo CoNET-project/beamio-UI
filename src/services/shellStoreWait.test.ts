@@ -4,6 +4,7 @@
  */
 import { NATIVE_RETRY_DELAYS_MS, NATIVE_STORE_WAIT_CAP_MS, nativeRetryStep, nativeStoreWaitDelayMs, shellStorageErrorReason, splashDeadlineAction } from './shellStoreWait'
 import { parseShellRecordRead, shellRecordAsWalletRecord } from './shellRecordStore'
+import { nativeStartRoute } from './accountJudgement'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
@@ -57,10 +58,10 @@ describe('G0 (4): the outcome of a shell read, not the source text', () => {
 		expect(shellRecordAsWalletRecord(parseShellRecordRead({ type: 'ack', ok: true, result: { code: 'absent' } }))).toBeNull()
 	})
 
-	it('migrating, import_not_done and legacy_store_unreadable wait and retry; a recovery hold stops at the recovery entry', () => {
+	it('migrating and import_not_done wait and retry; an unreadable legacy store is an unavailable page (not a wait); a recovery hold stops at the recovery entry', () => {
 		expect(shellStorageErrorReason('shell_record_migrating')).toBe('native_retry')
 		expect(shellStorageErrorReason('shell_record_import_not_done')).toBe('native_retry')
-		expect(shellStorageErrorReason('shell_record_legacy_store_unreadable')).toBe('native_retry')
+		expect(shellStorageErrorReason('shell_record_legacy_store_unreadable')).toBe('native_unreadable')
 		expect(shellStorageErrorReason('shell_record_needs_native_recovery')).toBe('native_recovery_needed')
 	})
 })
@@ -72,7 +73,7 @@ describe('a refused origin on a shell record read shows the update prompt', () =
 })
 
 
-describe('Y.70 #4: a shell read that is not yet decided is retryable, never a record error (0.53.5)', () => {
+describe('#4: a shell read that is not yet decided is retryable, never a record error (0.53.5)', () => {
 	it('not_ready (snapshot unknown) is native_retry', () => {
 		expect(shellStorageErrorReason('shell_record_not_ready')).toBe('native_retry')
 	})
@@ -85,7 +86,7 @@ describe('Y.70 #4: a shell read that is not yet decided is retryable, never a re
 	it('the existing retry codes are unchanged', () => {
 		expect(shellStorageErrorReason('shell_record_migrating')).toBe('native_retry')
 		expect(shellStorageErrorReason('shell_record_import_not_done')).toBe('native_retry')
-		expect(shellStorageErrorReason('shell_record_legacy_store_unreadable')).toBe('native_retry')
+		expect(shellStorageErrorReason('shell_record_legacy_store_unreadable')).toBe('native_unreadable')
 	})
 
 	it('record errors stay native_record (closed, no retry): bad answer, rev, PGP private, unknown', () => {
@@ -106,7 +107,7 @@ describe('Y.70 #4: a shell read that is not yet decided is retryable, never a re
 	})
 })
 
-describe('not_ready (Y.70 #4): positive and negative cases (0.53.5)', () => {
+describe('not_ready: positive and negative cases (0.53.5)', () => {
 	it('positive: not_ready is a retryable wait, and the wait delay keeps growing to the cap (the retries go on)', () => {
 		expect(shellStorageErrorReason('shell_record_not_ready')).toBe('native_retry')
 		expect(nativeStoreWaitDelayMs(0)).toBeLessThan(nativeStoreWaitDelayMs(1))
@@ -115,10 +116,11 @@ describe('not_ready (Y.70 #4): positive and negative cases (0.53.5)', () => {
 
 	it('negative: not_ready is an error answer, never an absent store (no onboarding, no create)', () => {
 		const read = parseShellRecordRead({ type: 'ack', ok: false, error: 'not_ready' })
-		expect(read).toEqual({ status: 'error', reason: 'not_ready' })
+		expect(read).toMatchObject({ status: 'error', reason: 'not_ready' })
 		expect(read.status).not.toBe('absent')
 		// shellRecordAsWalletRecord returns null only for absent; an error must throw, so no empty record is ever built.
-		expect(() => shellRecordAsWalletRecord(read)).toThrow('shell_record_not_ready')
+		//a superseded envelope not_ready without retryable is bounded (re-reads, then the terminal), never endless
+		expect(() => shellRecordAsWalletRecord(read)).toThrow('shell_record_not_ready_bounded')
 	})
 
 	it('negative: not_ready is never mapped to a store reason that would create or overwrite', () => {
@@ -126,7 +128,7 @@ describe('not_ready (Y.70 #4): positive and negative cases (0.53.5)', () => {
 		expect(shellStorageErrorReason('shell_record_not_ready')).not.toBe('app_update_required')
 	})
 
-	it('Y.99 4: a read answering error + record_unreadable (flag repair failed) is unknown and retryable: native_reading', () => {
+	it('a read answering error + record_unreadable (flag repair failed) is unknown and retryable: native_reading', () => {
 		const read = parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'error', sub: 'record_unreadable' } })
 		expect(read).toEqual({ status: 'error', reason: 'record_unreadable' })
 		let msg = ''
@@ -140,13 +142,13 @@ describe('not_ready (Y.70 #4): positive and negative cases (0.53.5)', () => {
 		expect(shellStorageErrorReason(msg)).toBe('native_reading')
 	})
 
-	it('Y.99 4: native_reading is not a retry of the store wait, not a recovery entry, and not a record error', () => {
+	it('native_reading is not a retry of the store wait, not a recovery entry, and not a record error', () => {
 		expect(shellStorageErrorReason('shell_record_record_unreadable')).not.toBe('native_retry')
 		expect(shellStorageErrorReason('shell_record_record_unreadable')).not.toBe('native_recovery_needed')
 		expect(shellStorageErrorReason('shell_record_record_unreadable')).not.toBe('native_record')
 	})
 
-	it('Y.99 4: the gate shows the reading copy with a retry, and never routes it to onboarding', () => {
+	it('the gate shows the reading copy with a retry, and never routes it to onboarding', () => {
 		const gate = readFileSync(join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
 		const at = gate.indexOf("storageUnavailable === 'native_reading'")
 		expect(at).toBeGreaterThan(0)
@@ -159,7 +161,7 @@ describe('not_ready (Y.70 #4): positive and negative cases (0.53.5)', () => {
 	})
 })
 
-describe('Y.104 3: the retry state runs 30 s, 2 min, 10 min, then the manual retry; used-up retries are never onboarding', () => {
+describe('the retry state runs 30 s, 2 min, 10 min, then the manual retry; used-up retries are never onboarding', () => {
 	it('the cadence is 30 seconds, 2 minutes and 10 minutes, then manual', () => {
 		expect(NATIVE_RETRY_DELAYS_MS).toEqual([30_000, 120_000, 600_000])
 		expect([0, 1, 2].map((n) => nativeRetryStep(n))).toEqual([
@@ -174,7 +176,7 @@ describe('Y.104 3: the retry state runs 30 s, 2 min, 10 min, then the manual ret
 		for (const n of [4, 6, 20, 100]) expect(nativeRetryStep(n)).toEqual({ kind: 'manual' })
 	})
 
-	it('the gate uses the Y.104 step on its native_retry path: no exponential wait, no six-retry bound, no recovery entry, no onboarding', () => {
+	it('the gate uses the step on its native_retry path: no exponential wait, no six-retry bound, no recovery entry, no onboarding', () => {
 		const gate = readFileSync(join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
 		expect(gate).toContain('const step = nativeRetryStep(attempt)')
 		expect(gate).toContain('window.setTimeout(() => void init(), step.delayMs)')
@@ -188,17 +190,51 @@ describe('Y.104 3: the retry state runs 30 s, 2 min, 10 min, then the manual ret
 	})
 })
 
-describe('Y.104 3 (ruling): the unknown retry branch shares the same cadence and never onboards', () => {
-	it('the retry_unknown branch uses nativeRetryStep with the shared attempt counter, then the manual screen', () => {
+describe('the unknown retry branch shares the same cadence and never onboards', () => {
+	// superseded (spec item 42(3), rule 2026-11-16 1501): an unknown pre-read is the startup wait, which re-reads on its own
+	// interval (STARTUP_WAIT_MS). The former reset-decision retry branch (nativeRetryStep) no longer decides the shell's start.
+	it('an unknown pre-read is the startup wait on one interval: no onboarding, no creation entry, no own delay', () => {
 		const gate = readFileSync(join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
-		const at = gate.indexOf("if (reset !== 'onboarding') {")
+		// revised 2026-11-20: the unknown pre-read is nativeStartRoute's retry (reason pre_unknown) on the same startupWait
+		const at = gate.indexOf('startupWait(`native start: ${outcome.reason}`')
 		expect(at).toBeGreaterThan(0)
-		const block = gate.slice(at, gate.indexOf('\n\t\t\t}', at))
-		expect(block).toContain('const step = nativeRetryStep(attempt)')
-		expect(block).toContain('window.setTimeout(() => void init(), step.delayMs)')
-		expect(block).toContain('showStorageUnavailable(NATIVE_RETRY_SCREEN)')
-		expect(block).not.toMatch(/onboarding\(|createWallet|clearIdentity|native_recovery_needed/i)
-		// one cadence: the retry_unknown branch must not carry its own delay
-		expect(block).not.toContain('nativeStoreWaitDelayMs')
+		expect(nativeStartRoute({ pre: { kind: 'unknown' }, walletState: 'absent', hasKey: false, walletStatus: 'no_key' })).toEqual({ route: 'retry', reason: 'pre_unknown' })
+		const wait = gate.slice(gate.indexOf('const startupWait = '), gate.indexOf('const init = async', 0))
+		expect(wait).toContain('window.setTimeout')
+		expect(wait).toContain('startupRetryDelayMs(attempt)')
+		expect(wait).toContain('void initRef.current?.()')
+		expect(wait).not.toMatch(/goOnboarding|createWallet|clearIdentity|native_recovery_needed|nativeStoreWaitDelayMs/)
+	})
+})
+
+describe('HC-LOCK / HC-STORAGE-LOCK classification', () => {
+	it('L-REC: an envelope-level shell_record_locked is native_locked, never native_record', () => {
+		expect(shellStorageErrorReason('shell_record_locked')).toBe('native_locked')
+		expect(shellStorageErrorReason('shell_record_locked')).not.toBe('native_record')
+	})
+
+	it('D-7: a result-level storage_locked is native_retry (wait and retry)', () => {
+		expect(shellStorageErrorReason('storage_locked')).toBe('native_retry')
+	})
+
+	it('other records are unchanged (regression)', () => {
+		expect(shellStorageErrorReason('shell_record_timeout')).toBe('native_retry')
+		expect(shellStorageErrorReason('shell_record_origin_refused')).toBe('app_update_required')
+	})
+})
+
+describe('the splash deadline does not override a decided terminal (the update prompt)', () => {
+	test('a terminal decision (decided, native store waiting flag cleared) is released, never kept waiting', () => {
+		expect(splashDeadlineAction({ decided: true, nativeWaiting: false })).toBe('release')
+		expect(splashDeadlineAction({ decided: true, nativeWaiting: true })).toBe('release')
+	})
+})
+
+describe('untrusted_source waits and retries (7590d172)', () => {
+	it('shell_record_untrusted_source is native_retry, never an update prompt, never an entry', () => {
+		expect(shellStorageErrorReason('shell_record_untrusted_source')).toBe('native_retry')
+	})
+	it('shell_record_locked stays native_locked', () => {
+		expect(shellStorageErrorReason('shell_record_locked')).toBe('native_locked')
 	})
 })

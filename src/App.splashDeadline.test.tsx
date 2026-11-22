@@ -17,7 +17,7 @@ Object.assign(globalThis, { TextEncoder: nodeUtil.TextEncoder, TextDecoder: node
 const EOA = '0x1111111111111111111111111111111111111111'
 
 // Controlled by each case: how the App's storage read ends, and when the native wallet arrives.
-const race: { caps: string[]; storage: 'null' | 'late-null'; storageResolve?: (v: unknown) => void; nativeResolve?: (v: unknown) => void; releaseStorage?: () => void; nativeImmediate?: unknown; reads: number; notReady: boolean } = { caps: [], storage: 'null', reads: 0, notReady: false }
+const race: { caps: string[]; storage: 'null' | 'late-null'; storageResolve?: (v: unknown) => void; nativeResolve?: (v: unknown) => void; releaseStorage?: () => void; nativeImmediate?: unknown; reads: number; answered?: boolean; unknownTimes?: number; notReady: boolean; preadAsked?: number } = { caps: [], storage: 'null', reads: 0, notReady: false }
 
 jest.mock('@/services/shellContext', () => ({ isShellContext: () => true }))
 jest.mock('@/utils/cashTreesNativeNfc', () => ({
@@ -28,6 +28,12 @@ jest.mock('@/utils/cashTreesNativeNfc', () => ({
 	openExternalUrl: jest.fn(),
 }))
 jest.mock('@/utils/cashTreesNativePwaLog', () => ({ publishNativePwaLog: jest.fn() }))
+// jsdom cannot derive a wallet (its Uint8Array is another realm than ethers'); the derivation is covered in the node tests.
+jest.mock('@/services/shellSessionSigner', () => ({ ...jest.requireActual('@/services/shellSessionSigner'), holdShellSessionFromPhrase: () => ({ kind: 'ok' }) }))
+jest.mock('@/services/recoveredMnemonicRecord', () => ({ ...jest.requireActual('@/services/recoveredMnemonicRecord'), checkRecoveredRecord: () => 'valid', checkShellReadBack: () => 'valid' }))
+const SAMPLE_PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+const SAMPLE_EOA = '0x9858effd232b4033e47d90003d41ec34ecaeda94'
+const VALID_PREREAD = { kind: 'valid', eoa: SAMPLE_EOA, phrase: SAMPLE_PHRASE }
 
 // The daemon context: a small real store with the flags the bar reads. Everything else is a no-op function.
 jest.mock('@/locale/beamioLocale', () => ({ ...jest.requireActual('@/locale/beamioLocale'), tu: (key: string) => key, useTu: () => ({ tu: (key: string) => key, locale: 'en' }) }))
@@ -48,15 +54,18 @@ jest.mock('@/providers/DaemonProvider', () => {
 
 // Storage: the App's read and the gate's read both end the same way for a case.
 jest.mock('@/services/beamio', () => ({
+	setPageWritePermit: () => undefined, // 0.53.44: the session write gate (AppEntryGate); stub here
+	allowRestoreWrite: () => undefined,
+  endRestoreWriteWindow: () => undefined,
 	...jest.requireActual('@/services/beamio'),
 	checkStorage: () => (race.storage === 'null' ? Promise.resolve(null) : new Promise((r) => { race.releaseStorage = () => r(null) })),
-	checkStorageWithTransientRetry: () => (race.storage === 'null' ? Promise.resolve({ status: 'unavailable', reason: 'invalid_document' }) : new Promise((r) => { race.releaseStorage = () => r({ status: 'unavailable', reason: 'invalid_document' }) })),
+	checkStorageWithTransientRetry: () => (race.storage === 'null' ? Promise.resolve({ status: 'empty' }) : new Promise((r) => { race.releaseStorage = () => r({ status: 'unavailable', reason: 'invalid_document' }) })),
 	checkStorageWithStatusWithTimeout: async () => { race.reads += 1; return race.notReady && race.reads <= 2 ? { status: 'unavailable', reason: 'native_retry' } : { status: 'empty' } },
 	sendPendingProfileSync: jest.fn(),
 	getUserInfo: async () => ({ accountName: 'synthtag' }),
 	getUserInfoLookup: async () => ({ status: 'ok', info: { accountName: 'synthtag' } }),
 	storeSystemData: async () => undefined,
-	storeSystemDataAndWait: async () => undefined,
+	storeSystemDataAndWait: async () => true,
 	ensureProfilePrivateKeyArmorFromMnemonic: (x: unknown) => x,
 	bootstrapProfileLocaleCurrencyIfUnset: async (x: unknown) => x,
 	readWalletRecordForOnboardingGate: async () => null,
@@ -78,10 +87,19 @@ jest.mock('@/services/nativeRecovery', () => ({
 	recoveryOpenErrorKey: () => '',
 	nativeRecoveryCopyKey: () => null,
 	queryNativeWalletState: async () => 'present',
+	queryNativeWalletStatus: async () => ({ status: 'no_key' }), // 0.53.39 stub: the start route reads walletStatus
+	queryNativePasscodeStatus: async () => ({ walletState: await (async () => 'present')(), hasKey: 'not_reported' as const }),
+	// the start-up pre-read (spec item 42(2)): counted in race.reads; the first race.unknownTimes answers are unknown
+	queryNativeMnemonicPreread: async () => {
+		race.reads += 1
+		race.preadAsked = (race.preadAsked ?? 0) + 1
+		if (race.reads <= (race.unknownTimes ?? 0)) return { kind: 'unknown' }
+		return race.nativeImmediate ?? new Promise((r) => { race.nativeResolve = r })
+	},
 	queryNativeWalletStateSafe: async () => 'present',
 }))
 jest.mock('@/services/shellChatCapability', () => ({ ...jest.requireActual('@/services/shellChatCapability'), ensureShellChatState: async () => 'native_chat', shellChatBlockedNow: () => false }))
-jest.mock('@/services/nativeChatRouteRegister', () => ({ ...jest.requireActual('@/services/nativeChatRouteRegister'), probeNativeCapabilities: async () => ({ answered: true, capabilities: race.caps }) }))
+jest.mock('@/services/nativeChatRouteRegister', () => ({ ...jest.requireActual('@/services/nativeChatRouteRegister'), probeNativeCapabilities: async () => ({ answered: race.answered !== false, capabilities: race.caps }) }))
 // Modules that build a worker from import.meta (not loadable under jest here): every export is an inert stub.
 jest.mock('@/workers/beamioTag/client', () => mockDeepStub())
 jest.mock('@/workers/appDaemon/client', () => mockDeepStub())
@@ -145,17 +163,32 @@ const SPLASH_MS = 12_000
 const RETRY_TITLE = 'native_not_ready_retry_title'
 const RETRY_ACTION = 'native_not_ready_retry_action'
 const MIGRATION_TITLE = 'migration_retry_title'
+/** Moves the fake clock in 1 s steps, each settled on the microtask queue: one long step fires the 2 s page-read limit before the read resolves. */
+const advanceSteps = async (ms: number) => {
+	for (let i = 0; i < ms / 1_000; i += 1) await act(async () => { jest.advanceTimersByTime(1_000) })
+}
+/** The rule: with the identity not declared the native pre-read is not asked; after the deadline the state is retry. */
+const preadAsked = () => race.preadAsked ?? 0
+/** No onboarding is shown or logged, and no wallet is created: the only states are the splash, the retry screen and the home. */
+const noOnboardingOrNewWallet = (log: jest.Mock) => {
+	const lines = log.mock.calls.map((c) => String(c[1]))
+	const createOrGetWallet = require('@/services/beamio').createOrGetWallet as jest.Mock
+	return lines.every((l) => !l.toLowerCase().includes('onboarding')) && createOrGetWallet.mock.calls.length === 0
+}
 
 describe('splash deadline race: decision first (a native decision before the 12 s timer)', () => {
 	beforeEach(() => {
 		loadFresh()
 		jest.useFakeTimers()
-		race.caps = []
+		race.caps = ['identity.native-keys.v1']
 		race.storage = 'null'
 		race.nativeResolve = undefined
 		race.nativeImmediate = undefined
 		race.reads = 0
+		race.preadAsked = 0
 		race.notReady = false
+		race.answered = true
+		race.unknownTimes = 0
 		mockChatStarts.length = 0
 	})
 	afterEach(() => {
@@ -166,9 +199,9 @@ describe('splash deadline race: decision first (a native decision before the 12 
 		renderApp()
 		await act(async () => { jest.advanceTimersByTime(1) })
 		await waitFor(() => expect(race.nativeResolve).toBeDefined())
-		await act(async () => { race.nativeResolve?.({ status: 'unlocked', eoa: EOA }) })
+		await act(async () => { race.nativeResolve?.(VALID_PREREAD) })
 		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy())
-		await act(async () => { jest.advanceTimersByTime(SPLASH_MS + 1000) })
+		await advanceSteps(SPLASH_MS + 1000)
 		expect(screen.getByRole('button', { name: 'search' })).toBeTruthy()
 		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
 	})
@@ -178,12 +211,15 @@ describe('splash deadline race: timer first (no decision by 12 s; the retry scre
 	beforeEach(() => {
 		loadFresh()
 		jest.useFakeTimers()
-		race.caps = []
+		race.caps = ['identity.native-keys.v1']
 		race.storage = 'null'
 		race.nativeResolve = undefined
 		race.nativeImmediate = undefined
 		race.reads = 0
+		race.preadAsked = 0
 		race.notReady = false
+		race.answered = true
+		race.unknownTimes = 0
 		mockChatStarts.length = 0
 	})
 	afterEach(() => {
@@ -191,12 +227,28 @@ describe('splash deadline race: timer first (no decision by 12 s; the retry scre
 	})
 
 	it('timer first (no decision by 12 s): the retry state shows; a later decision enters the home and the retry state goes', async () => {
+		race.answered = false
 		renderApp()
+		const { publishNativePwaLog } = require('@/utils/cashTreesNativePwaLog')
 		await act(async () => { jest.advanceTimersByTime(1) })
+		// 12 s: the splash deadline. The identity is not declared, so the native pre-read is not asked and the retry state shows.
+		await advanceSteps(SPLASH_MS + 1000)
+		expect(screen.getByText(RETRY_ACTION)).toBeTruthy()
+		expect(preadAsked()).toBe(0)
+		// 20 s bridge trust deadline: the state is unknown with the reason code, still retry
+		// past the 20 s deadline; the bridge trust check runs on the next startup retry round (2, 4, 8, 16 s backoff, round at 30 s)
+		await advanceSteps(20_000)
+		expect(publishNativePwaLog).toHaveBeenCalledWith('warn', expect.stringContaining('bridge_trust_timeout'))
+		expect(preadAsked()).toBe(0)
+		expect(screen.queryByRole('button', { name: 'search' })).toBeNull()
+		expect(noOnboardingOrNewWallet(publishNativePwaLog)).toBe(true)
+		// the identity is declared later and the user taps Retry: only now is the pre-read asked; its valid answer enters the home
+		race.answered = true
+		race.caps = ['identity.native-keys.v1']
+		await act(async () => { screen.getByText(RETRY_ACTION).click() })
 		await waitFor(() => expect(race.nativeResolve).toBeDefined())
-		await act(async () => { jest.advanceTimersByTime(SPLASH_MS + 1000) })
-		expect(screen.getByText(RETRY_TITLE)).toBeTruthy()
-		await act(async () => { race.nativeResolve?.({ status: 'unlocked', eoa: EOA }) })
+		expect(preadAsked()).toBeGreaterThan(0)
+		await act(async () => { race.nativeResolve?.(VALID_PREREAD) })
 		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy())
 		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
 	})
@@ -206,12 +258,15 @@ describe('splash deadline race: the native store not ready twice, then ok (end t
 	beforeEach(() => {
 		loadFresh()
 		jest.useFakeTimers()
-		race.caps = []
+		race.caps = ['identity.native-keys.v1']
 		race.storage = 'null'
 		race.nativeResolve = undefined
 		race.nativeImmediate = undefined
 		race.reads = 0
+		race.preadAsked = 0
 		race.notReady = false
+		race.answered = true
+		race.unknownTimes = 0
 		mockChatStarts.length = 0
 	})
 	afterEach(() => {
@@ -221,13 +276,17 @@ describe('splash deadline race: the native store not ready twice, then ok (end t
 	it('the native store is not ready twice, then ok: the home is entered end to end, no migration screen', async () => {
 		race.notReady = true
 		race.caps = ['identity.native-keys.v1']
-		race.nativeImmediate = { status: 'unlocked', eoa: EOA }
+		race.unknownTimes = 2
+		race.nativeImmediate = VALID_PREREAD
 		renderApp()
-		for (let i = 0; i < 6 && race.reads < 3; i += 1) {
-			await act(async () => { jest.advanceTimersByTime(60_000) })
+		// The clock moves in 1 s steps, each one settled on the microtask queue. A single long step would fire the 2 s page-read limit
+		// before the read started by a retry can resolve, and the read would count as unknown.
+		for (let i = 0; i < 360 && race.reads < 3; i += 1) {
+			await act(async () => { jest.advanceTimersByTime(1_000) })
 		}
 		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy(), { timeout: 5000 })
-		expect(race.reads).toBe(3)
+		//the pre-read valid path reads the page copy once more (decidePrereadEntry), so one more read than before
+		expect(race.reads).toBe(4)
 		expect(screen.queryByText(MIGRATION_TITLE)).toBeNull()
 		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
 	})
@@ -237,12 +296,15 @@ describe('splash deadline race: timeout, then Retry once the identity is declare
 	beforeEach(() => {
 		loadFresh()
 		jest.useFakeTimers()
-		race.caps = []
+		race.caps = ['identity.native-keys.v1']
 		race.storage = 'null'
 		race.nativeResolve = undefined
 		race.nativeImmediate = undefined
 		race.reads = 0
+		race.preadAsked = 0
 		race.notReady = false
+		race.answered = true
+		race.unknownTimes = 0
 		mockChatStarts.length = 0
 	})
 	afterEach(() => {
@@ -250,17 +312,27 @@ describe('splash deadline race: timeout, then Retry once the identity is declare
 	})
 
 	it('timeout, then the user taps Retry once the identity is declared: the home is entered, once', async () => {
+		race.answered = false
 		renderApp()
+		const { publishNativePwaLog } = require('@/utils/cashTreesNativePwaLog')
 		await act(async () => { jest.advanceTimersByTime(1) })
-		await waitFor(() => expect(race.nativeResolve).toBeDefined())
-		await act(async () => { jest.advanceTimersByTime(SPLASH_MS + 1000) })
-		expect(screen.getByText(RETRY_TITLE)).toBeTruthy()
+		// 12 s: the splash deadline, the retry state (reason in the 20 s bridge trust check below); no pre-read is asked
+		await advanceSteps(SPLASH_MS + 1000)
+		expect(screen.getByText(RETRY_ACTION)).toBeTruthy()
+		expect(preadAsked()).toBe(0)
+		// past the 20 s deadline; the bridge trust check runs on the next startup retry round (2, 4, 8, 16 s backoff, round at 30 s)
+		await advanceSteps(20_000)
+		expect(publishNativePwaLog).toHaveBeenCalledWith('warn', expect.stringContaining('bridge_trust_timeout'))
+		expect(preadAsked()).toBe(0)
+		expect(noOnboardingOrNewWallet(publishNativePwaLog)).toBe(true)
+		// the identity is declared, the user taps Retry: the pre-read is asked once after the declaration, and the home is entered once
+		race.answered = true
 		race.caps = ['identity.native-keys.v1']
-		race.nativeResolve = undefined
 		await act(async () => { screen.getByText(RETRY_ACTION).click() })
 		await waitFor(() => expect(race.nativeResolve).toBeDefined())
-		await act(async () => { race.nativeResolve?.({ status: 'unlocked', eoa: EOA }) })
+		await act(async () => { race.nativeResolve?.(VALID_PREREAD) })
 		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy())
 		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
+		expect(mockChatStarts.length).toBe(1)
 	})
 })

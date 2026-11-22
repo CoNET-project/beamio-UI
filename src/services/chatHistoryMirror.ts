@@ -15,6 +15,17 @@
 import type { HistoryEntry } from '@conet.project/chat-sdk'
 import { appendWorkerHistory } from './chatWorkerBridge'
 
+/**
+ * `voiceVerified` is a local marker written only by the chat ingestion gate. It never travels in history: a history
+ * copy, a merge or a backfill strips it, so a row can only be marked by the gate.
+ */
+export const withoutLocalVoiceMarker = <T extends object>(msg: T): T => {
+	if (!msg || typeof msg !== 'object' || !('voiceVerified' in msg)) return msg
+	const copy = { ...(msg as Record<string, unknown>) }
+	delete copy.voiceVerified
+	return copy as T
+}
+
 /** Stable dedup key for a rendered chat message (mirrors `makeMessage` semantics). */
 const messageDedupKey = (m: ChatMessage): string =>
 	(m?.sendId && String(m.sendId)) ||
@@ -32,6 +43,7 @@ export const mirrorChatMessageToHistory = (
 ): void => {
 	const peer = (peerEoa || '').toLowerCase()
 	if (!peer || !msg) return
+	msg = withoutLocalVoiceMarker(msg)
 	// Skip local optimistic placeholders — the "sent" copy is mirrored once it settles.
 	if (msg.id && msg.id.startsWith('tmp_') && msg.status !== 'sent') return
 	const ts = Number(msg.createdAt)
@@ -96,6 +108,8 @@ export const mergeHistoryEntriesIntoMessages = (
 			parsed = null
 		}
 		if (!parsed || typeof parsed !== 'object') continue
+		// The local voice marker never comes from history.
+		parsed = withoutLocalVoiceMarker(parsed)
 
 		// Backfill direction/timestamp from the history envelope when the body omits them.
 		if (parsed.from !== 'me' && parsed.from !== 'them') {

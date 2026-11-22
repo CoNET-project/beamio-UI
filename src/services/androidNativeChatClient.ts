@@ -12,6 +12,8 @@
  */
 
 import type {
+	FirstOpenRequest,
+	FirstOpenResult,
 	BeamioChatClient,
 	BeamioChatConfig,
 	BeamioChatHistory,
@@ -289,6 +291,10 @@ function createLegacyAndroidListenClient(config: NativeChatConfig): BeamioChatCl
 
 		async queryNativeWake(_contact: ChatRoute): Promise<boolean | null> {
 			return null
+		},
+
+		async firstOpen(_request: FirstOpenRequest): Promise<FirstOpenResult> {
+			return { status: 'error', reason: 'unsupported' }
 		},
 
 		setRoutes(_routes: ChatRoute[]): void {

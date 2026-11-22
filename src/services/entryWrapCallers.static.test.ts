@@ -49,7 +49,7 @@ describe('SDK gossip core: every entry POST is wrapped; no outerWrap bypass', ()
 
 	it('all wrap calls are awaited and their failure is not swallowed into the inner armor', () => {
 		const calls = core.match(/wrapArmorToEntryRoute\(/g) || []
-		const awaited = core.match(/await wrapArmorToEntryRoute\(/g) || []
+		const awaited = core.match(/await (?:withStepTimeout\()?wrapArmorToEntryRoute\(/g) || [] // the listen wrap runs under withStepTimeout
 		// The import line names the function without a call; the calls are all awaited.
 		expect(awaited.length).toBe(calls.length)
 		expect(awaited.length).toBeGreaterThanOrEqual(7)

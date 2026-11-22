@@ -60,7 +60,8 @@ export async function loadShellSessionSigner(blob: string, expectedEoa: string):
 		injectIntoMemory()
 		return { kind: 'ok' }
 	}
-	if (held) clearShellSessionSigner()
+	// switching account: the previous signer is dropped without touching the in-memory profile (release, no blanking)
+	if (held) releaseShellSessionSignerHold()
 	const answer = await readWalletCredentialUnseal(blob)
 	if (answer.kind !== 'credential') return { kind: 'refused', code: answer.code }
 	return holdFromPhrase(answer.mnemonic, eoa, answer.eoa)
@@ -82,7 +83,8 @@ export function refreshShellSessionInMemory(): void {
 /** Holds the key derived from a phrase the native layer has just unsealed (the page copy). Nothing is held on a mismatch. */
 export function holdShellSessionFromPhrase(phrase: string, expectedEoa: string): ShellSessionResult {
 	const eoa = normalize(expectedEoa)
-	if (held && held.eoa !== eoa) clearShellSessionSigner()
+	// switching account: the previous signer is dropped without touching the in-memory profile (release, no blanking)
+	if (held && held.eoa !== eoa) releaseShellSessionSignerHold()
 	return holdFromPhrase(phrase, eoa, undefined)
 }
 
@@ -108,6 +110,18 @@ export function injectShellSessionKey<T extends { profiles?: unknown }>(record: 
 }
 
 /** Drops the held key and removes it from the in-memory profile. */
+/**
+ * 0.53.39 (review of be1b9c3, item 2): drops the held signer WITHOUT changing the in-memory profile. Used where a restore is about to
+ * replace the session account: the page profile is left as it is (no blanked privateKeyArmor can reach a later write), and the held key is
+ * no longer used for signing. The window event tells any page copy that the held key was dropped.
+ */
+export function releaseShellSessionSignerHold(): void {
+	const had = held
+	held = null
+	if (!had) return
+	if (typeof window !== 'undefined') window.dispatchEvent(new Event(SHELL_SESSION_KEY_CLEARED_EVENT))
+}
+
 export function clearShellSessionSigner(): void {
 	const had = held
 	held = null
@@ -123,6 +137,7 @@ export function clearShellSessionSigner(): void {
 if (typeof window !== 'undefined') {
 	// a real unload drops the key; a page restored from the back-forward cache (persisted) keeps it.
 	window.addEventListener('pagehide', (e: PageTransitionEvent) => {
-		if (!e.persisted) clearShellSessionSigner()
+		// a real unload drops the held signer only (release: no profile blanking; the page is going away)
+		if (!e.persisted) releaseShellSessionSignerHold()
 	})
 }

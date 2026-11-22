@@ -22,7 +22,7 @@ export function sendFailedDetailText(code: string): string {
 }
 
 /** The label of a held message's status in the bubble. */
-export function chatHeldLabelText(status: 'route_unconfirmed' | 'first_fetch_pending' | 'fingerprint_changed'): string {
+export function chatHeldLabelText(status: 'route_unconfirmed' | 'first_fetch_pending' | 'fingerprint_changed' | 'trusted_resend'): string {
 	return tu(`chat.held.label.${status}`)
 }
 

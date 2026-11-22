@@ -267,7 +267,7 @@ export async function migratePlainWallet(stores: WalletStores): Promise<PlainMig
 	if (!original || !hasPlainSecrets(original)) return 'none'
 	const restore = async () => {
 		try {
-			await stores.writeInit(original)
+			await writeInitWithKeep(stores, original)
 		} catch {
 			/* the original text is still the last successful write */
 		}
@@ -286,7 +286,7 @@ export async function migratePlainWallet(stores: WalletStores): Promise<PlainMig
 			if (!isSecretString(v)) continue
 			slot.setSibling(side, await wrapField(key, v, slot.field, slot.eoa, 'device'))
 		}
-		await stores.writeInit(side)
+		await writeInitWithKeep(stores, side)
 	} catch {
 		await restore()
 		return 'kept'
@@ -318,7 +318,7 @@ export async function migratePlainWallet(stores: WalletStores): Promise<PlainMig
 	// plaintext fields replaced in place; no plaintext and no sibling left in the stored blob.
 	try {
 		const final = await wrapInPlace(removeSiblings(original), deviceWrapper(key))
-		await stores.writeInit(final)
+		await writeInitWithKeep(stores, final)
 		const back = await probeRead(stores)
 		if (!back || hasPlainSecrets(back) || JSON.stringify(back).includes('"privateKeyArmorWrap"')) {
 			throw new VaultError('final_check_failed')
@@ -388,7 +388,7 @@ async function setPasscodeInternal(stores: WalletStores, passcode: string, plain
 	const salt = newSalt()
 	const key = await passcodeWrapKey(passcode, salt)
 	const wrapped = await wrapInPlace(plain, passcodeWrapper(key, salt))
-	await stores.writeInit(wrapped)
+	await writeInitWithKeep(stores, wrapped)
 	await verifyWrapped(stores, plain, 'passcode', key)
 	session.pc = { key, salt, acct }
 	return null
@@ -429,7 +429,7 @@ export async function disableWalletPasscode(stores: WalletStores, passcode: stri
 	if (!unlocked.ok) return unlocked
 	try {
 		const wrapped = await wrapInPlace(unlocked.data, deviceWrapper(await deviceKey(stores, true)))
-		await stores.writeInit(wrapped)
+		await writeInitWithKeep(stores, wrapped)
 		await verifyWrapped(stores, unlocked.data, 'device')
 	} catch {
 		return { ok: false, reason: 'error' }
@@ -466,14 +466,68 @@ export async function wrapForPersist(stores: WalletStores, plain: Loose): Promis
 	} else {
 		out = await wrapInPlace(plain, deviceWrapper(await deviceKey(stores, !deviceExisting)))
 	}
-	// Keep stored wraps for slots that are empty in memory.
-	const outSlots = slotsOf(out)
-	const existingSlots = slotsOf(existing)
-	outSlots.forEach((s, i) => {
-		if (isSecretString(s.get(out))) return
-		const kept = existingSlots[i]?.get(existing)
-		if (isWrapRecord(kept)) s.set(out, kept)
-	})
+	const merged = keepStoredSecretsForEmptySlots(out, existing)
+	assertStoredSecretsKept(existing, merged)
+	return merged
+}
+
+/**
+ * The one write entry of the wallet store (0.53.39, independent review 4fd31f0a, item 2). Every write of the init object goes through here:
+ * a slot that is empty in the record keeps the stored value (keepStoredSecretsForEmptySlots), and a write that would lose a stored secret
+ * is refused before anything is written (the data is kept; the caller gets an error).
+ */
+export async function writeInitWithKeep(stores: WalletStores, record: Loose): Promise<void> {
+	const before = ((stores.probeInit ? await stores.probeInit() : await stores.readInit()) ?? {}) as Loose
+	const merged = keepStoredSecretsForEmptySlots(record, before)
+	assertStoredSecretsKept(before, merged)
+	await stores.writeInit(merged)
+}
+
+/**
+ * The refusal (0.53.39, independent review 4fd31f0a, item 1). Every stored secret (a key or a mnemonic, wrapped or plain) must be kept by the
+ * record about to be written, under its own identity (field and lower-case keyID). The write is refused, before anything is written, when:
+ * - the stored record holds two secrets with the same identity (ambiguous: which one to keep is not known);
+ * - the record about to be written has no single slot with that identity, or that slot is empty (the stored secret would be lost).
+ * A missing keyID is an identity too (the empty string), so an account without a keyID is never guessed.
+ */
+export function assertStoredSecretsKept(before: Loose, merged: Loose): void {
+	const isSecret = (v: unknown) => isWrapRecord(v) || isSecretString(v)
+	const idOf = (s: Slot) => `${s.field}|${s.eoa}`
+	const beforeSlots = slotsOf(before)
+	const secretCount = new Map<string, number>()
+	for (const s of beforeSlots) {
+		if (!isSecret(s.get(before))) continue
+		secretCount.set(idOf(s), (secretCount.get(idOf(s)) ?? 0) + 1)
+	}
+	const mergedSlots = slotsOf(merged)
+	for (const s of beforeSlots) {
+		if (!isSecret(s.get(before))) continue
+		if ((secretCount.get(idOf(s)) ?? 0) > 1) throw new VaultError('secret_identity_ambiguous')
+		const matches = mergedSlots.filter((m) => idOf(m) === idOf(s))
+		if (matches.length !== 1 || !isSecret(matches[0].get(merged))) throw new VaultError('secret_would_be_lost')
+	}
+}
+
+/**
+ * 0.53.39 (independent review of 5dbad42): a slot that is empty in memory keeps the value already stored, whether that stored value is a
+ * wrap record or a plain non-empty string (an old plaintext key). Before, only a wrap record was kept, so an old plaintext key was dropped
+ * by a write made while the in-memory slot was empty. Pure: the caller passes the wrapped record and the stored record.
+ */
+export function keepStoredSecretsForEmptySlots(out: Loose, existing: Loose): Loose {
+	// Slots are paired by their identity (the field and the lower-case keyID), never by array position: an account list in a different
+	// order, or with a different number of accounts, must never move one account's key onto another account.
+	const slotKey = (s: Slot): string => `${s.field}|${s.eoa}`
+	const storedByKey = new Map<string, Slot>()
+	for (const e of slotsOf(existing)) if (e.eoa) storedByKey.set(slotKey(e), e)
+	for (const s of slotsOf(out)) {
+		// a slot that holds a value now (a plain secret, or the wrap just made for it) is never replaced by the stored value
+		const current = s.get(out)
+		if (isWrapRecord(current) || isSecretString(current)) continue
+		if (!s.eoa) continue
+		const stored = storedByKey.get(slotKey(s))
+		const kept = stored?.get(existing)
+		if (isWrapRecord(kept) || isSecretString(kept)) s.set(out, kept)
+	}
 	return out
 }
 

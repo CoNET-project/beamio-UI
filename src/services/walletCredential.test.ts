@@ -96,10 +96,11 @@ describe('the page keeps the blob only when its record is empty', () => {
 	it('a credential without a blob stores nothing and retries', () => {
 		expect(pageCopyAction({ pageRecordPresent: false, eoa: EOA, answer: { ...credential, blob: null } })).toBe('retry')
 	})
-	it('not_trusted shows the update prompt; other refusals retry', () => {
+	it('not_trusted shows the update prompt; other refusals retry; locked is the locked action', () => {
 		expect(pageCopyAction({ pageRecordPresent: false, eoa: EOA, answer: { kind: 'refused', code: 'not_trusted' } })).toBe('update_required')
 		expect(pageCopyAction({ pageRecordPresent: false, eoa: EOA, answer: { kind: 'refused', code: 'unavailable' } })).toBe('retry')
-		expect(pageCopyAction({ pageRecordPresent: false, eoa: EOA, answer: { kind: 'refused', code: 'locked' } })).toBe('retry')
+		// HC-LOCK CRED-B1: a locked native side is the locked action, not retry (see walletCredentialLocked.test.ts)
+		expect(pageCopyAction({ pageRecordPresent: false, eoa: EOA, answer: { kind: 'refused', code: 'locked' } })).toBe('locked')
 	})
 })
 

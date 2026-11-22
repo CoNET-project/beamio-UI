@@ -8,6 +8,8 @@ import { useState } from 'react'
 import { tu } from '../locale/beamioLocale'
 import { nativeGenerateNewPgpKey } from '../services/nativePgpRestore'
 import { shellAccountKeyOrEmpty } from '../services/nativeIdentityPublic'
+import { pgpCreateEligible } from '../services/pgpIdentityEligibility'
+import { isShellContext } from '../services/shellContext'
 
 export default function PgpFirstIdentityNotice() {
 	const [busy, setBusy] = useState(false)
@@ -34,6 +36,7 @@ export default function PgpFirstIdentityNotice() {
 						{tu('chat.restore_retry.body')}
 					</p>
 				)}
+				{(!isShellContext() || pgpCreateEligible(shellAccountKeyOrEmpty())) && (
 				<div className="mt-5 flex justify-center">
 					<button
 						type="button"
@@ -44,6 +47,7 @@ export default function PgpFirstIdentityNotice() {
 						{tu('chat.first_identity.entry')}
 					</button>
 				</div>
+				)}
 			</div>
 		</div>
 	)

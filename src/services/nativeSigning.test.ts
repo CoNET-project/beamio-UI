@@ -45,7 +45,7 @@ function installShell(caps: string[] | null, reply: Record<string, unknown>): vo
 			const send = (payload: Record<string, unknown>) =>
 				setTimeout(() => window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'chatModuleEvent', event: payload } })), 0)
 			if (cmd.type === 'hello') {
-				if (caps !== null) send({ type: 'ready', reqId: cmd.reqId, result: { capabilities: caps } })
+				if (caps !== null) send({ type: 'ack', reqId: cmd.reqId, ok: true, result: { capabilities: caps } })
 				return
 			}
 			if (cmd.type === NATIVE_GOSSIP_SIGN_COMMAND || cmd.type === NATIVE_SIGN_MESSAGE_COMMAND) {

@@ -75,6 +75,7 @@ import ReceiveFundsPanel from '@/components/ReceiveFundsPanel'
 import { encodeOpenContainerRelayQrPayload, readContainerNonceFromAAStorage, signAAtoEOA_USDC_with_BeamioContainerMainRelayedOpenOnConet, type OpenContainerRelayPayload } from '@/services/AAaccount'
 import { ensureConetAaForProfileAndPersist } from '@/utils/ensureConetAa'
 import { tu } from '@/locale/beamioLocale'
+import ShellSyncNotice from '@/components/Home/ShellSyncNotice'
 import { HomeLanguageSelector } from './HomeLanguageSelector'
 import {
 	CoinbaseCMark,
@@ -2857,6 +2858,7 @@ const Home = (_props: HomeProps) => {
 				backgroundImage: 'radial-gradient(circle at 70% 17%, rgba(77,166,255,.34), transparent 24%), radial-gradient(circle at 70% 72%, rgba(74,151,255,.16), transparent 25%), linear-gradient(150deg, #f8fcff 0%, #eef8ff 52%, #f8fbff 100%)',
 			}}
 		>
+			<ShellSyncNotice />
 			{/* <div className="px-5 pt-6 flex flex-col gap-2">
 				<button
 					type="button"

@@ -56,7 +56,7 @@ describe('shell recovery path', () => {
 	it('the recovery submit returns to the native page in a shell, before any in-page call', () => {
 		const fn = restore.indexOf('const handleRecoverySubmit = async')
 		const guard = restore.indexOf('if (shell) {', fn)
-		const call = restore.indexOf('restoreWithRedeem(recoveryCode', fn)
+		const call = restore.indexOf('restoreWithRedeemDetailed(recoveryCode', fn)
 		expect(fn).toBeGreaterThan(0)
 		expect(guard).toBeGreaterThan(fn)
 		expect(call).toBeGreaterThan(guard)

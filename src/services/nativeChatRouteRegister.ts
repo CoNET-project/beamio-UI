@@ -31,14 +31,14 @@ export const NATIVE_ROUTE_ERROR_CODES = [
 	'bad_request',
 	'no_pgp_key',
 	'sig_rejected',
-	// Y.61: fail closed. network_unavailable and chain_refused may be retried; key_mismatch goes to the recovery prompt.
+	//fail closed. network_unavailable and chain_refused may be retried; key_mismatch goes to the recovery prompt.
 	'backup_failed',
 	'backup_readback_failed',
 	'key_mismatch',
 	'sign_failed',
 	'chain_refused',
 	'network_unavailable',
-	// Y.64: the native side got a success answer but the chain does not show the registration. Not a success on the page:
+	//the native side got a success answer but the chain does not show the registration. Not a success on the page:
 	// it is an unfinished, retryable state and nothing is posted.
 	'unverified_submit',
 ] as const
@@ -49,7 +49,7 @@ export type NativeRouteLocalCode = 'timeout' | 'bad_ack'
 
 export type NativeRouteOutcome =
 	| { ok: true; result: Record<string, unknown> }
-	/** Y.61: the native layer registered the route itself; the page posts nothing. */
+	/**: the native layer registered the route itself; the page posts nothing. */
 	| { ok: true; submitted: true }
 	| { ok: false; code: NativeRouteErrorCode | NativeRouteLocalCode }
 
@@ -128,15 +128,20 @@ export function nextReqId(): number {
  */
 export async function probeNativeCapabilities(
 	timeoutMs: number = HELLO_TIMEOUT_MS,
-): Promise<{ answered: boolean; capabilities: string[] }> {
+): Promise<{ answered: boolean; capabilities: string[]; nativeApp?: unknown }> {
 	const answer = await request({ type: 'hello', reqId: nextReqId(), protocolVersion: HELLO_PROTOCOL_VERSION }, timeoutMs)
 	if (answer.kind !== 'payload') return { answered: false, capabilities: [] }
 	const p = answer.payload
-	const ok = p.type === 'ready' || (p.type === 'ack' && p.ok === true)
-	const result = (p.type === 'ready' ? p.result : p.result ?? p) as Loose | undefined
+	// Only the hello ack declares the capabilities (ack.result.capabilities). The init 'ready' event carries a shorter list that omits
+	// identity.native-keys.v1 (iOS BeamioConetChatModule.swift:1246), so a 'ready' payload is never read as the hello answer.
+	const ok = p.type === 'ack' && p.ok === true
+	// only ack.result carries the capabilities; a missing result means none are declared (the top level is never read)
+	const result = p.result as Loose | undefined
 	const caps = isPlainObject(result) && Array.isArray(result.capabilities) ? result.capabilities : []
 	// A refusal (ok false) declares nothing: its capability list is not read, so a refused hello counts as unanswered.
-	return { answered: ok, capabilities: ok ? caps.filter((c): c is string => typeof c === 'string') : [] }
+	// nativeApp: the native version of the shell, read from the same ack result; never a PWA or SDK version.
+	const nativeApp = ok && isPlainObject(result) ? result.nativeApp : undefined
+	return { answered: ok, capabilities: ok ? caps.filter((c): c is string => typeof c === 'string') : [], nativeApp }
 }
 
 /**
@@ -148,7 +153,7 @@ export function judgeRouteAck(payload: Loose): NativeRouteOutcome {
 	if (payload.ok === true) {
 		if ('code' in payload || 'error' in payload) return { ok: false, code: 'bad_ack' }
 		if (!isPlainObject(payload.result)) return { ok: false, code: 'bad_ack' }
-		// Y.61 submitted: exactly {code:"submitted"} and no other field.
+		// submitted: exactly {code:"submitted"} and no other field.
 		const r = payload.result as Record<string, unknown>
 		if (Object.keys(r).length === 1 && r.code === 'submitted') return { ok: true, submitted: true }
 		return { ok: true, result: payload.result }

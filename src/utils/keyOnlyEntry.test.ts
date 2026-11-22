@@ -11,8 +11,10 @@ const r1NoKey = { profiles: [{ keyID: '0x111111111111111111111111111111111111111
 const withMnemonic = { ...keyOnly, mnemonicPhrase: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about' } as unknown as encrypt_keys_object
 
 describe('keyOnlyEntryDecision', () => {
-	it('a private key with no mnemonic, in the browser build, enters as key-only', () => {
-		expect(keyOnlyEntryDecision(keyOnly, false)).toBe('enter_key_only')
+	// Old expectation (before 2026-11-17): "a private key with no mnemonic, in the browser build, enters as key-only" (enter_key_only).
+	// New: held, never an entry; the gate decides (onboarding).
+	it('a private key with no mnemonic, in the browser build, is held (not an entry); the gate decides', () => {
+		expect(keyOnlyEntryDecision(keyOnly, false)).toBe('hold_no_key')
 	})
 	it('no key and no mnemonic (the BeamioTag-only record) is held, so the bar stays hidden', () => {
 		expect(keyOnlyEntryDecision(r1NoKey, false)).toBe('hold_no_key')

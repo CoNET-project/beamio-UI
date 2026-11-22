@@ -94,6 +94,11 @@ module.exports = {
             webpackConfig.plugins.push(new BuildProgressPlugin());
             webpackConfig.plugins.push(new WholeChatWorkerPlugin());
             webpackConfig.plugins.push(new ForceAsyncSplitPlugin());
+            // QA boot markers: the switch is a build-time constant, so a Release bundle folds the marker branch away
+            // and the "[BeamioBoot]" literal is not shipped. Only a build with REACT_APP_BEAMIO_BOOT_TRACE=true keeps it.
+            webpackConfig.plugins.push(new webpack.DefinePlugin({
+                'process.env.REACT_APP_BEAMIO_BOOT_TRACE': JSON.stringify(process.env.REACT_APP_BEAMIO_BOOT_TRACE === 'true' ? 'true' : 'false'),
+            }));
             webpackConfig.plugins.forEach((plugin) => {
                 const name = plugin && plugin.constructor && plugin.constructor.name
                 if (name !== 'ReactRefreshPlugin') return

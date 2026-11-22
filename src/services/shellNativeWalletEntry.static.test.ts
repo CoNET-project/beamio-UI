@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * Shell wallet entry on the native wallet (PWA; ). After a native recovery the app asks the native wallet state
+ * Shell wallet entry on the native wallet (PWA;). After a native recovery the app asks the native wallet state
  * and enters on the public address; it does not reload and does not depend on page storage. The public seed holds no secret.
  * Reads the sources.
  */
@@ -14,22 +14,26 @@ describe('shell wallet entry on the native wallet', () => {
 	it('the native wallet status is queried with walletStatus and the public address is read from accountKey', () => {
 		const nr = read('services/nativeRecovery.ts')
 		expect(nr).toContain("export const NATIVE_WALLET_STATUS_COMMAND = 'walletStatus'")
-		// Y.94 3: the walletStatus shape is parsed by the pure parser (accountPresence); the public address is read from accountKey there.
+		//the walletStatus shape is parsed by the pure parser (accountPresence); the public address is read from accountKey there.
 		expect(nr).toContain('parseWalletStatusResult(')
 		expect(read('services/accountPresence.ts')).toContain("key.split(':')[0]")
 	})
 
-	it('AppEntryGate asks the native wallet first in a shell; a native wallet enters the app; no key falls to the page wallet (boundary)', () => {
+	it('AppEntryGate reads the page first in a shell, then asks the native pre-read; a valid answer enters the app (boundary: no key falls to the page judgement)', () => {
 		const g = read('components/AppEntryGate.tsx')
-		const init = g.slice(g.indexOf('const init = async () => {'), g.indexOf('const init = async () => {') + 8000)
+		// rule (a), spec item 42(5): the explicit no_key guard lengthens init; the window is 12000 characters so the browser read stays inside it.
+		const init = g.slice(g.indexOf('const init = async () => {'), g.indexOf('const init = async () => {') + 16000)
 		expect(init).toContain('if (nativeShellRef.current) {')
-		expect(init).toContain('reachNativeWallet()')
-		expect(init).toContain('applyNativeWallet(native.eoa)')
-		expect(init).toContain("native.status !== 'no_key'")
-		expect(init.indexOf('reachNativeWallet()')).toBeLessThan(init.indexOf('checkStorageWithTransientRetry()'))
-		//in a shell, unknown and not_ready end here; the page storage is read only on the non-shell path below.
-		expect(init).toContain('showStorageUnavailable(`native_wallet_${native.status}`)')
-		expect(init.indexOf('showStorageUnavailable(`native_wallet_')).toBeLessThan(init.indexOf('checkStorageWithTransientRetry()'))
+		// 0.53.39: the shell start asks the native pre-read, not the walletStatus route (reachNativeWallet
+		// and its no_key branch were removed from init); the pre-read valid answer enters on the native account.
+		expect(init).toContain('queryNativeMnemonicPreread()')
+		expect(init).toContain('applyNativeWallet(pre.eoa)')
+		expect(init.indexOf('queryNativeMnemonicPreread()')).toBeLessThan(init.indexOf('checkStorageWithTransientRetry()'))
+		// Rewritten for rule 2026-11-16 (PWA first, spec item 42(1)(2)(3)): the page mnemonic is read before the native side, so the
+		// page read is first in the shell. A valid page mnemonic enters without asking the native side (no reachNativeWallet).
+		expect(init.indexOf('withTimeout(readPageMnemonic(), SHELL_PAGE_READ_TIMEOUT_MS')).toBeLessThan(init.indexOf('queryNativeMnemonicPreread()'))
+		// in a shell, an unknown or not_ready native answer is the startup wait (never the storage-unavailable screen, never the page read).
+		expect(init).not.toContain('showStorageUnavailable(`native_wallet_')
 	})
 
 	it('boundary : a shell keeps the account record in the page copy as before (profiles and beamio are stored)', () => {

@@ -7,6 +7,7 @@ import PgpRestoreFailedNotice, { generateAnswerOutcome, showsReplaceButton } fro
 import { isShellContext } from '../services/shellContext'
 import { nativeGenerateNewPgpKey } from '../services/nativePgpRestore'
 import { regeneratePgpKeyByUser } from '../services/chat'
+import { grantPgpCreateEligibility, revokePgpCreateEligibility } from '../services/pgpIdentityEligibility'
 
 jest.mock('../locale/beamioLocale', () => ({ tu: (key: string) => key }))
 jest.mock('../services/shellContext', () => ({ isShellContext: jest.fn() }))
@@ -49,6 +50,7 @@ describe('class 4 (not_ready) shows its body only', () => {
 describe('the not_supported defence stays, for the other classes that have a button', () => {
 	it('shell: a not_supported answer shows the placeholder copy, hides the button, and does not retry', async () => {
 		isShell.mockReturnValue(true)
+		grantPgpCreateEligibility('synthetic-account-key')
 		nativeGen.mockResolvedValue({ ok: false, reason: 'not_supported' })
 		render(<PgpRestoreFailedNotice code="pgp_backup_missing" />)
 		fireEvent.click(screen.getByRole('button'))
@@ -58,6 +60,7 @@ describe('the not_supported defence stays, for the other classes that have a but
 	})
 	it('shell: any other refusal keeps the retry line and the button', async () => {
 		isShell.mockReturnValue(true)
+		grantPgpCreateEligibility('synthetic-account-key')
 		nativeGen.mockResolvedValue({ ok: false, reason: 'pending_exists' })
 		render(<PgpRestoreFailedNotice code="pgp_backup_missing" />)
 		fireEvent.click(screen.getByRole('button'))
@@ -73,5 +76,12 @@ describe('the answer outcome (pure)', () => {
 		expect(generateAnswerOutcome({ ok: false, reason: 'not_supported' })).toBe('unsupported')
 		expect(generateAnswerOutcome({ ok: false, reason: 'pending_exists' })).toBe('retry')
 		expect(generateAnswerOutcome({ ok: false })).toBe('retry')
+	})
+
+	it('RULING 617d3dd9: shell without the first-identity eligibility renders no create button (the switch is not the gate)', () => {
+		isShell.mockReturnValue(true)
+		revokePgpCreateEligibility('synthetic-account-key')
+		render(<PgpRestoreFailedNotice code="pgp_backup_missing" />)
+		expect(screen.queryByRole('button')).toBeNull()
 	})
 })

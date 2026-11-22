@@ -89,9 +89,9 @@ function keyDerivesTo(armor: unknown, eoaLower: string): boolean {
  * The state of a shell record. The account is the first profile's keyID, which must be a valid address
  * (the same predicate as the page gate, consumerWalletGate.ts). The EOA private key must sit on the profile bound to that
  * keyID and derive to it. The mnemonic, the @beamioTag and the account name are not required here.
- *  - ok: the record is entered; the app handles a missing tag or name.
- *  - needs_native_recovery: the bound profile has no EOA private key that derives to the account, and no sealed credential (a mnemonic alone does not count).
- *  - wallet_fields_missing: no valid account EOA (malformed record): a hold, never onboarding.
+ * - ok: the record is entered; the app handles a missing tag or name.
+ * - needs_native_recovery: the bound profile has no EOA private key that derives to the account, and no sealed credential (a mnemonic alone does not count).
+ * - wallet_fields_missing: no valid account EOA (malformed record): a hold, never onboarding.
  * Only a confirmed-absent store reaches onboarding; none of these states does.
  */
 /**
@@ -165,6 +165,16 @@ export function eoaPrivateKeyPresent(record: unknown): boolean {
 		if (v !== undefined && v !== null && v !== '') found = true
 	})
 	return found
+}
+
+/**
+ * rule J (2026-11-17): the sanitizer's job is to know which secrets a record holds, so that they are stripped. A private key and a
+ * plaintext mnemonic are both secrets. This is a report of what is present, never an account gate (the account is decided by E7 and the
+ * start-up classification).
+ */
+export function secretFieldsPresent(record: unknown): { privateKey: boolean; mnemonic: boolean } {
+	const mnemonic = isObject(record) && typeof (record as Loose).mnemonicPhrase === 'string' && (record as Loose).mnemonicPhrase !== ''
+	return { privateKey: eoaPrivateKeyPresent(record), mnemonic: Boolean(mnemonic) }
 }
 
 /** A copy of the record without the PGP private fields and the chat private armor. The input is not changed. W-class fields are kept here; see stripWalletFields. */

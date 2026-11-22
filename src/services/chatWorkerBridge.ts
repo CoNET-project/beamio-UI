@@ -1,9 +1,9 @@
 /**
  * Bridge between SilentPassUI `services/chat.ts` and `@conet.project/chat-sdk`
  * worker client **or** native Conet Chat Modules:
- *  - Browser: TS Worker (`makeGossipWorker`)
- *  - iOS shell (`CashTreesIOS` / WK handler): `nativeConetChatTransport` (1B)
- *  - Android shell (`CashTreesAndroid`): `androidNativeChatClient`
+ * - Browser: TS Worker (`makeGossipWorker`)
+ * - iOS shell (`CashTreesIOS` / WK handler): `nativeConetChatTransport` (1B)
+ * - Android shell (`CashTreesAndroid`): `androidNativeChatClient`
  *
  * **Iron rule:** when the PWA runs inside a native WebView shell
  * (`isCashTreesNativeWebView`), **never** call `makeGossipWorker()` /
@@ -15,6 +15,10 @@
 
 import {
 	createBeamioChatClient,
+	runFirstOpenInWorker,
+	type FirstOpenRequest,
+	type FirstOpenResult,
+	type AccountSignRequest,
 	hasCapability,
 	negotiateChatDaemon,
 	type BeamioChatClient,
@@ -73,6 +77,7 @@ import { BEAMIO_WALLET_READY_EVENT } from '../utils/beamioWalletReadyEvent'
 import { NATIVE_WALLET_ESTABLISHED_EVENT } from './nativeWalletEstablished'
 import { createInitRefusalLatch, type IdentityClosedInitReason } from './nativeInitRefusal'
 import { isMailboxAckSent, noteMailboxAckSent } from '../utils/chatDeliveryReceipt'
+import { WORKER_READY_TIMEOUT, WorkerReadyTimeout, withWorkerReadyWatchdog } from './workerReadyWatchdog'
 
 /** True when any native shell path must own Chat (no TS gossip Worker). */
 function mustUseNativeChatBridge(): boolean {
@@ -419,7 +424,7 @@ export const openLocalChatPage = async (
 }
 
 /**
- * The page's read result for the Y.102 signal. A chat with no local library or no record answers `no_library` (a normal empty session,
+ * The page's read result for the signal. A chat with no local library or no record answers `no_library` (a normal empty session,
  * never a notice); a read that fails or cannot be opened answers `read_error` (unreadable). openLocalChatPage keeps its null for the merge.
  */
 export type LocalChatHistoryRead = { kind: 'page'; source: string; items: number } | { kind: 'no_library' } | { kind: 'not_ready' } | { kind: 'read_error' }
@@ -936,7 +941,9 @@ const startWorkerGossipListenInternal = async (p: StartWorkerGossipParams): Prom
 	p.rootSignal.addEventListener('abort', teardown)
 
 	try {
-		await client.init()
+		// -watchdog: a start that never reaches the worker's ready is bounded and named (the step where it stopped)
+		// (a native client has no worker start to bound: it is awaited as before)
+		await (client.startStep !== undefined ? withWorkerReadyWatchdog(client.init(), () => client.startStep ?? '') : client.init())
 		initLatch.noteReady()
 		if (p.rootSignal.aborted) {
 			teardown()
@@ -975,6 +982,20 @@ const startWorkerGossipListenInternal = async (p: StartWorkerGossipParams): Prom
 		if (activeVoiceRelay) void openActiveVoiceRelay(activeVoiceRelay.sessionId)
 		return true
 	} catch (ex) {
+		if (ex instanceof WorkerReadyTimeout) {
+			// the stall is logged with its class and step only; the client is torn down so no half-started worker stays
+			p.onLog?.('error', `chat worker not ready: class=${WORKER_READY_TIMEOUT} step=${ex.step}`)
+			try {
+				client.destroy()
+			} catch {
+				/* ignore */
+			}
+			if (activeClient === client) {
+				activeClient = null
+				activeClientEoa = null
+			}
+			return false
+		}
 		//the native restore answered a failure code; it is kept for the Chat route and never retried by the page.
 		const restoreCode = (ex as Error)?.message
 		if (isPgpRestoreFailure(restoreCode)) setPgpRestoreFailure(restoreCode)
@@ -1209,3 +1230,10 @@ export async function initShellIdentityOnly(
 	}
 	return useIosNative ? initNativeIdentityOnly(config) : initAndroidIdentityOnly(config)
 }
+
+/**
+ * The automatic first open (plan step c): its own worker for the one command (the gossip client is not started at the key stage). The page
+ * passes the encrypt-only sealing key and the public inputs; the worker answers the status and the key ID. The page never gets a key.
+ */
+export const runPageFirstOpen = (request: FirstOpenRequest, signAccount: (req: AccountSignRequest) => Promise<string>): Promise<FirstOpenResult> =>
+	runFirstOpenInWorker(makeGossipWorker, request, signAccount)

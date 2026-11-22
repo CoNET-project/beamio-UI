@@ -1,6 +1,6 @@
 /**
  * no send reads the recipient's armor from the stored chat copy any more. The shell read-back strips it (spec.2,
- * ruling a), so a send resolves it from AddressPGP first, and a silent return on a missing armor is not allowed.
+ * rule a), so a send resolves it from AddressPGP first, and a silent return on a missing armor is not allowed.
  */
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -45,7 +45,7 @@ describe('the send entry points show their error with a fixed code', () => {
 	const text_of = (f: string) => text(f)
 
 	it('chat.tsx: the send goes through the refresh-aware send and shows the key or refresh error', () => {
-		contains('pages/chat/chat.tsx', 'sendWithFreshRoute(current, text, privateKey')
+		contains('pages/chat/chat.tsx', 'sendWithFreshRoute(await trustGateCopy(current), text, privateKey')
 		contains('pages/chat/chat.tsx', 'setChatError(chatHeldBannerText(result.code))')
 		contains('pages/chat/chat.tsx', 'chatHeldBannerText(result.code)')
 		contains('pages/chat/chat.tsx', 'sendError: lastSendCodeRef.current')
@@ -86,15 +86,15 @@ describe('the send entry points show their error with a fixed code', () => {
 	})
 })
 
-/**  (with  / ): every send fetches first; a failed fetch is held; "send anyway"is the user's choice and is marked. */
-describe('the held send and "send anyway" (.5)', () => {
+/** (with /): every send fetches first; a failed fetch is held; "send anyway"is the user's choice and is marked. */
+describe('the held send and "send anyway" ()', () => {
 	it('chat.tsx: a failed fetch holds the text send, with Retry and Send anyway; the cached route is marked', () => {
 		const s = text('pages/chat/chat.tsx')
 		expect(s).toContain("const held = failCode === 'route_unconfirmed' || failCode === 'fingerprint_changed' || failCode === 'first_fetch_pending'")
 		expect(s).toContain('scheduleHeldSend(tempId)')
 		expect(s).toContain("retryHeldSend(m.id as string, 'cached')")
 		expect(s).toContain('chat.held.action.send_anyway')
-		expect(s).toContain('sendViaCachedRoute(current, text, privateKey')
+		expect(s).toContain('sendViaCachedRoute(await trustGateCopy(current), text, privateKey')
 		expect(s).toContain('sentViaUnconfirmedRoute')
 		expect(s).toContain('RECIPIENT_ROUTE_RETRY_DELAYS_MS')
 	})

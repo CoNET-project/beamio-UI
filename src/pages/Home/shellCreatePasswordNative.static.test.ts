@@ -33,23 +33,26 @@ describe('shell create: no wallet password is typed in the WebView', () => {
 	})
 })
 
-describe('shell create: the pending native create follows ruling (a)', () => {
+describe('shell create: the pending native create follows rule (a)', () => {
 	const page = read('pages/Home/CreateUsernamePinScreen.tsx')
 
 	it('pending is set only when the native page opens, and no second open is sent while it is pending', () => {
 		//pending is set only when the ack's page is "opened"; none, absent or another page value waits for the result event.
 		expect(page).toMatch(/if \(opened\.page === 'opened'\) \{[\s\S]{0,200}nativeCreatePendingRef\.current = true/)
-		expect(page).toMatch(/if \(nativeCreatePendingRef\.current\) \{[\s\S]{0,200}return\s*\}[\s\S]{0,400}const opened = await nativeAccountCreateOpen\(trimmedTag\)/)
+		expect(page).toMatch(/if \(nativeCreatePendingRef\.current\) \{[\s\S]{0,200}return\s*\}[\s\S]{0,3000}const opened = await nativeAccountCreateOpen\(trimmedTag\)/)
 	})
 
 	it('ok and cancel clear pending; a failed result keeps it; unmount clears it', () => {
-		expect(page).toMatch(/if \(code === 'ok' \|\| code === 'already_exists'\) \{[\s\S]{0,260}nativeCreatePendingRef\.current = false/)
+		// (CT, NC-AE): ok is the only establishing result. already_exists is handed back to the entry judgement and never announces.
+		expect(page).toMatch(/if \(code === 'ok'\) \{[\s\S]{0,600}nativeCreatePendingRef\.current = false/)
 		// the wallet is announced as established synchronously, before any async read.
-		expect(page).toMatch(/if \(code === 'ok' \|\| code === 'already_exists'\) \{[\s\S]{0,200}announceNativeWalletEstablished\(\)/)
+		expect(page).toMatch(/if \(code === 'ok'\) \{[\s\S]{0,400}announceNativeWalletEstablished\(\)/)
+		expect(page).toMatch(/if \(code === 'already_exists'\) \{[\s\S]{0,400}requestNativeIdentityRetry\(\)/)
+		expect(page.slice(page.indexOf("if (code === 'already_exists')"), page.indexOf("if (code === 'already_exists')") + 500)).not.toMatch(/announceNativeWalletEstablished\(\)/)
 		expect(page).toMatch(/if \(code === 'cancelled'\) \{\s*nativeCreatePendingRef\.current = false/)
-		const failed = page.indexOf('// write_failed, readback_failed: the native page stays open')
+		const failed = page.indexOf("if (code === 'write_failed' || code === 'readback_failed') {")
 		expect(failed).toBeGreaterThan(0)
-		expect(page.slice(failed, failed + 200)).not.toMatch(/nativeCreatePendingRef\.current = false/)
-		expect(page).toMatch(/return \(\) => \{\s*off\(\)\s*nativeCreatePendingRef\.current = false/)
+		expect(page.slice(failed, failed + 500)).not.toMatch(/nativeCreatePendingRef\.current = false/)
+		expect(page).toMatch(/return \(\) => \{\s*off\(\)[\s\S]{0,160}nativeCreatePendingRef\.current = false/)
 	})
 })

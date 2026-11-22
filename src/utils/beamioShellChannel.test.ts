@@ -52,13 +52,15 @@ afterEach(() => {
 })
 
 describe('the action list', () => {
-	it('is the 21 actions of .4 (scanRecoveryQr deleted; notifyVoiceMicReady and queryIncomingCallOutcome added)', () => {
+	it('is the 25 actions: the 21 of the spec plus dismissIncomingSystemCall, the two voiceEphemeral actions and incomingCallUnlockShown', () => {
 		expect([...BEAMIO_SHELL_ACTIONS].sort()).toEqual(
 			[
 				'bindPushIdentity',
 				'cacheCallerAvatars',
 				'cancelPreparedSystemCall',
+				'dismissIncomingSystemCall',
 				'endSystemCall',
+				'incomingCallUnlockShown',
 				'listInstalledWalletApps',
 				'notifyVoiceMicReady',
 				'openInAppBrowser',
@@ -76,9 +78,11 @@ describe('the action list', () => {
 				'startNativeVoiceMic',
 				'startSystemCall',
 				'stopNativeVoiceMic',
+				'voiceEphemeralForget',
+				'voiceEphemeralPrepare',
 			].sort(),
 		)
-		expect(new Set(BEAMIO_SHELL_ACTIONS).size).toBe(21)
+		expect(new Set(BEAMIO_SHELL_ACTIONS).size).toBe(25)
 		expect(BEAMIO_SHELL_ACTIONS).not.toContain('scanRecoveryQr')
 	})
 })
