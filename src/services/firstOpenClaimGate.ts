@@ -7,12 +7,13 @@
  */
 import { chainReadFromLookup, isFirstOpenCandidate } from '@conet.project/chat-sdk'
 
-export type ClaimGateLookup = { status: 'ok' | 'no_record' | 'network_error'; publicArmored?: string; routersArmoreds?: string }
+export type ClaimGateLookup = { status: 'ok' | 'no_record' | 'network_error' | 'internal_error'; publicArmored?: string; routersArmoreds?: string }
 
 /** Pure: true when the automatic claim must not be sent on this first-open path. A shell is never the browser path. */
 export function skipAutoBUnitClaimForFirstOpen(input: { shell: boolean; lookup: ClaimGateLookup; localChatKeyComplete: boolean; pendingPresent: boolean }): boolean {
 	if (input.shell) return false
-	const chain = chainReadFromLookup(input.lookup)
+	// an internal fault of our own code is an unknown chain read, like a network failure (the claim is not skipped on it)
+	const chain = chainReadFromLookup(input.lookup.status === 'internal_error' ? { status: 'network_error' } : { ...input.lookup, status: input.lookup.status })
 	if (chain !== 'absent') return false
 	return isFirstOpenCandidate({
 		restore: 'new_account',

@@ -1017,7 +1017,7 @@ export default function AppEntryGate() {
 	}, [])
 
 	/**
-	 * R2271: before an account is opened because no account was found (page absent, native no_key), one real native read decides it. A valid mnemonic is
+	 * Onboarding confirmation: before an account is opened because no account was found (page absent, native no_key), one real native read decides it. A valid mnemonic is
 	 * the home (the page record is written from it, the sync follows in the background); a ciphertext is the unlock page; a lock waits; an unavailable or
 	 * failed read is unknown (wait and retry, no onboarding, nothing written). Only a read that confirms no valid mnemonic returns 'proceed'. An address, a
 	 * pointer or an old private key alone do not block it. An earlier pre-read answer is never reused: it may predate the record or be folded from an
@@ -1364,7 +1364,7 @@ export default function AppEntryGate() {
 				return
 			}
 			if (outcome.route === 'onboard') {
-				// R2271: one real native read confirms the absence before the onboarding opens (shared with every other onboarding entry)
+				// One real native read confirms the absence before the onboarding opens (shared with every other onboarding entry)
 				if ((await confirmNoMnemonicOnNative(reqId)) === 'handled') return
 				publishNativePwaLog('info', '[AppEntryGate] native mnemonic pre-read absent, page confirmed empty: onboarding')
 				logStartRoute(reqId, 'onboarding')

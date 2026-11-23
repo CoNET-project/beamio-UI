@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * R2271 (entry coverage): every entry that opens the onboarding because no account was found goes through the one real native read
+ * Entry coverage: every entry that opens the onboarding because no account was found goes through the one real native read
  * (confirmOnboarding / openOnboardingConfirmed) before goOnboarding. The entries that are not "no account" (the create-tag page for a key without a
  * BeamioTag, the recovery entry of an existing account) keep their own call. Source-order checks; the behaviour is in
  * AppEntryGate.startupTwoState.test.tsx (the start path and the platform rule).

@@ -32,7 +32,7 @@ export function hasValidMnemonic(data: encrypt_keys_object | null | undefined): 
 }
 
 /**
- * R2271 (page-side unrecognised secret): a record with no mnemonic that still carries a non-empty secret-class field the reader did not recognise is not an
+ * Page-side unrecognised secret: a record with no mnemonic that still carries a non-empty secret-class field the reader did not recognise is not an
  * empty record. Checked on the record after the start read has opened every recognised wrap, so what remains is: a secret-named field whose value is an
  * object or another non-string shape (privateKeyArmor, mnemonicPhrase, ...), or a non-empty `*Wrap` sibling (privateKeyArmorWrap, pgpKey.privateKeyArmorWrap,
  * a top-level privateKeyArmorWrap). A string key or phrase is handled by the existing rules; an address alone is not a secret. Scans the top level,

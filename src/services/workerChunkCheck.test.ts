@@ -85,6 +85,8 @@ describe('shell mode of the worker check (R83): the shell compiles the gossip wo
 			const body = w.name === opts.listenersOff ? 'x'.repeat(300) : w.markers.join(';')
 			writeFileSync(join(root, 'static', 'js', `${w.name}.abc123.chunk.js`), body)
 		}
+		// the shell main bundle carries the minimal AddressPGP fragment (checked in shell mode)
+		writeFileSync(join(root, 'static', 'js', 'main.abc123.js'), 'function searchKey(address to) view returns (string userPublicKeyArmored, string routePublicKeyArmored)')
 		return root
 	}
 

@@ -1,5 +1,5 @@
 /**
- * Create-account failure messages (R2271 side finding): the error of THIS attempt is shown, every time. A failed attempt used to leave the
+ * Create-account failure messages (side finding): the error of THIS attempt is shown, every time. A failed attempt used to leave the
  * form with no message on the second try, because the failure branch read the previous render's error state. Browser and shell branches.
  * SYNTHETIC values only; the network, the native bridge and the workers are stubs; no request is made.
  */

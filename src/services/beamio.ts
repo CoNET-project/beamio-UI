@@ -1538,7 +1538,16 @@ export const persistInitRecord = async (temp: encrypt_keys_object): Promise<void
     const pageState = await readPageIdbInit()
     if (pageState.status === 'unknown') throw new Error('page_idb_unknown')
     // the refusal floor holds against both copies: the page IndexedDB (the start copy) and the native copy (a valid account there is never replaced)
-    const nativeExisting = ((await readInitObject({ probe: true })) ?? null) as Loose | null
+    // A native read that fails (any answer other than ok or absent) means the native state is unknown, not that the save failed: the page copy is
+    // still written under the page-side refusal rules, and the native copy is synced afterwards by syncShellNativeCopy, which has its own
+    // guarded write and records a pending sync.
+    let nativeExisting: Loose | null = null
+    try {
+      nativeExisting = ((await readInitObject({ probe: true })) ?? null) as Loose | null
+    } catch (err) {
+      markPendingSync('native_profile_sync')
+      publishNativePwaLog('warn', `[persistInitRecord] native state unknown before the page save (${diagnosticCode(err instanceof Error ? err.message : 'failed')}): the page copy is saved first`)
+    }
     const byPage = await assertPageRecordNotOverwritten(temp, pageState.status === 'valid' ? pageState.data : null)
     const written = await assertPageRecordNotOverwritten(byPage, nativeExisting)
     // the shell write whitelist (PGP private and public fields, size) is checked here, synchronously, as before the save resolves
@@ -2096,7 +2105,7 @@ export const readPageIdbInit = async (): Promise<PageIdbState> => {
   const phrase = typeof data.mnemonicPhrase === 'string' ? data.mnemonicPhrase.trim() : ''
   if (!phrase) {
     if (isTrustedEmptyWalletBlob(data as encrypt_keys_object)) {
-      // R2271: a record that holds a non-empty secret-class field the reader did not recognise is not empty: unknown, never absent
+      // A record that holds a non-empty secret-class field the reader did not recognise is not empty: unknown, never absent
       if (hasUnrecognizedSecret(data as encrypt_keys_object)) return { status: 'unknown', reason: 'unrecognized_secret' }
       return { status: 'absent' }
     }

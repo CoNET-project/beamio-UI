@@ -4,7 +4,7 @@
 import { holdShellSessionFromPhrase, releaseShellSessionSignerHold } from './shellSessionSigner'
 import { isPersistFailed } from './persistNoticeStatus'
 /**
- * newUser keeps the reason of a failed registration call (R2271 side finding): no answer (network, CORS, TLS) is a CreateRemoteError('network'); a server answer
+ * newUser keeps the reason of a failed registration call (side finding): no answer (network, CORS, TLS) is a CreateRemoteError('network'); a server answer
  * with a non-2xx status is a CreateRemoteError('http', status); a 2xx answer is true. Nothing is folded into false. The fetch is a stub: no request is made.
  * (header of the harness test this was built from follows)
  * M6, entry (b): the page IndexedDB record written for a ciphertext pre-read (persistPageIdbPasscodeRecord) is the PASSCODE record: the v3 envelope in

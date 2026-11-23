@@ -20,7 +20,7 @@ describe('G1: the import route waits for the shell capability', () => {
 		const block = gate.slice(hello, hello + 400)
 		expect(block).toContain("noKeyCtl.capabilityResolved(state === 'native_chat')")
 		// rule (b), spec r2.3 item 41: the held no_key now enters the onboarding (goOnboarding) instead of the retired import route (setNativeNoKey).
-		// (R2271: the onboarding entries are confirmed by one real native read first: openOnboardingConfirmed, which ends in goOnboarding(false))
+		// (the onboarding entries are confirmed by one real native read first: openOnboardingConfirmed, which ends in goOnboarding(false))
 		expect(block).toContain("openOnboardingConfirmed('chat capability resolved')")
 		expect(block.indexOf('capabilityResolved')).toBeLessThan(block.indexOf('openOnboardingConfirmed'))
 		expect(gate).toContain('const openOnboardingConfirmed = async')

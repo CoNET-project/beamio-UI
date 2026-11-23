@@ -30,7 +30,7 @@ import { readNativeIdentityPublic, shellAccountKeyOrEmpty } from './nativeIdenti
 import { initShellIdentityOnly } from './chatWorkerBridge'
 import { boundAccountOfActiveClient } from '@/services/chatWorkerBridge'
 import { gossipStartDecision, listenParamsFitAccount } from '@/services/historyClientBinding'
-import { readRecipientRecord, isRecipientReadError, RecipientReadError, type RecipientLookup } from './recipientRecord'
+import { readRecipientRecord, isRecipientReadError, RecipientReadError, RecipientInternalError, type RecipientLookup } from './recipientRecord'
 import { resolveSigningPrivateKeyArmor } from '@/utils/resolveSigningPrivateKeyArmor'
 import { readPersistedShellEoa, setShellFirstIdentity, setShellIdentityPending } from './shellIdentitySource'
 import { identityClosedSource, importSwitchFailedThisSession, setIdentityClosed } from './shellIdentityClosed'
@@ -155,6 +155,7 @@ export const getKeysFromCoNETPGPSC = async (walletAddress: string) => {
 	const lookup = await lookupRecipientRecord(walletAddress)
 	if (lookup.status === 'no_record') return null
 	if (lookup.status === 'network_error') throw new RecipientReadError(lookup.reason)
+	if (lookup.status === 'internal_error') throw new RecipientInternalError(lookup.reason)
 	// Presence is NOT chain routeOnline (SI abandoned setUserOnlineOnMe).
 	// UI online comes from mailbox `wallet_online_query` — see refreshChatMailboxPresence.
 	return {
@@ -178,9 +179,15 @@ export const lookupRecipientRecord = async (walletAddress: string): Promise<Reci
 	if (!ethers.isAddress(walletAddress)) return { status: 'network_error', reason: 'invalid_address' }
 	const contract = contracts.constPgpManager
 	const lookup = await readRecipientRecord(
-		() => new ethers.Contract(contract.address, contract.abi, conetDepinProvider).searchKey(walletAddress),
+		() => {
+			const pgp = new ethers.Contract(contract.address, contract.abi, conetDepinProvider)
+			// A build without the searchKey ABI fragment fails by name here, not as a vague TypeError.
+			if (typeof pgp.searchKey !== 'function') throw new RecipientInternalError('abi_missing')
+			return pgp.searchKey(walletAddress)
+		},
 		fromBase64,
 	)
+	if (lookup.status === 'internal_error') chatBootLog(`recipient lookup internal error: ${lookup.reason}`, 'warn')
 	if (lookup.status === 'ok') rememberRecipientRoute(lookup.publicArmored, lookup.routersArmoreds)
 	return lookup
 }

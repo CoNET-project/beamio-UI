@@ -29,6 +29,7 @@ export type RecipientLookup =
 	| { status: 'ok'; publicArmored: string; routersArmoreds: string; routePgpKeyID?: string; userPgpKeyID?: string }
 	| { status: 'no_record' }
 	| { status: 'network_error'; reason: string }
+	| { status: 'internal_error'; reason: string }
 
 export type FetchRecipientRoute = (address: string) => Promise<RecipientLookup>
 
@@ -56,7 +57,9 @@ async function lookupOrNetworkError(address: string, fetchRoute: FetchRecipientR
 	try {
 		const lookup = await fetchRoute(address)
 		return lookup ?? { status: 'network_error', reason: 'empty_answer' }
-	} catch {
+	} catch (ex) {
+		const name = typeof ex === 'object' && ex !== null ? String((ex as { name?: unknown }).name ?? '') : ''
+		if (name === 'TypeError' || name === 'ReferenceError' || name === 'RecipientInternalError') return { status: 'internal_error', reason: name }
 		return { status: 'network_error', reason: 'exception' }
 	}
 }
@@ -73,6 +76,8 @@ export async function resolveRecipientPublicArmored(chat: RecipientChat | null |
 	const lookup = await lookupOrNetworkError(address, fetchRoute)
 	if (lookup.status === 'no_record') return { ok: false, code: 'recipient_no_record' }
 	if (lookup.status === 'network_error') return { ok: false, code: 'network_error' }
+	// a fault in our own code is not a network failure: the key is unavailable (its own copy), not "could not read"
+	if (lookup.status === 'internal_error') return { ok: false, code: 'recipient_key_unavailable' }
 	if (!isPgpPublicArmor(lookup.publicArmored)) return { ok: false, code: 'recipient_key_invalid' }
 	return { ok: true, publicArmored: lookup.publicArmored.trim() }
 }
@@ -99,6 +104,7 @@ export async function refreshRecipient(chat: RecipientChat | null | undefined, f
 	const lookup = await lookupOrNetworkError(address, fetchRoute)
 	if (lookup.status === 'no_record') return { ok: false, code: 'recipient_no_record' }
 	if (lookup.status === 'network_error') return { ok: false, code: 'network_error' }
+	if (lookup.status === 'internal_error') return { ok: false, code: 'recipient_key_unavailable' }
 	const publicArmored = lookup.publicArmored.trim()
 	const routersArmoreds = lookup.routersArmoreds.trim()
 	if (!routersArmoreds) return { ok: false, code: 'network_error' }

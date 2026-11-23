@@ -4,7 +4,7 @@
 import { holdShellSessionFromPhrase, releaseShellSessionSignerHold } from './shellSessionSigner'
 import { isPersistFailed } from './persistNoticeStatus'
 /**
- * R2271 (page read classification SR-01 .. SR-09): readPageIdbInit over seeded page records. A record with no valid mnemonic is absent only when it holds no
+ * Page read classification (SR-01 .. SR-09): readPageIdbInit over seeded page records. A record with no valid mnemonic is absent only when it holds no
  * secret-class material at all (a missing document or an address alone); a key string or a completed account is unknown/no_mnemonic_record; a secret-class field
  * of a shape the reader does not recognise (an object, a *Wrap sibling, an unknown wrapped mnemonic) is unknown/unrecognized_secret. Harness: see persistRegression.test.ts.
  * (header of the harness test this was built from follows)
@@ -208,7 +208,7 @@ const E0 = require('ethers')
 const PHRASE_A = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
 const PHRASE_B = 'legal winner thank year wave sausage worth useful legal winner thank yellow'
 
-describe('R2271 page read classification (SR-01 .. SR-09)', () => {
+describe('page read classification (SR-01 .. SR-09)', () => {
 	let mod: Loose
 	let pouchDbs: Map<string, Map<string, { _id?: string; _rev?: string; title?: string }>>
 	let encodeInitRaw: (d: unknown) => string

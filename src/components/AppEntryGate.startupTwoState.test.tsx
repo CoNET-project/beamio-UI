@@ -387,7 +387,7 @@ describe('② ciphertext current without a passcode: the passcode page; decrypte
 	}, 90_000)
 })
 
-describe('R2271: the onboarding is confirmed by one real native read (SR-10 .. SR-16, SR-21 .. SR-23)', () => {
+describe('the onboarding is confirmed by one real native read (SR-10 .. SR-16, SR-21 .. SR-23)', () => {
 	const declare = (platform: 'ios' | 'android' | null) => {
 		;(globalThis as { __nativeApp?: unknown }).__nativeApp = platform ? { platform, version: '1.0', build: '1' } : undefined
 	}
@@ -523,7 +523,7 @@ describe('③ empty and read failure: empty is onboarding; a read failure is hel
 		g.__walletStatus = 'no_key'
 		renderAt('/home')
 		await waitFor(() => expect(screen.getByText('ONBOARDING-PAGE')).toBeTruthy(), { timeout: 4000 })
-		// the start's pre-read and the one real read that confirms the absence before the onboarding (R2271)
+		// the start's pre-read and the one real read that confirms the absence before the onboarding
 		expect(g.__calls.preread).toBe(2)
 		expect(g.__persistCalls.n).toBe(0)
 	})

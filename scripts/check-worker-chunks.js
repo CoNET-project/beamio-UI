@@ -34,6 +34,19 @@ function checkOne(dir, worker) {
  * Shell mode (REACT_APP_SHELL_BUILD): the shell compiles the gossip worker out, so it must be absent; any other worker chunk that is present
  * must carry its listener and replies.
  */
+/**
+ * Shell artifact: the AddressPGP ABI is the minimal `searchKey` fragment only. The signature text must be present (a build without it
+ * makes every contact lookup fail) and the backup field name must be absent from every JS file of the build.
+ */
+function checkShellPgpAbi(dir) {
+	const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.js')) : []
+	const texts = files.map((f) => fs.readFileSync(path.join(dir, f), 'utf8'))
+	const has = (needle) => texts.some((t) => t.includes(needle))
+	const missing = ['function searchKey(address', 'userPublicKeyArmored', 'routePublicKeyArmored'].filter((m) => !has(m))
+	const forbidden = ['getEncryptedPrivateKey'].filter((m) => has(m))
+	return { ok: missing.length === 0 && forbidden.length === 0, missing, forbidden }
+}
+
 function checkWorkerBuild(buildDir, opts = {}) {
 	const dir = path.join(buildDir, 'static', 'js')
 	const shell = opts.shell === true
@@ -47,12 +60,13 @@ function checkWorkerBuild(buildDir, opts = {}) {
 		}
 		return checkOne(dir, w)
 	})
-	const ok = workers.every((w) => w.ok)
+	const pgpAbi = shell ? checkShellPgpAbi(dir) : null
+	const ok = workers.every((w) => w.ok) && (pgpAbi ? pgpAbi.ok : true)
 	const gossip = workers[0]
-	return { ok, mode: shell ? 'shell' : 'browser', chunk: gossip.chunk, bytes: gossip.bytes, missing: gossip.missing || [], workers }
+	return { ok, mode: shell ? 'shell' : 'browser', chunk: gossip.chunk, bytes: gossip.bytes, missing: gossip.missing || [], workers, ...(pgpAbi ? { pgpAbi } : {}) }
 }
 
-module.exports = { checkWorkerBuild, REQUIRED, WORKERS, CHUNK }
+module.exports = { checkWorkerBuild, checkShellPgpAbi, REQUIRED, WORKERS, CHUNK }
 
 if (require.main === module) {
 	const dir = process.argv[2] || 'build'

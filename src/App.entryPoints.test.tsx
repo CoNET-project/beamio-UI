@@ -574,7 +574,7 @@ describe('decision 2026-11-17: wallet-only records, explicit absent, and the unk
 		// 0.53.39: explicit trusted-source state for an onboarding case: native confirms no account (walletState absent)
 		;(globalThis as any).__walletStateOverride = 'absent'
 		await start({ page: WALLET_ONLY_X, preread: payload({ code: 'confirmed_missing' }), nativeEoa: addr(EOA_X) })
-		// the start's pre-read and the one real read that confirms the absence before the onboarding (R2271)
+		// the start's pre-read and the one real read that confirms the absence before the onboarding
 		expect(race.prereadCalls + race.windowPrereads).toBe(2)
 		expect(onboardingLogged()).toBe(true)
 		expect(homeShown()).toBe(false)

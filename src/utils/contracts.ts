@@ -33,6 +33,10 @@ import {
 
   import CoNETPGP from '@/services/ABI/conetPgp.json'
   import ActionFacetAbi from '@/services/ABI/ActionFacetAbi.json'
+  /** The only AddressPGP function the shell page calls: a peer's public key and mailbox route (the same signature as the full ABI). */
+  export const SHELL_PGP_ABI = [
+	'function searchKey(address to) view returns (string userPgpKeyID, string userPublicKeyArmored, string routePgpKeyID, string routePublicKeyArmored, bool routeOnline)',
+  ]
   const contracts = {
 	GuardianNodesInfoV6: {
 	  address: CONET_GUARDIAN_NODES_INFO_V6,
@@ -132,9 +136,9 @@ import {
 	constPgpManager: {
 		address: CONET_ADDRESS_PGP,
 		network: 'CONET DePIN',
-		// Shell target: the page does not call the PGP manager (the native layer does). Its ABI, including the backup field names,
-		// is not built into the shell artifact.
-		abi: process.env.REACT_APP_SHELL_BUILD === 'true' ? [] : CoNETPGP
+		// Shell target: the page reads other wallets' public key and route through `searchKey`, and only that. The rest of the ABI, including
+		// the backup field names, is not built into the shell artifact.
+		abi: process.env.REACT_APP_SHELL_BUILD === 'true' ? SHELL_PGP_ABI : CoNETPGP
 	},
 
 	BeamioCardCCSA: {

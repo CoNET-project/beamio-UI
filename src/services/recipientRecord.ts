@@ -12,6 +12,25 @@ export type RecipientLookup =
 	| { status: 'ok'; publicArmored: string; routersArmoreds: string; routePgpKeyID?: string; userPgpKeyID?: string }
 	| { status: 'no_record' }
 	| { status: 'network_error'; reason: string }
+	/** A programming or build fault (a missing ABI function, a TypeError): not a network read result, never retried as one. */
+	| { status: 'internal_error'; reason: string }
+
+/** Thrown by the reader when the contract has no `searchKey` (a build without the ABI fragment). */
+export class RecipientInternalError extends Error {
+	readonly reason: string
+
+	constructor(reason: string) {
+		super(`internal_error: ${reason}`)
+		this.name = 'RecipientInternalError'
+		this.reason = reason
+	}
+}
+
+/** A fault in our own code (not an RPC or network failure): TypeError, ReferenceError, or a RecipientInternalError. Matched by name across realms. */
+export const isProgrammingError = (ex: unknown): boolean => {
+	const name = typeof ex === 'object' && ex !== null ? String((ex as { name?: unknown }).name ?? '') : ''
+	return name === 'TypeError' || name === 'ReferenceError' || name === 'RecipientInternalError'
+}
 
 /** The fields of AddressPGP `searchKey` that the lookup reads. Armor is base64 as the contract returns it. */
 export interface SearchKeyAnswer {
@@ -37,7 +56,7 @@ export const isRecipientReadError = (ex: unknown): ex is RecipientReadError =>
 	ex instanceof RecipientReadError || (typeof ex === 'object' && ex !== null && (ex as { name?: unknown }).name === 'RecipientReadError')
 
 /**
- * Reads one AddressPGP answer. A throw or an empty answer from `searchKey` is `network_error`; a valid empty answer is `no_record`.
+ * Reads one AddressPGP answer. A failed call or an empty answer from `searchKey` is `network_error` (a TypeError-class fault is `internal_error`); a valid empty answer is `no_record`.
  * `decode` turns the base64 armor into text; a decode failure is `network_error`.
  */
 export async function readRecipientRecord(
@@ -48,6 +67,10 @@ export async function readRecipientRecord(
 	try {
 		info = await searchKey()
 	} catch (ex) {
+		// A fault in our own code is reported as such (with its class), never as a network failure.
+		if (isProgrammingError(ex)) {
+			return { status: 'internal_error', reason: ex instanceof RecipientInternalError ? ex.reason : String((ex as { name?: unknown }).name) }
+		}
 		return { status: 'network_error', reason: ex instanceof Error ? ex.message.slice(0, 80) : 'rpc' }
 	}
 	if (!info || typeof info !== 'object') return { status: 'network_error', reason: 'empty_answer' }
