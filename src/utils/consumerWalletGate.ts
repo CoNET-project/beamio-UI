@@ -1,3 +1,4 @@
+import { pageMnemonicField } from '@/services/pageMnemonicField'
 import { ethers } from 'ethers'
 
 /** Local PouchDB wallet has a plaintext 12-word mnemonic (consumer apps may persist it). */
@@ -62,7 +63,7 @@ export function consumerAppNeedsWalletRecover(data: encrypt_keys_object | null |
  * shell the native side holds the EOA key and owns recovery (the page recovery entry throws native_recovery_only there).
  */
 export function pageWalletRecoverNeeded(data: encrypt_keys_object | null | undefined, shell: boolean): boolean {
-	// rule E (2026-11-17): in the browser a record with only a private key (no valid mnemonic) goes to onboarding, and its data is kept.
+	// in the browser a record with only a private key (no valid mnemonic) goes to onboarding, and its data is kept.
 	// The browser recovery route is not used for it (no plaintext mnemonic means no account credential here, E7).
 	if (!shell && hasLocalPrivateKeyArmor(data) && !hasLocalPlaintextMnemonic(data)) return false
 	return !shell && consumerAppNeedsWalletRecover(data)
@@ -107,13 +108,14 @@ export function validMnemonicEoa(data: encrypt_keys_object | null | undefined): 
 }
 
 /**
- * A shell record that carries only the EOA private-key copy and no mnemonic. Such a copy is not an account: when both sides confirm
+ * A shell record that carries only the EOA private-key copy and no mnemonic (R94). Such a copy is not an account: when both sides confirm
  * that there is no mnemonic (the page record here, and the native walletEoaAddress answering no_key), the start goes on to onboarding.
  * A record with a mnemonic, or a completed Beamio account, is never judged here (the native recovery route keeps it). Read-only.
  */
 export function isKeyOnlyCopyWithoutMnemonic(data: encrypt_keys_object | null | undefined): boolean {
 	if (!data) return false
-	if (typeof data.mnemonicPhrase === 'string' && data.mnemonicPhrase.trim()) return false
+	// any mnemonicPhrase value other than absent (a phrase, a v3 envelope, or an unknown shape) is never a key-only copy
+	if (pageMnemonicField(data).kind !== 'absent') return false
 	if (hasCompletedBeamioAccount(data)) return false
 	return hasLocalPrivateKeyArmor(data)
 }

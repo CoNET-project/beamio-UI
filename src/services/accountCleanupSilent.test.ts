@@ -1,5 +1,5 @@
 /**
- * The silent cleanup after a verified recovery. Behaviour-level: a fake store, a fake page read and a fake native
+ * The silent cleanup after a verified recovery (owner decision 2026-11-21). Behaviour-level: a fake store, a fake page read and a fake native
  * send. Cases: recovery ok and the read-backs agree → one send with the derived key, the marker cleared; a failed, incomplete or refused
  * recovery, an unreadable page address, a mismatch, a repeat and a concurrent repeat → no second send and nothing deleted by this code.
  */

@@ -111,7 +111,7 @@ export function injectShellSessionKey<T extends { profiles?: unknown }>(record: 
 
 /** Drops the held key and removes it from the in-memory profile. */
 /**
- * 0.53.39 (review of be1b9c3, item 2): drops the held signer WITHOUT changing the in-memory profile. Used where a restore is about to
+ * 0.53.39 (review, item 2): drops the held signer WITHOUT changing the in-memory profile. Used where a restore is about to
  * replace the session account: the page profile is left as it is (no blanked privateKeyArmor can reach a later write), and the held key is
  * no longer used for signing. The window event tells any page copy that the held key was dropped.
  */

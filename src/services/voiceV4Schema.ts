@@ -1,5 +1,5 @@
 /**
- * Key schema of the v4 pre-connection signals: any undefined key is refused.
+ * Key schema of the v4 pre-connection signals (v122 §141, v121 §140): any undefined key is refused.
  * - offer v4: no callerPgp, callerRoute, callerTag, callerSignature. Channels cv/cV: sid,key,wk,temp,tempPgpFpr,tempPgpArmor?,auth.
  * - accept v4: no codec, no timestamp. Channels ev/eV as above; pays cv_pay, cV_pay, ev_pay, eV_pay: role,temp,notAfter,maxBytes,maxSeconds,sig (no payer).
  * - auth: exactly from, validUntil, sig.

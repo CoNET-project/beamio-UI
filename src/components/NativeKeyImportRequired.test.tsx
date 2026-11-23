@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * Spec item 41 and rule (b) (2026-11-16): the native import entry is retired. The locked page NativeKeyImportRequired is deleted,
+ * Spec r2.3 item 41 and rule (b) (2026-11-16): the native import entry is retired. The locked page NativeKeyImportRequired is deleted,
  * and no production source of the PWA holds an import entry, an import command or its copy. Rewritten from the render test of the
  * import button: the entry is asserted absent. Source check only; no key material is used.
  */
@@ -22,7 +22,7 @@ function productionSources(dir: string, out: string[] = []): string[] {
 	return out
 }
 
-describe('the native import entry does not exist (spec item 41, rule (b))', () => {
+describe('the native import entry does not exist (spec r2.3 item 41, rule (b))', () => {
 	it('the locked import page file is deleted', () => {
 		expect(existsSync(join(__dirname, 'NativeKeyImportRequired.tsx'))).toBe(false)
 	})

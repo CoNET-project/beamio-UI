@@ -1,10 +1,10 @@
 /**
- * Receiving end of the incoming-call unlock. Pure: parsing, countdown, the Shown rule, and the caller
+ * Receiving end of the incoming-call unlock (v114 §133, 2026-11-21). Pure: parsing, countdown, the Shown rule, and the caller
  * display rule. The overlay and the bridge calls are wired elsewhere.
  *
  * - Running shell: event `incomingCallUnlockRequest`. Cold start: launch parameter `incomingCallUnlock`. Same shape:
- * {callId, eoa, remainingMs, phase}. Any missing field, wrong type, remainingMs <= 0, or phase outside load|input: refused
- * (fail closed). Nothing is inferred and nothing is filled in to the full amount.
+ *   {callId, eoa, remainingMs, phase}. Any missing field, wrong type, remainingMs <= 0, or phase outside load|input: refused
+ *   (fail closed). Nothing is inferred and nothing is filled in to the full amount.
  * - remainingMs counts from the shell's generation moment, so the page starts its countdown from the moment it receives it.
  */
 
@@ -33,13 +33,13 @@ export function remainingAt(req: { remainingMs: number }, arrivedAtMs: number, n
 	return Math.max(0, req.remainingMs - elapsed)
 }
 
-/** The page sends `incomingCallUnlockShown {callId}` once, and only for phase load. */
+/** The page sends `incomingCallUnlockShown {callId}` once, and only for phase load (input: the shell already has it, v114 §133.2). */
 export function shouldSendShown(req: { phase: UnlockPhase }, alreadySent: boolean): boolean {
 	return req.phase === 'load' && !alreadySent
 }
 
 /**
- * The caller shown in the incoming window. The identity shown is the verified `from`, as a
+ * The caller shown in the incoming window (v116 §135, transitional, 2026-11-21). The identity shown is the verified `from`, as a
  * short address. No name is looked up: this version takes no name from the local contacts (the same in all three clients). A peer
  * tag is only a secondary text marked unverified, and never replaces or overrides the address.
  */

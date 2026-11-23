@@ -20,7 +20,7 @@ import { BEAMIO_TAG_MESSAGE_KEY, BEAMIO_TAG_PATTERN } from './beamioTagInput'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
-describe('one BeamioTag rule on create and restore', () => {
+describe('one BeamioTag rule on create and restore (R66)', () => {
 	it('a hyphenated name is not a valid tag on either screen (the same pattern and the same message key)', () => {
 		expect(BEAMIO_TAG_PATTERN.test('alice-01')).toBe(false)
 		expect(BEAMIO_TAG_PATTERN.test('alice_01')).toBe(true)

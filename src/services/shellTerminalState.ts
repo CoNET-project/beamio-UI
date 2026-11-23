@@ -1,5 +1,5 @@
 /**
- * Terminal state of a fallback shell start.
+ * Terminal state of a fallback shell start (2026-11-21, the decision; review on S25 t168 with).
  *
  * Once the gate has decided the update prompt (a confirmed-empty page store on a shell whose native record command is absent),
  * nothing re-reads the store on a timer: the App's empty-read retry and the gate's startup retry stay off. Only the user's Retry
@@ -29,7 +29,7 @@ export function markShellTerminal(): void {
 }
 
 /**
- * Decides the terminal and then runs the diagnostic that reports it (the terminal line was printed before the
+ * Decides the terminal and then runs the diagnostic that reports it (S25: the terminal line was printed before the
  * state was set, and a read that landed in that gap scheduled a retry). The state is set first; the line and any await or render follow.
  */
 export function decideShellTerminal(report: () => void): void {

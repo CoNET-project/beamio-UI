@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * (CT series), page wiring. Static order checks; the timing and admission rules are in nativeCreateWait.test.ts.
+ * v10.2 r4 §2.2 (CT series), page wiring. Static order checks; the timing and admission rules are in nativeCreateWait.test.ts.
  */
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -57,7 +57,7 @@ describe('native create wait wiring (CT series)', () => {
 	})
 })
 
-describe('cancel, cancelled, still-open and late-ok wiring', () => {
+describe('cancel, cancelled, still-open and late-ok wiring (CT-13, CT-15, CT-15b, CT-16; r5 §§二、四、五)', () => {
 	it('CT-15: the cancel control ends the wait, judges nothing, and shows the cancelled copy', () => {
 		const at = src.indexOf("create_account_cancel')}")
 		expect(at).toBeGreaterThan(0)
@@ -114,8 +114,8 @@ describe('nested result wait and write-failed hold (Android review, this batch)'
 	})
 })
 
-describe('retry after cancel; write-hold scope', () => {
-	it('CT-15: after a cancel the open path refuses with the prompt before any request', () => {
+describe('r7 §一 retry after cancel; write-hold scope', () => {
+	it('CT-15: after a cancel the open path refuses with the r7 prompt before any request', () => {
 		const at = src.indexOf("if (createWaitRef.current.kind === 'cancelled') {")
 		const open = src.indexOf('const opened = await nativeAccountCreateOpen(trimmedTag)', at)
 		expect(at).toBeGreaterThan(0)
@@ -123,7 +123,7 @@ describe('retry after cancel; write-hold scope', () => {
 		expect(open).toBeGreaterThan(at)
 	})
 
-	it('writeHold: reason missing or outside the vocabulary, old_copy_unverified, and rollback_pending; not internal_state, storage_write (OB-1, OB-2 retry)', () => {
+	it('writeHold: reason missing or outside the vocabulary, old_copy_unverified (v10 OB-4 无按钮), and rollback_pending (v10 OB-3; rule: only the OB-3 button retries); not internal_state, storage_write (OB-1, OB-2 retry)', () => {
 		expect(src).toContain("setWriteHold(accepted.code === 'write_failed' && (accepted.reason === undefined || accepted.reason === 'rollback_pending' || accepted.reason === 'old_copy_unverified'))")
 	})
 

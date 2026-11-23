@@ -1,5 +1,5 @@
 /**
- * First-identity eligibility (RULING 617d3dd9, plan d2704bb8 section six). A wallet may show or send the "create the first chat identity"
+ * First-identity eligibility (first-identity rule, section six). A wallet may show or send the "create the first chat identity"
  * action only when the native answer confirms both: the legacy report is ABSENT (no old store with chat data) and the chain has no
  * AddressPGP registration. A missing field, or any unknown value, is unknown and closes the action (fail closed). The rule is the same in a
  * production build and in a QA build. The eligibility is in memory only: the page does not store the conclusion.

@@ -2,7 +2,7 @@ import { fallbackStartOutcome, nativeRecordFallbackOf, OLD_SHELL_UPGRADE_REASON,
 import { nativeNoKeyRoute } from './accountJudgement'
 import { queryNativeMnemonicPreread } from './nativeRecovery'
 
-describe('the shell record read error classes', () => {
+describe('the shell record read error classes (2026-11-21)', () => {
 	test('not_supported → no native record, the page store is read next (class: definite old shell)', () => {
 		expect(nativeRecordFallbackOf(SHELL_RECORD_NOT_SUPPORTED_ERROR)).toEqual({ kind: 'fallback', reason: 'not_supported' })
 	})
@@ -30,7 +30,7 @@ describe('iOS unknown_command is the same definite class as Android not_supporte
 	})
 })
 
-describe('the fallback shell start outcome: no walletEoaAddress, no native write', () => {
+describe('the fallback shell start outcome (the decision, 2026-11-21): no walletEoaAddress, no native write', () => {
 	test('page store holds an account → enter /chat', () => {
 		expect(fallbackStartOutcome({ legacy: 'valid' })).toBe('enter')
 	})
@@ -45,7 +45,7 @@ describe('the fallback shell start outcome: no walletEoaAddress, no native write
 	})
 })
 
-describe('the pre-read of a shell that cannot answer it', () => {
+describe('the pre-read of a shell that cannot answer it (2026-11-21)', () => {
 	test('not_supported from the pre-read transport is the legacy class (unknown, reason unsupported), not a retry', async () => {
 		const out = await queryNativeMnemonicPreread(() => 1, async () => ({ kind: 'not_supported' }))
 		expect(out).toEqual({ kind: 'unknown', reason: 'unsupported' })

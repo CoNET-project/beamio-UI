@@ -97,7 +97,7 @@ export async function fetchConetUsdcBalance(
 	return { ok: true, balanceRaw: res.raw.usdc, balance: res.balances.usdc }
 }
 
-/** CNET / CoNET chain token balance — beamio-digital-asset-display-protocol.mdc */
+/** CNET / CoNET chain token balance */
 export function formatConetChainTokenBalance(raw: string): string {
 	return formatDigitalAssetDisplay(raw)
 }

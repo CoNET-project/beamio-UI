@@ -1,5 +1,5 @@
 /**
- * review of aeb5206: in a shell, the final onboarding entry needs an explicit walletStatus no_key. A not_ready or unknown native answer
+ * R88 review: in a shell, the final onboarding entry needs an explicit walletStatus no_key. A not_ready or unknown native answer
  * with an empty page is unknown (startup wait). Static pin of the guard text and its order; the walletState-absent path is answered
  * earlier (option A notice), so the guard is defence in depth. Device repro is pending.
  */
@@ -8,7 +8,7 @@ import { join } from 'path'
 
 const src = readFileSync(join(__dirname, 'AppEntryGate.tsx'), 'utf8')
 
-describe('shell onboarding requires an explicit walletStatus no_key', () => {
+describe('shell onboarding requires an explicit walletStatus no_key (R88)', () => {
 	it('the trusted-empty onboarding is guarded by a shell check on shellWalletStatus no_key, before goOnboarding', () => {
 		// the guard is written as isExplicitNativeNoKey(shellWalletStatus) (same rule: only an explicit no_key passes)
 		const guard = src.indexOf('if (isShellContext() && !isExplicitNativeNoKey(shellWalletStatus)) {')

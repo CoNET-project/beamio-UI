@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- * Entry-level regression (2026-11-20, independent review 09c734b6, item 1 (1)): an old-store entry, an edit, a restart, at the level
+ * Entry-level regression (review, item 1 (1)): an old-store entry, an edit, a restart, at the level
  * of checkStorageWithStatus (the production start read) and persistInitRecord (the production write), with the REAL shell record store and
  * the REAL deferred-write gate. Only the I/O boundaries are doubles: the native record transport (a fake native that keeps its own wallet
  * fields), the PouchDB old store, and the page storage (window.localStorage). Synthetic values only: the public BIP-39 test vector.
@@ -21,10 +21,11 @@ jest.mock('@/workers/appDaemon/client', () => ({}))
 jest.mock('@/workers/beamioTag/client', () => ({}))
 jest.mock('@/services/chatWorkerBridge', () => ({}))
 jest.mock('@/services/chatMediaWorkerBridge', () => ({}))
+// argon2idAsync must not run in these tests (the PBKDF2 stand-in is removed). The bridge module cannot load in jest (import.meta),
+// so it stays mocked, but a call fails closed. A test that needs the v3 KDF injects it with setMnemonicKdfForTest.
 jest.mock('@/services/argon2WorkerBridge', () => ({
-	argon2idAsync: async (password: Uint8Array, salt: Uint8Array, opts: { dkLen: number }) => {
-		const { pbkdf2Sync } = require('crypto')
-		return new Uint8Array(pbkdf2Sync(Buffer.from(password), Buffer.from(salt), 1, opts.dkLen, 'sha256'))
+	argon2idAsync: () => {
+		throw new Error('argon2idAsync must not run in this test: inject the v3 KDF with setMnemonicKdfForTest')
 	},
 }))
 jest.mock('./idbBlobCompat', () => ({ ...jest.requireActual('./idbBlobCompat'), idbBlobCompatReady: async () => 'ok' }))
@@ -95,66 +96,6 @@ jest.mock('./shellRecordTransport', () => {
 })
 jest.mock('./walletEoaAddress', () => ({ readWalletEoaAddress: async () => ({ kind: 'address', eoa: (globalThis as { __keyId?: string }).__keyId }) }))
 
-// the in-memory device key store (test double of the IndexedDB device store): a CryptoKey is kept by reference
-const deviceStore = ((globalThis as { __deviceStore?: Map<string, unknown> }).__deviceStore ??= new Map<string, unknown>())
-function installDeviceKeyShim(): void {
-	const reqFor = (run: () => void) => {
-		const r: { result?: unknown; onsuccess?: ((e: unknown) => void) | null } = {}
-		queueMicrotask(() => {
-			run()
-			r.onsuccess?.({ target: r })
-		})
-		return r
-	}
-	const dbFor = (): Record<string, unknown> => ({
-		objectStoreNames: { contains: () => true },
-		createObjectStore: () => undefined,
-		close: () => undefined,
-		transaction: () => {
-			const tx: { oncomplete?: (() => void) | null; onerror?: (() => void) | null; objectStore: () => unknown } = {
-				oncomplete: null,
-				onerror: null,
-				objectStore: () => ({
-					get: (key: string) => {
-						const r: { result?: unknown; onsuccess?: ((e: unknown) => void) | null } = {}
-						queueMicrotask(() => {
-							r.result = deviceStore.get(key)
-							r.onsuccess?.({ target: r })
-						})
-						return r
-					},
-					put: (value: unknown, key: string) => {
-						const r: { onsuccess?: ((e: unknown) => void) | null } = {}
-						queueMicrotask(() => {
-							deviceStore.set(key, value)
-							r.onsuccess?.({ target: r })
-							tx.oncomplete?.()
-						})
-						return r
-					},
-				}),
-			}
-			return tx
-		},
-	})
-	;(globalThis as { indexedDB?: unknown }).indexedDB = {
-		open: (name: string) => {
-			const req: { result?: unknown; onupgradeneeded?: (() => void) | null; onsuccess?: ((e: unknown) => void) | null; onerror?: (() => void) | null } = {}
-			if (name !== 'beamio-vault-v1') {
-				queueMicrotask(() => req.onerror?.())
-				return req
-			}
-			req.result = dbFor()
-			queueMicrotask(() => {
-				req.onupgradeneeded?.()
-				req.onsuccess?.({ target: req })
-			})
-			return req
-		},
-	}
-	void reqFor
-}
-
 if (!(globalThis as { window?: unknown }).window) {
 	// node env: a minimal window (location only), enough for the browser-side URL constants and the iOS bridge probe
 	;(globalThis as { window?: unknown }).window = { location: { origin: 'http://localhost' }, addEventListener: () => undefined, removeEventListener: () => undefined, dispatchEvent: () => true }
@@ -186,6 +127,14 @@ function installPageStorage(): void {
 	}
 }
 
+/** The page IndexedDB 'init' copy's first profile name (decoded); the page copy is what the start reads (IDB 先读). */
+function pageCopyUserName(g: Record<string, any>): string | undefined {
+	const { parseInitRaw } = require('./initRecordCodec')
+	const doc = g.__pouch.get('conet')?.get('init')
+	const rec = doc ? parseInitRaw(doc.title) : null
+	return (rec?.profiles as Array<{ userName?: string }> | undefined)?.[0]?.userName
+}
+
 describe('an old-store entry, an edit and a restart, through checkStorageWithStatus and persistInitRecord (real gate; I/O doubles only)', () => {
 	beforeEach(() => {
 		jest.resetModules()
@@ -196,7 +145,6 @@ describe('an old-store entry, an edit and a restart, through checkStorageWithSta
 		g.__keyId = KEY_ID
 		g.__fakeNative = { keys: { mnemonicPhrase: PHRASE, profiles: [{ keyID: KEY_ID, privateKeyArmor: KEY_HEX }] }, rev: 0, writes: [] }
 		installPageStorage()
-		installDeviceKeyShim()
 		const legacy = { mnemonicPhrase: PHRASE, isReady: true, beamio: { firstName: 'old' }, profiles: [{ keyID: KEY_ID, userName: 'old-name' }] }
 		const { encodeInitRaw } = require('./initRecordCodec')
 		g.__pouch.set('conet', new Map([['init', { _id: 'init', _rev: '1-old', title: encodeInitRaw(legacy) }]]))
@@ -219,12 +167,18 @@ describe('an old-store entry, an edit and a restart, through checkStorageWithSta
 		expect(start.status).toBe('loaded')
 		expect((start as { data: Record<string, any> }).data.profiles[0].userName).toBe('old-name')
 		expect(g.__fakeNative.writes.length).toBe(0)
+		// 改写（IDB 先读）：页面有效时启动不查原生，写入基线（basisRev）尚未建立，产品会以 not_read 挂起后台同步。
+		// 这里以一次非 probe 的原生读（原生答复 absent，即 gate 的预读在原生侧确认无记录）建立写入基线，再进行编辑。
+		await store.shellRecordRead({ source: 'init' })
 
 		// 2. the user edits; the save is held (the native key is not confirmed): nothing is written natively
 		const edited = clone((start as { data: Record<string, any> }).data)
 		edited.profiles[0].userName = 'edited-name'
 		globals.setCoNET_Data(edited)
 		await beamio.persistInitRecord(clone(edited))
+		// 改写：产品的 persistInitRecord 在壳内先写页面 IDB，再把原生副本同步放入后台（syncShellNativeCopy，不阻塞返回）。
+		// 等待该后台同步结束（flushShellNativeSync）后再断言原生侧未写、延迟写已挂起。
+		await beamio.flushShellNativeSync()
 		expect(g.__fakeNative.writes.length).toBe(0)
 		expect(store.deferredWriteForTest()).not.toBeNull()
 
@@ -234,10 +188,13 @@ describe('an old-store entry, an edit and a restart, through checkStorageWithSta
 		const beamio2 = require('./beamio')
 		const store2 = require('./shellRecordStore')
 		signer2.holdShellSessionFromPhrase(PHRASE, KEY_ID)
-		expect(g.__pouch.get('conet')?.get('init')?._rev).toBe('1-old')
+		// 改写（IDB 先读，persistInitRecord 先写页面 IDB 副本）：页面副本已带有编辑，旧库 rev 之外的页面副本即为 edit 所在
+		expect(pageCopyUserName(g)).toBe('edited-name')
 		const restart = await beamio2.checkStorageWithStatus()
 		expect(restart.status).toBe('loaded') // the old store still enters on a shell start while the native record is absent
 		expect(g.__fakeNative.writes.length).toBe(0)
+		// 改写（IDB 先读）：重启后启动不查原生，持久化的延迟写由第一次原生读（此处为 probe，原生答复 absent）载入
+		await store2.shellRecordRead({ probe: true, source: 'probe' })
 		expect(store2.deferredWriteForTest()).not.toBeNull()
 
 		// 4. the native sync of this account is confirmed: the held edit is written at once
@@ -251,14 +208,13 @@ describe('an old-store entry, an edit and a restart, through checkStorageWithSta
 		const after = await beamio2.checkStorageWithStatus()
 		expect(after.status).toBe('loaded')
 		expect((after as { data: Record<string, any> }).data.profiles[0].userName).toBe('edited-name')
-		// the old store was never rewritten
-		expect(g.__pouch.get('conet')?.get('init')?._rev).toBe('1-old')
+		// 改写：页面副本保留编辑（旧 PWA 库的 1-old 记录由页面副本取代；本断言只核对页面副本内容）
+		expect(pageCopyUserName(g)).toBe('edited-name')
 	})
 
 	it('the old store is wiped and the native side has no record: the start is onboarding (the restore entry is there), nothing is written, and the chat identity create action is not eligible', async () => {
 		const g = globalThis as Record<string, any>
 		g.__pouch.set('conet', new Map())
-		g.__deviceStore?.clear?.()
 		const beamio = require('./beamio')
 		const { pgpCreateEligible } = require('./pgpIdentityEligibility')
 		const { nativeGenerateNewPgpKey } = require('./nativePgpRestore')

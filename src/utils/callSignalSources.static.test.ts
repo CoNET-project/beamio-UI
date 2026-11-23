@@ -61,7 +61,7 @@ describe('no account reader returns null for a failure, and a failed read writes
 		expect(offenders.map((f) => f.replace(SRC, ''))).toEqual([])
 	})
 
-	it('the deprecated rpc-old legacy read is removed: no legacy registry fallback, no migration write (R2213)', () => {
+	it('the deprecated rpc-old legacy read is removed: no legacy registry fallback, no migration write', () => {
 		const b = text('services/beamio.ts')
 		expect(b).not.toContain('rpc-old.conet.network')
 		expect(b).not.toContain('legacyBeamioAccountSC')

@@ -1,5 +1,5 @@
 /**
- * (manual retry): the persisted record of a held write. Written only for write_failed with reason rollback_pending. It holds
+ * v10 §六.1 (manual retry): the persisted record of a held write. Written only for write_failed with reason rollback_pending. It holds
  * the reason, the account's first 6 and last 4 characters, and the time (ISO). It never holds key material, a phrase or a full address.
  * Stored as one entry (overwritten). A storage that is unavailable reads as no record (fail-closed).
  */
@@ -13,7 +13,7 @@ export function accountMarker(eoa: string): string {
 	return `${e.slice(0, 6)}…${e.slice(-4)}`
 }
 
-/** The record to write for a failed sync, or null: only write_failed with rollback_pending is recorded. */
+/** The record to write for a failed sync, or null: only write_failed with rollback_pending is recorded (§六.1). */
 export function recordForFailure(input: { code: string; reason?: string }, eoa: string, now: Date): PwaSyncFailureRecord | null {
 	if (input.code !== 'write_failed' || input.reason !== 'rollback_pending') return null
 	return { reason: 'rollback_pending', account: accountMarker(eoa), at: now.toISOString() }
@@ -50,13 +50,13 @@ export function clearFailureRecord(store: KV | null): void {
 	}
 }
 
-/** Whether the record belongs to this account (the same marker). A changed account is a clear. */
+/** Whether the record belongs to this account (the same marker). A changed account is a clear (§六.1). */
 export function recordMatchesAccount(record: PwaSyncFailureRecord | null, eoa: string): boolean {
 	return record !== null && record.account === accountMarker(eoa)
 }
 
 /**
- * the manual retry button is shown only when all of these hold: the record exists and matches this account; the last reply
+ * v10 §六.2: the manual retry button is shown only when all of these hold: the record exists and matches this account; the last reply
  * was not an envelope-level locked; the page holds a valid mnemonic; and the live walletStatus is not locked (read before rendering).
  */
 export function manualRetryVisible(input: {

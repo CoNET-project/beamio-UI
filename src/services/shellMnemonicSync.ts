@@ -1,9 +1,9 @@
 /**
- * Page-to-shell mnemonic sync (rule 2026-11-16, 1502: after the home is entered, a trusted native shell receives the current valid
+ * Page-to-shell mnemonic sync (the rule, 1502: after the home is entered, a trusted native shell receives the current valid
  * mnemonic over the local bridge for durable sync). The home never waits for the reply. A failed send is retried; a reply that arrives
  * after a newer transaction started is discarded (transaction sequence numbers). The mnemonic is never logged.
  *
- * The bridge command is `pwaWalletSync` (spec.x item 46(4)); its number comes from the shared, persistent sequence (shellTxSeq).
+ * The bridge command is `pwaWalletSync` (spec r2.5.x item 46(4)); its number comes from the shared, persistent sequence (shellTxSeq).
  * No bridge is set in a browser, so a browser build never calls one.
  */
 
@@ -11,19 +11,19 @@ import { markBootSync, type BootSyncEvent } from './bootTrace'
 import { nextShellTxSeq } from './shellTxSeq'
 import { mnemonicEoa } from './shellLegacyIdbInit'
 import { setShellSyncState } from './shellSyncStatus'
-import { pwaWalletSyncTransportAvailable, sendPwaWalletSync } from './pwaWalletSyncTransport'
+import { pwaWalletSyncTransportAvailable, sendPwaWalletSync, sendPwaWalletSyncCipher, type PwaSyncReply } from './pwaWalletSyncTransport'
 import { readWalletEoaAddress } from './walletEoaAddress'
 import { NO_KEY_ERROR } from './nativeKeyState'
 
-/** The bridge command of the post-home sync (spec, item 46(4)). Replies: ok, stale_seq, write_failed, untrusted_source. */
+/** The bridge command of the post-home sync (spec r2.5.1, item 46(4)). Replies: ok, stale_seq, write_failed, untrusted_source. */
 export const SHELL_MNEMONIC_SYNC_COMMAND = 'pwaWalletSync'
 
 /**
- *the closed reply set of pwaWalletSync (spec.x item 46(4)), plus `no_answer` for a send that threw or timed out.
+ * r94: the closed reply set of pwaWalletSync (spec r2.5.x item 46(4)), plus `no_answer` for a send that threw or timed out.
  * Only `ok` confirms the write (the native side read its own write back).
  */
-/** `locked`: the native lock. Not retried automatically; not counted as synced. */
-export type ShellSyncAnswer = 'ok' | 'stale_seq' | 'write_failed' | 'untrusted_source' | 'key_over_bridge_refused' | 'bad_request' | 'no_answer' | 'locked'
+/** `locked` (HC-LOCK, v10 §3.2 pwaWalletSync): the native lock. Not retried automatically; not counted as synced. */
+export type ShellSyncAnswer = 'ok' | 'stale_seq' | 'write_failed' | 'untrusted_source' | 'key_over_bridge_refused' | 'bad_request' | 'no_answer' | 'locked' | 'unlock_failed' | 'verify_failed'
 
 export type SyncOutcome =
 	| { kind: 'synced'; tx: number }
@@ -37,7 +37,7 @@ export type ShellSyncCode = Exclude<ShellSyncAnswer, 'ok'>
 export type ShellMnemonicSyncDeps = {
 	/** Sends one transaction over the bridge and returns the reply code. A throw counts as `no_answer`. */
 	send: (command: string, txId: number, mnemonic: string, eoa: string) => Promise<ShellSyncAnswer | { code: ShellSyncAnswer; reason?: string }>
-	/** Re-reads the native state (nativeMnemonicPreread) after a failed write, before another try (spec Optional. */
+	/** Re-reads the native state (nativeMnemonicPreread) after a failed write, before another try (spec §十一, §57(2)). Optional. */
 	reread?: (seq: number) => Promise<'valid' | 'absent' | 'unknown'>
 	/** Retry delays after each failed send. The number of retries is the length of this list. */
 	retryDelaysMs: readonly number[]
@@ -46,21 +46,25 @@ export type ShellMnemonicSyncDeps = {
 	log: (message: string) => void
 	/** False when no trusted bridge exists (a browser build): no call is made. */
 	bridgeAvailable: () => boolean
-	/** Called once a sync is confirmed `ok`, with the EOA the page sent with the confirmed write. It never
-	 * changes the sync result: a throw here is ignored. Optional. */
+	/** Called once a sync is confirmed `ok`, with the EOA the page sent with the confirmed write (r95: the native EOA hint). It never
+	 *  changes the sync result: a throw here is ignored. Optional. */
 	onSynced?: (eoa: string) => void
 	/** QA boot markers (sync=send|reply|retry seq=n). The default does nothing; the app-wide sync reports through bootTrace. */
 	trace?: (event: BootSyncEvent, seq: number) => void
 	/** The transaction number of a sync: shared and persistent in the app (shellTxSeq); a local counter when not given (tests). */
 	nextSeq?: () => number
+	/** The cipher request (spec 30.1 / §29 section 6): one transaction; the default is sendPwaWalletSyncCipher. Optional (tests). */
+	sendCipher?: (txId: number, cipher: Record<string, unknown>, passcode?: string) => Promise<PwaSyncReply>
 }
 
 export type ShellMnemonicSync = {
 	sync: (mnemonic: string, eoa: string) => Promise<SyncOutcome>
+	/** The v3 cipher sync (spec 30.1 and 2.3): synced only on the shell's read-back confirmation (stored, readback match). The cipher is sent exactly as stored. */
+	syncCipher: (cipher: Record<string, unknown>, eoa: string, passcode?: string) => Promise<SyncOutcome>
 }
 
 /**
- * step 6 (P2, draft 24.2): the page sends its mnemonic to the shell only when the page's own evidence is valid: the phrase derives to
+ * r92 step 6 (P2, draft 24.2): the page sends its mnemonic to the shell only when the page's own evidence is valid: the phrase derives to
  * the EOA it reports (BIP-39, m/44'/60'/0'/0/0). Unknown, a confirmed empty store, or a phrase that does not derive gives nothing.
  */
 export function pageSyncPayload(evidence: { kind: string; phrase?: string; eoa?: string; nativeValidated?: boolean }): { phrase: string; eoa: string } | null {
@@ -68,14 +72,14 @@ export function pageSyncPayload(evidence: { kind: string; phrase?: string; eoa?:
 	const phrase = typeof evidence.phrase === 'string' ? evidence.phrase.trim() : ''
 	const eoa = typeof evidence.eoa === 'string' ? evidence.eoa.toLowerCase() : ''
 	if (!phrase || !eoa) return null
-	//a native-validated copy carries the native EOA; the page does not derive it again
+	// r94: a native-validated copy carries the native EOA; the page does not derive it again
 	if (evidence.nativeValidated === true) return { phrase, eoa }
 	return mnemonicEoa(phrase) === eoa ? { phrase, eoa } : null
 }
 
 export function createShellMnemonicSync(deps: ShellMnemonicSyncDeps): ShellMnemonicSync {
 	let latest = 0
-	// (PHRASE_ONLY, E5.1): a failed write is not retried by itself; the next attempt (a user retry) re-reads first
+	// r94 (PHRASE_ONLY, E5.1): a failed write is not retried by itself; the next attempt (a user retry) re-reads first
 	let writeFailedPending = false
 	let localCount = 0
 	const nextSeq = deps.nextSeq ?? (() => ++localCount)
@@ -85,7 +89,7 @@ export function createShellMnemonicSync(deps: ShellMnemonicSyncDeps): ShellMnemo
 			// one number for the whole sync: a retry is sent with the same number (the shell accepts it again)
 			const tx = nextSeq()
 			latest = tx
-			// step 6 (P2): an empty phrase or an EOA that is not an address is never sent (no empty write reaches the store)
+			// r92 step 6 (P2): an empty phrase or an EOA that is not an address is never sent (no empty write reaches the store)
 			if (!mnemonic.trim() || !/^0x[0-9a-fA-F]{40}$/.test(eoa)) return { kind: 'unavailable', tx }
 			if (!deps.bridgeAvailable()) return { kind: 'unavailable', tx }
 			// a user retry after a failed write: the native state is read again first; unknown holds, nothing is sent
@@ -154,6 +158,45 @@ export function createShellMnemonicSync(deps: ShellMnemonicSyncDeps): ShellMnemo
 			setShellSyncState({ kind: 'failed', code, retryable, reason })
 			return { kind: 'failed', tx, code, retryable, reason }
 			},
+		async syncCipher(cipher: Record<string, unknown>, eoa: string, passcode?: string): Promise<SyncOutcome> {
+			const tx = nextSeq()
+			latest = tx
+			if (!cipher || typeof cipher !== 'object' || !/^0x[0-9a-fA-F]{40}$/.test(eoa)) return { kind: 'unavailable', tx }
+			if (!deps.bridgeAvailable()) return { kind: 'unavailable', tx }
+			const send = deps.sendCipher ?? ((t: number, c: Record<string, unknown>, p?: string) => sendPwaWalletSyncCipher(SHELL_MNEMONIC_SYNC_COMMAND, t, c, p))
+			// a request that carries the passcode is sent once: the passcode is used for this one request only and is never retried or logged
+			const delays = passcode === undefined ? deps.retryDelaysMs : []
+			setShellSyncState({ kind: 'syncing' })
+			let code: ShellSyncCode = 'no_answer'
+			let retryable = true
+			for (let attempt = 0; attempt <= delays.length; attempt++) {
+				if (attempt > 0) {
+					await deps.wait(delays[attempt - 1])
+					if (tx !== latest) return { kind: 'superseded', tx }
+				}
+				let reply: PwaSyncReply
+				try {
+					reply = await send(tx, cipher, passcode)
+				} catch {
+					reply = { code: 'no_answer' }
+				}
+				if (tx !== latest) return { kind: 'superseded', tx }
+				// completed only on the shell's read-back confirmation (spec 30.1: stored and readback match), mapped by mapCipherSyncReply
+				if (reply.code === 'ok') {
+					writeFailedPending = false
+					setShellSyncState({ kind: 'synced' })
+					return { kind: 'synced', tx }
+				}
+				code = reply.code as ShellSyncCode
+				// no_answer is retried on the schedule; write_failed is not retried by itself (30.4); the passcode-branch codes are not retried
+				retryable = code === 'no_answer' || code === 'write_failed' || code === 'stale_seq'
+				if (code !== 'no_answer') break
+				deps.log(`[shellMnemonicSync] cipher transaction ${tx} attempt ${attempt + 1} not confirmed (${code}); retry`)
+			}
+			deps.log(`[shellMnemonicSync] cipher transaction ${tx} not confirmed (${code}); the page record is unchanged`)
+			setShellSyncState({ kind: 'failed', code, retryable })
+			return { kind: 'failed', tx, code, retryable }
+		},
 	}
 }
 
@@ -182,7 +225,7 @@ export async function rereadNativeAccountState(): Promise<'valid' | 'absent' | '
 
 /** The app-wide sync. It is started after the home is entered and never awaited by the route. */
 export const shellMnemonicSync: ShellMnemonicSync = createShellMnemonicSync({
-	//the production request goes over the shell transport (window or iOS chat); a test or a shell may install another sender.
+	// r94: the production request goes over the shell transport (window or iOS chat); a test or a shell may install another sender.
 	send: (command, txId, mnemonic, eoa) => (bridgeSender ? bridgeSender(command, txId, mnemonic, eoa) : sendPwaWalletSync(command, txId, mnemonic, eoa)),
 	reread: () => rereadNativeAccountState(),
 	retryDelaysMs: RETRY_DELAYS_MS,
@@ -194,7 +237,7 @@ export const shellMnemonicSync: ShellMnemonicSync = createShellMnemonicSync({
 	bridgeAvailable: () => bridgeSender !== null || pwaWalletSyncTransportAvailable(),
 	trace: (event, seq) => markBootSync(event, seq),
 	nextSeq: nextShellTxSeq,
-	//a confirmed sync records the account EOA as the native EOA hint (the native wallet's public address). The module is loaded
+	// r95: a confirmed sync records the account EOA as the native EOA hint (the native wallet's public address). The module is loaded
 	// lazily so this file does not import the native wallet statically.
 	onSynced: (eoa) => {
 		void import('./nativeWallet').then((m) => m.rememberNativeEoa(eoa)).catch(() => undefined)

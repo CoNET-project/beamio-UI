@@ -2,13 +2,13 @@
  * @jest-environment node
  */
 /**
- * /: the SSE start's step timeouts (the signing round trip and the entry wrap). A step that does not answer in time rejects
+ * R76-3 / R77: the SSE start's step timeouts (the signing round trip and the entry wrap). A step that does not answer in time rejects
  * with a named error; the start-up error log carries its class (sign_timeout, wrap_timeout, fetch_failed, other). Runs the SDK build
  * (vendor/conet-chat-sdk/dist, rebuilt from the source before this test).
  */
 import { ListenStepError, LISTEN_SIGN_TIMEOUT_MS, WRAP_TIMEOUT_MS, listenErrorClass, listenErrorLogLine, listenStatusReason, sanitizeErrorMessage, withStepTimeout } from '../../vendor/conet-chat-sdk/dist/worker/gossip-core.js'
 
-describe('SSE start step timeouts', () => {
+describe('SSE start step timeouts (R76-3, R77)', () => {
 	afterEach(() => {
 		jest.useRealTimers()
 	})
@@ -62,12 +62,12 @@ describe('SSE start step timeouts', () => {
 		expect(listenErrorClass(undefined)).toBe('other')
 	})
 
-	it('the status reason is the class only, never the raw message', () => {
+	it('R79: the status reason is the class only, never the raw message', () => {
 		expect(listenStatusReason(new ListenStepError('sign'))).toBe('sign_timeout')
 		expect(listenStatusReason(new Error('leaked 0xABCDEF0123456789ABCDEF'))).toBe('other')
 	})
 
-	it('the log line carries the class for named errors, and a sanitized message for other', () => {
+	it('R79: the log line carries the class for named errors, and a sanitized message for other', () => {
 		expect(listenErrorLogLine(new ListenStepError('wrap'))).toBe('startListen error [wrap_timeout]')
 		const line = listenErrorLogLine(new Error('bad 0x0123456789abcdef0123 and -----BEGIN PGP PRIVATE KEY BLOCK----- x -----END PGP PRIVATE KEY BLOCK-----'))
 		expect(line).toContain('startListen error [other]:')
@@ -76,7 +76,7 @@ describe('SSE start step timeouts', () => {
 		expect(line).toContain('[armor]')
 	})
 
-	it('sanitizeErrorMessage removes long hex and base64 runs and cuts the text', () => {
+	it('R79: sanitizeErrorMessage removes long hex and base64 runs and cuts the text', () => {
 		expect(sanitizeErrorMessage('a b '.repeat(100))).toHaveLength(120)
 		expect(sanitizeErrorMessage('key QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY= end')).not.toContain('QUJD')
 	})

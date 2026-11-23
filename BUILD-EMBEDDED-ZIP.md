@@ -14,9 +14,10 @@ Scope: the single `SilentPassUI.zip` that the iOS and Android shells embed. Not 
    (`scripts/inject-qa-update-json.js`) writes `build/update.json` from `package.json` only. It is wired only into the shell ZIP
    scripts (`build:shell-embedded`, `build:shell-qa-embedded`). Other build scripts must not inject.
 5. Never change the repository `public/update.json` for a ZIP. It is the public OTA manifest and changes only in an approved OTA publication.
-6. Package: copy `build/` to a staging directory, remove `*.map`, remove `sourceMappingURL` lines from `*.js`, `*.css`, `*.html`,
-   set all timestamps to `202611210000`, list files with `LC_ALL=C sort`, and create the archive with `zip -X -D -q -@`.
-   The ZIP must contain exactly one `update.json` at the root and no nested ZIP.
+6. Package: run `PACK_OUT=/path/outside/the/repo/SilentPassUI.zip npm run pack:shell-embedded` (`scripts/pack-embedded-zip.sh [build-dir] <output-zip>`; the build directory defaults to `build`, the output path is required and must be outside the repository so that `git status` stays empty). The script copies `build/` to a staging directory, removes `*.map` and the `sourceMappingURL` lines from `*.js`, `*.css` and `*.html`, sets `TZ=UTC`, `LC_ALL=C` and
+   `umask 022`, sets every file to mode 644 and every directory to 755, sets all timestamps to `202611210000`, lists the files with `LC_ALL=C sort`, and creates the archive with
+   `zip -X -D -q -@`. It needs Info-ZIP `zip` and stops with an error if it is missing (no other archiver is used). It prints the path, the entry count and the SHA-256, and warns when the Node
+   version differs from `.nvmrc` (the frozen build environment, Node 22.23.3). The ZIP must contain exactly one `update.json` at the root and no nested ZIP; the script refuses otherwise.
 7. Record, with the ZIP:
    - the build script name (`build:shell-qa-embedded` or `build:shell-embedded`) and the environment variables actually set by that script (record the expansion used, not a generic list)
      (`GENERATE_SOURCEMAP`, `REACT_APP_BEAMIO_BOOT_TRACE`, `REACT_APP_SHELL_BUILD`, `REACT_APP_PGP_IDENTITY_CREATE_ENABLED`, `PUBLIC_URL`),

@@ -7,7 +7,13 @@
  */
 const mockPouch = jest.fn()
 jest.mock('pouchdb', () => ({ __esModule: true, default: (...args: unknown[]) => mockPouch(...args) }))
-jest.mock('@/services/argon2WorkerBridge', () => ({ argon2idAsync: jest.fn() }))
+// argon2idAsync must not run in these tests (the PBKDF2 stand-in is removed). The bridge module cannot load in jest (import.meta),
+// so it stays mocked, but a call fails closed. A test that needs the v3 KDF injects it with setMnemonicKdfForTest.
+jest.mock('@/services/argon2WorkerBridge', () => ({
+	argon2idAsync: () => {
+		throw new Error('argon2idAsync must not run in this test: inject the v3 KDF with setMnemonicKdfForTest')
+	},
+}))
 jest.mock('@/services/beamioTagWorkerBridge', () => ({ searchBeamioTagRemote: jest.fn() }))
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires

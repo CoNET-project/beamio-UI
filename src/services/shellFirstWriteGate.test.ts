@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- * 2026-11-20: the first write that creates the native record waits for the native pwaWalletSync of the same account to be
+ * the first write that creates the native record waits for the native pwaWalletSync of the same account to be
  * confirmed ok. The native side is a fake at the transport (it keeps its own wallet fields, as a native store does after the sync).
  * Synthetic values only: the BIP-39 public test vector and its address.
  */

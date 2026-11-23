@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * The write refusal (0.53.39, independent review 4fd31f0a, item 1): a write that could lose a stored secret, or whose identity is not
+ * The write refusal (0.53.39, independent review item 1): a write that could lose a stored secret, or whose identity is not
  * certain, is refused before anything is written. Synthetic values only.
  */
 import { assertStoredSecretsKept, keepStoredSecretsForEmptySlots } from './walletVault'

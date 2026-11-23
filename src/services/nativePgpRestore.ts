@@ -80,7 +80,7 @@ export type PgpEvaluation =
 	/**1: a temporary state (undetermined). Retried, never terminal, never a missing PGP. */
 	| { kind: 'source_unavailable' }
 
-/** The legacy and chain fields (RULING 617d3dd9): a missing or unknown value is unknown, never a confirmation. */
+/** The legacy and chain fields (first-identity rule): a missing or unknown value is unknown, never a confirmation. */
 function fieldsOf(r: Loose): { legacy: LegacyReportState; chain: ChainRegistrationState } {
 	const legacy = typeof r.legacy === 'string' && LEGACY_REPORT_STATES.includes(r.legacy) ? (r.legacy as LegacyReportState) : 'unknown'
 	const chain = typeof r.chain === 'string' && CHAIN_REGISTRATION_STATES.includes(r.chain) ? (r.chain as ChainRegistrationState) : 'unknown'
@@ -110,7 +110,7 @@ async function ackFor(cmd: Loose, timeoutMs: number, reqId: number): Promise<{ k
 	if (p.type !== 'ack') return { kind: 'unavailable' }
 	if (p.ok === true) return { kind: 'ok', result: p.result }
 	const code = typeof p.error === 'string' ? p.error : ''
-	// not_ready is unknown and retryable: the code is returned as-is and evaluate maps it to the temporary
+	// not_ready is unknown and retryable (the decision): the code is returned as-is and evaluate maps it to the temporary
 	// source state (never a terminal result).
 	if (code === PGP_NOT_READY) return { kind: 'refused', code }
 	return REFUSAL_CODES.includes(code) ? { kind: 'refused', code } : { kind: 'refused', code: 'unknown_ack' }
@@ -146,7 +146,7 @@ function waitForResult(eventType: string, reqId: number, timeoutMs: number): { p
 /** The code of a temporary source state (1.1): retried, not a terminal result. It appears as the ack error or in result.code. */
 export const PGP_SOURCE_UNAVAILABLE = 'pgp_source_unavailable'
 /**
- *43608b3d): `not_ready` is unknown and retryable. It is the same temporary state as pgp_source_unavailable: no
+ * Decision (2026-11-21): `not_ready` is unknown and retryable. It is the same temporary state as pgp_source_unavailable: no
  * missing key is concluded, no new PGP is generated, no success is shown, and the usual backoff and manual retry apply.
  */
 export const PGP_NOT_READY = 'not_ready'
@@ -231,7 +231,7 @@ export function newIdempotencyKey(): string {
 export { PGP_IDENTITY_CREATE_ENABLED }
 
 export async function nativeGenerateNewPgpKey(accountKey: string, idempotencyKey: string = newIdempotencyKey()): Promise<PgpCreateOutcome> {
-	// RULING 617d3dd9: the command is refused without the first-identity confirmation, in every build (no send).
+	// first-identity rule: the command is refused without the first-identity confirmation, in every build (no send).
 	if (!pgpCreateEligible(accountKey)) return { ok: false, reason: 'not_eligible' }
 	if (!PGP_IDENTITY_CREATE_ENABLED) return { ok: false, reason: 'not_enabled' }
 	return sendNativePgpIdentityCreate(accountKey, idempotencyKey)

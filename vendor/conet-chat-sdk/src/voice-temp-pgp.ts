@@ -1,5 +1,5 @@
 /**
- * Per-call temporary PGP key for one voice channel user side.
+ * Per-call temporary PGP key for one voice channel user side (v89 §96, v96 §103.4; decision).
  *
  * Generated with a CSPRNG (openpgp) on the device, held in memory only, never reused across calls, and
  * forgotten (cleared) when the call ends. It is never the long-term chat PGP key, and it never falls back to it.
@@ -43,7 +43,7 @@ export function forgetTemporaryPgpKey(key: { privateArmor: string }): void {
 }
 
 /**
- * Binding check: the fingerprint computed from the peer's `tempPgpArmor` must equal the `tempPgpFpr`
+ * Binding check (v100 §107.4, case K): the fingerprint computed from the peer's `tempPgpArmor` must equal the `tempPgpFpr`
  * signed in the authorization, character for character. Anything else is refused.
  */
 export async function tempPgpArmorMatchesFingerprint(publicArmor: string | undefined, signedFpr: string): Promise<boolean> {

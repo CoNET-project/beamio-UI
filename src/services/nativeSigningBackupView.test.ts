@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * (Android review): no raw native reason is shown; unknown_command and not_supported give the neutral update copy. NB-1…NB-4
+ * no raw native reason is shown; unknown_command and not_supported give the neutral update copy. NB-1…NB-4
  * are my own naming. The two screens are checked statically (no raw reason passed to the text).
  */
 import { readFileSync } from 'fs'

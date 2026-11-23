@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- *the three entry points take the native path for a native-validated copy and never call the
+ * r94 (R-PWA-R94-01 reachability): the three entry points take the native path for a native-validated copy and never call the
  * sealed-credential hold or the phrase hold. rule B/G (2026-11-17): a copy is validated only when the native flag, a BIP-39-valid
  * mnemonic and a keyID equal to the native walletEoaAddress all hold; the page never derives the EOA of a validated copy.
  * SYNTHETIC values only: the phrase is the public BIP-39 test vector; eoa1 is the address it derives to.
@@ -25,7 +25,7 @@ const loaded = (data: Record<string, unknown>, copyValidated = true): CheckStora
 /** A validated copy for eoa1: a valid mnemonic whose derived address is the keyID. */
 const copyFor = (over: Record<string, unknown> = {}) => ({ profiles: [{ keyID: eoa1 }], mnemonicPhrase: PHRASE, ...over })
 
-describe('isNativeCopyValidated', () => {
+describe('isNativeCopyValidated (: flag + BIP-39 checksum + keyID = native EOA)', () => {
 	it('true only for a validated copy of this account', () => {
 		expect(isNativeCopyValidated(loaded(copyFor()), eoa1)).toBe(true)
 		expect(isNativeCopyValidated(loaded(copyFor()), eoa2)).toBe(false)
@@ -39,7 +39,7 @@ describe('isNativeCopyValidated', () => {
 	})
 })
 
-describe('the validated flag follows the shell read rule', () => {
+describe('the validated flag follows the shell read rule (: recoveryWords are not a phrase; checksum required)', () => {
 	it('a valid mnemonicPhrase is validated; recoveryWords alone, an invalid phrase, or neither is not', () => {
 		expect(validatedCopyAccount({ copyValidated: true, eoa: eoa1, record: copyFor() })).toBe(true)
 		expect(validatedCopyAccount({ copyValidated: true, eoa: eoa1, record: { mnemonicPhrase: '', recoveryWords: 'a b c', profiles: [{ keyID: eoa1 }] } })).toBe(false)
@@ -115,7 +115,7 @@ describe('entry point 3: restorePageCopy (race and snapshot)', () => {
 	})
 })
 
-describe('gate evidence: a validated copy takes the native EOA; the page does not derive it', () => {
+describe('r94 gate evidence: a validated copy takes the native EOA; the page does not derive it', () => {
 	it('isNativeCopyValidated with no account: any validated copy with a valid phrase, and not an unvalidated one', () => {
 		expect(isNativeCopyValidated(loaded(copyFor()), '')).toBe(true)
 		expect(isNativeCopyValidated(loaded(copyFor(), false), '')).toBe(false)

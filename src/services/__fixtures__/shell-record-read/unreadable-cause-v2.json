@@ -2,7 +2,7 @@
   "vectorSet": "unreadable-cause",
   "version": "v2",
   "supersedes": "earlier unreadable-cause v1 vector (envelope shape superseded; semantic reference only)",
-  "authority": "shell record read answer-shape v1 vector (sha256 aa9ddccc…150b)",
+  "authority": "shell record read answer-shape v1 vector (sha256 a3f3f193…2617)",
   "status": "新文件（v2，权威形状）；v1 原件不改",
   "causes": {
     "entitlement": { "retryable": false, "examples": ["-34018"] },

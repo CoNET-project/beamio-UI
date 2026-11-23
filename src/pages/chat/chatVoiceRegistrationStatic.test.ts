@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * Static check of the connected-call registration wiring (review c92bc5e (C), the mount effect resets the unmount marker,
+ * Static check of the connected-call registration wiring (review (C), v70 §77): the mount effect resets the unmount marker,
  * so React.StrictMode's dev-only simulated unmount/remount cannot leave a stale registration.
  */
 import { readFileSync } from 'fs'

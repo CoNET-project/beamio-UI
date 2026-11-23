@@ -1,61 +1,48 @@
 /**
- * Passcode policy and backoff against the shared vector file (passcode-vectors.v1.json; sha256 prefix
- * fec956944a45ca52 after the metadata-only edits recorded in PROVENANCE.md).
- * SYNTHETIC values only.
+ * Six-digit passcode policy (unit f3, decision 2026-11-22). Applied only when a passcode is set or changed.
+ * SYNTHETIC values only. The 8–12 digit vector list (passcode-vectors.v1.json) and the 8-digit birthday rule are retired.
  */
-import { createHash } from 'crypto'
-import { readFileSync } from 'fs'
-import { join } from 'path'
-import { backoffSecondsAfter, checkPasscodePolicy, isBirthdayLike8 } from './passcodeRules'
+import { checkPasscodePolicy, PASSCODE_DIGITS } from './passcodeRules'
 
-const VECTOR_PATH = join(__dirname, 'passcode-vectors.v1.json')
-const vectors = JSON.parse(readFileSync(VECTOR_PATH, 'utf8'))
-
-
-describe('shared vectors', () => {
-	it('the published vector file matches its recorded sha256 prefix', () => {
-		const hash = createHash('sha256').update(readFileSync(VECTOR_PATH)).digest('hex')
-		expect(hash.slice(0, 16)).toBe('fec956944a45ca52')
+describe('six-digit policy: accepted and refused (decision 2026-11-22)', () => {
+	it('uses exactly six digits', () => {
+		expect(PASSCODE_DIGITS).toBe(6)
 	})
 
-	for (const c of vectors.policy.cases as Array<{ passcode: string; expectOk: boolean; expectReason?: string; result: { ok: boolean; reason?: string } }>) {
-		it(`policy case ${c.passcode}`, () => {
-			const got = checkPasscodePolicy(c.passcode)
-			if (c.expectOk) {
-				expect(got).toEqual({ ok: true })
-			} else {
-				expect(got).toEqual({ ok: false, reason: (c.expectReason ?? c.result.reason) })
-			}
-		})
-	}
-
-	it('backoff table matches the vector schedule', () => {
-		for (const row of vectors.backoff.schedule) {
-			expect(backoffSecondsAfter(row.consecutiveFailures)).toBe(row.cooldownSec)
-		}
-	})
-})
-
-describe('rules beyond the vector list', () => {
-	it('refuses 8-digit birthday-like values (YYYYMMDD, MMDDYYYY, DDMMYYYY) with a valid date and year 1900–2099', () => {
-		expect(checkPasscodePolicy('19900315')).toEqual({ ok: false, reason: 'birthday' })
-		expect(checkPasscodePolicy('03151990')).toEqual({ ok: false, reason: 'birthday' })
-		expect(checkPasscodePolicy('15031990')).toEqual({ ok: false, reason: 'birthday' })
+	it('accepts an ordinary six-digit code', () => {
+		expect(checkPasscodePolicy('395784')).toEqual({ ok: true })
+		expect(checkPasscodePolicy('802461')).toEqual({ ok: true })
 	})
 
-	it('accepts 8-digit values that are not valid dates, and years outside 1900–2099', () => {
-		expect(isBirthdayLike8('20250230')).toBe(false) // no February 30
-		expect(isBirthdayLike8('21001231')).toBe(false) // year 2100
+	it('refuses non-digits, and lengths other than six', () => {
+		expect(checkPasscodePolicy('39578a')).toEqual({ ok: false, reason: 'non_digit' })
+		expect(checkPasscodePolicy('39578')).toEqual({ ok: false, reason: 'too_short' })
+		expect(checkPasscodePolicy('3957845')).toEqual({ ok: false, reason: 'too_long' })
+		expect(checkPasscodePolicy('12395784')).toEqual({ ok: false, reason: 'too_long' })
 	})
 
-	it('refuses a two-digit cycle and a six-digit run, in spec order', () => {
-		expect(checkPasscodePolicy('12121212')).toEqual({ ok: false, reason: 'repeat_pair' })
-		expect(checkPasscodePolicy('48123456')).toEqual({ ok: false, reason: 'sequence' })
-		expect(checkPasscodePolicy('98765432')).toEqual({ ok: false, reason: 'sequence' })
+	it('refuses all-same digits', () => {
+		expect(checkPasscodePolicy('000000')).toEqual({ ok: false, reason: 'all_same' })
+		expect(checkPasscodePolicy('777777')).toEqual({ ok: false, reason: 'all_same' })
 	})
 
-	it('accepts an ordinary random-looking 8 to 12 digit code', () => {
-		expect(checkPasscodePolicy('482915736')).toEqual({ ok: true })
-		expect(checkPasscodePolicy('739104862517')).toEqual({ ok: true })
+	it('refuses a repeated pair (ababab)', () => {
+		expect(checkPasscodePolicy('121212')).toEqual({ ok: false, reason: 'repeat_pair' })
+		expect(checkPasscodePolicy('909090')).toEqual({ ok: false, reason: 'repeat_pair' })
+	})
+
+	it('refuses common six-digit values', () => {
+		expect(checkPasscodePolicy('135790')).toEqual({ ok: false, reason: 'common' })
+		expect(checkPasscodePolicy('159753')).toEqual({ ok: false, reason: 'common' })
+	})
+
+	it('refuses a six-digit run, increasing or decreasing', () => {
+		expect(checkPasscodePolicy('123456')).toEqual({ ok: false, reason: 'common' }) // common is checked first
+		expect(checkPasscodePolicy('234567')).toEqual({ ok: false, reason: 'sequence' })
+		expect(checkPasscodePolicy('987654')).toEqual({ ok: false, reason: 'sequence' })
+	})
+
+	it('no longer refuses 8-digit birthday-like values (rule deleted); the length check applies instead', () => {
+		expect(checkPasscodePolicy('19900315')).toEqual({ ok: false, reason: 'too_long' })
 	})
 })

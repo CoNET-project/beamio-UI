@@ -1,5 +1,5 @@
 /**
- * An unrecognised passcodeStatus shape gives a named reason: a clear diagnostic, never a silent unknown.
+ * An unrecognised passcodeStatus shape gives a named reason (2026-11-21): a clear diagnostic, never a silent unknown.
  */
 import { passcodeUnknownReason } from './nativeRecovery'
 
@@ -27,7 +27,7 @@ describe('passcodeUnknownReason', () => {
 
 import { walletStatusUnknownReason } from './nativeRecovery'
 
-describe('walletStatusUnknownReason', () => {
+describe('walletStatusUnknownReason (2026-11-21: the walletStatus unknown branch is named too)', () => {
 	it('a usable walletStatus has no reason', () => {
 		expect(walletStatusUnknownReason({ type: 'ack', ok: true, result: { status: 'no_key' } }, true)).toBeNull()
 		expect(walletStatusUnknownReason({ type: 'ack', ok: true, result: { status: 'not_ready', notReadyReason: 'unreadable' } }, true)).toBeNull()
@@ -44,7 +44,7 @@ describe('walletStatusUnknownReason', () => {
 	})
 })
 
-describe('a mnemonic word in a status code is printed as other', () => {
+describe('a mnemonic word in a status code is printed as other (2026-11-21)', () => {
 	it('walletState and status carrying a BIP-39 word print other', () => {
 		expect(passcodeUnknownReason({ type: 'ack', ok: true, result: { walletState: 'abandon' } }, true)).toBe('wallet_state_unrecognised:other')
 		expect(walletStatusUnknownReason({ type: 'ack', ok: true, result: { status: 'legal' } }, true)).toBe('status_unrecognised:other')

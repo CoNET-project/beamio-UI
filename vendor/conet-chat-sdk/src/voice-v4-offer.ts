@@ -1,7 +1,7 @@
 /**
- * Caller side of voice protocol v4.
+ * Caller side of voice protocol v4 (browser mode, v101 §108.2–108.4, §108.7 step 1).
  * The caller creates cv and cV before it sends the offer: per channel a CSPRNG locator/key/write-key, a temporary
- * wallet T, a temporary OpenPGP key (decision 5a676140), and the account's voice_pgp_auth_v1 authorization.
+ * wallet T, a temporary OpenPGP key (decision), and the account's voice_pgp_auth_v1 authorization.
  * Temporary secrets stay in memory; only the public fields go into the offer.
  */
 import { ethers } from 'ethers'
@@ -69,7 +69,7 @@ export async function signOfferV4(
 }
 
 /**
- * Verifies a received offer v4: the signature recovers `from`; `to` is the local account; timestamp equals
+ * Verifies a received offer v4 (§108.7 step 1): the signature recovers `from`; `to` is the local account; timestamp equals
  * createdAt; not expired; the chansDigest recomputes; each channel's authorization and armor fingerprint hold.
  * Returns false otherwise (the caller drops the offer silently).
  */
@@ -97,7 +97,7 @@ export async function verifyOfferV4(
 	}
 	for (const [label, ch] of [['cv', offer.cv], ['cV', offer.cV]] as const) {
 		// The verifier rebuilds the voice_pgp_auth_v1 canonical with the channel's top-level tempPgpFpr and checks the signature
-		//. An upper-case or malformed value, or any field in auth beyond {from, validUntil, sig}, is refused inside verifyVoiceAuth.
+		// (v111 §128). An upper-case or malformed value, or any field in auth beyond {from, validUntil, sig}, is refused inside verifyVoiceAuth.
 		if (typeof ch.tempPgpFpr !== 'string') return false
 		if (!verifyVoiceAuth(ch.auth, { callId: offer.callId, sessionId: offer.sessionId, channel: label, temp: ch.temp, tempPgpFpr: ch.tempPgpFpr }, offer.from, nowMs, offer.expiresAt)) return false
 		// The armor must hash to the same fingerprint, character for character (case K). An empty fingerprint means no armor.

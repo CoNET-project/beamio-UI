@@ -1,5 +1,5 @@
 /**
- * accountCleanupOld v3 vector (pinned by SHA256 51f71328…6519f). The file is read from the repository copy only.
+ * accountCleanupOld v3 vector (pinned by SHA256 2bec3aa8…dff564). The file is read from the repository copy only.
  * Each case's answer maps to the PWA outcome: ok clears the journal; clear_incomplete is resumable; any other answer is a refusal that keeps the
  * marker and deletes nothing.
  */
@@ -9,7 +9,7 @@ import { join } from 'path'
 import { accountCleanupOutcomeOf } from './accountCleanupOld'
 
 const PATH = join(__dirname, '__fixtures__', 'accountCleanupOld', 'accountCleanupOld-v3.json')
-const SHA256 = '51f71328ba30f9019fc00fb8b3ae31c818910d8a3bc9b065a2c483a61856519f'
+const SHA256 = '2bec3aa8d5bb1264b2ae0fa1d3dc01e4c33c8714c085ad542392e40b33dff564'
 
 describe('accountCleanupOld v3 vector (pinned by SHA256)', () => {
 	it('the copied file exists and matches the pinned SHA256', () => {

@@ -1,6 +1,6 @@
 /**
- * The trigger rule of the old-account cleanup (2026-11-21: the cleanup runs silently after a completed recovery, with no extra
- * pick and no notice; the rule keeps the recovery-success and read-back criteria). It runs only when:
+ * The trigger rule of the old-account cleanup (owner decision, 2026-11-21: the cleanup runs silently after a completed recovery, with no extra
+ * pick and no notice; the owner's rule keeps the recovery-success and read-back criteria). It runs only when:
  * - the native recovery succeeded (ok), and
  * - the page's IDB-derived account address and the native address agree (both valid lower-case 0x + 40 hex; unreadable or different does not agree),
  * - and no cleanup for this account is already running or done (a repeated callback never deletes twice).
@@ -31,7 +31,7 @@ export function cleanupMayRun(input: { nativeRecoveryOk: boolean; readBack: bool
 const ACCOUNT_KEY_RE = /^0x[0-9a-f]{40}$/
 
 /**
- * The accountKey of the cleanup command: the account address the page reads from IDB and derives, lower-case 0x + 40 hex.
+ * The accountKey of the cleanup command (v191 §211): the account address the page reads from IDB and derives, lower-case 0x + 40 hex.
  * Returns it, or null when it cannot be read or is malformed. A null means no cleanup command is sent. Pure.
  */
 export function confirmationAccountKey(readAddress: unknown): string | null {

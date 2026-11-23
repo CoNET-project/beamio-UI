@@ -15,17 +15,35 @@ const App = require('./App').default
 const { DaemonProvider } = require('@/providers/DaemonProvider')
 
 const EOA = '0x1111111111111111111111111111111111111111'
-// Spec pre-read: a valid answer must derive its EOA from the phrase, so the phrase is the public BIP-39 test vector.
+// Spec r2.5.x pre-read: a valid answer must derive its EOA from the phrase, so the phrase is the public BIP-39 test vector (SYNTHETIC).
 const SAMPLE_PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
 const SAMPLE_EOA = '0x9858effd232b4033e47d90003d41ec34ecaeda94'
 
 // Controlled by each case: how the App's storage read ends, and when the native wallet arrives.
-const race: { storage: 'null' | 'late-null'; storageResolve?: (v: unknown) => void; nativeResolve?: (v: unknown) => void; prereadResolve?: (v: unknown) => void; releaseStorage?: () => void } = { storage: 'null' }
+const race: { storage: 'null' | 'late-null'; storageResolve?: (v: unknown) => void; nativeResolve?: (v: unknown) => void; releaseStorage?: () => void; preadAsked: number; writes: number } = { storage: 'null', preadAsked: 0, writes: 0 }
+/** The native pre-read is the real transport; the window host answers it (the App.nativeLateReply shape). A valid answer carries the phrase and its EOA. */
+const VALID_ANSWER = { ok: true, result: { code: 'ok', mnemonic: SAMPLE_PHRASE, eoa: SAMPLE_EOA } }
+let hostOnMessage: ((ev: unknown) => void) | null = null
+function installNativeHost(): void {
+	const host = {
+		postMessage: (text: string) => {
+			const cmd = JSON.parse(text) as { type: string; reqId: number }
+			if (cmd.type !== 'nativeMnemonicPreread') return
+			race.preadAsked += 1
+			setTimeout(() => hostOnMessage?.({ data: JSON.stringify({ type: 'ack', reqId: cmd.reqId, ...VALID_ANSWER }) }), 0)
+		},
+		get onmessage() { return hostOnMessage },
+		set onmessage(fn: ((ev: unknown) => void) | null) { hostOnMessage = fn },
+	}
+	;(window as unknown as { BeamioShellRecord: unknown }).BeamioShellRecord = host
+}
 
 jest.mock('@/services/shellContext', () => ({ isShellContext: () => true }))
 // jsdom cannot derive a wallet (its Uint8Array is another realm than ethers'); the derivation is covered in the node tests. The route is what this file checks.
 jest.mock('@/services/shellSessionSigner', () => ({ ...jest.requireActual('@/services/shellSessionSigner'), holdShellSessionFromPhrase: () => ({ kind: 'ok' }) }))
 jest.mock('@/services/recoveredMnemonicRecord', () => ({ ...jest.requireActual('@/services/recoveredMnemonicRecord'), checkRecoveredRecord: () => 'valid' }))
+// jsdom cannot run the BIP-39 checksum (ethers Mnemonic); the word-shape check is the app's, the derivation is stubbed in the test
+jest.mock('@/services/walletCredential', () => ({ ...jest.requireActual('@/services/walletCredential'), isMnemonicPhrase: (v: unknown) => typeof v === 'string' && /^[a-z]+( [a-z]+)*$/.test(v) && [12, 24].includes(v.split(' ').length) }))
 jest.mock('@/utils/cashTreesNativeNfc', () => ({
 	isCashTreesNativeWebView: () => true,
 	getCashTreesNativeNfcBridge: () => null,
@@ -67,6 +85,8 @@ jest.mock('@/services/beamio', () => ({
 	getUserInfoLookup: async () => ({ status: 'ok', info: { accountName: 'synthtag' } }),
 	storeSystemData: async () => undefined,
 	storeSystemDataAndWait: async () => true,
+	// the pre-read write-back (page IndexedDB, read back): jsdom cannot open the device-key vault; the write is counted and reported verified
+	persistPageIdbMnemonic: async () => { race.writes += 1; return 'verified' },
 	readStoredRecordForVerify: async () => ({ mnemonicPhrase: SAMPLE_PHRASE }),
 	ensureProfilePrivateKeyArmorFromMnemonic: (x: unknown) => x,
 	bootstrapProfileLocaleCurrencyIfUnset: async (x: unknown) => x,
@@ -92,7 +112,8 @@ jest.mock('@/services/nativeRecovery', () => ({
 	queryNativeWalletStatus: async () => ({ status: 'no_key' }), // 0.53.39 stub: the start route reads walletStatus
 	queryNativePasscodeStatus: async () => ({ walletState: await (async () => 'present')(), hasKey: 'not_reported' as const }),
 	queryNativeWalletStateSafe: async () => 'present',
-	queryNativeMnemonicPreread: () => new Promise((r) => { race.prereadResolve = r }),
+	// the real pre-read (its transport and inner timeouts); the native answer comes from the window host
+	queryNativeMnemonicPreread: (...a: unknown[]) => (jest.requireActual('@/services/nativeRecovery') as { queryNativeMnemonicPreread: (...x: unknown[]) => unknown }).queryNativeMnemonicPreread(...a),
 }))
 jest.mock('@/services/shellChatCapability', () => ({ ...jest.requireActual('@/services/shellChatCapability'), ensureShellChatState: async () => 'native_chat', shellChatBlockedNow: () => false }))
 jest.mock('@/services/nativeChatRouteRegister', () => ({ ...jest.requireActual('@/services/nativeChatRouteRegister'), probeNativeCapabilities: async () => ({ answered: true, capabilities: ['identity.native-keys.v1'] }) }))
@@ -119,6 +140,8 @@ jest.mock('@/components/EmbeddedPwaUpdateBanner', () => ({ EmbeddedPwaUpdateBann
 jest.mock('@/pages/Home/LoadingPage', () => () => null)
 
 function renderApp() {
+	installNativeHost()
+	jest.spyOn(require('ethers').Wallet, 'fromPhrase').mockReturnValue({ address: SAMPLE_EOA } as never)
 	return render(
 		<DaemonProvider>
 			<MemoryRouter initialEntries={['/home']}>
@@ -132,12 +155,11 @@ describe('A+B: no record, or a failed read (the read ends empty before the nativ
 	it('the bar shows after the native-wallet entry; the chat starts, the push bind and the AA ensure run once each', async () => {
 		race.storage = 'null'
 		renderApp()
-		await waitFor(() => expect(race.prereadResolve).toBeDefined())
-		await act(async () => {
-			race.prereadResolve?.({ kind: 'valid', eoa: SAMPLE_EOA, phrase: SAMPLE_PHRASE })
-		})
+		// the page store is empty, so the pre-read is asked (IDB first); its valid answer is written back once and the bar shows
+		await waitFor(() => expect(race.preadAsked).toBe(1), { timeout: 3000 })
 		await waitFor(() => expect(screen.getByRole('button', { name: 'search' })).toBeTruthy(), { timeout: 3000 })
-		// The init runs once. The chat start is the route to the PGP restore; the push bind and the AA ensure
+		expect(race.writes).toBe(1)
+		//  The init runs once. The chat start is the route to the PGP restore; the push bind and the AA ensure
 		// are counted so a second init would show.
 		await waitFor(() => expect(mockChatStarts.length).toBe(1))
 		expect(mockPushBinds.length).toBe(1)

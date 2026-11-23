@@ -28,7 +28,7 @@ describe('the native state: walletState from passcodeStatus is the only basis ',
 
 describe('the gate: judged from the read and walletState; undetermined never onboards; locked shows the passcode page (GY)', () => {
 	it('the shell reads walletState first (one passcodeStatus read); a locked walletState shows the passcode page, judged again after the unlock', () => {
-		expect(gate).toContain('const passcode = await queryNativePasscodeStatus()')
+		expect(gate).toContain('const passcode = await capStatusRead(reqId, queryNativePasscodeStatus')
 		expect(gate).toContain('shellWalletState = passcode.walletState')
 		// the locked state is the unlock action of the judgement (accountJudgement.test.ts, "native locked: undetermined, the passcode page")
 		expect(judgeShell('absent', 'locked')).toEqual({ account: 'undetermined', action: 'unlock' })

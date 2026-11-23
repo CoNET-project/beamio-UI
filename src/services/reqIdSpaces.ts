@@ -1,14 +1,14 @@
 /**
- * The numeric reqId spaces of the native ack channel.
+ * The numeric reqId spaces of the native ack channel (0.53.39, independent review of r5).
  *
  * The shared transaction sequence (shellTxSeq.ts) is a millisecond-scale number (about 1.7e12 in 2026), not a small counter.
  * pwaWalletSync uses PWA_WALLET_SYNC_REQ_BASE + seq, and the pre-read used to use the same seq stream with a +1,000,000 offset. Two
  * requests 1,000,000 ms apart could then share a reqId while both were pending. The pre-read therefore has its own range.
  *
  * Ranges (for any millisecond-scale seq from 1.7e12 to 2.9e12):
- * PWA_WALLET_SYNC_REQ_BASE + seq ~ 9.0e8 + 1.7e12 .. 2.9e12 + 9e8 (below PREREAD_REQ_BASE)
- * PREREAD_REQ_BASE + seq 3.0e12 + 1.7e12 .. 3.0e12 + 2.9e12 (above the sync range)
- * IMPORT_REQ_BASE + importSeq 8.8e8 + a small counter (below the sync range)
+ *   PWA_WALLET_SYNC_REQ_BASE + seq   ~ 9.0e8 + 1.7e12 .. 2.9e12 + 9e8     (below PREREAD_REQ_BASE)
+ *   PREREAD_REQ_BASE + seq           3.0e12 + 1.7e12 .. 3.0e12 + 2.9e12   (above the sync range)
+ *   IMPORT_REQ_BASE + importSeq      8.8e8 + a small counter               (below the sync range)
  * The import base is a preventive choice: its counter is small and cannot meet the sequence range.
  */
 export const PWA_WALLET_SYNC_REQ_BASE = 900_000_000
@@ -22,7 +22,7 @@ export const IMPORT_REQ_BASE = 880_000_000
 export const SHELL_PASSCODE_REQ_BASE = 7_000_000_000_000
 /** Upper bound (exclusive) of the page's shell passcode counter. */
 export const SHELL_PASSCODE_REQ_LIMIT = 7_500_000_000_000
-/** The native-issued repair request range: its own counter, after the page range. Upper bound exclusive. */
+/** The native-issued repair request range (r2): its own counter, after the page range. Upper bound exclusive. */
 export const NATIVE_REPAIR_REQ_BASE = 7_500_000_000_000
 export const NATIVE_REPAIR_REQ_LIMIT = 7_600_000_000_000
 

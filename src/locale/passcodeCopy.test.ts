@@ -36,3 +36,18 @@ describe('passcode settings copy', () => {
 		expect(src).toContain("tu('passcode_settings_intro')")
 	})
 })
+
+describe('sync pending copy (f3 follow-up, item 2): an i18n key in both locales, no hard-coded string', () => {
+	it('the key exists in English and Simplified Chinese, and the Chinese is not the English text', () => {
+		expect(ui(en).passcode_sync_pending).toBe('Passcode saved. Waiting for the app to confirm the sync; it is not complete yet.')
+		expect(ui(zhCN).passcode_sync_pending).toBe('口令已保存，等待应用确认同步，尚未完成。')
+		expect(ui(zhCN).passcode_sync_pending).not.toBe(ui(en).passcode_sync_pending)
+	})
+
+	it('the settings screen reads the key through tu and the message module no longer hard-codes it', () => {
+		const screen = readFileSync(join(__dirname, '../components/Setting/PasscodeSettingsSection.tsx'), 'utf8')
+		expect(screen).toContain("tu('passcode_sync_pending')")
+		const messages = readFileSync(join(__dirname, '../services/passcode/passcodeMessages.ts'), 'utf8')
+		expect(messages).not.toContain('Waiting for the app to confirm')
+	})
+})

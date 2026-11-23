@@ -170,17 +170,17 @@ export const parseVoiceChannelsWire = (raw: unknown): VoiceChannelsWire | null =
 export const newVoiceUiKey = (): string => bytesToBase64(crypto.getRandomValues(new Uint8Array(32)))
 
 // ---------------------------------------------------------------------------
-// Alternative A: each channel's temporary wallet is generated
+// Alternative A (v78 §85, v80 §87): each channel's temporary wallet is generated
 // by the party that uses it, with a CSPRNG, and never leaves that device. Messages
 // carry only the temporary ADDRESS and an authorization signed by the channel's
 // user EOA. The private key (tk) is never sent, not even encrypted.
 // ---------------------------------------------------------------------------
 
-/** The channel labels of the caller listens on cv/cV, the callee on ev/eV. */
+/** The channel labels of §85: the caller listens on cv/cV, the callee on ev/eV. */
 export type VoiceChannelLabel = 'cv' | 'cV' | 'ev' | 'eV'
 
 /**
- * The authorization a channel user's EOA signs over a temporary address.
+ * The authorization a channel user's EOA signs over a temporary address (v77 §84.3).
  * `validUntil` is in MILLISECONDS (the same unit as Date.now() and the offer's expiresAt in ms); the pay's notAfter is in seconds.
  */
 export type VoiceChannelAuth = {
@@ -199,13 +199,13 @@ export const newTemporaryChannelWallet = (): { address: string; privateKey: stri
 	return { address: temp.address, privateKey: temp.privateKey }
 }
 
-/** The canonical text the channel user's EOA signs. */
+/** The canonical text the channel user's EOA signs (v77 §84.3; lower-case, byte for byte). */
 export const voiceAuthText = (f: {
 	callId: string
 	sessionId: string
 	channel: VoiceChannelLabel
 	temp: string
-	/** The temporary PGP public key fingerprint (lower-case hex), or '' when the channel has no user-side PGP. */
+	/** The temporary PGP public key fingerprint (lower-case hex), or '' when the channel has no user-side PGP (v89 §96.1). */
 	tempPgpFpr: string
 	from: string
 	validUntil: number
@@ -222,7 +222,7 @@ export const voiceAuthText = (f: {
 	].join('\n')
 
 /**
- * The channel user signs the authorization. The auth object is {from, validUntil, sig} only: the fingerprint
+ * The channel user signs the authorization. The auth object is {from, validUntil, sig} only (v111 §128): the fingerprint
  * `tempPgpFpr` is the channel's top-level field, rebuilt by the verifier into the canonical text.
  */
 export const signVoiceAuth = async (
@@ -236,13 +236,13 @@ export const signVoiceAuth = async (
 }
 
 /**
- * Verifies an authorization: the signature must recover `from`, `from` must be the expected
+ * Verifies an authorization (v77 §84.3, all times in milliseconds): the signature must recover `from`, `from` must be the expected
  * user EOA, `validUntil` must not have passed (`nowMs`, default Date.now()), and `validUntil` must not be later than the offer's
  * `expiresAt` (also ms). Returns false otherwise (the caller drops the message silently).
  */
 export const verifyVoiceAuth = (
 	auth: VoiceChannelAuth | null | undefined,
-	/** The channel's top-level fields; `tempPgpFpr` is the value the canonical is rebuilt with. */
+	/** The channel's top-level fields; `tempPgpFpr` is the value the canonical is rebuilt with (v111 §128). */
 	f: { callId: string; sessionId: string; channel: VoiceChannelLabel; temp: string; tempPgpFpr: string },
 	expectedFrom: string,
 	nowMs: number = Date.now(),
@@ -250,10 +250,10 @@ export const verifyVoiceAuth = (
 	expiresAtMs?: number,
 ): boolean => {
 	if (!auth || typeof auth.sig !== 'string' || typeof auth.from !== 'string') return false
-	// auth carries exactly {from, validUntil, sig}: any other field is refused.
+	// auth carries exactly {from, validUntil, sig}: any other field is refused (v111 §128).
 	const keys = Object.keys(auth).sort().join(',')
 	if (keys !== 'from,sig,validUntil') return false
-	// The fingerprint is lower-case 40-hex, or the empty placeholder. No normalisation: anything else is refused.
+	// The fingerprint is lower-case 40-hex, or the empty placeholder (v89 §96.1). No normalisation: anything else is refused.
 	if (typeof f.tempPgpFpr !== 'string' || (f.tempPgpFpr !== '' && !/^[0-9a-f]{40}$/.test(f.tempPgpFpr))) return false
 	if (!Number.isSafeInteger(auth.validUntil) || auth.validUntil < nowMs) return false
 	if (expiresAtMs !== undefined && auth.validUntil > expiresAtMs) return false

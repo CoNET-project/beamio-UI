@@ -7,8 +7,8 @@
  */
 import { ethers } from 'ethers'
 import { reuseKeepsKey } from './reuseKeepsKey'
-// argon2 runs in a Worker built with import.meta, which jest's CJS runtime cannot parse. This test never derives with argon2.
-jest.mock('@/services/argon2WorkerBridge', () => ({ argon2idAsync: jest.fn() }))
+// 模块加载桩：beamio.ts 静态导入 argon2WorkerBridge（import.meta，Jest 无法加载）。本用例不派生 KDF，不提供 argon2idAsync。
+jest.mock('@/services/argon2WorkerBridge', () => ({}))
 // Same for the BeamioTag search worker (beamio.ts imports it for the lookup path only).
 jest.mock('@/services/beamioTagWorkerBridge', () => ({ searchBeamioTagRemote: jest.fn() }))
 import { ensureProfilePrivateKeyArmorFromMnemonic } from './beamio'

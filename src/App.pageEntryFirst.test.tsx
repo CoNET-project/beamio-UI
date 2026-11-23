@@ -142,7 +142,7 @@ describe('a page-record entry before the init storage read keeps its wake-up', (
 	it('the entry is logged, the init read then ends empty; the bar shows and the chat starts once', async () => {
 		renderApp()
 		// The gate has entered on the page record while the App's first read is still in flight.
-		// rule 2026-11-16 (PWA first): the gate's entry on the page record is the valid-mnemonic route (the page is read before any native ask)
+		// the gate's entry on the page record is the valid-mnemonic route (the page is read before any native ask)
 		await waitFor(() => expect(mockLogs.some((m) => m.includes('[AppEntryGate] page mnemonic is valid'))).toBe(true))
 		await act(async () => {
 			mockRace.releaseFirstRead?.(null)

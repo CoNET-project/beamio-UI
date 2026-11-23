@@ -1,7 +1,7 @@
 /**
- * passcodeState from the native shell: the outer `chatModuleEvent` carries `event: {type:'passcodeState', set, locked}`.
+ * passcodeState from the native shell (spec §25.17.4, R-21): the outer `chatModuleEvent` carries `event: {type:'passcodeState', set, locked}`.
  * The native side emits it after a passcode run completes (not on an automatic lock). The page never relies on it to learn that the
- * wallet locked; it uses an unlock (`locked:false`) only to release a
+ * wallet locked (the native answer code is authoritative, 2026-11-18 rule); it uses an unlock (`locked:false`) only to release a
  * held init once and to refresh its hints. A malformed payload is ignored.
  */
 /** The shell's event names, the same as the chat transports (nativeKeyState.NATIVE_EVENT_NAMES). Kept local so that this module stands alone. */

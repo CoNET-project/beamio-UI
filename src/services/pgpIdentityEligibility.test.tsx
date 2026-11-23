@@ -1,5 +1,5 @@
 /**
- * RULING 617d3dd9: a first identity needs legacy ABSENT and chain unregistered; any other value, or a missing field, is not confirmed.
+ * first-identity rule: a first identity needs legacy ABSENT and chain unregistered; any other value, or a missing field, is not confirmed.
  * The create button is not rendered without the eligibility, in every build (the switch is not the gate).
  */
 import { render, screen } from '@testing-library/react'

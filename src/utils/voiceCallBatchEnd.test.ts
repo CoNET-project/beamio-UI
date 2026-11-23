@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * Batch end marking: only a verified chat envelope counts (outer signer == envelope.from == inner from). Real EIP-191
+ * Batch end marking (v54 §61): only a verified chat envelope counts (outer signer == envelope.from == inner from). Real EIP-191
  * signatures; the legacy 'any signer' and nested-only reads are gone.
  */
 jest.mock('@/services/beamioTagWorkerBridge', () => ({}), { virtual: true })

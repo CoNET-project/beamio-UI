@@ -1,5 +1,5 @@
 /**
- * The PWA-drivable items of the three-platform acceptance draft. Items that only the native side or the device can show (S-08 wallet kept, S-09 chat kept, S-10/S-11/S-14 unattributed and
+ * The PWA-drivable items of the three-platform acceptance draft (v216 §236, S-01..S-14; the draft lives in the spec folder, SHA256 67cea539…1190 — not copied into the repository). Items that only the native side or the device can show (S-08 wallet kept, S-09 chat kept, S-10/S-11/S-14 unattributed and
  * owner/inbox/signals kept, S-13 active account group kept) are device items; the PWA part of each is noted per case. Behaviour-level:
  * a fake store, a fake page read and a fake native send. No UI, no pick, no notice.
  */

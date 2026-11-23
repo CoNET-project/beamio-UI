@@ -1,10 +1,10 @@
 /**
- * When the encrypted history is loaded (the plan in history-replay-plan-.md).
+ * When the encrypted history is loaded (the replay plan).
  *
  * - single-flight: a request that arrives while a load runs is covered by it; a bypass request that arrives during a load runs once more
  *   after it ("dirty").
  * - minimum interval: after a load, a request from an ordinary caller is skipped until the interval has passed. The interval is
- *   HISTORY_LOAD_MIN_INTERVAL_MS, an engineering default (not a project decision). A skipped request gets one trailing run when the
+ * HISTORY_LOAD_MIN_INTERVAL_MS, an engineering default (not a project decision). A skipped request gets one trailing run when the
  * interval has passed, so it is not lost; several skipped requests share that one run.
  * - bypass callers: the account changed (historyEoa_change) and the foreground resume (foreground_resume) run at once.
  * - every load logs one line with the caller and numbers only: the time taken and the number of entries the history buffer delivered

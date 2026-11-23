@@ -36,7 +36,7 @@ function keyOnlyBranch(): string {
 	return app.slice(start, end)
 }
 
-// rule: a key without a valid mnemonic is not an entry. The branch does not
+// Per: "只要没有助记词，就进入 onboarding 页面": a key without a valid mnemonic is not an entry. The branch does not
 // hold the loading flag and does not bind push; the entry gate decides onboarding or retry.
 describe('a key without a valid mnemonic is not an entry: no loading hold, no push bind, the gate decides', () => {
 	it('the enter_key_only branch is removed from the App', () => {

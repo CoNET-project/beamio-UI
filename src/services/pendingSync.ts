@@ -1,5 +1,5 @@
 /**
- * C1 pendingSync: a held automatic sync. In memory only, no secret, no phrase: the resume re-reads the page's valid
+ * C1 pendingSync (v10 §五): a held automatic sync. In memory only, no secret, no phrase: the resume re-reads the page's valid
  * mnemonic when it runs. Taken once: a take clears it, so the unlock resumes it exactly once.
  */
 let pending: { reason: string } | null = null

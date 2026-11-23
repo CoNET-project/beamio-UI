@@ -52,7 +52,7 @@ afterEach(() => {
 })
 
 describe('the action list', () => {
-	it('is the 25 actions: the 21 of the spec plus dismissIncomingSystemCall, the two voiceEphemeral actions and incomingCallUnlockShown', () => {
+	it('is the 25 actions: the 21 of .4 plus dismissIncomingSystemCall, the two voiceEphemeral actions (v105 §112) and incomingCallUnlockShown', () => {
 		expect([...BEAMIO_SHELL_ACTIONS].sort()).toEqual(
 			[
 				'bindPushIdentity',

@@ -1,5 +1,5 @@
 /**
- * / interface seat (3): the account-create open ack. `page`only on an ok ack (opened, none; any other value is
+ * / interface maintainers (3): the account-create open ack. `page`only on an ok ack (opened, none; any other value is
  * absent); `walletStatus` on a not_available ack (G0, G1, G2). SYNTHETIC payloads.
  */
 import { parseAccountCreateOpenAck } from './nativeRecovery'

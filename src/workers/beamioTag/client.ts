@@ -54,7 +54,7 @@ export class BeamioTagWorkerClient {
 		if (this.worker) return
 		this.worker = new Worker(new URL('./entry.ts', import.meta.url), {
 			type: 'module',
-			// the chunk name: a named chunk is identified in the build
+			// the chunk name (R82 build check): a named chunk is identified in the build
 			name: 'beamio-tag',
 		})
 		this.worker.onmessage = (ev: MessageEvent<BeamioTagWorkerOutbound>) => {

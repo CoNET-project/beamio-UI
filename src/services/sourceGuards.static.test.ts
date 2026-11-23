@@ -49,16 +49,21 @@ describe('source guards', () => {
 		expect(cmd).toContain('{ type: NATIVE_ACCOUNT_CREATE_OPEN_COMMAND, account }')
 	})
 
-	it('the gate never routes a shell build to onboarding: native_retry follows the Y.104 cadence, then manual', () => {
+	it('the shell storage-unavailable path never reaches onboarding: it re-reads on the 2, 4, 8, 16 s then 30 s schedule, with no manual button', () => {
+		// 改写：旧守卫的 native_retry 路由与“之后转手动”已废止；不变式“壳内存储不可用不进 onboarding”保留。
 		const gate = read('src/components/AppEntryGate.tsx')
-		// the router is the pure storageRoute.ts; a shell (and a browser) never reaches onboarding from a storage failure.
-		expect(gate).toContain("storageUnavailableRoute({ nativeShell, reason }) === 'native_retry'")
-		expect(read('src/services/storageRoute.ts')).toContain("input.nativeShell && input.reason === 'native_retry'")
-		expect(gate).toContain('const step = nativeRetryStep(attempt)')
-		expect(gate).toContain('window.setTimeout(() => void init(), step.delayMs)')
+		const policy = read('src/services/startupRetryPolicy.ts')
+		expect(policy).toContain('[2_000, 4_000, 8_000, 16_000]')
+		expect(policy).toContain('STARTUP_RETRY_STEADY_MS = 30_000')
+		expect(gate).toContain('const delay = startupRetryDelayMs(attempt)')
+		expect(gate).toContain('void initRef.current?.()')
+		// the retired native_retry route, its manual step and the fixed attempt cap are gone
+		expect(gate).not.toContain("storageUnavailableRoute({ nativeShell, reason }) === 'native_retry'")
+		expect(gate).not.toContain('nativeRetryStep(attempt)')
 		expect(gate).not.toContain('nativeStoreWaitDelayMs(attempt)')
 		expect(gate).not.toContain('attempt >= 6')
-		// used-up retries show the manual screen, never onboarding
-		expect(gate).toContain('showStorageUnavailable(MIGRATION_RETRY_SCREEN)')
+		expect(gate).not.toContain('showStorageUnavailable(MIGRATION_RETRY_SCREEN)')
+		// runtime proof: the no-stuck-screen suite re-enters each waiting class and reaches onboarding only after a definite answer
+		expect(read('src/components/AppEntryGate.startupTwoState.test.tsx')).toContain('no stuck shell screens')
 	})
 })

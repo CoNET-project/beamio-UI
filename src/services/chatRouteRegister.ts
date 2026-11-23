@@ -38,7 +38,7 @@ export const NATIVE_RESULT_KEYS = [
  * Browser path. The signature comes from the page signer; the server flag decides the outcome. Only the browser calls this.
  */
 /**
- * The class of one HTTP answer of the registration POST: 2xx is accepted; 4xx is refused and is never retried
+ * The class of one HTTP answer of the registration POST (SDK-side rule, owner plan): 2xx is accepted; 4xx is refused and is never retried
  * automatically; 5xx is a server failure and is retried with the backoff; no answer is a network failure, also retried with the backoff.
  */
 export type RegisterHttpClass = 'accepted' | 'refused' | 'server' | 'network'

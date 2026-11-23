@@ -5,14 +5,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { useDaemonContext } from '@/providers/DaemonProvider'
-import { checkStorageWithStatus, checkStorageWithStatusWithTimeout, checkStorageWithTransientRetry, readStoredRecordForVerify, sendPendingProfileSync, storeSystemDataAndWait } from '@/services/beamio'
+import { checkStorageWithStatus, checkStorageWithStatusWithTimeout, checkStorageWithTransientRetry, persistPageIdbMnemonic, persistPageIdbPasscodeRecord, readStoredRecordForVerify, sendPendingProfileSync, storeSystemDataAndWait } from '@/services/beamio'
 import { allowRestoreWrite, endRestoreWriteWindow, setPageWritePermit, type PageWritePermit } from '@/services/beamio'
 import { checkRecoveredRecord, checkShellReadBack, recoveredPageRecord } from '@/services/recoveredMnemonicRecord'
 import { releaseShellSessionSignerHold, holdShellSessionFromPhrase, loadShellSessionSigner, recordCarriesAccountKey, refreshShellSessionInMemory, shellSessionEoa } from '@/services/shellSessionSigner'
 import { pageCopyAction, readWalletCredential, type PageCopyAction } from '@/services/walletCredential'
 import { decidePageRecord, type PageRecordRead } from '@/services/pageRecordDecision'
 import { onAppUpdateRequired } from '@/services/appUpdatePrompt'
-import { storageUnavailableRoute } from '@/services/storageRoute'
 import { OLD_SHELL_UPGRADE_REASON, shellRecordFallbackLabel, terminalEvidenceOf } from '@/services/shellRecordFallback'
 import { decideShellTerminal, isShellTerminal, requestShellSingleProbe } from '@/services/shellTerminalState'
 import { NOT_READY_BOUNDED_DELAYS_MS } from '@/services/shellStoreWait'
@@ -34,11 +33,12 @@ import { NATIVE_FLOW_PENDING_EVENT } from '@/services/nativeFlowPending'
 import { startPgpMigrationOnce } from '@/services/pgpMigrationRunner'
 import { ensureShellChatState } from '@/services/shellChatCapability'
 import { beamioTagCreateNeeded, idbSignalFromRecord, judgeBrowser, judgeLocalOnly, judgeShellFromNative, type NativeWalletState, type NativeWalletStatus } from '../services/accountJudgement'
-import { queryNativeMnemonicPreread, queryNativePasscodeStatus } from '../services/nativeRecovery'
+import { queryNativeMnemonicPreread, queryNativePasscodeStatus, type MnemonicPreread } from '../services/nativeRecovery'
+import { capNativeRead } from '../services/nativeReadDeadline'
 import { bridgeTrustReasonCode, bridgeTrustState, nativeNoKeyRoute, nativeStartRoute, prereadPageRoute } from '../services/accountJudgement'
 import { isStartReasonCode, startReasonLine, type StartReasonCode } from '../services/startReasonCodes'
 import { queryNativeWalletStateForPreCheck } from '@/services/syncPreCheckReads'
-import { identityCapabilityFrom, identityEntryDisplay, MIGRATION_RETRY_SCREEN, NATIVE_RETRY_SCREEN, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'
+import { identityCapabilityFrom, identityEntryDisplay, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'
 import { identityProbeDelayMs, onNativeIdentityRetryRequested, requestNativeIdentityRetry, setNativeIdentityCapability } from '@/services/nativeIdentityProbeRetry'
 import { probeNativeCapabilities, requestNativeAck } from '@/services/nativeChatRouteRegister'
 import { reportUiLocked } from '@/services/passcode/uiLockState'
@@ -50,13 +50,17 @@ import { shellMnemonicSync } from '@/services/shellMnemonicSync'
 import { markBootScreen } from '@/services/bootTrace'
 import { setCoNET_Data } from '@/utils/globals'
 import PasscodeLockScreen from '@/components/PasscodeLockScreen'
+import { PrereadPasscodeUnlock } from '@/components/PrereadPasscodeUnlock'
+import { nativePrereadRoundInFlight } from '@/services/prereadRound'
 
 import { VAULT_LOCKED_EVENT } from '@/services/walletVaultEvents'
+import { lockChatAccess } from '@/services/passcode/chatAccessGuard'
 import SplashScreen from '@/components/SplashScreen'
 import { EmbeddedPwaUpdateBanner } from '@/components/EmbeddedPwaUpdateBanner'
 import IdentityEntryPrompt from '@/components/IdentityEntryPrompt'
 import BeamioOnboardingModal from '@/pages/Home/LoadingPage'
 import { isCashTreesNativeWebView } from '@/utils/cashTreesNativeNfc'
+import { setSyncPendingHandler } from '@/services/passcode/syncPendingHandoff'
 import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
 import {
 	hasCompletedBeamioAccount,
@@ -68,7 +72,7 @@ import {
 	pageWalletRecoverNeeded,
 } from '@/utils/consumerWalletGate'
 import { isShellContext } from '@/services/shellContext'
-import { nativeRetryStep, splashDeadlineAction } from '@/services/shellStoreWait'
+import { splashDeadlineAction } from '@/services/shellStoreWait'
 import { type NativeWalletStatusAnswer } from '@/services/accountPresence'
 import { nativeRecoveryCopyKey, nativeRecoveryOpen, onNativeRecoveryResult, queryNativeWalletStatus, recoveryOpenErrorKey } from '@/services/nativeRecovery'
 import { announceNativeWalletEstablished } from '@/services/nativeWalletEstablished'
@@ -78,12 +82,17 @@ import { ensureEphemeralWalletForCouponClaim } from '@/utils/ephemeralCouponClai
 import { BEAMIO_WALLET_READY_EVENT, dispatchBeamioWalletReady } from '@/utils/beamioWalletReadyEvent'
 import { requestChatRestartAfterUnlock } from '@/services/unlockChatRestart'
 import { startupRetryDelayMs, STARTUP_RETRY_OFFER_EVENT } from '@/services/startupRetryPolicy'
+import { passcodeNotProvidedEffect } from '@/services/shellStoreWait'
 import { pageSyncPayload } from '@/services/shellMnemonicSync'
+import { isMnemonicCipherEnvelope, pageMnemonicField } from '@/services/pageMnemonicField'
 import { isTrustedTopFrame } from '@/utils/androidChatChannel'
 import { copyPageEvidence, copyPreHoldAction, decidePrepareEntry, decidePrereadEntry, isNativeCopyValidated } from '@/services/copyValidatedEntry'
 import { setShellSyncRetry } from '@/services/shellSyncStatus'
 
-/** HC-LOCK: the wait between checks while the native side is locked. */
+/** Unit (b): the first re-request of an unknown pre-read (the Android first call only starts the read). Later unknowns back off (startupRetryPolicy). */
+const PREREAD_QUICK_RETRY_MS = 750
+
+/** HC-LOCK: the wait between checks while the native side is locked (the unlock re-runs the gate sooner, R-21). */
 const NATIVE_LOCKED_RETRY_MS = 30_000
 
 const isExplicitNativeNoKey = (status: NativeWalletStatus): boolean => status === 'no_key'
@@ -93,7 +102,7 @@ const EPHEMERAL_WALLET_TIMEOUT_MS = 8_000
 /** The shell entry's page-storage read limit (the same 2 s as the shell pre-check). A read past it is unknown: never the local home. */
 const SHELL_PAGE_READ_TIMEOUT_MS = 2_000
 /**
- * A(6): the identity hello (the bridge connection) is probed again on the cadence (10 s, 30 s, then every 60 s). The cadence is
+ * Y.159 A(6): the identity hello (the bridge connection) is probed again on the cadence (10 s, 30 s, then every 60 s). The cadence is
  * bridge-only: it never decides the wallet route. After this many probes it stops; the retry screen stays.
  */
 const BRIDGE_HELLO_MAX_PROBES = 5
@@ -103,8 +112,30 @@ const BRIDGE_HELLO_MAX_PROBES = 5
  * account. `confirmed_empty`: the page store was read and holds no valid mnemonic. `unknown`: a timeout, a failure or an unreadable store
  * (a passcode-locked store is unknown with `locked`). Unknown is never empty: nothing is deleted, overwritten or shown as an error.
  */
-type PageMnemonicEvidence = { kind: 'valid'; eoa: string; phrase: string; nativeValidated?: boolean } | { kind: 'confirmed_empty'; keyIdMismatch?: boolean } | { kind: 'unknown'; locked?: boolean } | { kind: 'terminal' }
+type PageMnemonicEvidence = { kind: 'valid'; eoa: string; phrase: string; nativeValidated?: boolean } | { kind: 'confirmed_empty'; keyIdMismatch?: boolean } | { kind: 'unknown'; locked?: boolean; reason?: string } | { kind: 'terminal' } | { kind: 'recovery' } | { kind: 'valid_cipher'; eoa: string; cipher: Record<string, unknown> }
 const UNKNOWN_PAGE_MNEMONIC: PageMnemonicEvidence = { kind: 'unknown' }
+/** Diagnostic code of a storage reason on a shell background wait (the codes of START_REASON_CODES; an unlisted reason is read_failed). */
+const SHELL_WAIT_CODE: Record<string, StartReasonCode> = {
+	storage_locked: 'storage_locked',
+	ambiguous_accounts: 'ambiguous_accounts',
+	not_ready_persistent: 'not_ready_persistent',
+	unreadable: 'unreadable_nonretryable',
+	read_error: 'record_unreadable',
+	invalid_document: 'record_unreadable',
+}
+const shellWaitCodeOf = (reason?: string): StartReasonCode => (reason !== undefined && SHELL_WAIT_CODE[reason]) || 'read_failed'
+/** The shell pre-read's per-round limit marker (never a read result). */
+const PREREAD_TIMED_OUT = Symbol('preread-timed-out')
+
+/** Unit (b) diagnostics: one reqId per start (status codes only: never a phrase, a key or a full bridge answer). */
+let startReqCounter = 0
+const newStartReqId = (): string => {
+	startReqCounter += 1
+	return `s${startReqCounter.toString(36)}`
+}
+const logStartRoute = (reqId: string, route: 'home' | 'onboarding' | 'none_yet'): void => {
+	publishNativePwaLog('info', `[startup] reqId=${reqId} final_route=${route}`)
+}
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
 	return Promise.race([
@@ -117,7 +148,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
 
 
 
-/** The page's IDB-derived account address (profiles[0].keyID), read once through the read-only probe; null when not readable. */
+/** The page's IDB-derived account address (profiles[0].keyID), read once through the read-only probe; null when not readable (v191 §211). */
 async function readPageDerivedAddress(): Promise<unknown> {
 	const r = await checkStorageWithStatus({ probe: true })
 	if (r.status !== 'loaded') return null
@@ -125,14 +156,26 @@ async function readPageDerivedAddress(): Promise<unknown> {
 	return profiles?.[0]?.keyID ?? null
 }
 
+/**
+ * Shell reasons that keep their own screen. Everything else in the shell is a background wait (0.53.44 two-landing rule).
+ * PENDING_DECISION (project owner): storage_locked, ambiguous_accounts and not_ready_persistent have no final landing yet. They are not listed
+ * here, so they stay background waits with their diagnostic code.
+ */
+const SHELL_SCREEN_REASONS: ReadonlySet<string> = new Set([OLD_SHELL_UPGRADE_REASON, 'app_update_required', IDENTITY_CAPABILITY_MISSING])
+
 export default function AppEntryGate() {
 	const { setIsInitialLoading } = useDaemonContext()
 	// Passcode lock (D19): the wallet is encrypted with a passcode and not unlocked yet. No app content mounts.
 	// (items 2 and 3): the native no-key decision lives in one controller; the component forwards events.
 	const [noKeyCtl] = useState(() => new AppEntryNoKeyController())
 	const boundedNotReadyRef = useRef(0)
+	/** Unit g (rev): a native passcode_not_provided answer marks a pending sync. It never changes the landing, the splash or the counters. */
+	const passcodePendingSyncRef = useRef(false)
+	/** Unit (b) item 3: the first unknown pre-read of a start sequence was re-requested at once (not a verdict). Once per sequence: cleared only by a decision. */
+	const quickPrereadRetryRef = useRef(false)
 	const markDecided = () => {
 		boundedNotReadyRef.current = 0
+		quickPrereadRetryRef.current = false
 		if (startupRetryRef.current !== undefined) {
 			window.clearTimeout(startupRetryRef.current)
 			startupRetryRef.current = undefined
@@ -146,14 +189,14 @@ export default function AppEntryGate() {
 		if (nativeShellRef.current) void startPgpMigrationOnce()
 	}
 	const [vaultLocked, setVaultLocked] = useState(false)
-	// rev2 every UI lock (including the hot-restore lock) reports uiLockState {locked:true}. The native session is not touched.
+	// rev2 §3.2: every UI lock (including the hot-restore lock) reports uiLockState {locked:true}. The native session is not touched.
 	useEffect(() => {
 		if (!vaultLocked) return
 		void probeNativeCapabilities()
 			.then((p) => reportUiLocked(p.answered ? p.capabilities : [], (cmd) => requestNativeAck(cmd, 5000)))
 			.catch(() => undefined)
 	}, [vaultLocked])
-	//which lock is showing. A native-side lock hides "Forgot passcode?"; the page-storage lock keeps it.
+	// R-16: which lock is showing. A native-side lock hides "Forgot passcode?"; the page-storage lock keeps it.
 	const [vaultLockKind, setVaultLockKind] = useState<'page' | 'native'>('page')
 	const [showBeamioOnboardingModal, setShowBeamioOnboardingModal] = useState(false)
 	const [requireWalletRecover, setRequireWalletRecover] = useState(false)
@@ -168,11 +211,11 @@ export default function AppEntryGate() {
 	const [storageUnavailable, setStorageUnavailable] = useState<string | null>(null)
 	/** an error line for the native recovery exit on the unavailable screen (existing copy keys only). */
 	const [nativeRecoveryNotice, setNativeRecoveryNotice] = useState('')
-	// QA boot marker (coordinator request): the splash is the first screen of every launch. Only a QA build prints it.
+	// QA boot marker (request) : the splash is the first screen of every launch. Only a QA build prints it.
 	useEffect(() => {
 		markBootScreen('splash')
 	}, [])
-	// (2026-11-21, approval 75edef25): the silent cleanup of the old account is part of this version. A pending cleanup from an
+	// decision: the silent cleanup of the old account is part of this version. A pending cleanup from an
 	// earlier verified recovery resumes at start with the same idempotencyKey (the marker is written only after a verified recovery).
 	useEffect(() => {
 		const pending = readCleanupPending(window.localStorage)
@@ -186,7 +229,7 @@ export default function AppEntryGate() {
 				setNativeRecoveryNotice('')
 				announceNativeWalletEstablished()
 				rememberNativeEoa(eoa)
-				// silent cleanup (approval 75edef25): only a verified recovery (native ok and the page's derived address agrees) starts it; any other
+				// silent cleanup: only a verified recovery (native ok and the page's derived address agrees) starts it; any other
 				// case deletes nothing. No button, no pick, no notice.
 				if (eoa) void cleanupAfterVerifiedRecovery(window.localStorage, eoa, readPageDerivedAddress).catch(() => undefined)
 				setStorageUnavailable(null)
@@ -199,6 +242,8 @@ export default function AppEntryGate() {
 	}, [storageUnavailable])
 	// 任一终态（进入 App / onboarding / recover）已确定；用于 Splash 兜底时安全降级。
 	const decisionMadeRef = useRef(false)
+	/** ②: an adoption (the write-back and its read-back) that has started is not interrupted by the splash deadline. */
+	const adoptionInFlightRef = useRef(false)
 	// 0.53.44 (PART 2): the session write permit starts CLOSED. It opens only at the three entry points (a valid page mnemonic with a consistent
 	// keyID; a native restore read back consistent; a new account created) and closes on every hold. The module state (setPageWritePermit) is
 	// what every page-store save consults (storeSystemData, its timer, flushStoreSystemData): a closed save is discarded there.
@@ -217,21 +262,31 @@ export default function AppEntryGate() {
 	const localModeRef = useRef(false)
 	// the latest init, for the retry screen and its timer (set below, after init)
 	const initRef = useRef<(() => Promise<void>) | null>(null)
+	// unit (c), 2026-11-22: false once this gate unmounts. An unmounted gate starts no read, no retry and no wake-up (a late answer of its
+	// earlier read is then not sent into the next page session). Declared before the effects that may start a start round.
+	const gateMountedRef = useRef(false)
+	useEffect(() => {
+		gateMountedRef.current = true
+		return () => {
+			gateMountedRef.current = false
+		}
+	}, [])
 	const nativeShellRef = useRef(false)
 	/** 0.53.39: when the bridge trust wait began (the first start without a declared identity). */
 	const bridgeTrustStartRef = useRef<number | undefined>(undefined)
 	/** attempts of the native store's not-ready retry (a backoff that is never given up; reset when the store reads). */
-	const nativeRetryAttemptRef = useRef(0)
 	/** true while the native store is not ready (a migration): the splash deadline keeps the wait, never the unavailable screen. */
 	const startupRoundsRef = useRef(0)
-	/** step 5: the visible retry button of an unknown start (shown from the first unknown round on, until a decision). */
+	/** r92 step 5: the visible retry button of an unknown start (shown from the first unknown round on, until a decision). */
 	const [startupRetryOffered, setStartupRetryOffered] = useState(false)
-	/** The hold page's restore button opened the existing restore screen (RestoreWalletUnifiedScreen) directly. */
+	/** spec item 4: the pre-read returned the current v3 ciphertext (no plaintext). The passcode page decrypts it; nothing is written before that. */
+	const [prereadCipher, setPrereadCipher] = useState<{ cipher: unknown; reqId: string } | null>(null)
+	/** 2026-11-21: the hold page's restore button opened the existing restore screen (RestoreWalletUnifiedScreen) directly. */
 	const [restoreFromHold, setRestoreFromHold] = useState(false)
 	// the terminal screen's one Retry: while its probe runs the control is disabled (no second probe, no second control)
 	const [terminalProbing, setTerminalProbing] = useState(false)
 	const terminalProbeRef = useRef(false)
-	/** 0.53.39: the native lock with no PWA mnemonic is a retry state; the unlock entry is offered on it. */
+	/** 0.53.39 (rule 2026-11-20): the native lock with no PWA mnemonic is a retry state; the unlock entry is offered on it. */
 	const [nativeLockedOffered, setNativeLockedOffered] = useState(false)
 	const nativeWaitRef = useRef(false)
 	/** the pending startup-wait re-read (one at a time); cleared once a decision is made. */
@@ -262,7 +317,6 @@ export default function AppEntryGate() {
 		identityProbesDoneRef.current = 0
 		if (cap === 'declared') {
 			// the retry screen gives way once the capability is declared; the account is entered by the same init as a start.
-			setStorageUnavailable((prev) => (prev === NATIVE_RETRY_SCREEN ? '' : prev))
 			void initRef.current?.()
 		}
 	}
@@ -278,7 +332,6 @@ export default function AppEntryGate() {
 		setSplashVisible(false)
 		// The native-retry screen of an earlier undecided start (the splash deadline) gives way to the decided entry: the App is the screen
 		// now. Without this the retry screen covers the Outlet and the home never shows (the decision was made, the screen was not cleared).
-		setStorageUnavailable((prev) => (prev === NATIVE_RETRY_SCREEN ? null : prev))
 		if (!isShellContext()) setIsInitialLoading(false)
 	}
 
@@ -293,7 +346,6 @@ export default function AppEntryGate() {
 	const goOnboarding = (needRecover: boolean, beamioTagCreate = false) => {
 		startupRoundsRef.current = 0
 		setStartupRetryOffered(false)
-		setStorageUnavailable((prev) => (prev === NATIVE_RETRY_SCREEN ? null : prev))
 		markBootScreen('onboarding')
 		markDecided()
 		setBootResolved(true)
@@ -304,16 +356,9 @@ export default function AppEntryGate() {
 		setSplashVisible(false)
 	}
 
-	/** The hold page's restore button enters the existing restore screen only. It never opens the onboarding entry
-	 * (no create, no Get started). Nothing is written here; the restore screen writes only on a completed restore (open point b). */
-	const openRestoreFromHold = (): void => {
-		setStartupRetryOffered(false)
-		setRequireWalletRecover(true)
-		setRestoreFromHold(true)
-		setIsInitialLoading(true)
-		setShowBeamioOnboardingModal(true)
-		setSplashVisible(false)
-	}
+	/** 2026-11-21: the hold page's restore button enters the existing restore screen only. It never opens the onboarding entry
+	 *  (no create, no Get started). Nothing is written here; the restore screen writes only on a completed restore (open point b). */
+	// 0.53.44: Restore Wallet is not a startup button any more.
 
 	/** 0.53.44 open point (b): a restore (recovery or onboarding restore) writes inside the restore window; the gate opens only on the read-back. */
 	const onRestoreWriteStart = (): void => allowRestoreWrite()
@@ -324,6 +369,17 @@ export default function AppEntryGate() {
 		const check = checkStoredRecord(await readStoredRecordForVerify(), eoa)
 		if (check === 'valid') setWritePermit('recovery_completed', 'restore completed: read back consistent')
 		else publishNativePwaLog('warn', `[AppEntryGate] restore read-back not confirmed (${check}): the gate stays closed`)
+	}
+
+	/**
+	 * Unit g (rev): the native passcode is not provided. This is a native pending-sync answer, not a landing decision. It records
+	 * the diagnostic code and marks the pending sync. The landing stays with the page store (a valid page mnemonic is already on /home before any
+	 * native read) and with the pre-read. No splash hold, no screen, no button, no re-read timer, not counted, nothing deleted.
+	 */
+	const markPasscodePendingSync = (source: string, diagnostic: 'passcode_not_provided' | 'native_passcode_not_provided') => {
+		passcodePendingSyncRef.current = true
+		const effect = passcodeNotProvidedEffect()
+		publishNativePwaLog('info', `[AppEntryGate] ${source}: diagnostic=${diagnostic} pendingSync=${effect.pendingSync} landingChanged=${effect.landingChanged} screen=${effect.screen} rereads=${effect.rereads}`)
 	}
 
 	const showStorageUnavailable = (reason: string) => {
@@ -349,8 +405,8 @@ export default function AppEntryGate() {
 	 */
 	const handleStorageUnavailable = (reason: string) => {
 		const nativeShell = nativeShellRef.current || isCashTreesNativeWebView()
-		// HC-LOCK: the native side is locked. Never onboarding, never the storage-unavailable screen, never a manual retry page:
-		// the page keeps waiting and retries on a timer; the unlock re-runs the gate.
+		// HC-LOCK (v10 §〇): the native side is locked. Never onboarding, never the storage-unavailable screen, never a manual retry page:
+		// the page keeps waiting and retries on a timer; the unlock (passcodeState, R-21) re-runs the gate.
 		if (reason === 'native_locked') {
 			publishNativePwaLog('info', '[AppEntryGate] native locked: waiting, no onboarding')
 			nativeWaitRef.current = true
@@ -358,8 +414,22 @@ export default function AppEntryGate() {
 			window.setTimeout(() => void init(), NATIVE_LOCKED_RETRY_MS)
 			return
 		}
-		// v4: a not_ready with a bounded class re-reads at most 5 times (0.5, 1, 2, 4, 8 s), then the explicit
+		// Unit g (2026-11-22): passcode_not_provided is an explicit not_ready class: background wait, never a screen, never counted, never onboarding.
+		if (reason === 'native_passcode_not_provided') {
+			markPasscodePendingSync('shell read answer', 'passcode_not_provided')
+			return
+		}
+		// v4 (v159 §179, v161 §181, v162 §182): a not_ready with a bounded class re-reads at most 5 times (0.5, 1, 2, 4, 8 s), then the explicit
 		// error. A final class (zero, persistent) is the explicit error at once. Neither creates, recovers, imports or onboards.
+		// 0.53.44:
+		// in the shell the start has two landings only (/home, onboarding). Every other reason is a background wait: no error screen, no button,
+		// data kept; the re-read schedule is startupWait's (2, 4, 8, 16 s, then every 30 s; each native read at most 30 s). The reasons in
+		// SHELL_SCREEN_REASONS keep their own screen (terminal decisions of the existing rules, or the eoa stop).
+		if (nativeShell && !SHELL_SCREEN_REASONS.has(reason)) {
+			publishNativePwaLog('info', `[AppEntryGate] shell start: ${reason} is not a decision yet: background re-read (no screen, no button, nothing deleted)`)
+			startupWait(`shell background: ${reason}`, shellWaitCodeOf(reason))
+			return
+		}
 		if (reason === 'native_not_ready_bounded') {
 			const attempt = boundedNotReadyRef.current
 			if (attempt < NOT_READY_BOUNDED_DELAYS_MS.length) {
@@ -380,7 +450,7 @@ export default function AppEntryGate() {
 			showStorageUnavailable(reason)
 			return
 		}
-		// b7c6f8b2 (2026-11-21): both capabilities absent on the shell and the page store empty: the terminal update prompt; no retry.
+		// decision (2026-11-21): both capabilities absent on the shell and the page store empty: the terminal update prompt; no retry.
 		if (reason === OLD_SHELL_UPGRADE_REASON) {
 			// the terminal is decided first (decideShellTerminal sets the state, then reports): no re-read can be scheduled from the report on
 			decideShellTerminal(() => publishNativePwaLog('warn', `[AppEntryGate] terminal: fallback shell (shellRecordRead ${shellRecordFallbackLabel()}), page store confirmed empty: update prompt, no retry`))
@@ -391,22 +461,6 @@ export default function AppEntryGate() {
 			nativeWaitRef.current = false
 			setStartupRetryOffered(false)
 			showStorageUnavailable(OLD_SHELL_UPGRADE_REASON)
-			return
-		}
-		// the native store is not ready (migrating, import not done, legacy store unreadable): keep the splash, retry later.
-		if (storageUnavailableRoute({ nativeShell, reason }) === 'native_retry') {
-			const attempt = nativeRetryAttemptRef.current
-			nativeRetryAttemptRef.current = attempt + 1
-			//30 s, 2 min, 10 min automatically, then the manual retry screen. Used-up retries are still unknown: never onboarding, no account-lost prompt.
-			const step = nativeRetryStep(attempt)
-			if (step.kind === 'manual') {
-				showStorageUnavailable(MIGRATION_RETRY_SCREEN)
-				return
-			}
-			nativeWaitRef.current = true
-			publishNativePwaLog('info', '[AppEntryGate] native store not ready; retrying (no onboarding)')
-			setSplashVisible(true)
-			window.setTimeout(() => void init(), step.delayMs)
 			return
 		}
 		// An unreadable vault is never "no wallet": onboarding could overwrite the encrypted copy.: every browser reason
@@ -449,7 +503,7 @@ export default function AppEntryGate() {
 
 	/**
 	 * Native G2 and no page wallet record: the page asks walletCredential once and keeps the sealed blob with the restored mnemonic in its
-	 * own record. The mnemonic is written in the record's existing format: wrapForDisk wraps it on the way to the
+	 * own record (1c). The mnemonic is written in the record's existing format: wrapForDisk wraps it on the way to the
 	 * store (device key, AES-GCM); in a shell the store is the native record. It is read back and must derive this native account; only
 	 * then does the page sync run (item 44). Nothing is stored for another account.
 	 */
@@ -471,6 +525,11 @@ export default function AppEntryGate() {
 			const decision = decidePageRecord(read, nativeAccount, eoa)
 			if (decision === 'update_required') return 'update_required'
 			if (decision === 'record_unavailable') return 'record_unavailable'
+			// Unit g: the native passcode is not provided: nothing used or stored; a background retry (never record_unavailable, never onboarding).
+			if (decision === 'passcode_not_provided') {
+				publishNativePwaLog('warn', `[AppEntryGate] page record: ${startReasonLine('passcode_not_provided')} (background wait, nothing used or stored)`)
+				return 'retry'
+			}
 			if (decision === 'eoa_mismatch') {
 				publishNativePwaLog('warn', '[AppEntryGate] page record is for another account (eoa_mismatch): not used, nothing stored')
 				return 'eoa_mismatch'
@@ -482,7 +541,7 @@ export default function AppEntryGate() {
 			if (decision === 'use') return 'none'
 			// E7 (2026-11-17): readable, but only a key or an address: not an account. Nothing is copied or written; the pre-read decides.
 			if (decision === 'not_account') return 'none'
-			//a native-validated copy for this account is the native path; no credential is asked or held here.
+			// r94 (R-PWA-R94-01): a native-validated copy for this account is the native path; no credential is asked or held here.
 			if (copyPreHoldAction(stored, eoa) === 'native') return 'none'
 			const answer = await readWalletCredential()
 			const action = pageCopyAction({ pageRecordPresent: false, eoa, answer })
@@ -527,17 +586,19 @@ export default function AppEntryGate() {
 	const prepareShellEntry = async (eoa: string): Promise<'enter' | 'eoa_mismatch' | 'update_required' | 'unseal_failed' | 'retry' | 'record_unavailable'> => {
 		if (shellSessionEoa() && shellSessionEoa() !== eoa.trim().toLowerCase()) releaseShellSessionSignerHold()
 		const pre = await checkStorageWithStatusWithTimeout(2_000)
-		//a native-validated copy enters on the native path; the sealed credential is not held for it.
+		// r94 (§24.5): a native-validated copy enters on the native path; the sealed credential is not held for it.
 		return decidePrepareEntry(pre, eoa, loadShellSessionSigner)
 	}
 
 	const blockShellEntry = (outcome: 'eoa_mismatch' | 'update_required' | 'unseal_failed' | 'retry' | 'record_unavailable') => {
 		setWritePermit(null, `entry blocked: ${outcome}`)
-		if (outcome === 'eoa_mismatch') showStorageUnavailable('eoa_mismatch')
-		else if (outcome === 'record_unavailable') showStorageUnavailable('native_record')
+		// 0.53.44: eoa_mismatch, unseal_failed and record_unavailable are read failures for the
+		// start: data kept, background wait with a diagnostic code, no screen and no button. Only the version gate (update_required) keeps its screen.
+		if (outcome === 'eoa_mismatch') startupWait('shell entry: eoa_mismatch (background, data kept)', 'read_failed')
+		else if (outcome === 'record_unavailable') startupWait('shell entry: record unavailable (background)', 'read_failed')
 		else if (outcome === 'update_required') showStorageUnavailable('app_update_required')
-		else if (outcome === 'unseal_failed') showStorageUnavailable('unseal_failed')
-		// rule 2026-11-16 (1501): a native store that is not ready is unknown: the startup wait, no retry screen and no retry rounds.
+		else if (outcome === 'unseal_failed') startupWait('shell entry: unseal_failed (background, data kept)', 'read_failed')
+		// Per 1501: a native store that is not ready is unknown: the startup wait, no retry screen and no retry rounds.
 		else startupWait('native store not ready (shell entry pre-check)', 'record_not_ready')
 	}
 
@@ -554,10 +615,10 @@ export default function AppEntryGate() {
 		return true
 	}
 
-	// Boundary: the local-home early return for identity MISSING is not the iOS not_ready path below.
+	// Boundary (0.53.11): the local-home early return for identity MISSING is not the iOS not_ready path below.
 	/**
 	 * The page's mnemonic evidence from IndexedDB. Only a store that was read and holds no valid mnemonic is confirmed_empty; a timeout,
-	 * a failure, an unavailable or a locked store is unknown. A hint or a private key is never evidence.
+	 * a failure, an unavailable or a locked store is unknown (R68). A hint or a private key is never evidence.
 	 */
 	// 0.53.43: a session that has read a valid page mnemonic never enters onboarding later in the same page session. Set only
 	// by a valid page read; never cleared by a later read (the gate component lives for one page session).
@@ -570,22 +631,41 @@ export default function AppEntryGate() {
 			if (terminal) return terminal
 			if (read?.status === 'empty') return { kind: 'confirmed_empty' }
 			if (read?.status === 'locked') return { kind: 'unknown', locked: true }
+			// 0.53.44: a definite native answer that the key must be recovered is
+			// recovery evidence (the recovery entry), not an unknown. Nothing is written, cleared or onboarded.
+			// Current code (11-17 reading, the recorded rule): a definite native needs_native_recovery answer is the
+			// recovery entry, for the PNK-07 shape and the schema-2 key-stripped copy (spec §25.52Y.156 item 3). The owner's reaffirmed rule
+			// maps it to onboarding only when the mnemonic is confirmed missing; that
+			// change is pending (the answer carries no mnemonic-presence signal here), not made in this line. Unknown stays for timeouts and unreadable records.
+			if (read?.status === 'unavailable' && read.reason === 'native_recovery_needed') return { kind: 'recovery' }
+			if (read?.status === 'unavailable') return { kind: 'unknown', reason: read.reason }
 			if (read?.status !== 'loaded') return UNKNOWN_PAGE_MNEMONIC
-			//a copy validated natively takes the native EOA; the page derives no address from it.
+			// r94 (§24.5): a copy validated natively takes the native EOA; the page derives no address from it.
 			if (isNativeCopyValidated(read, '')) {
 				// no_key is the expected native answer for a validated copy (beamio.ts ~1697): the copy's EOA is taken; any other refusal is unknown.
 				const native = await readWalletEoaAddress().catch(() => ({ kind: 'refused' as const, code: 'error' }))
 				const evidence = copyPageEvidence(read, native)
 				return evidence?.kind === 'valid' ? evidence : UNKNOWN_PAGE_MNEMONIC
 			}
+			// f3 (walletVault): a passcode-protected page record keeps the v3 envelope in `mnemonicPhrase`. It is account evidence (never an empty
+			// record), its EOA is the record's keyID, and it is synced as stored: nothing is decrypted here.
+			const field = pageMnemonicField(read.data)
+			if (field.kind === 'envelope') {
+				const keyID = typeof read.data?.profiles?.[0]?.keyID === 'string' ? String(read.data.profiles[0].keyID).trim().toLowerCase() : ''
+				if (!keyID || keyID !== field.envelope.eoa) return UNKNOWN_PAGE_MNEMONIC
+				sessionSawValidRef.current = true
+				return { kind: 'valid_cipher', eoa: field.envelope.eoa, cipher: field.envelope }
+			}
+			// any other shape of the field is never "no mnemonic": unknown (hold, retry), never confirmed_empty and never onboarding
+			if (field.kind === 'other') return UNKNOWN_PAGE_MNEMONIC
 			const eoa = validMnemonicEoa(read.data)
-			// 0.53.43: a stored phrase that cannot be decoded or derived is unknown (hold, retry), never confirmed_empty.
+			// 0.53.43 (the decision): a stored phrase that cannot be decoded or derived is unknown (hold, retry), never confirmed_empty.
 			const storedPhrase = typeof read.data?.mnemonicPhrase === 'string' ? read.data.mnemonicPhrase.trim() : ''
 			if (storedPhrase && !eoa) return UNKNOWN_PAGE_MNEMONIC
 			// E7-1 (2026-11-17): the account credential is a valid mnemonic whose derived EOA equals the record's keyID. A mnemonic for another
 			// address is not this account's credential: no valid mnemonic here (the pre-read path decides), nothing is used.
 			const keyID = typeof read.data?.profiles?.[0]?.keyID === 'string' ? String(read.data.profiles[0].keyID).trim().toLowerCase() : ''
-			// 0.53.43: a parseable mnemonic whose EOA differs from the keyID is evidence
+			// 0.53.43 (the decision): a parseable mnemonic whose EOA differs from the keyID is evidence
 			// of a page account: it never leads to onboarding or a write; the start holds with the diagnostic page_mnemonic_keyid_mismatch.
 			if (eoa && keyID && keyID !== eoa) return { kind: 'confirmed_empty', keyIdMismatch: true }
 			if (eoa) sessionSawValidRef.current = true
@@ -595,14 +675,115 @@ export default function AppEntryGate() {
 		}
 	}
 
-	/** whether the last reply of the sync was an envelope-level locked (the button is hidden after one). */
+	/** v10 §六.2: whether the last reply of the sync was an envelope-level locked (the button is hidden after one). */
 	const lastReplyLocked = useRef(false)
-	/** The page's local store for the held-write record; null without a window (fail-closed). */
+	/**
+	 * the recorded rule: the shell pre-read keeps one page read in flight across start rounds. The 2 s
+	 * limit only decides this round's wait (splash and retry); it never discards the read. A later round (automatic or manual retry)
+	 * awaits the same read instead of starting another, so two page reads never overlap. The read is released when a round takes its answer.
+	 */
+	const preReadRef = useRef<Promise<PageMnemonicEvidence> | null>(null)
+	/** The start rounds currently awaiting the pre-read (a late wake-up never runs beside one of them). */
+	const preReadWaitersRef = useRef(0)
+	// Bound of the in-flight read (checked against the code, 2026-11-22; no hard cap is added): readPageMnemonic awaits only two bounded
+	// steps. (a) checkStorageWithTransientRetry: up to 2 attempts of checkStorageWithStatusWithTimeout, each raced with a 5 s timer
+	// (beamio.ts 1998–2010, 1975–1990), so at most 10 s. (b) readWalletEoaAddress in the validated-copy branch: sendShellRecordCommand with
+	// SHELL_RECORD_REPLY_TIMEOUT_MS = 10 s (walletEoaAddress.ts, shellRecordTransport.ts 34). The worst case is therefore about 20 s, after
+	// which the read settles (as unknown) and a manual retry or the next round starts a new read. A hung read cannot outlive that bound.
+	const takePageMnemonicRead = async (): Promise<PageMnemonicEvidence> => {
+		if (!preReadRef.current) preReadRef.current = readPageMnemonic()
+		const pending = preReadRef.current
+		let timer: number | undefined
+		preReadWaitersRef.current += 1
+		let got: PageMnemonicEvidence | typeof PREREAD_TIMED_OUT
+		try {
+			got = await Promise.race([
+				pending,
+				new Promise<typeof PREREAD_TIMED_OUT>((resolve) => {
+					timer = window.setTimeout(() => resolve(PREREAD_TIMED_OUT), SHELL_PAGE_READ_TIMEOUT_MS)
+				}),
+			])
+		} finally {
+			preReadWaitersRef.current -= 1
+			window.clearTimeout(timer)
+		}
+		if (got === PREREAD_TIMED_OUT) {
+			// this round's limit passed: unknown for this round only, the read stays in flight. The moment it ends, the start is woken and
+			// decides on the same read at once (the next-round timer is cancelled); no new read is started and the wait does not run out.
+			void pending.then(() => {
+				if (!gateMountedRef.current || preReadRef.current !== pending || preReadWaitersRef.current > 0) return
+				if (startupRetryRef.current !== undefined) {
+					window.clearTimeout(startupRetryRef.current)
+					startupRetryRef.current = undefined
+				}
+				publishNativePwaLog('info', '[AppEntryGate] pre-read ended after its round limit: the start decides now (no new read)')
+				void initRef.current?.()
+			})
+			return UNKNOWN_PAGE_MNEMONIC
+		}
+		// the in-flight mark is released when a round takes the answer
+		if (preReadRef.current === pending) preReadRef.current = null
+		return got
+	}
+
+	/** The page's local store for the held-write record (v10 §六.1); null without a window (fail-closed). */
 	const failureStore = () => (typeof window === 'undefined' ? null : window.localStorage)
 	/** The EOA|phrase pairs this page session has confirmed (ok) or has in flight: a pair is sent once; a failed one may be sent again (item A). */
 	const phraseSyncs = useRef<{ confirmed: Set<string>; inFlight: Set<string> }>({ confirmed: new Set(), inFlight: new Set() })
+	/** Background retries of an unconfirmed pwaWalletSync (2026-11-22 item 3): the schedule, never a block. */
+	const syncRetryAttemptRef = useRef(0)
 	// Dependency (review b, 2026-11-17): a remount clears this ref, so the same pair may be sent again in a new page session. That is accepted:
 	// the native side answers an identical request (same seq and content) with idempotent, which is confirmed here (ok), and writes nothing twice.
+	/**
+	 * The cipher sync (spec 30.1; 2.3): completed only on the shell's read-back confirmation (stored and readback match). Any other
+	 * answer is not a completion: it is retried in the background on the re-read schedule (); the page record is not written here.
+	 */
+	const cipherSyncs = useRef<{ confirmed: Set<string>; inFlight: Set<string> }>({ confirmed: new Set(), inFlight: new Set() })
+	const cipherRetryAttemptRef = useRef(0)
+	const sendCipherOnce = async (payload: { cipher: Record<string, unknown>; eoa: string }): Promise<void> => {
+		const key = `${payload.eoa}|${String(payload.cipher.ct)}`
+		const sets = cipherSyncs.current
+		if (sets.confirmed.has(key) || sets.inFlight.has(key)) return
+		sets.inFlight.add(key)
+		try {
+			const out = await shellMnemonicSync.syncCipher(payload.cipher, payload.eoa)
+			if (out.kind === 'synced') {
+				sets.confirmed.add(key)
+				cipherRetryAttemptRef.current = 0
+				allowFirstNativeWrite(payload.eoa)
+				void retryDeferredWriteNow()
+				publishNativePwaLog('info', '[sync] cipher confirmed by the shell read-back (stored, readback match)')
+			} else if (out.kind === 'failed' && !out.retryable) {
+				// M6 (v3.3): a store-only sync (no passcode) of a different envelope for the same account is refused by the native side (bad_request, or
+				// another closed refusal code): a terminal answer. It is not retried; the next unlock sends the current envelope with the passcode, and the
+				// native side verifies and accepts it. The log carries the code only.
+				cipherRetryAttemptRef.current = 0
+				publishNativePwaLog('warn', `[sync] cipher sync refused (code=${out.code}): not retried; the next unlock syncs again with the passcode`)
+			} else {
+				const attempt = cipherRetryAttemptRef.current + 1
+				cipherRetryAttemptRef.current = attempt
+				const delay = startupRetryDelayMs(attempt)
+				publishNativePwaLog('info', `[sync] ${startReasonLine('sync_retry')} attempt=${attempt} next=${delay}ms`)
+				window.setTimeout(() => {
+					if (gateMountedRef.current) void sendCipherOnce(payload)
+				}, delay)
+			}
+		} finally {
+			sets.inFlight.delete(key)
+		}
+	}
+
+	// 2026-11-22 (item 1): a set whose first sync was not confirmed (sync_pending) is handed to this mechanism, which sends it
+	// through sendCipherOnce ( schedule; completion only on the shell's read-back). Registered only in the native shell.
+	useEffect(() => {
+		if (!isCashTreesNativeWebView()) return
+		setSyncPendingHandler((cipher, eoa) => {
+			void sendCipherOnce({ cipher, eoa })
+		})
+		return () => setSyncPendingHandler(null)
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [])
+
 	const sendPhraseOnce = async (payload: { phrase: string; eoa: string }): Promise<void> => {
 		const key = `${payload.eoa}|${payload.phrase}`
 		const sets = phraseSyncs.current
@@ -612,18 +793,30 @@ export default function AppEntryGate() {
 			const out = await shellMnemonicSync.sync(payload.phrase, payload.eoa)
 			const outcome = out as { kind?: string; code?: string; reason?: string } | undefined
 			lastReplyLocked.current = outcome?.kind === 'failed' && outcome.code === 'locked'
+			if (outcome?.kind !== 'synced') {
+				// not confirmed (failed, locked or no answer): retry in the background on the re-read schedule; the page and its IndexedDB are untouched
+				const attempt = syncRetryAttemptRef.current + 1
+				syncRetryAttemptRef.current = attempt
+				const delay = startupRetryDelayMs(attempt)
+				publishNativePwaLog('info', `[sync] ${startReasonLine('sync_retry')} attempt=${attempt} next=${delay}ms`)
+				window.setTimeout(() => {
+					if (gateMountedRef.current) void sendPhraseOnce(payload)
+				}, delay)
+			} else syncRetryAttemptRef.current = 0
 			if (outcome?.kind === 'synced') {
 				sets.confirmed.add(key)
-				// 2026-11-20: the native sync of this account is confirmed; the first native record of the account may now be written
+				// the native sync of this account is confirmed; the first native record of the account may now be written
 				allowFirstNativeWrite(payload.eoa)
 				void retryDeferredWriteNow()
-				// a confirmed sync for this account clears its held record.
+				// v10 §六.1: a confirmed sync for this account clears its held record.
 				if (recordMatchesAccount(readFailureRecord(failureStore()), payload.eoa)) clearFailureRecord(failureStore())
 			}
-			// only write_failed with rollback_pending is recorded (no key material; one entry).
+			// v10 §六.1: only write_failed with rollback_pending is recorded (no key material; one entry).
 			if (outcome?.kind === 'failed') {
 				const rec = recordForFailure({ code: outcome.code ?? '', reason: outcome.reason }, payload.eoa, new Date())
 				if (rec) writeFailureRecord(failureStore(), rec)
+				// Unit (b) (review item 7): a sync that did not finish is pending only. Home is unchanged and the account in use is not changed.
+				markPendingSync(`native_sync_${outcome.code ?? 'failed'}`)
 			}
 		} finally {
 			sets.inFlight.delete(key)
@@ -639,7 +832,7 @@ export default function AppEntryGate() {
 		if (payload) void sendPhraseOnce(payload)
 	}
 	/**
-	 * rule 2026-11-16: after the home is entered, a trusted shell receives the page's valid mnemonic for durable
+	 * Per spec r2.4 item 44: after the home is entered, a trusted shell receives the page's valid mnemonic for durable
 	 * sync. Browser builds never sync. Not awaited: the route does not wait, and a failed sync never changes it.
 	 */
 	const syncPageMnemonicToShell = () => {
@@ -647,10 +840,10 @@ export default function AppEntryGate() {
 		void readPageMnemonic().then(async (ev) => {
 			const payload = pageSyncPayload(ev)
 			if (!payload) return
-			// a held record of another account is cleared (the account changed).
+			// v10 §六.1: a held record of another account is cleared (the account changed).
 			const held = readFailureRecord(failureStore())
 			if (held && !recordMatchesAccount(held, payload.eoa)) clearFailureRecord(failureStore())
-			// C1: the pre-sync read of walletState and walletStatus. Locked, corrupt, unknown or timed out: held (pendingSync), not sent.
+			// C1 (v10 §五): the pre-sync read of walletState and walletStatus. Locked, corrupt, unknown or timed out: held (pendingSync), not sent.
 			if ((await runSyncPreCheck(queryNativeWalletStateForPreCheck, queryNativeWalletStatusForPreCheck)) === 'pending') {
 				markPendingSync('pre_sync_locked_or_unknown')
 				publishNativePwaLog('info', '[AppEntryGate] pre-sync: native locked, unknown or timed out: held until the unlock (not sent)')
@@ -660,7 +853,7 @@ export default function AppEntryGate() {
 		})
 	}
 	/**
-	 * (manual retry of a held write): the record for this account is present. Live walletStatus is read at the click; locked
+	 * v10 §六.3 (manual retry of a held write): the record for this account is present. Live walletStatus is read at the click; locked
 	 * refuses; a key in flight refuses; the confirmed key is cleared and the pair is sent once. No reread, not limited by unknown or timeout.
 	 */
 	const manualRetryShellSync = () => {
@@ -683,7 +876,7 @@ export default function AppEntryGate() {
 			void sendPhraseOnce(payload)
 		})
 	}
-	// the live inputs of the button's visibility (the rule is pure: manualRetryVisible). Read before rendering the button.
+	// v10 §六.2: the live inputs of the button's visibility (the rule is pure: manualRetryVisible). Read before rendering the button.
 	useEffect(() => {
 		setShellSyncManualCheck(async () => {
 			if (!isCashTreesNativeWebView()) return false
@@ -702,8 +895,8 @@ export default function AppEntryGate() {
 		return () => setShellSyncManualCheck(null)
 	}, [])
 	/**
-	 * PWA-RETRY-03: a manual retry of internal_state or storage_write rereads walletEoaAddress first. Unknown does not send;
-	 * valid or absent sends. A pair in flight is refused.
+	 * PWA-RETRY-03 (v10.2 R-22): a manual retry of internal_state or storage_write rereads walletEoaAddress first. Unknown does not send;
+	 * valid or absent sends. A pair in flight is refused (inFlight, v10 §138).
 	 */
 	const rereadThenSync = () => {
 		if (!isCashTreesNativeWebView()) return
@@ -723,8 +916,8 @@ export default function AppEntryGate() {
 			syncPageMnemonicToShell()
 		})
 	}
-	//the home's "retry sync" re-reads the page's valid mnemonic and syncs again; the home shows the result (shellSyncStatus).
-	// a held record for this account takes the manual path (live check, inFlight refusal); otherwise the re-read path.
+	// r94: the home's "retry sync" re-reads the page's valid mnemonic and syncs again; the home shows the result (shellSyncStatus).
+	// v10 §六: a held record for this account takes the manual path (live check, inFlight refusal); otherwise the re-read path.
 	useEffect(() => {
 		setShellSyncRetry(() => {
 			const rec = readFailureRecord(failureStore())
@@ -742,11 +935,11 @@ export default function AppEntryGate() {
 	}
 
 	/**
-	 * Startup wait: unknown is neither the onboarding nor the home. The splash stays up and the start is read
+	 * Startup wait (1501): unknown is neither the onboarding nor the home. The splash stays up and the start is read
 	 * again after a fixed interval, until a definite answer arrives. Nothing is deleted, overwritten, shown as an error or routed.
 	 * Only a confirmed empty page with a confirmed "no such account" from the native side reaches the onboarding.
 	 */
-	/** 0.53.39: a native lock with no PWA mnemonic: retry with the unlock entry. Never onboarding, never the passcode page. */
+	/** 0.53.39 (rule 2026-11-20): a native lock with no PWA mnemonic: retry with the unlock entry. Never onboarding, never the passcode page. */
 	const waitNativeLocked = (reason: string) => {
 		publishNativePwaLog('warn', `[AppEntryGate] native locked: retry with the unlock entry (never onboarding): ${reason}`)
 		setNativeLockedOffered(true)
@@ -757,9 +950,9 @@ export default function AppEntryGate() {
 		setWritePermit(null, `hold: ${reason}`)
 		publishNativePwaLog('warn', `[AppEntryGate] ${reason}: startup wait (unknown: nothing deleted, overwritten or routed)${code ? ` ${startReasonLine(code)}` : ''}`)
 		nativeWaitRef.current = true
-		// rule 2026-11-16 (startup capability): an unknown answer never waits silently for long. See the rounds below.
+		// Per startup capability: an unknown answer never waits silently for long. See the rounds below.
 		startupRoundsRef.current += 1
-		// step 5: the splash stays; the visible retry button is offered from the first unknown round. No generic fallback screen. The
+		// r92 step 5: the splash stays; the visible retry button is offered from the first unknown round. No generic fallback screen. The
 		// automatic re-read backs off (2, 4, 8, 16 s, then every 30 s) and never gives up. Nothing is deleted, overwritten or routed.
 		const attempt = startupRoundsRef.current
 		setSplashVisible(true)
@@ -769,6 +962,12 @@ export default function AppEntryGate() {
 		if (startupRetryRef.current === undefined) {
 			startupRetryRef.current = window.setTimeout(() => {
 				startupRetryRef.current = undefined
+				// (option A): a re-run that would start a new pre-read waits for the open round to conclude (one round at a time)
+				const inFlight = nativePrereadRoundInFlight()
+				if (inFlight) {
+					void inFlight.then(() => void initRef.current?.())
+					return
+				}
 				void initRef.current?.()
 			}, delay)
 		}
@@ -800,17 +999,9 @@ export default function AppEntryGate() {
 		}
 	}
 
-	/** The visible retry button: one immediate re-run of the start (the automatic schedule is kept for the next unknown round). */
-	const retryStartupNow = () => {
-		if (startupRetryRef.current !== undefined) {
-			window.clearTimeout(startupRetryRef.current)
-			startupRetryRef.current = undefined
-		}
-		publishNativePwaLog('info', `[AppEntryGate] startup retry: manual (attempt ${startupRoundsRef.current})`)
-		void initRef.current?.()
-	}
+	// 0.53.44: Try Again is not a startup button any more; the start re-reads in the background (startupWait) only.
 
-	// step 5: the App's init skip raises this when a start stays unknown; the same visible retry button is then offered.
+	// r92 step 5: the App's init skip raises this when a start stays unknown; the same visible retry button is then offered.
 	useEffect(() => {
 		const offer = () => setStartupRetryOffered(true)
 		window.addEventListener(STARTUP_RETRY_OFFER_EVENT, offer)
@@ -825,36 +1016,108 @@ export default function AppEntryGate() {
 	}, [])
 
 	/**
-	 * Spec item 42(2) valid, the 1c write-back (a7e0add): the mnemonic from the native pre-read is written into the page's own record in
+	 * Spec r2.4 item 42(2) valid, the 1c write-back (): the mnemonic from the native pre-read is written into the page's own record in
 	 * the existing format, then read back. Only a read-back that derives this account opens the home (on its EOA); the post-home sync follows
 	 * (item 44). A failed hold, write or read-back is a startup wait: nothing is deleted, shown or routed.
 	 */
-	const adoptPrereadMnemonic = async (phrase: string, eoa: string): Promise<void> => {
+	const adoptPrereadMnemonic = async (phrase: string, eoa: string, reqId: string, cipherSync?: { cipher: Record<string, unknown>; passcode: string }): Promise<void> => {
 		const held = holdShellSessionFromPhrase(phrase, eoa)
 		if (held.kind !== 'ok') {
 			publishNativePwaLog('warn', `[AppEntryGate] pre-read: the held key is not this account (${held.code}): startup wait`)
 			startupWait('pre-read mnemonic not held', 'pre_read_no_hold')
 			return
 		}
-		setCoNET_Data(recoveredPageRecord(publicWalletSeed(eoa), phrase) as never)
-		refreshShellSessionInMemory()
-		// 0.53.44: the restore write (see restorePageCopy); the gate opens only on a consistent read-back.
-		allowRestoreWrite()
-		const stored = await storeSystemDataAndWait()
-		endRestoreWriteWindow()
-		const check = stored ? checkStoredRecord(await readStoredRecordForVerify(), eoa) : 'missing'
-		if (check !== 'valid') {
-			publishNativePwaLog('warn', `[AppEntryGate] pre-read write-back not confirmed (${check}): startup wait, the next read asks again`)
-			startupWait('pre-read write-back not confirmed', 'pre_read_write_back_unconfirmed')
+		// Unit (b), the decision rule 4 fix 2: written to the page's own IndexedDB (existing format) and verified only by an
+		// independent read of the mnemonic there, deriving this account. The shell record, the address and the generic record read-back do not count.
+		// M6: a ciphertext pre-read (a passcode account) is written to the page IndexedDB as the passcode record (the envelope), never as plaintext;
+		// the single cipher+passcode sync is sent by that write. A plaintext pre-read keeps the plaintext page record and the phrase sync.
+		const verdict = cipherSync
+			? await persistPageIdbPasscodeRecord(recoveredPageRecord(publicWalletSeed(eoa), phrase), phrase, eoa, cipherSync.passcode)
+			: await persistPageIdbMnemonic(recoveredPageRecord(publicWalletSeed(eoa), phrase), phrase, eoa)
+		publishNativePwaLog('info', `[startup] reqId=${reqId} writeback=${verdict}`)
+		if (verdict !== 'verified') {
+			// the spec (write_failed): a real write or read-back failure keeps the data and waits; it is never reported as a missing record.
+			publishNativePwaLog('warn', `[AppEntryGate] pre-read write-back not confirmed (${verdict}): startup wait, the next read asks again`)
+			startupWait('pre-read write-back not confirmed', 'write_failed')
 			return
 		}
-		setWritePermit('native_restore', 'pre-read write-back read back consistent')
+		setCoNET_Data(recoveredPageRecord(publicWalletSeed(eoa), phrase) as never)
+		refreshShellSessionInMemory()
+		setWritePermit('native_restore', 'pre-read write-back read back consistent (page IndexedDB)')
 		applyLocalWallet(eoa)
-		syncHeldPhraseToShell(phrase, eoa)
+		logStartRoute(reqId, 'home')
+		// the plaintext phrase is never sent for a passcode account: its one sync (cipher + passcode) was sent by the page write above
+		if (!cipherSync) syncHeldPhraseToShell(phrase, eoa)
+	}
+
+	/**
+	 * spec item 4: the pre-read returned ciphertext. The splash and any scheduled re-read stop, and the passcode page takes the
+	 * screen. The page decrypts on its own; the phrase then goes through adoptPrereadMnemonic (write, read back, home).
+	 */
+	/**
+	 * 2026-11-22 (the decision, item 2): the pre-read of a start round is capped (30 s). A timed-out read is a background wait.
+	 * Its late answer is adopted only when it is the one this start still waits for (same reqId, no decision made yet); a late answer for
+	 * another reqId, or after a decision, is dropped with a log line. A new read supersedes the older expectation.
+	 */
+	const lateReadRef = useRef<{ expectReqId: string | null; lateAnswer: { reqId: string; answer: MnemonicPreread } | null }>({ expectReqId: null, lateAnswer: null })
+	const readPrereadCapped = async (reqId: string): Promise<MnemonicPreread> => {
+		const late = lateReadRef.current
+		late.expectReqId = null
+		// wrapped so that a sync reader (a test double) and an async one both work, and a throw is an unknown answer
+		const task = Promise.resolve().then(() => queryNativeMnemonicPreread()).catch((): MnemonicPreread => ({ kind: 'unknown' }))
+		const r = await capNativeRead(task)
+		if (r.kind === 'answer') return r.value
+		publishNativePwaLog('warn', startReasonLine('native_read_timeout', reqId))
+		late.expectReqId = reqId
+		void task.then((answer) => {
+			if (late.expectReqId !== reqId) {
+				publishNativePwaLog('warn', `${startReasonLine('late_result_discarded', reqId)} cause=reqid_mismatch`)
+				return
+			}
+			late.expectReqId = null
+			if (decisionMadeRef.current) {
+				publishNativePwaLog('warn', `${startReasonLine('late_result_discarded', reqId)} cause=decided`)
+				return
+			}
+			late.lateAnswer = { reqId, answer }
+			publishNativePwaLog('info', startReasonLine('late_result_adopted', reqId))
+			if (startupRetryRef.current !== undefined) {
+				window.clearTimeout(startupRetryRef.current)
+				startupRetryRef.current = undefined
+			}
+			void initRef.current?.()
+		})
+		return { kind: 'unknown', reason: 'read_timeout' }
+	}
+	/** A status read (passcodeStatus, walletStatus) is capped too; a late answer is dropped (a status is never a decision on its own). */
+	const capStatusRead = async <T,>(reqId: string, task: () => Promise<T>, fallback: T): Promise<T> => {
+		const p = Promise.resolve().then(() => task()).catch(() => fallback)
+		const r = await capNativeRead(p)
+		if (r.kind === 'answer') return r.value
+		publishNativePwaLog('warn', `${startReasonLine('native_read_timeout', reqId)} read=status`)
+		void p.then(() => publishNativePwaLog('warn', `${startReasonLine('late_result_discarded', reqId)} cause=status_read`))
+		return fallback
+	}
+
+	const showPrereadCipher = (cipher: unknown, reqId: string) => {
+		publishNativePwaLog('info', `[startup] reqId=${reqId} preread=cipher: passcode page (no plaintext, nothing written)`)
+		if (startupRetryRef.current !== undefined) {
+			window.clearTimeout(startupRetryRef.current)
+			startupRetryRef.current = undefined
+		}
+		nativeWaitRef.current = false
+		setStartupRetryOffered(false)
+		markDecided()
+		setSplashVisible(false)
+		setGateDecided(false)
+		setPrereadCipher({ cipher, reqId })
 	}
 
 	const init = async () => {
-		//the pre-read answer of this start (unsupported: the native rule does not decide the account; see the judgement below)
+		// unit (c): an unmounted gate starts no round (see gateMountedRef)
+		if (!gateMountedRef.current) return
+		const reqId = newStartReqId()
+		// R96: the pre-read answer of this start (unsupported: the native rule does not decide the account; see the judgement below)
 		let prereadUnsupported = false
 		// /.2: the shell judges the account from `walletState`(the only basis). A native build that does not report it yet
 		// answers `not_reported`, and the existing route applies (unchanged 0.52.930 behaviour).
@@ -865,21 +1128,33 @@ export default function AppEntryGate() {
 		// the identity capability is probed once per start; a missing capability sends no init and shows neither the lock nor the import page.
 		let identity: IdentityCapabilityState = 'unanswered'
 		let identityDeclared = false
-		// rule 2026-11-16 (PWA first): in a shell the page is read before the native side is asked. A valid mnemonic on the page is the
+		// in a shell the page is read before the native side is asked. A valid mnemonic on the page is the
 		// one current account: the home opens on its EOA, and the native side is not asked or compared. An unknown read is retryable
 		// (never a delete, an overwrite or a popup). Only a confirmed-empty page goes on to the native side below.
 		let pageEvidence: PageMnemonicEvidence | null = null
 		if (nativeShellRef.current) {
-			const first = await withTimeout(readPageMnemonic(), SHELL_PAGE_READ_TIMEOUT_MS, UNKNOWN_PAGE_MNEMONIC)
+			const first = await takePageMnemonicRead()
 			pageEvidence = first
 			if (first.kind === 'valid') {
-				publishNativePwaLog('info', '[AppEntryGate] page mnemonic is valid: the home on the page EOA; the native side is not asked')
+				publishNativePwaLog('info', `[AppEntryGate] page mnemonic is valid: the home on the page EOA; the native side is not asked (reqId=${reqId} idb=valid preread=not_called)`)
 				setWritePermit('page_valid_mnemonic', 'page mnemonic valid, EOA is the current account')
 				applyLocalWallet(first.eoa)
+				logStartRoute(reqId, 'home')
 				// The home is already entered; native chat capability is resolved only after the PWA account is known.
 				resolveShellChatCapability()
 				// rule 1502: after the home is entered, the trusted shell receives the valid mnemonic for durable sync (never awaited here)
 				if (isCashTreesNativeWebView() && first.phrase) void sendPhraseOnce({ phrase: first.phrase, eoa: first.eoa })
+				return
+			}
+			if (first.kind === 'valid_cipher') {
+				// the home on the record's EOA with no native read (preread and walletStatus are not asked); the cipher goes to the shell as stored
+				publishNativePwaLog('info', `[AppEntryGate] page record is the v3 ciphertext: the home on its EOA; no native read (reqId=${reqId} idb=valid_cipher preread=not_called)`)
+				setWritePermit('page_valid_mnemonic', 'page v3 record valid, EOA is the current account')
+				applyLocalWallet(first.eoa)
+				logStartRoute(reqId, 'home')
+				resolveShellChatCapability()
+				// M6: the passcode account syncs once per page session, after the page unlock, as pwaWalletSync{eoa, cipher, passcode, seq} (PasscodeLockScreen,
+				// afterUiUnlock). No sync without the passcode is sent from here: the native record is not touched before the unlock.
 				return
 			}
 			if (first.kind === 'terminal') {
@@ -888,10 +1163,19 @@ export default function AppEntryGate() {
 				handleStorageUnavailable(OLD_SHELL_UPGRADE_REASON)
 				return
 			}
-			if (first.kind === 'unknown') {
-				startupWait('page mnemonic unknown (timeout, read failure or unreadable store)', 'read_failed')
+			if (first.kind === 'recovery') {
+				// 0.53.44: the native side answered that the key must be recovered: the recovery entry (nothing written, cleared or onboarded)
+				publishNativePwaLog('warn', '[AppEntryGate] pre-read: native recovery needed (a definite answer): the recovery entry; nothing written or cleared')
+				handleStorageUnavailable('native_recovery_needed')
 				return
 			}
+			if (first.kind === 'unknown') {
+				publishNativePwaLog('warn', `[startup] reqId=${reqId} idb=unknown preread=not_called`)
+				logStartRoute(reqId, 'none_yet')
+				startupWait('page mnemonic unknown (timeout, read failure or unreadable store)', shellWaitCodeOf(first.reason))
+				return
+			}
+			publishNativePwaLog('info', `[startup] reqId=${reqId} idb=absent`)
 		}
 		if (nativeShellRef.current) {
 			// A native read is allowed only after the page has explicitly confirmed that no valid mnemonic exists.
@@ -910,7 +1194,7 @@ export default function AppEntryGate() {
 				setIdentityRetryTick((t) => t + 1)
 			}
 			if (!identityDeclared) {
-				// 0.53.39: bridge trust is unknown after the deadline (no identity declared): a retry state with a reason
+				// 0.53.39 (3): bridge trust is unknown after the deadline (no identity declared): a retry state with a reason
 				// code. Never onboarding, never a new wallet. A slow hello (S25, 9.9 s) before the deadline is a wait, not a failure.
 				if (bridgeTrustStartRef.current === undefined) bridgeTrustStartRef.current = Date.now()
 				const trust = bridgeTrustState({ identity, elapsedMs: Date.now() - bridgeTrustStartRef.current })
@@ -918,39 +1202,77 @@ export default function AppEntryGate() {
 				startupWait(`native mnemonic pre-read capability ${identity}`, bridgeTrustReasonCode(trust.state))
 				return
 			}
-			const pre = await queryNativeMnemonicPreread()
+			// Unit (b): the pre-read is asked only here, when the page IndexedDB is definitively absent (the gate above). It does not depend on Chat init.
+			const lateAnswer = lateReadRef.current.lateAnswer
+			lateReadRef.current.lateAnswer = null
+			const pre = lateAnswer ? lateAnswer.answer : await readPrereadCapped(reqId)
+			publishNativePwaLog('info', `[startup] reqId=${reqId} preread=${pre.kind}${pre.kind === 'unknown' && pre.reason ? ` reason=${pre.reason}` : ''}${pre.kind === 'unknown' && pre.code ? ` code=${pre.code}` : ''}`)
+			if (pre.kind === 'cipher') {
+				// the spec: a passcode-protected record is unlocked by the PWA page; it is never onboarding and never a native unlock.
+				showPrereadCipher(pre.cipher, reqId)
+				return
+			}
 			if (pre.kind === 'valid') {
-				publishNativePwaLog('info', '[AppEntryGate] native mnemonic pre-read valid: restoring this account')
-				// 0.53.39: the key hold of prepareShellEntry (a held
-				// signer for another account is cleared before any entry); the record check is decidePrereadEntry (isNativeCopyValidated).
-				if (shellSessionEoa() && shellSessionEoa() !== pre.eoa.trim().toLowerCase()) releaseShellSessionSignerHold()
-				const pageCopy = await checkStorageWithStatusWithTimeout(2_000)
-				// 0.53.39: a page copy that exists is checked by prepareShellEntry (record and key hold) before any entry.
-				// An empty page is not checked (it would block the native restore); the restore write below lands the wallet on the page.
-				const pageRoute = prereadPageRoute(pageCopy.status)
-				// 0.53.39: an unreadable page copy is unknown: wait and retry with a reason code; the native restore never
-				// overwrites a page that may hold the user's own wallet.
-				if (pageRoute === 'wait_retry') {
-					publishNativePwaLog('warn', '[AppEntryGate] page copy unreadable (reason page_read_failed): unknown, startup wait, no restore over the page')
-					startupWait('page read failed (page_read_failed)', 'page_read_failed')
+				publishNativePwaLog('info', '[AppEntryGate] native mnemonic pre-read valid: writing it to the page IndexedDB, then the home')
+				// ②: the adoption (its checks, write-back and read-back) starts here and is not interrupted by the splash deadline.
+				adoptionInFlightRef.current = true
+				// Per B, item 3: the derived address must also agree with any local account record. A different one is verify_failed:
+				// nothing is written, nothing is onboarded, the data is kept.
+				const localEoa = await readPageDerivedAddress().catch(() => null)
+				if (typeof localEoa === 'string' && localEoa.trim() !== '' && localEoa.trim().toLowerCase() !== pre.eoa.trim().toLowerCase()) {
+					adoptionInFlightRef.current = false
+					startupWait('pre-read address differs from the local account record: verify_failed (nothing written)', 'verify_failed')
 					return
 				}
-				if (pageRoute === 'check_record') {
-					const outcome = await prepareShellEntry(pre.eoa)
-					if (outcome !== 'enter') {
-						blockShellEntry(outcome)
-						return
-					}
+				// a held signer for another account is cleared before any entry
+				if (shellSessionEoa() && shellSessionEoa() !== pre.eoa.trim().toLowerCase()) releaseShellSessionSignerHold()
+				try {
+					await adoptPrereadMnemonic(pre.phrase, pre.eoa, reqId)
+				} finally {
+					adoptionInFlightRef.current = false
 				}
-				await decidePrereadEntry(pageCopy, pre.eoa, () => applyNativeWallet(pre.eoa), () => adoptPrereadMnemonic(pre.phrase, pre.eoa))
 				resolveShellChatCapability()
+				return
+			}
+			// Unit (b): unknown (not_ready, envelope errors, a read that did not finish) is never a verdict and never an
+			// onboarding. The first unknown of a start re-asks at once (Android answers its first call unknown); later ones back off (startupWait).
+			if (pre.kind === 'unknown' && pre.reason !== 'unsupported') {
+				if (!quickPrereadRetryRef.current) {
+					quickPrereadRetryRef.current = true
+					publishNativePwaLog('info', `[startup] reqId=${reqId} preread first unknown: quick re-request in ${PREREAD_QUICK_RETRY_MS} ms (no verdict)`)
+					nativeWaitRef.current = true
+					setSplashVisible(true)
+					logStartRoute(reqId, 'none_yet')
+					if (startupRetryRef.current === undefined) {
+						startupRetryRef.current = window.setTimeout(() => {
+							startupRetryRef.current = undefined
+							// the quick re-request runs after its round concluded (its own round is the one in flight)
+							void initRef.current?.()
+						}, PREREAD_QUICK_RETRY_MS)
+					}
+					return
+				}
+				logStartRoute(reqId, 'none_yet')
+				// the spec (record_unreadable): a read failure keeps the data and is never a confirmed absence.
+				startupWait(
+					`native pre-read unknown (${pre.reason ?? 'unknown'}): retry, no verdict`,
+					pre.reason === 'read_error' ? 'record_unreadable' : pre.reason === 'read_timeout' ? 'native_read_timeout' : pre.reason === 'verify_failed' ? 'verify_failed' : pre.reason === 'not_ready' ? 'pre_read_not_ready' : 'pre_unknown',
+				)
 				return
 			}
 			// 0.53.39: the native start reads walletState and hasKey (passcodeStatus) and walletStatus after the pre-read.
 			// It never returns early on an unknown pre-read. The route is decided by nativeStartRoute (pure, tested).
-			const passcode = await queryNativePasscodeStatus()
-			const status = (await queryNativeWalletStatus()).status as NativeWalletStatus
-			const outcome = nativeStartRoute({ pre, walletState: passcode.walletState, hasKey: passcode.hasKey, walletStatus: status })
+			const passcode = await capStatusRead(reqId, queryNativePasscodeStatus, { walletState: 'unknown', hasKey: 'unknown' })
+			const walletStatusAnswer = await capStatusRead(reqId, queryNativeWalletStatus, { status: 'unknown' })
+			const status = walletStatusAnswer.status as NativeWalletStatus
+			// Unit g (rev 2): passcode_not_provided is a pending sync: it does not hold the landing; the pre-read and the key guards decide.
+			const passcodePending = walletStatusAnswer.status === 'not_ready' && walletStatusAnswer.notReadyReason === 'passcode_not_provided'
+			if (passcodePending) markPasscodePendingSync('pre-read start walletStatus', 'native_passcode_not_provided')
+			const outcome = nativeStartRoute({ pre, walletState: passcode.walletState, hasKey: passcode.hasKey, walletStatus: status, passcodePending })
+			// Unit g: a passcode account is reported and the pre-read answers absent: inconsistent. Nothing is onboarded; the wait is in the background.
+			if (passcodePending && pre.kind === 'absent') {
+				publishNativePwaLog('warn', `[AppEntryGate] ${startReasonLine('passcode_preread_inconsistent')}: no onboarding, data kept`)
+			}
 			publishNativePwaLog('info', `[AppEntryGate] native start route=${outcome.route} ${isStartReasonCode(outcome.reason) ? startReasonLine(outcome.reason) : '[start] reason=unlisted'}`)
 			if (outcome.route === 'native_locked') {
 				waitNativeLocked('pre-read locked')
@@ -970,6 +1292,7 @@ export default function AppEntryGate() {
 			}
 			if (outcome.route === 'onboard') {
 				publishNativePwaLog('info', '[AppEntryGate] native mnemonic pre-read absent, page confirmed empty: onboarding')
+				logStartRoute(reqId, 'onboarding')
 				resolveShellChatCapability()
 				setStorageUnavailable(null)
 				goOnboarding(false)
@@ -977,6 +1300,11 @@ export default function AppEntryGate() {
 			}
 			if (outcome.route === 'retry') {
 				if (pre.kind === 'unknown') publishNativePwaLog('warn', 'native mnemonic pre-read unknown: startup wait')
+				// the spec: absent here, but another record has data: diagnostic, data kept, no button.
+				if (pre.kind === 'absent' && (outcome.reason === 'key_marker' || outcome.reason === 'record_without_mnemonic')) {
+					startupWait(`pre-read absent but another record has data (${outcome.reason}): contradiction, data kept`, 'preread_contradiction')
+					return
+				}
 				startupWait(`native start: ${outcome.reason}`, isStartReasonCode(outcome.reason) ? outcome.reason : 'read_failed')
 				return
 			}
@@ -997,6 +1325,7 @@ export default function AppEntryGate() {
 				setSplashVisible(false)
 				setGateDecided(false)
 				setVaultLockKind('page')
+				lockChatAccess() // unit e: the UI lock also refuses chat access (no bridge request)
 				setVaultLocked(true)
 				return
 			}
@@ -1015,10 +1344,14 @@ export default function AppEntryGate() {
 			// 0.53.39 (handoff order: IndexedDB, then the trusted native record): the native walletState and hasKey are read here, once.
 			// An unreadable answer is `unknown` (retry), never an absent account.
 			if (isShellContext()) {
-				const passcode = await queryNativePasscodeStatus()
+				const passcode = await capStatusRead(reqId, queryNativePasscodeStatus, { walletState: 'unknown', hasKey: 'unknown' })
 				shellWalletState = passcode.walletState
 				shellHasKey = passcode.hasKey
-				shellWalletStatus = (await queryNativeWalletStatus()).status as NativeWalletStatus
+				const walletStatusAnswer = await capStatusRead(reqId, queryNativeWalletStatus, { status: 'unknown' })
+				shellWalletStatus = walletStatusAnswer.status as NativeWalletStatus
+				// Unit g (rev 2): walletStatus not_ready with passcode_not_provided is an explicit pending sync (diagnostic native_passcode_not_provided).
+				// Unit g (B): an old shell's old SDK never sends passcode_not_provided, so this legacy route does not reach it. The hold below is unchanged.
+				if (walletStatusAnswer.status === 'not_ready' && walletStatusAnswer.notReadyReason === 'passcode_not_provided') markPasscodePendingSync('walletStatus not_ready (legacy)', 'native_passcode_not_provided')
 			}
 			//the shell judges by walletState (the only basis when it is reported); the transitional route uses walletStatus only.
 			const judged = isShellContext()
@@ -1027,7 +1360,7 @@ export default function AppEntryGate() {
 						walletState: shellWalletState ?? 'not_reported',
 						walletStatus: shellWalletStatus,
 						hasKey: shellHasKey,
-						//only with the declared identity, and only when the pre-read command answered (or was never needed here as unsupported)
+						// R96: only with the declared identity, and only when the pre-read command answered (or was never needed here as unsupported)
 						// Q3 / C4(b) (2026-11-18): the page holds no valid mnemonic (a private key or an address alone included). The record is
 						// read (loaded) or empty; only a valid mnemonic is account evidence, so storeEmpty is 'no valid mnemonic on the page'.
 						storeEmpty: idb === 'absent' && identityDeclared && !prereadUnsupported,
@@ -1043,31 +1376,36 @@ export default function AppEntryGate() {
 				setSplashVisible(false)
 				setGateDecided(false)
 				setVaultLockKind('native')
+				lockChatAccess() // unit e: the UI lock also refuses chat access (no bridge request)
 				setVaultLocked(true)
 				return
 			}
 			if (judged.account === 'undetermined') {
-				// (b): in a shell an undetermined answer is the start state (a wait with the retry), never the generic storage-unavailable screen.
+				// R96 (b): in a shell an undetermined answer is the start state (a wait with the retry), never the generic storage-unavailable screen.
 				if (isShellContext()) startupWait('account judgement undetermined (shell): the start state, retry', 'read_failed')
 				else handleStorageUnavailable('undetermined')
 				return
 			}
 			const presence = judged.account
-			// (2026-11-21): a shell not_ready is wait-and-retry: no creation, recovery or import entry (shellNotReadyWait.ts).
+			// a shell not_ready is wait-and-retry: no creation, recovery or import entry (shellNotReadyWait.ts).
 			const notReadyWait = shellNotReadyWaitReason({ isShell: isShellContext(), walletStatus: shellWalletStatus, presence })
 			if (notReadyWait) {
 				startupWait(notReadyWait, 'status_not_no_key')
 				return
 			}
-			// (c) and: a shell enters onboarding only when the IndexedDB side and the native side both confirmed none.
+			// Y.85 (c) and Y.89: a shell enters onboarding only when the IndexedDB side and the native side both confirmed none.
 			// Any unknown (or a contradicting "has") is retry: no onboarding, nothing deleted. The gate deletes nothing here.
 			// No native side is asked on this path: a native webview has already decided the start above (the pre-read), so here the shell
 			// has no identity hello to declare identity.native-keys.v1. Option A: the unified capability notice, never onboarding, never a creation entry.
-			//both sides confirmed no account (native no_key, page store empty): onboarding. Read-only; nothing is written or deleted here.
+			// R96: both sides confirmed no account (native no_key, page store empty): onboarding. Read-only; nothing is written or deleted here.
 			if (judged.via === 'native_no_key') {
-				// 0.53.39: before onboarding the sealed copy is checked (the same native pre-read as the start).
+				// 0.53.39 (B): before onboarding the sealed copy is checked (the same native pre-read as the start).
 				// valid: restore; locked: the passcode page; unknown or unreadable: retry; absent (confirmed): onboarding.
 				const sealed = await queryNativeMnemonicPreread()
+				if (sealed.kind === 'cipher') {
+					showPrereadCipher(sealed.cipher, reqId)
+					return
+				}
 				const route = nativeNoKeyRoute(sealed)
 				publishNativePwaLog('info', `[AppEntryGate] shell no_key: sealed-copy check route=${route}`)
 				if (route === 'onboard') {
@@ -1077,7 +1415,7 @@ export default function AppEntryGate() {
 					return
 				}
 				if (route === 'restore' && sealed.kind === 'valid') {
-					// 0.53.39: the sealed-copy restore is the same as the pre-read valid path. An unreadable page
+					// 0.53.39 (2nd item): the sealed-copy restore is the same as the pre-read valid path. An unreadable page
 					// waits (never overwritten); an existing page copy is checked by prepareShellEntry; an empty page is restored by the restore write.
 					const sealedCopy = await checkStorageWithStatusWithTimeout(2_000)
 					const sealedRoute = prereadPageRoute(sealedCopy.status)
@@ -1093,7 +1431,7 @@ export default function AppEntryGate() {
 							return
 						}
 					}
-					await decidePrereadEntry(sealedCopy, sealed.eoa, () => applyNativeWallet(sealed.eoa), () => adoptPrereadMnemonic(sealed.phrase, sealed.eoa))
+					await decidePrereadEntry(sealedCopy, sealed.eoa, () => applyNativeWallet(sealed.eoa), () => adoptPrereadMnemonic(sealed.phrase, sealed.eoa, reqId))
 					return
 				}
 				if (route === 'native_locked') {
@@ -1105,7 +1443,6 @@ export default function AppEntryGate() {
 			}
 			// Q3 (2026-11-18): a shell no_account no longer shows the capability notice; the no-record case goes on to the onboarding rules
 			// below, which still require an explicit native no_key in the shell.
-			nativeRetryAttemptRef.current = 0
 			// the store reads now: any earlier unavailable state is cleared, so the app enters on its own (no stuck screen).
 			nativeWaitRef.current = false
 			setStorageUnavailable(null)
@@ -1166,7 +1503,7 @@ export default function AppEntryGate() {
 				notifyShellEntry('page-wallet')
 				return
 			}
-			// rule 2026-11-16: in a shell the onboarding needs an explicit walletStatus no_key. A not_ready or unknown
+			// Per R88 review of: in a shell the onboarding needs an explicit walletStatus no_key. A not_ready or unknown
 			// native answer with an empty page is unknown, never a new account: the startup wait (nothing deleted, shown or routed).
 			if (isShellContext() && !isExplicitNativeNoKey(shellWalletStatus)) {
 				startupWait(`shell onboarding needs an explicit walletStatus no_key (got ${shellWalletStatus})`, 'status_not_no_key')
@@ -1193,7 +1530,7 @@ export default function AppEntryGate() {
 		const id = window.setTimeout(() => {
 			identityProbesDoneRef.current += 1
 			void probeIdentityNow().then(() => {
-				// : the bridge cadence never routes the wallet. After the last probe it stops; a manual retry or a later answer continues.
+				// r2.4: the bridge cadence never routes the wallet. After the last probe it stops; a manual retry or a later answer continues.
 				if (!identityUnansweredRef.current || identityProbesDoneRef.current < BRIDGE_HELLO_MAX_PROBES) return
 				publishNativePwaLog('warn', '[AppEntryGate] identity hello still unanswered after the bridge probe cap: probes stop (bridge only, no route change)')
 			})
@@ -1224,6 +1561,11 @@ export default function AppEntryGate() {
 		publishNativePwaLog('info', msg)
 
 		const splashTimer = window.setTimeout(() => {
+			if (adoptionInFlightRef.current) {
+				// ②: an adoption in progress is not interrupted at the deadline; no storage-unavailable judgement. It ends on its read-back (home) or its own failure.
+				publishNativePwaLog('info', `[AppEntryGate] splash deadline ${SPLASH_FORCE_DISMISS_MS}ms during an adoption: the write-back is not interrupted`)
+				return
+			}
 			const action = splashDeadlineAction({ decided: decisionMadeRef.current, nativeWaiting: nativeWaitRef.current })
 			if (action === 'keep_waiting') {
 				// a store still migrating keeps the wait (the splash stays); the retries enter the app once it reads ok.
@@ -1244,7 +1586,7 @@ export default function AppEntryGate() {
 			// retryable state (never onboarding, no record is judged, nothing is written). The retry re-runs the identity probe and the init.
 			if (nativeShellRef.current || isCashTreesNativeWebView()) {
 				publishNativePwaLog('warn', `[AppEntryGate] splash deadline ${SPLASH_FORCE_DISMISS_MS}ms, start undecided: retryable state`)
-				showStorageUnavailable(NATIVE_RETRY_SCREEN)
+				startupWait('splash deadline: start undecided (shell background, no screen)', 'native_retry_deadline')
 				return
 			}
 			handleStorageUnavailable('timeout')
@@ -1277,12 +1619,13 @@ export default function AppEntryGate() {
 			setSplashVisible(false)
 			setGateDecided(false)
 			setVaultLockKind('native')
+			lockChatAccess() // unit e: the UI lock also refuses chat access (no bridge request)
 			setVaultLocked(true)
 		}
 		window.addEventListener(VAULT_LOCKED_EVENT, onVaultLocked)
 
 		// Native key state: a shell with no key for the account answers `no_key`; show the import route.
-		//an unlock releases a held init once (HC-LOCK INIT-3); the native answer, not this event, decides a lock.
+		// R-21: an unlock releases a held init once (HC-LOCK INIT-3); the native answer, not this event, decides a lock.
 		const removePasscodeWatcher = nativeShell ? installPasscodeStateWatcher((state) => {
 			if (state.locked) return
 			releaseInitLockedHold()
@@ -1292,7 +1635,7 @@ export default function AppEntryGate() {
 		const removeNoKeyWatcher = nativeShell ? installNativeNoKeyWatcher(() => {
 			// Race (3.3): the import route only after the gate has decided and found no page account.
 			if (!noKeyCtl.onNativeNoKey()) return
-			// rule (b), spec item 42(2): both sides confirmed no mnemonic. The existing onboarding holds the two recovery entries; no import route.
+			// Per spec r2.4 item 42(2): both sides confirmed no mnemonic. The existing onboarding holds the two recovery entries; no import route.
 			goOnboarding(false)
 		}) : null
 		// G0 (walletStatus no_key) is decided by init below: the onboarding shows "Get started" and the native recovery entry.
@@ -1318,7 +1661,21 @@ export default function AppEntryGate() {
 	useEffect(() => onAppUpdateRequired(() => showStorageUnavailable('app_update_required')), [])
 
 	// while the wallet is not initialised, the native state is read again every 30 s, so the init retries once
-	// the node list is reachable. Reaching G2 hands the app the native wallet.
+	// the node list is reachable . Reaching G2 hands the app the native wallet.
+	// 2026-11-22: on return to the foreground a waiting shell start re-reads at once; the schedule continues afterwards.
+	useEffect(() => {
+		const onVisible = () => {
+			if (document.visibilityState !== 'visible' || !nativeShellRef.current) return
+			if (startupRetryRef.current === undefined && !nativeWaitRef.current) return
+			window.clearTimeout(startupRetryRef.current)
+			startupRetryRef.current = undefined
+			publishNativePwaLog('info', `[reread] ${startReasonLine('foreground_reread')}`)
+			void initRef.current?.()
+		}
+		document.addEventListener('visibilitychange', onVisible)
+		return () => document.removeEventListener('visibilitychange', onVisible)
+	}, [])
+
 	useEffect(() => {
 		const id = window.setInterval(() => {
 			if (!localModeRef.current) return
@@ -1332,8 +1689,9 @@ export default function AppEntryGate() {
 				}
 				// an address mismatch ends the local home for the recovery entry.
 				if (takeInitRefusal() === 'address_mismatch') {
+					// 0.53.44: no recovery screen at startup; the start waits in the background
 					localModeRef.current = false
-					setStorageUnavailable('native_recovery_needed')
+					startupWait('address mismatch (background, data kept; no recovery screen at startup)', 'read_failed')
 				}
 			})
 		}, 30_000)
@@ -1343,35 +1701,26 @@ export default function AppEntryGate() {
 	return (
 		<div className="flex h-full min-h-[100dvh] w-full flex-col">
 			<EmbeddedPwaUpdateBanner />
-			{/* One retry control at a time (the G1 page showed Try again and Retry): while any start screen of the gate is shown, the identity prompt is not mounted.
-			    The hold page shows only the gate's retry, the unlock control when locked, and the restore button below. */}
+			{/* One retry control at a time (S25 r88: the G1 page showed Try again and Retry): while any start screen of the gate is shown, the identity prompt is not mounted.
+			    The hold page (2026-11-21) shows only the gate's retry, the unlock control when locked, and the restore button below. */}
 			{!storageUnavailable && !(splashVisible && startupRetryOffered) && <IdentityEntryPrompt />}
 			{splashVisible && <SplashScreen />}
-			{splashVisible && startupRetryOffered && (
-				<div className="fixed inset-x-0 bottom-10 z-[60] flex justify-center gap-3">
-					<button type="button" className="rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-[#071126]" onClick={retryStartupNow}>
-						{tu('native_not_ready_retry_action')}
-					</button>
+			{/* 0.53.44: the loading page has no Try Again and no Restore Wallet. The
+			    native unlock button stays (it is the unlock, not a startup retry). The start re-reads in the background. */}
+			{splashVisible && nativeLockedOffered && (
+				<div className="fixed inset-x-0 bottom-10 z-[10000] flex justify-center gap-3">
 					<button
 						type="button"
 						className="rounded-full border border-white px-5 py-2.5 text-sm font-semibold text-white"
-						onClick={openRestoreFromHold}
+						onClick={() => {
+							setNativeLockedOffered(false)
+							setVaultLockKind('native')
+							lockChatAccess() // unit e: the UI lock also refuses chat access (no bridge request)
+							setVaultLocked(true)
+						}}
 					>
-						{tu('restore_wallet')}
+						{tu('unlock_wallet')}
 					</button>
-					{nativeLockedOffered && (
-						<button
-							type="button"
-							className="rounded-full border border-white px-5 py-2.5 text-sm font-semibold text-white"
-							onClick={() => {
-								setNativeLockedOffered(false)
-								setVaultLockKind('native')
-								setVaultLocked(true)
-							}}
-						>
-							{tu('unlock_wallet')}
-						</button>
-					)}
 				</div>
 			)}
 			{vaultLocked ? (
@@ -1386,58 +1735,32 @@ export default function AppEntryGate() {
 						void init()
 					}}
 				/>
+			) : prereadCipher ? (
+				<PrereadPasscodeUnlock
+					cipher={prereadCipher.cipher}
+					onUnlocked={(phrase, eoa, passcode) => {
+						const reqId = prereadCipher.reqId
+						const sentCipher = prereadCipher.cipher
+						setPrereadCipher(null)
+						setSplashVisible(true)
+						void adoptPrereadMnemonic(phrase, eoa, reqId, isMnemonicCipherEnvelope(sentCipher) ? { cipher: sentCipher, passcode } : undefined)
+					}}
+					onVerifyFailed={() => {
+						publishNativePwaLog('warn', '[AppEntryGate] preread cipher could not be verified (verify_failed): record kept, nothing written')
+					}}
+				/>
 			) : storageUnavailable ? (
 				<div className="flex min-h-0 flex-1 flex-col items-center justify-center bg-[#071126] px-6 text-center text-white">
 					<div className="w-full max-w-md rounded-3xl border border-white/15 bg-white/10 p-6 shadow-2xl backdrop-blur-xl">
-						{storageUnavailable === MIGRATION_RETRY_SCREEN ? (
-							<>
-								<h1 className="text-xl font-semibold">{tu('migration_retry_title')}</h1>
-								<p className="mt-3 text-sm leading-6 text-white/75">{tu('migration_retry_body')}</p>
-								<button
-									type="button"
-									className="mt-5 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-[#071126]"
-									onClick={() => {
-										nativeRetryAttemptRef.current = 0
-										setStorageUnavailable('')
-										void init()
-									}}
-								>
-									{tu('migration_retry_action')}
-								</button>
-							</>
-						) : storageUnavailable === 'native_reading' ? (
-							<>
-								<h1 className="text-xl font-semibold">{tu('native_reading_title')}</h1>
-								<p className="mt-3 text-sm leading-6 text-white/75">{tu('native_reading_body')}</p>
-								<button
-									type="button"
-									className="mt-5 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-[#071126]"
-									onClick={() => {
-										setStorageUnavailable('')
-										void init()
-									}}
-								>
-									{tu('native_reading_action')}
-								</button>
-							</>
-						) : storageUnavailable === NATIVE_RETRY_SCREEN ? (
-							<>
-								<h1 className="text-xl font-semibold">{tu('native_not_ready_retry_title')}</h1>
-								<p className="mt-3 text-sm leading-6 text-white/75">{tu('native_not_ready_retry_body')}</p>
-								<button
-									type="button"
-									className="mt-5 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-[#071126]"
-									onClick={() => requestNativeIdentityRetry()}
-								>
-									{tu('native_not_ready_retry_action')}
-								</button>
-							</>
-						) : storageUnavailable === OLD_SHELL_UPGRADE_REASON ? (
+						{storageUnavailable === OLD_SHELL_UPGRADE_REASON ? (
 							<>
 								<h1 className="text-xl font-semibold">{tu('old_shell.terminal.title')}</h1>
-								<button type="button" disabled={terminalProbing} className="mt-5 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-[#071126] disabled:opacity-60" onClick={() => void retryTerminalOnce()}>
-									{tu('retry')}
-								</button>
+								{/* the spec: the shell terminal has no button (the update prompt only); terminalProbing and retryTerminalOnce are kept unused here. */}
+								{!(isShellContext() || nativeShellRef.current || isCashTreesNativeWebView()) && (
+									<button type="button" disabled={terminalProbing} className="mt-5 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-[#071126] disabled:opacity-60" onClick={() => void retryTerminalOnce()}>
+										{tu('retry')}
+									</button>
+								)}
 							</>
 						) : storageUnavailable === 'app_update_required' ? (
 							<>
@@ -1469,7 +1792,7 @@ export default function AppEntryGate() {
 							</>
 												) : storageUnavailable === 'native_recovery_needed' ? (
 							<>
-								{/* A recovery-oriented title (the native wallet restores its key). Manual Retry only. */}
+								{/* Y.158: a recovery-oriented title (the native wallet restores its key). Manual Retry only. */}
 								<h1 className="text-xl font-semibold">{tu('native_restore_title')}</h1>
 								<p className="mt-3 text-sm leading-6 text-white/75">{tu('native_restore_body')}</p>
 							</>
@@ -1482,25 +1805,9 @@ export default function AppEntryGate() {
 								</p>
 							</>
 						)}
-						{storageUnavailable === 'native_recovery_needed' ? (
-								<div className="mt-5 flex flex-col items-center gap-3">
-									{/* the only recovery entry here is the recovery code (the import route is retired). */}
-									<button
-										type="button"
-										className="rounded-full bg-white px-5 py-3 text-sm font-semibold text-[#071126]"
-										onClick={() => {
-											setNativeRecoveryNotice('')
-											void nativeRecoveryOpen().then((out) => {
-												if (!out.ok) setNativeRecoveryNotice(tu(recoveryOpenErrorKey(out.reason)))
-											})
-										}}
-									>
-										{tu('use_recovery_code')}
-									</button>
-									{nativeRecoveryNotice ? <p className="text-sm leading-6 text-white/75">{nativeRecoveryNotice}</p> : null}
-								</div>
-							) : null}
-						{storageUnavailable !== OLD_SHELL_UPGRADE_REASON && (
+						{/* 0.53.44: no recovery button at startup; the recovery code entry is in the onboarding page (v237) */}
+						{/* the spec / 三端 PWA: the shell middle pages have no operable button; the browser path keeps its Retry. */}
+						{!(isShellContext() || nativeShellRef.current || isCashTreesNativeWebView()) && storageUnavailable !== OLD_SHELL_UPGRADE_REASON && (
 							<div className="mt-5 flex justify-center">
 								<button
 									type="button"
@@ -1542,7 +1849,7 @@ export default function AppEntryGate() {
 						// onboarding / recover 成功后允许进入主 App。
 						markBootScreen('home')
 						setGateDecided(true)
-						// rule 2026-11-16 (spec 44(1)(c)): onboarding success enters the home, then the page mnemonic is synced to the shell
+						// Per spec 44(1)(c): onboarding success enters the home, then the page mnemonic is synced to the shell
 						syncPageMnemonicToShell()
 					}}
 					onInitComplete={() => setSplashVisible(false)}

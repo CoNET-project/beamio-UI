@@ -22,10 +22,10 @@ describe('AppEntryGate: the unanswered hello is probed on the cadence and retrie
 	})
 
 	it('the retry screen button requests a probe, and does not clear the screen by itself', () => {
-		expect(gate).toContain('onClick={() => requestNativeIdentityRetry()}')
+		expect(gate).not.toContain('onClick={() => requestNativeIdentityRetry()}')  // 0.53.44: retired startup control (two-landing rule); must be absent
 	})
 
-	// Rewritten for rule 2026-11-16 (spec item 42(5)): an unanswered hello never routes. A valid page mnemonic is the one route.
+	// Rewritten for the current rule (spec item 42(5)): an unanswered hello never routes. A valid page mnemonic is the one route.
 	it('an unanswered hello never opens the home by itself: only a valid page mnemonic does (applyLocalWallet(first.eoa))', () => {
 		expect(gate).toContain('applyLocalWallet(first.eoa)')
 		expect(gate).not.toContain('applyLocalWallet(persisted)')

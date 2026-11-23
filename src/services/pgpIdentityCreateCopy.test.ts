@@ -1,5 +1,5 @@
 /**
- * r2h and r2g each result code that the page shows has copy in both locales; the success codes share one copy; cas_conflict has a refusal copy;
+ * r2h §四 and r2g §一: each result code that the page shows has copy in both locales; the success codes share one copy; cas_conflict has a refusal copy;
  * the copy avoids the forbidden wording. SYNTHETIC values only.
  */
 import { identityCreateCopyKey, identityCreateIsSuccess } from './pgpIdentityCreateCopy'
@@ -8,7 +8,7 @@ import zhCN from '../locale/zh-CN.json'
 
 const ui = (d: unknown) => (d as { ui: Record<string, string> }).ui
 
-describe('identity create copy', () => {
+describe('identity create copy (r2h §四, r2g §一)', () => {
 	it('pending_exists and native_confirmation_missing map to their refusal keys', () => {
 		expect(identityCreateCopyKey('pending_exists')).toBe('chat.identity_create.pending_exists')
 		expect(identityCreateCopyKey('native_confirmation_missing')).toBe('chat.identity_create.confirmation_missing')
@@ -26,19 +26,19 @@ describe('identity create copy', () => {
 		expect(identityCreateCopyKey('cas_conflict')).toBe('chat.identity_create.conflict')
 	})
 
-	it('r2p confirmation_not_native shares the confirmation-missing copy; already_exists is its own refusal', () => {
+	it('r2p §四: confirmation_not_native shares the confirmation-missing copy; already_exists is its own refusal', () => {
 		expect(identityCreateCopyKey('confirmation_not_native')).toBe('chat.identity_create.confirmation_missing')
 		expect(identityCreateCopyKey('already_exists')).toBe('chat.identity_create.already_exists')
 		expect(identityCreateIsSuccess('already_exists')).toBe(false)
 		expect(identityCreateIsSuccess('confirmation_not_native')).toBe(false)
 	})
 
-	it('index z retry_write is a retryable refusal, never a success', () => {
+	it('index z §27.1: retry_write is a retryable refusal, never a success', () => {
 		expect(identityCreateCopyKey('retry_write')).toBe('chat.identity_create.retry')
 		expect(identityCreateIsSuccess('retry_write')).toBe(false)
 	})
 
-	it('index an write_reverted is a retryable refusal, never a success', () => {
+	it('index an §40.2: write_reverted is a retryable refusal, never a success', () => {
 		expect(identityCreateCopyKey('write_reverted')).toBe('chat.identity_create.retry')
 		expect(identityCreateIsSuccess('write_reverted')).toBe(false)
 	})

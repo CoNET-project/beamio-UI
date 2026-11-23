@@ -1,5 +1,5 @@
 /**
- * History re-init after a passcode unlock.
+ * History re-init after a passcode unlock (: route 2).
  *
  * After a lock → unlock the chat start is run once, explicitly: the unlock callback calls `requestChatRestartAfterUnlock()`,
  * which runs the registered start (the App's `initChat(…, gossip=false, …)`) and claims the chat start for this unlock.
@@ -7,8 +7,9 @@
  * `initChat`, so the chat starts once whichever path runs first. The claim is consumed by the first `init()` run, so a
  * later run is never skipped by mistake.
  *
- * A lock does not stop the gossip listen (d62fb04b); the start after an unlock is the same reload as the foreground resume.
+ * A lock does not stop the gossip listen (); the start after an unlock is the same reload as the foreground resume.
  */
+
 
 type StartChat = () => Promise<void>
 
@@ -42,7 +43,7 @@ export const requestChatRestartAfterUnlock = (): boolean => {
  * The start after an unlock, with its dependencies injected (no App render needed to test the branch choice).
  *
  * - shell, native listen owned: the listen is resumed, never torn down; the gossip flag is set to the native state (on);
- * the history is reloaded once. No initChat.
+ *   the history is reloaded once. No initChat.
  * - shell, native listen not owned: initChat(gossip=false) without prepareListenResume (no teardown of an existing listen).
  * - browser: the listen restarts as the foreground resume does, then initChat(gossip=false).
  *

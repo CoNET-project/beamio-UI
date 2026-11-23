@@ -6,8 +6,8 @@ import { SHELL_PASSCODE_REQ_BASE } from '../reqIdSpaces'
 
 const EOA = '0x9858effd232b4033e47d90003d41ec34ecaeda94'
 const PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
-const P1 = '48215973'
-const P2 = '70316284'
+const P1 = '482159'
+const P2 = '703162'
 const REQ = nextPasscodeReqId(0)
 const BASE = { reqId: REQ, eoa: EOA }
 

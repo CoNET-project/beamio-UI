@@ -53,7 +53,7 @@ describe('wiring', () => {
 
 	it('a restore failure is not retried automatically (no retry from an empty key read, nor from the start)', () => {
 		expect(chat).toMatch(/if \(!started && getPgpRestoreFailure\(\)\) \{/)
-		//a pending browser first-open (no chain record, the user's click awaited) returns without a retry, before the same retry call
+		// R76-1: a pending browser first-open (no chain record, the user's click awaited) returns without a retry, before the same retry call
 		expect(chat).toMatch(/if \(getPgpRestoreFailure\(\)\) return\n\t+\/\/ Chain key unreadable right now[^\n]*\n\t+scheduleChatRetry\('own chain key unreadable'/)
 		expect(chat).toMatch(/if \(getPgpRestoreFailure\(\)\) return\n\t\tscheduleChatRetry\('error'/)
 	})

@@ -12,11 +12,11 @@ import { NOT_READY_BOUNDED_DELAYS_MS, shellStorageErrorReason } from './shellSto
 
 // the vector files are checked in beside this test, byte for byte; they are read from the repository only (no path outside it)
 const VECTOR_DIR = join(__dirname, '__fixtures__', 'shell-record-read')
-/** The SHA256 of each checked-in file (answer-shape v1 898ff403…a217e; not-ready-reasons v2 797a5370…23b9; unreadable-cause v2 e1c626f0…7ade4). */
+/** The SHA256 of each checked-in file (answer-shape v1 059e0952…f575; not-ready-reasons v2 787a52a4…ca1f; unreadable-cause v2 bdffa29e…876a). */
 const FILES: ReadonlyArray<{ name: string; sha256: string }> = [
-	{ name: 'shell-record-read-answer-shape-v1.json', sha256: '898ff403e9d53a9ca42c2226fbbcaee3138dee3f398bd1e2e1ea6250821a217e' },
-	{ name: 'shell-record-read-not-ready-reasons-v2.json', sha256: '797a5370ac12aae7a79ac0d7a73173986dc459cb0c33757a1d95d0f7186f23b9' },
-	{ name: 'unreadable-cause-v2.json', sha256: 'e1c626f0d7d62c7f78a8e7c082b89ad6f168b6bdaeb6733ae91797108d57ade4' },
+	{ name: 'shell-record-read-answer-shape-v1.json', sha256: '059e0952ab9b387f4c14eb03c3af97f3e7779e4575d0dbe2800a86cff448f575' },
+	{ name: 'shell-record-read-not-ready-reasons-v2.json', sha256: '787a52a46e671401cabd2dc6bacad8e7601c4aaccace11e68ee6a655b1b9ca1f' },
+	{ name: 'unreadable-cause-v2.json', sha256: 'bdffa29e474584f619405454014efbe2e9fbec3159c03525187bba159bf2876a' },
 ]
 
 type Case = { id: string; command?: string; expect: Record<string, unknown> }

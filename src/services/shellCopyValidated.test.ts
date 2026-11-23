@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- * step 3 (draft 21.6 to 21.8, 22.3, 22.4): the native check of a page copy (copyValidated, eoa), the isolation command of a
+ * r92 step 3 (draft 21.6 to 21.8, 22.3, 22.4): the native check of a page copy (copyValidated, eoa), the isolation command of a
  * key-only copy, and the fresh-write guard. The transport is mocked; no key material is used beyond the test key 0x22..22.
  */
 import { sendShellRecordCommand, type ShellRecordAnswer } from './shellRecordTransport'
@@ -187,7 +187,7 @@ describe('prepareShellFreshWrite (22.4): a fresh account over a key-only copy is
 		expect(await prepareShellFreshWrite(isKeyOnly, OTHER)).toEqual({ isolated: true })
 		expect(mockSend).toHaveBeenCalledTimes(2)
 		expect((mockSend.mock.calls[1][0] as Record<string, unknown>).type).toBe(SHELL_RECORD_QUARANTINE_KEY_ONLY)
-		// rule F: the isolation is a move (quarantine), never a delete. The page sends no remove or delete request. Whether the native
+		// the isolation is a move (quarantine), never a delete. The page sends no remove or delete request. Whether the native
 		// bytes are still present is checked on the native side (outside this suite).
 		const types = mockSend.mock.calls.map((c) => String((c[0] as Record<string, unknown>).type))
 		expect(types.some((t) => /remove|delete|erase|wipe/i.test(t))).toBe(false)

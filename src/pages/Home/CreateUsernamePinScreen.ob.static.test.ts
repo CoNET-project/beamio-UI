@@ -1,15 +1,15 @@
 /**
  * @jest-environment node
  *
- * (onboarding creation and write settlement), source checks. OB-1…OB-6 are the clauses; the test IDs follow them.
- * Limits: the native create result carries no reason field, so OB-3 and OB-4 are checked as "no completion on any write_failed".
+ * v10 §九 (onboarding creation and write settlement), source checks. OB-1…OB-6 are the v10 clauses; the test IDs follow them.
+ * Limits: the native create result carries no reason field (r11 shape), so OB-3 and OB-4 are checked as "no completion on any write_failed".
  */
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
 const src = readFileSync(join(__dirname, 'CreateUsernamePinScreen.tsx'), 'utf8')
 
-describe('onboarding creation and completion', () => {
+describe('onboarding creation and completion (v10 §九)', () => {
 	it('OB-1/2/3/4: write_failed (any reason) does not complete, shows the try-later text, and does not announce or notify', () => {
 		const at = src.indexOf("if (code === 'write_failed' || code === 'readback_failed') {")
 		expect(at).toBeGreaterThan(0)
@@ -42,7 +42,7 @@ describe('onboarding creation and completion', () => {
 	})
 })
 
-describe('write_failed reason handling', () => {
+describe('write_failed reason handling (OB-2, OB-4; rule)', () => {
 	it('OB-2: any write_failed sets the reread-required flag before any later action', () => {
 		const at = src.indexOf("if (code === 'write_failed' || code === 'readback_failed') {")
 		expect(at).toBeGreaterThan(0)
@@ -65,12 +65,12 @@ describe('write_failed reason handling', () => {
 	})
 })
 
-describe('OB-3: rollback_pending retry on the create page', () => {
+describe('OB-3: rollback_pending retry on the create page (v10 line 285; §6.2)', () => {
 	it('the rollback_pending reason sets the flag; other reasons clear it', () => {
 		expect(src).toContain("setRollbackPending(accepted.code === 'write_failed' && accepted.reason === 'rollback_pending')")
 	})
 
-	it('the visibility is checked live (reread and walletStatus) with the rule before the button shows', () => {
+	it('the visibility is checked live (reread and walletStatus) with the §6.2 rule before the button shows', () => {
 		const at = src.indexOf('const visible = createRollbackRetryVisible({')
 		expect(at).toBeGreaterThan(0)
 		const block = src.slice(at - 500, at)

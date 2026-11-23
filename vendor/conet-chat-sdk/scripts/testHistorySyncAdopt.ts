@@ -154,8 +154,8 @@ async function main(): Promise<void> {
 		check('C equal local: no write and no change', net.storageWrites === 0 && net.pointerWrites === 0 && changed === false, `writes=${net.storageWrites}/${net.pointerWrites} changed=${changed}`)
 	}
 
-	// D. A record exists only locally. A sync does not publish it.
-	// The next append publishes it together with the new record: one fragment write, one index write, one pointer write.
+	// D. A record exists only locally. A sync does not publish it (current behaviour; whether sync should is an open decision for the owner).
+	//    The next append publishes it together with the new record: one fragment write, one index write, one pointer write.
 	{
 		const onchain = fresh()
 		const persistence = new Map<string, unknown>()

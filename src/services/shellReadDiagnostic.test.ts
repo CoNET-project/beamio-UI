@@ -1,5 +1,5 @@
 /**
- * The shellRecordRead diagnostic carries the classification (notReadyReason, retryable, unreadableCause) and never a value.
+ * The shellRecordRead diagnostic carries the classification (notReadyReason, retryable, unreadableCause) and never a value (2026-11-21).
  */
 import { parseShellRecordRead, shellReadDiagnosticFields } from './shellRecordStore'
 import { shellStorageErrorReason } from './shellStoreWait'
@@ -26,7 +26,7 @@ describe('shellReadDiagnosticFields', () => {
 	})
 })
 
-describe('answer shape and not_ready mapping', () => {
+describe('answer shape and not_ready mapping (v162 §182: not_ready is a result code under ok:true)', () => {
 	it('an ok:true absent answer logs the envelope names and resultCode=absent, and parses as absent', () => {
 		const payload = { type: 'ack', ok: true, result: { code: 'absent' } }
 		expect(shellReadDiagnosticFields(payload)).toBe(' envelope=ok,result,type resultCode=absent')
@@ -49,7 +49,7 @@ describe('answer shape and not_ready mapping', () => {
 	})
 })
 
-describe('diagnostic codes: a whitelist, never a free text or a mnemonic word', () => {
+describe('diagnostic codes: a whitelist, never a free text or a mnemonic word (f828dace review, 2026-11-21)', () => {
 	it('a BIP-39 word in notReadyReason or resultCode is printed as other, not as itself', () => {
 		const payload = { type: 'ack', ok: true, result: { code: 'abandon', notReadyReason: 'abandon', unreadableCause: 'legal' } }
 		const out = shellReadDiagnosticFields(payload)

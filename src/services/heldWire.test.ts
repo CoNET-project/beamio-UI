@@ -5,7 +5,7 @@ import { heldWireFromMessage } from './heldWire'
 
 const base = { sendId: 's-1', from: 'me' as const, text: 'hello', createdAt: 1_700_000_000_000 }
 
-describe('heldWireFromMessage', () => {
+describe('heldWireFromMessage (BCHAT 38)', () => {
 	it('rebuilds the text wire with the same field order a text send uses', () => {
 		expect(heldWireFromMessage(base)).toBe(JSON.stringify({ sendId: 's-1', from: 'me', text: 'hello', createdAt: 1_700_000_000_000 }))
 	})

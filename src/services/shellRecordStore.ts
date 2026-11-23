@@ -42,7 +42,7 @@ type Loose = Record<string, unknown>
 export type ShellRecordRead =
 	| { status: 'absent' }
 	| { status: 'ok'; record: Loose; rev: number; walletFieldsRedacted: boolean; copyValidated?: boolean; eoa?: string | null }
-	| { status: 'error'; reason: string; notReady?: { retryable: unknown; notReadyReason?: string; unreadableCause?: string; persistent: boolean } }
+	| { status: 'error'; reason: string; notReady?: { retryable: unknown; notReadyReason?: string; unreadableCause?: string; persistent: boolean }; keylessRecord?: Loose }
 
 export type ShellRecordWrite = { status: 'ok'; rev: number } | { status: 'conflict'; currentRev: number | null } | { status: 'error'; reason: string; notReady?: { retryable: unknown; notReadyReason?: string; persistent: boolean } }
 
@@ -83,7 +83,7 @@ export function buildShellRecordWriteCommand(reqId: number, record: Loose, rev: 
 
 /** Reads the answer of a read. Only `ok` with an integer rev, or `absent`, is accepted; anything else is an error. */
 /**
- * The classification fields of a read answer for the diagnostic line: the envelope field names, the
+ * The classification fields of a read answer for the diagnostic line (2026-11-21; v162 §182): the envelope field names, the
  * result code, notReadyReason, retryable and unreadableCause, as categories only. A value that is not a short lower-case code is logged as `other`; no record, key or
  * free text is ever logged. Returns a leading-space string, or '' when the answer carries none of them.
  */
@@ -92,7 +92,7 @@ export function shellReadDiagnosticFields(payload: Loose | null): string {
 	const top = (payload && typeof payload === 'object' ? payload : {}) as Loose
 	const code = (v: unknown): string | null => (v === undefined || v === null ? null : diagnosticCode(v))
 	const parts: string[] = []
-	// the shape, as field names only: the envelope keys and the result code, so an unrecognised answer is visible in the log
+	// the shape, as field names only (v162 §182): the envelope keys and the result code, so an unrecognised answer is visible in the log
 	const envelopeKeys = Object.keys(top).filter((k) => /^[A-Za-z_]{1,30}$/.test(k)).sort().join(',')
 	if (envelopeKeys) parts.push(`envelope=${envelopeKeys}`)
 	const resultCode = code(r?.code)
@@ -107,7 +107,7 @@ export function shellReadDiagnosticFields(payload: Loose | null): string {
 }
 
 /**
- * The retryable flag of a superseded envelope not_ready: the envelope's boolean when present; otherwise by the reason's
+ * The retryable flag of a superseded envelope not_ready (v168 §188.2): the envelope's boolean when present; otherwise by the reason's
  * meaning (storage_locked and ambiguous_accounts are not retryable; g1_uninitialized is); otherwise bounded (true). Pure.
  */
 export function legacyRetryable(payload: Loose): boolean {
@@ -116,32 +116,45 @@ export function legacyRetryable(payload: Loose): boolean {
 	return true
 }
 
+/** A plaintext mnemonic on the record (the account credential, the recorded rule). */
+function recordHasPlaintextMnemonic(record: unknown): boolean {
+	return isPlain(record) && typeof record.mnemonicPhrase === 'string' && record.mnemonicPhrase.trim() !== ''
+}
+
 export function parseShellRecordRead(payload: Loose | null): ShellRecordRead {
 	//2: the ack envelope. ok:false is an envelope-level failure (error = the code). ok:true carries the answer in
 	// result.code: ok (with record), absent, error (with sub), migrating. Anything else, or an unknown code, fails closed.
 	if (!payload || payload.type !== 'ack') return { status: 'error', reason: 'native_unavailable' }
-	// / an envelope-level not_ready is not a valid shape.
+	// v162 §182.2 / v165 §185: an envelope-level not_ready (ok:false, error "not_ready", the superseded v159/v160 form) is not a valid shape.
 	// It carries no class, so it is an explicit error (zero class, notReadyClass), never the endless retry.
-	// (compatibility, the superseded form): retryable is taken from the envelope when it is a boolean; without it the answer is
+	// v168 §188 (compatibility, the superseded form): retryable is taken from the envelope when it is a boolean; without it the answer is
 	// bounded (re-reads, then the terminal). Never an endless retry, never a data clear, a key change or an automatic create.
+	if (payload.ok !== true && payload.error === 'not_ready' && payload.notReadyReason === 'passcode_not_provided') return { status: 'error', reason: 'passcode_not_provided' }
 	if (payload.ok !== true && payload.error === 'not_ready') return { status: 'error', reason: 'not_ready', notReady: { retryable: legacyRetryable(payload), notReadyReason: typeof payload.notReadyReason === 'string' ? payload.notReadyReason : undefined, persistent: false } }
-	// the superseded persistent form: the terminal; its notReadyReason is kept for the diagnostic when the envelope carries it
+	// the superseded persistent form (v168 §188.2): the terminal; its notReadyReason is kept for the diagnostic when the envelope carries it
 	if (payload.ok !== true && payload.error === 'not_ready_persistent') return { status: 'error', reason: 'not_ready_persistent', notReady: { retryable: legacyRetryable(payload), notReadyReason: typeof payload.notReadyReason === 'string' ? payload.notReadyReason : undefined, persistent: true } }
 	if (payload.ok !== true) return { status: 'error', reason: typeof payload.error === 'string' ? payload.error : 'native_unavailable' }
 	const result = payload.result
 	if (!result || typeof result !== 'object') return { status: 'error', reason: 'bad_answer' }
 	const r = result as Loose
 	if (r.code === 'absent') return { status: 'absent' }
-	// / v4: not_ready is result.code under ok:true (with notReadyReason, retryable, unreadableCause); not_ready_persistent is
+	// v162 §182 / v4: not_ready is result.code under ok:true (with notReadyReason, retryable, unreadableCause); not_ready_persistent is
 	// result.code "error" with sub "not_ready_persistent". Both carry the class fields for the ceiling (notReadyClass).
+	// SRP v2 / v291 (unit g): the native passcode state is not_ready with notReadyReason passcode_not_provided. It is a pending sync, never a read error.
+	if (r.code === 'not_ready' && r.notReadyReason === 'passcode_not_provided') return { status: 'error', reason: 'passcode_not_provided' }
 	if (r.code === 'not_ready') return { status: 'error', reason: 'not_ready', notReady: { retryable: r.retryable, notReadyReason: typeof r.notReadyReason === 'string' ? r.notReadyReason : undefined, unreadableCause: typeof r.unreadableCause === 'string' ? r.unreadableCause : undefined, persistent: false } }
 	if (r.code === 'error' && r.sub === 'not_ready_persistent') return { status: 'error', reason: 'not_ready_persistent', notReady: { retryable: r.retryable, notReadyReason: typeof r.notReadyReason === 'string' ? r.notReadyReason : undefined, unreadableCause: typeof r.unreadableCause === 'string' ? r.unreadableCause : undefined, persistent: true } }
 	if (r.code === 'error') return { status: 'error', reason: typeof r.sub === 'string' ? r.sub : 'error' }
 	if (r.code === 'ok') {
 		const record = r.record
 		if (!record || typeof record !== 'object' || Array.isArray(record)) return { status: 'error', reason: 'bad_answer' }
+		// rev is the record's rev (the iOS and Android answers both carry record.rev as an integer; the interface rule, shape v2).
+		// result.rev is optional: when it is present it must equal record.rev, or the answer is refused as bad_answer. The record without an
+		// integer rev is rev_missing.
+		const isRev = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0
 		const rev = (record as Loose).rev
-		if (typeof rev !== 'number' || !Number.isInteger(rev) || rev < 0) return { status: 'error', reason: 'rev_missing' }
+		if (!isRev(rev)) return { status: 'error', reason: 'rev_missing' }
+		if (r.rev !== undefined && r.rev !== rev) return { status: 'error', reason: 'bad_answer' }
 		try {
 			assertNoPgpPrivate(record)
 		} catch {
@@ -155,6 +168,10 @@ export function parseShellRecordRead(payload: Loose | null): ShellRecordRead {
 		const eoa = typeof r.eoa === 'string' && r.eoa.trim() ? r.eoa.trim().toLowerCase() : null
 		if (!copyValidated) {
 			const state = shellWalletState(record)
+			// 0.53.44: a keyless record with no plaintext mnemonic is not refused here.
+			// It is returned as keylessRecord, so the start can apply the 11-17 rule (no key + no mnemonic → onboarding, data kept). With a
+			// mnemonic on the record a missing key stays needs_native_recovery (a hold, never onboarding).
+			if (state === 'needs_native_recovery' && !recordHasPlaintextMnemonic(record)) return { status: 'error', reason: state, keylessRecord: record as Loose }
 			if (state !== 'ok') return { status: 'error', reason: state }
 		} else if (!Array.isArray((record as Loose).profiles)) {
 			return { status: 'error', reason: 'wallet_fields_missing' }
@@ -174,13 +191,15 @@ export function parseShellRecordRead(payload: Loose | null): ShellRecordRead {
 
 /** Reads the answer of a write `ok` with the new rev, or `conflict` with currentRev, or an error code. */
 export function parseShellRecordWrite(payload: Loose | null): ShellRecordWrite {
-	// HC-LOCK L-WRITE: an envelope-level locked is the native lock: named so the storage read classifies it as native_locked.
+	// HC-LOCK L-WRITE (v10 §3.2): an envelope-level locked is the native lock: named so the storage read classifies it as native_locked.
 	if (payload && payload.type === 'ack' && payload.ok === false && payload.error === 'locked') return { status: 'error', reason: 'shell_record_locked' }
-	// a write answers not_ready only (no persistent form). The superseded envelope not_ready follows (legacyRetryable).
+	// v169 §189: a write answers not_ready only (no persistent form). The superseded envelope not_ready follows v168 §188.2 (legacyRetryable).
+	// SRP v2 SRP-02 (unit g): the envelope not_ready with notReadyReason passcode_not_provided is the passcode state (pending sync), never a write failure.
+	if (payload && payload.type === 'ack' && payload.ok === false && payload.error === 'not_ready' && payload.notReadyReason === 'passcode_not_provided') return { status: 'error', reason: 'passcode_not_provided' }
 	if (payload && payload.type === 'ack' && payload.ok === false && payload.error === 'not_ready') {
 		return { status: 'error', reason: 'not_ready', notReady: { retryable: legacyRetryable(payload), notReadyReason: typeof payload.notReadyReason === 'string' ? payload.notReadyReason : undefined, persistent: false } }
 	}
-	// an envelope error keeps its code: a refusal is then
+	// an envelope error keeps its code (v171 §191.2 bad_request, v166 §186 pgp_private_in_payload, v164 §184 origin_refused): a refusal is then
 	// never retried (writeFailureDisposition). An envelope without a string error is native_unavailable.
 	if (payload && payload.type === 'ack' && payload.ok === false) {
 		return { status: 'error', reason: typeof payload.error === 'string' && payload.error.length > 0 ? payload.error : 'native_unavailable' }
@@ -191,20 +210,21 @@ export function parseShellRecordWrite(payload: Loose | null): ShellRecordWrite {
 	const r = result as Loose
 	if (r.code === 'ok' && typeof r.rev === 'number' && Number.isInteger(r.rev)) return { status: 'ok', rev: r.rev }
 	if (r.code === 'conflict') return { status: 'conflict', currentRev: typeof r.currentRev === 'number' ? r.currentRev : null }
+	if (r.code === 'not_ready' && r.notReadyReason === 'passcode_not_provided') return { status: 'error', reason: 'passcode_not_provided' }
 	if (r.code === 'not_ready') {
 		return { status: 'error', reason: 'not_ready', notReady: { retryable: r.retryable, notReadyReason: typeof r.notReadyReason === 'string' ? r.notReadyReason : undefined, persistent: false } }
 	}
 	return { status: 'error', reason: typeof r.code === 'string' ? r.code : 'bad_answer' }
 }
 
-/** The not_ready failure reason a write (or the probe read) carries into the deferred retry: the class of the ceiling. */
+/** The not_ready failure reason a write (or the probe read) carries into the deferred retry: the class of the ceiling (v169 §189). */
 export function writeNotReadyReason(parsed: { reason: string; notReady?: { retryable: unknown } }): string | null {
 	if (parsed.reason !== 'not_ready') return null
 	return `shell_record_not_ready_${notReadyClass({ persistent: false, retryable: parsed.notReady?.retryable })}`
 }
 
 /**
- * The write's not_ready step: the f-th consecutive not_ready failure (f from 1) schedules re-write f after
+ * The write's not_ready step (v169 §189, §179.3): the f-th consecutive not_ready failure (f from 1) schedules re-write f after
  * NOT_READY_BOUNDED_DELAYS_MS[f-1] while the class is bounded and f is within the five re-writes; otherwise the explicit error (the
  * intent is kept, the user retries). Pure.
  */
@@ -283,17 +303,20 @@ const WRITE_RETRY_MS = 3000
 const WRITE_REFUSAL_CODES: ReadonlySet<string> = new Set([
 	'key_shaped_content',
 	'wallet_copy_not_approved',
-	// envelope-level refusals: a bad request, a payload with a PGP private key and
-	// an untrusted origin are refusals of the request, never retried on any path
+	// envelope-level refusals: a bad request (including an over-size request, v171 §191.2), a payload with a PGP private key (v166 §186) and
+	// an untrusted origin (v164 §184) are refusals of the request, never retried on any path
 	'bad_request',
 	'pgp_private_in_payload',
 	'origin_refused',
 ])
 /**
- * How a failed write is handled: 'refused' (a refusal of the request: kept, never retried), 'not_ready' (the
+ * How a failed write is handled (v169 §189, v171 §191.2): 'refused' (a refusal of the request: kept, never retried), 'not_ready' (the
  * not_ready ceiling), or 'retry' (the ordinary backoff). Pure.
  */
-export function writeFailureDisposition(reason: string): 'refused' | 'not_ready' | 'retry' {
+export function writeFailureDisposition(reason: string): 'refused' | 'not_ready' | 'retry' | 'pending_sync' {
+	// Unit g (rev): passcode_not_provided is a pending sync (the native side waits for the passcode). It is neither a write failure, nor a refusal,
+	// nor an exhausted retry: the intent is kept and not counted.
+	if (reason === 'passcode_not_provided') return 'pending_sync'
 	if (WRITE_REFUSAL_CODES.has(reason)) return 'refused'
 	if (reason.startsWith('shell_record_not_ready_')) return 'not_ready'
 	return 'retry'
@@ -556,7 +579,7 @@ function mergeIntentOps(a: DeltaOp[], b: DeltaOp[]): DeltaOp[] {
 
 /** Keeps the page's change as the intent, merged with the intent it follows. */
 /**
- * A not_ready failure of a direct write: the intent is deferred and the not_ready ceiling runs on it (five re-writes on
+ * A not_ready failure of a direct write (v169 §189): the intent is deferred and the not_ready ceiling runs on it (five re-writes on
  * 0.5, 1, 2, 4, 8 s for a retryable answer; the explicit error at once for a non-retryable one). The first timer uses the ceiling delay.
  */
 function deferNotReadyWrite(ops: DeltaOp[], ours: Loose | null, reason: string): void {
@@ -610,9 +633,9 @@ function scheduleDeferredRetry(): void {
 	}, delay)
 }
 
-/** A not_ready failure of the deferred write: bounded re-writes on the ladder, then the explicit error. Nothing is cleared. */
+/** A not_ready failure of the deferred write (v169 §189): bounded re-writes on the §179.3 ladder, then the explicit error. Nothing is cleared. */
 /**
- * The state after one more not_ready write failure: the consecutive count rises by one; a bounded class within the five
+ * The state after one more not_ready write failure (v169 §189.4): the consecutive count rises by one; a bounded class within the five
  * re-writes schedules the next (its delay), otherwise the explicit error (exhausted). Never a persistent class for a write. Pure.
  */
 export function nextNotReadyState(prevCount: number, cls: 'persistent' | 'bounded' | 'zero'): { count: number; step: { kind: 'retry'; delayMs: number } | { kind: 'explicit' } } {
@@ -671,6 +694,11 @@ async function retryDeferredWrite(): Promise<void> {
 				notReadyFailure(pending, notReadyClass({ persistent: false, retryable: read.notReady?.retryable }))
 				return
 			}
+			// Unit g (rev 2): a passcode_not_provided read is a pending sync: the intent is kept and not counted (not an exhausted retry, not a refusal).
+			if (read.reason === 'passcode_not_provided') {
+				publishNativePwaLog('info', `[shellRecord] read pending sync (${diagnosticCode('passcode_not_provided')}): kept, not counted`)
+				return
+			}
 			if (WRITE_REFUSAL_CODES.has(read.reason)) {
 				if (deferred === pending) {
 					deferred = { ...pending, attempts: pending.attempts + 1, refused: read.reason }
@@ -705,6 +733,11 @@ async function retryDeferredWrite(): Promise<void> {
 			rev = 0
 		}
 		const out = await writeAt(payload, rev)
+		if (out.status === 'failed' && writeFailureDisposition(out.reason) === 'pending_sync') {
+			// pending sync: the intent is kept as it is; no attempt is counted and no failure or refusal is recorded.
+			publishNativePwaLog('info', `[shellRecord] write pending sync (${diagnosticCode('passcode_not_provided')}): kept, not counted, not a failure`)
+			return
+		}
 		if (out.status === 'failed' && writeFailureDisposition(out.reason) === 'not_ready') {
 			notReadyFailure(pending, out.reason.slice('shell_record_not_ready_'.length) as 'persistent' | 'bounded' | 'zero')
 			return
@@ -722,7 +755,7 @@ async function retryDeferredWrite(): Promise<void> {
 				deferred = { ...pending, attempts: pending.attempts + 1, refused: out.reason }
 				persistDeferred()
 			}
-			publishNativePwaLog('info', `[shellRecord] write refused by the store (${out.reason}); not retried`)
+			publishNativePwaLog('info', `[shellRecord] write refused by the store (${diagnosticCode(out.reason)}); not retried`)
 			return
 		}
 		countAttempt(pending)
@@ -787,16 +820,36 @@ async function writeAt(payload: Loose, rev: number): Promise<WriteOutcome> {
 /** A label for the diagnostics log only: which caller issued the read. Never a value. */
 export type ShellReadSource = 'init' | 'probe' | 'deferred' | 'removal' | 'unlabeled'
 
-export async function shellRecordRead(options: { probe?: boolean; raw?: boolean; source?: ShellReadSource } = {}): Promise<ShellRecordRead> {
+/**
+ * 0.53.44: a read request is open until its reply or the hard cap. The soft mark (10 s)
+ * only logs "still waiting": a transport timeout at 10 s is not an answer, so a late ok reply reaches the read in flight. One read request is
+ * open at a time: every caller meanwhile shares it (no second reqId is sent).
+ */
+export const SHELL_READ_HARD_CAP_MS = 30_000
+export const SHELL_READ_STILL_WAITING_MS = 10_000
+let openReadAnswer: Promise<ShellRecordAnswer> | null = null
+function sharedReadAnswer(src: string): Promise<ShellRecordAnswer> {
+	if (openReadAnswer) return openReadAnswer
 	const reqId = nextReqId()
+	const stillWaiting = setTimeout(() => publishNativePwaLog('info', `[shellRecordRead] still waiting source=${src} at 10 s (request open to 30 s)`), SHELL_READ_STILL_WAITING_MS)
+	const open: Promise<ShellRecordAnswer> = sendShellRecordCommand(buildShellRecordReadCommand(reqId), SHELL_READ_HARD_CAP_MS).finally(() => {
+		clearTimeout(stillWaiting)
+		if (openReadAnswer === open) openReadAnswer = null
+	})
+	openReadAnswer = open
+	return open
+}
+
+export async function shellRecordRead(options: { probe?: boolean; raw?: boolean; source?: ShellReadSource } = {}): Promise<ShellRecordRead> {
 	// Diagnostics (S25, 2026-11-15): reason codes and times only. No record, key or field value is logged.
 	const sentAt = Date.now()
 	const src = options.source ?? 'unlabeled'
-	publishNativePwaLog('info', `[shellRecordRead] sent source=${src} at ${new Date(sentAt).toISOString()}`)
-	const answer = await sendShellRecordCommand(buildShellRecordReadCommand(reqId), TIMEOUT_MS)
+	if (!openReadAnswer) publishNativePwaLog('info', `[shellRecordRead] sent source=${src} at ${new Date(sentAt).toISOString()}`)
+	else publishNativePwaLog('info', `[shellRecordRead] shares the open request source=${src} (no second request)`)
+	const answer = await sharedReadAnswer(src)
 	if (answer.kind !== 'payload') {
 		const reason = transportReason(answer)
-		publishNativePwaLog('warn', `[shellRecordRead] no answer source=${src}: reason=${reason} ms=${Date.now() - sentAt}`)
+		publishNativePwaLog('warn', `[shellRecordRead] no answer source=${src}: reason=${diagnosticCode(reason)} ms=${Date.now() - sentAt}`)
 		return { status: 'error', reason }
 	}
 	const parsed = parseShellRecordRead(answer.payload)
@@ -919,7 +972,7 @@ async function applyRemovalsNow(removals: DeltaOp[]): Promise<boolean> {
  * for a refusal that is not a deferral.
  */
 /**
- * 2026-11-20: a first write that creates the native record (the store is absent) waits for the native pwaWalletSync of the same
+ * a first write that creates the native record (the store is absent) waits for the native pwaWalletSync of the same
  * account to be confirmed ok. Until then the page's copy has no key on the native side (the write strips the wallet fields), so a record
  * created now would hold no key. The gate is in memory: it opens once per session, on the sync's confirmation.
  */
@@ -1084,7 +1137,7 @@ export function validatedCopyAccount(read: { copyValidated?: boolean; eoa?: stri
 	const first = Array.isArray(profiles) ? profiles[0] : undefined
 	const keyID = isPlain(first) && typeof first.keyID === 'string' ? first.keyID.trim().toLowerCase() : ''
 	if (!keyID || !read.eoa || read.eoa !== keyID) return false
-	// rule B (2026-11-17): the copy's mnemonic must pass the BIP-39 checksum (no derivation here); recoveryWords alone do not count.
+	// the copy's mnemonic must pass the BIP-39 checksum (no derivation here); recoveryWords alone do not count.
 	// The keyID is checked against the native walletEoaAddress (read.eoa) above.
 	const phrase = typeof read.record.mnemonicPhrase === 'string' ? read.record.mnemonicPhrase.trim() : ''
 	return isMnemonicPhrase(phrase)

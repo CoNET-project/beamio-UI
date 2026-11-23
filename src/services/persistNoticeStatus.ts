@@ -1,5 +1,5 @@
 /**
- * 0.53.39: the state of a save that did not complete (the record was refused or could not be written). It holds
+ * 0.53.39 (item 3): the state of a save that did not complete (the record was refused or could not be written). It holds
  * only a flag and a retry callback; it never holds the record or any secret. The notice is shown by the existing ShellSyncNotice position.
  */
 import { useSyncExternalStore } from 'react'

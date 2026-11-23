@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * Admission of an incoming offer: one admission per (callId, sessionId).
+ * Admission of an incoming offer (draft-v33 §33.2, v36 §40, v37 §41 and §41.4): one admission per (callId, sessionId).
  * The offers are really signed (EIP-191) with a throwaway wallet; no key is stored.
  */
 jest.mock('@/services/beamioTagWorkerBridge', () => ({}), { virtual: true })
@@ -103,7 +103,7 @@ describe('admitIncomingVoiceOffer', () => {
 		expect(admitIncomingVoiceOffer(signed)).toEqual({ ok: false, reason: 'no_created_at' })
 	})
 
-	test('only createdAt is the issue time: timestamp alone does not admit or ring', async () => {
+	test('only createdAt is the issue time: timestamp alone does not admit or ring (v20 §22, v21 §23)', async () => {
 		const h = handle()
 		const wallet = Wallet.createRandom()
 		const base = makeVoiceCallSignal({
@@ -117,7 +117,7 @@ describe('admitIncomingVoiceOffer', () => {
 		expect(admitIncomingVoiceOffer(signed)).toEqual({ ok: false, reason: 'no_created_at' })
 	})
 
-	test('a declared tag that differs from the looked-up tag of the signer is refused', async () => {
+	test('a declared tag that differs from the looked-up tag of the signer is refused (v10 §12, v18 §18.1)', async () => {
 		const h = handle()
 		const wallet = Wallet.createRandom()
 		const base = makeVoiceCallSignal({
@@ -172,7 +172,7 @@ describe('admitIncomingVoiceOffer', () => {
 
 import { offerReplacesLiveCall } from './voiceCallSession'
 
-describe('offerReplacesLiveCall', () => {
+describe('offerReplacesLiveCall (v70 §77)', () => {
 	const now = Date.now()
 	const live = new Set(['live-s'])
 	const ringing = (over: Record<string, unknown> = {}) => ({

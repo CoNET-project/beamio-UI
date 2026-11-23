@@ -1,6 +1,6 @@
 /**
  * The unified "chat unavailable" state of a shell without the capability (option A). The copy is a draft, to be
- * confirmed by the PWA integration maintainer. It is not a lock page (that is for `no_key` only) and it holds no key.
+ * confirmed by the review. It is not a lock page (that is for `no_key` only) and it holds no key.
  *
  * TEST BENCH (transitional): this is the stage before the native commands exist. It is not the final shell form;
  * the identity entries are re-pointed to the native commands one by one (plan in-shell-no-page-keys, step 2).
@@ -102,7 +102,7 @@ export function useShellIdentityPending(): boolean {
 }
 
 /**no identity source after a restart. The page shows "retry later" and guesses nothing. */
-/** The chat identity is pending (RULING 617d3dd9): the copy says so; it is not an app-update notice. */
+/** The chat identity is pending (first-identity rule): the copy says so; it is not an app-update notice. */
 export function ShellIdentityPendingNotice() {
 	return (
 		<div role="status" className="flex min-h-0 flex-1 flex-col items-center justify-center bg-[#071126] px-6 text-center text-white">

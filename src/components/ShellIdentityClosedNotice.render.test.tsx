@@ -11,6 +11,17 @@ import { nativeRecoveryOpen } from '../services/nativeRecovery'
 jest.mock('../locale/beamioLocale', () => ({ tu: (key: string) => key }))
 jest.mock('../services/nativeChatRouteRegister', () => ({ requestNativeAck: jest.fn(), nextReqId: () => 1, probeNativeCapabilities: jest.fn() }))
 jest.mock('../services/nativeRecovery', () => ({ nativeRecoveryOpen: jest.fn(async () => ({ ok: true })) }))
+// the local page record decides the refused copy (the decision): mocked per case here
+const mockLocalPage: { next: 'valid' | 'no_mnemonic' | 'address_only' | 'throws' } = { next: 'valid' }
+jest.mock('../services/beamio', () => ({
+	// a plain function (not jest.fn): the suite's resetMocks would clear a jest.fn implementation before each test
+	readPageIdbInit: async () => {
+		if (mockLocalPage.next === 'throws') throw new Error('read_failed')
+		if (mockLocalPage.next === 'no_mnemonic' || mockLocalPage.next === 'address_only') return { status: 'unknown', reason: 'no_mnemonic_record' }
+		return { status: 'valid', eoa: '0x' + '11'.repeat(20), phrase: 'synthetic', data: {} }
+	},
+	readPageIdbKeyState: async () => (mockLocalPage.next === 'no_mnemonic' ? 'key_only' : 'unknown'),
+}))
 jest.mock('../services/shellIdentityClosed', () => {
 	const actual = jest.requireActual('../services/shellIdentityClosed')
 	return { ...actual, clearShellChatIdentity: jest.fn() }
@@ -116,7 +127,7 @@ describe('the clear answers that are neither a clear nor a missing account', () 
 		render(<ShellIdentityClosedNotice onCleared={onCleared} onOpenBackup={onOpenBackup} />)
 		fireEvent.click(screen.getByRole('button', { name: 'chat.clear_failed.entry' }))
 		fireEvent.click(screen.getByRole('button', { name: 'chat.clear_confirm.ok' }))
-		expect(await screen.findByText('chat.clear_refused.body')).toBeTruthy()
+		expect(await screen.findByText('chat.clear_refused.body', {}, { timeout: 4000 })).toBeTruthy()
 		expect(screen.queryByText('chat.clear_incomplete.body')).toBeNull()
 		expect(onCleared).not.toHaveBeenCalled()
 		expect(getIdentityClosed()).not.toBeNull()
@@ -143,5 +154,42 @@ describe('the stopped-retries notice', () => {
 		expect(screen.getByText('chat.retry_exhausted.body')).toBeTruthy()
 		fireEvent.click(screen.getByRole('button', { name: 'retry' }))
 		expect(retryMock).toHaveBeenCalledTimes(1)
+	})
+
+	it('a refused reset on a key-only account (a private key, no phrase here): the key-only copy, no backup entry, no retry (the decision)', async () => {
+		mockLocalPage.next = 'no_mnemonic'
+		setIdentityClosed({ reason: 'clear_failed', source: 'clear' })
+		clearMock.mockResolvedValue({ kind: 'refused' })
+		render(<ShellIdentityClosedNotice />)
+		fireEvent.click(screen.getByRole('button', { name: 'chat.clear_failed.entry' }))
+		fireEvent.click(screen.getByRole('button', { name: 'chat.clear_confirm.ok' }))
+		expect(await screen.findByText('chat.refused_key_only.body', {}, { timeout: 4000 })).toBeTruthy()
+		expect(screen.queryByRole('button', { name: 'chat.clear_refused.backup_entry' })).toBeNull()
+		expect(screen.queryByText('chat.clear_refused.body')).toBeNull()
+		expect(getIdentityClosed()).not.toBeNull()
+	})
+
+	it('a refused reset when the local state cannot be read: a neutral line only, no backup entry, nothing removed', async () => {
+		mockLocalPage.next = 'throws'
+		setIdentityClosed({ reason: 'clear_failed', source: 'clear' })
+		clearMock.mockResolvedValue({ kind: 'refused' })
+		render(<ShellIdentityClosedNotice />)
+		fireEvent.click(screen.getByRole('button', { name: 'chat.clear_failed.entry' }))
+		fireEvent.click(screen.getByRole('button', { name: 'chat.clear_confirm.ok' }))
+		expect(await screen.findByText('chat.refused_unknown.body')).toBeTruthy()
+		expect(screen.queryByRole('button', { name: 'chat.clear_refused.backup_entry' })).toBeNull()
+		expect(getIdentityClosed()).not.toBeNull()
+	})
+
+	it('a refused reset on an address-only record (no phrase, no private key here): the neutral line, no entry (30046b27 as ruled 2026-11-22)', async () => {
+		mockLocalPage.next = 'address_only'
+		setIdentityClosed({ reason: 'clear_failed', source: 'clear' })
+		clearMock.mockResolvedValue({ kind: 'refused' })
+		render(<ShellIdentityClosedNotice />)
+		fireEvent.click(screen.getByRole('button', { name: 'chat.clear_failed.entry' }))
+		fireEvent.click(screen.getByRole('button', { name: 'chat.clear_confirm.ok' }))
+		expect(await screen.findByText('chat.refused_unknown.body', {}, { timeout: 4000 })).toBeTruthy()
+		expect(screen.queryByText('chat.refused_key_only.body')).toBeNull()
+		expect(screen.queryByRole('button', { name: 'chat.clear_refused.backup_entry' })).toBeNull()
 	})
 })

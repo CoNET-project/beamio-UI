@@ -1,5 +1,5 @@
 /**
- * Static pin of the BCHAT 40 wiring in chat.tsx: the send gate reads the stored trust, and a verify press with no key on screen
+ * Static pin of the BCHAT 40 (R87) wiring in chat.tsx: the send gate reads the stored trust, and a verify press with no key on screen
  * opens the panel before any send. Mutations of these lines must fail here.
  */
 import { readFileSync } from 'fs'
@@ -13,7 +13,7 @@ function bodyOf(name: string): string {
 	return chat.slice(i, i + 2200)
 }
 
-describe('chat page wiring of the stored-trust gate', () => {
+describe('chat page wiring of the stored-trust gate (BCHAT 40)', () => {
 	it('the fresh and the cached send gates take the stored-trust copy, never the memory copy', () => {
 		const send = bodyOf('async function sendChatToRecipient(')
 		expect(send).toContain('sendWithFreshRoute(await trustGateCopy(current)')

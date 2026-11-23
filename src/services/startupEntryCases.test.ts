@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- * (review d5db240, must-fix 2): the start-up entry cases with the native answers replaced (walletEoaAddress and the pre-read
+ * r94 (review must-fix 2): the start-up entry cases with the native answers replaced (walletEoaAddress and the pre-read
  * answer are stubs, as the review allows). Each case checks the page evidence, the sync it leads to (the number of pwaWalletSync sends and
  * the EOA sent), and the hold/adopt decision. SYNTHETIC values only. The phrase is the public BIP-39 test vector.
  */

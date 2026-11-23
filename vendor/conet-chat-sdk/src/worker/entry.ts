@@ -480,7 +480,7 @@ async function handle(cmd: WorkerInbound): Promise<void> {
 }
 
 /**
- * Starts the worker: attaches the message listener. The host calls this once from its worker wrapper. Importing this module has no
+ * Starts the worker: attaches the message listener. The host calls this once from its worker wrapper (R82). Importing this module has no
  * side effect, so a bundler with `sideEffects: false` cannot drop the listener: the start is an explicit call, not an import.
  */
 export function startChatWorkerEntry(): void {

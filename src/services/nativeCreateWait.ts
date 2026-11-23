@@ -1,5 +1,5 @@
 /**
- * (CT series): the wait for a native create result. The result event ends the wait first. Only after 10 minutes with no
+ * v10.2 r4 §2.2 (CT series): the wait for a native create result. The result event ends the wait first. Only after 10 minutes with no
  * result event does the wait fall back: the page stops waiting (the wait state only, nothing is judged failed, nothing is remembered).
  * A new create request after the fallback is admitted only by PWA-RETRY-03: reread walletEoaAddress first; an unknown reread does not
  * send; a late result of the old request is not a second completion. A create is never started automatically.
@@ -8,7 +8,7 @@ import { rereadDecision, type RereadAnswer } from './manualRetryReread'
 
 export const NATIVE_CREATE_FALLBACK_MS = 10 * 60 * 1000
 
-/** `cancelled`: the user cancelled (or the page was closed). A late terminal result of the same request is still delivered once. */
+/** `cancelled`: the user cancelled (or the page was closed). A late terminal result of the same request is still delivered once (r5 §五, CT-16b). */
 export type CreateWaitState =
 	| { kind: 'idle' }
 	| { kind: 'pending'; id: number; startedAt: number }
@@ -36,7 +36,7 @@ export function onCreateResult(s: CreateWaitState): { deliver: boolean; state: C
 
 /**
  * The user cancels the wait (the cancel control) or the native page reports `cancelled` (the page was closed): the wait ends, nothing is
- * judged, and a retry is admitted. Delivered once; a cancel with no wait is a no-op.
+ * judged, and a retry is admitted (v10.2 r5 §四, CT-15 / CT-15b). Delivered once; a cancel with no wait is a no-op.
  */
 export function cancelCreateWait(s: CreateWaitState): CreateWaitState {
 	if (s.kind === 'pending' || s.kind === 'fallback') return { kind: 'cancelled', id: s.id }
@@ -44,12 +44,12 @@ export function cancelCreateWait(s: CreateWaitState): CreateWaitState {
 }
 
 /**
- * Whether a new create request may be sent now: while pending, never; after a fallback alone (the native
+ * Whether a new create request may be sent now (v10.2 r4 §2.2 and r5 §二, CT-13): while pending, never; after a fallback alone (the native
  * page may still be open), never; after a terminal result or a cancel the wait is idle, and then a new create is admitted only with a
  * valid or absent reread of walletEoaAddress (PWA-RETRY-03). A fresh page with no earlier wait is idle and admitted.
  */
 export function canStartCreate(s: CreateWaitState, reread: RereadAnswer): boolean {
-	// (CT-15): after a cancel the retry is unavailable until the terminal result event of the same request (cancelled included) arrives.
+	// r7 §一 (CT-15): after a cancel the retry is unavailable until the terminal result event of the same request (cancelled included) arrives.
 	if (s.kind === 'pending' || s.kind === 'fallback' || s.kind === 'cancelled') return false
 	return rereadDecision(reread) === 'send'
 }

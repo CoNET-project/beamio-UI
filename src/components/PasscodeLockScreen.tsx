@@ -5,8 +5,9 @@
  * Forgetting the passcode leads to an explicit local reset and re-import with the recovery phrase.
  */
 import { useEffect, useState, type CSSProperties } from 'react'
-import { unlockWalletVaultWithPasscode, wipeLocalWalletForRestore } from '../services/beamio'
-import { PASSCODE_MAX_DIGITS, PASSCODE_MIN_DIGITS } from '../services/passcode/passcodeRules'
+import { readPageCipherEnvelope, unlockWalletVaultWithPasscode, wipeLocalWalletForRestore } from '../services/beamio'
+import { shellMnemonicSync } from '../services/shellMnemonicSync'
+import { PASSCODE_DIGITS } from '../services/passcode/passcodeRules'
 import { PASSCODE_TOKENS as T } from '../services/passcode/passcodeTokens'
 import { applyFlowEvent, startFlow, type FlowSnapshot } from '../services/passcode/passcodeFlow'
 import { ERROR_TEXT, WRONG_TEXT, backoffText, formatCooldown } from '../services/passcode/passcodeMessages'
@@ -14,12 +15,13 @@ import PasscodeDotInput from './passcode/PasscodeDotInput'
 import { afterUiUnlock, type UiUnlockNativeDeps } from '../services/passcode/uiUnlockNative'
 import { probeNativeCapabilities, requestNativeAck } from '../services/nativeChatRouteRegister'
 import { lockWalletSession } from '../services/passcode/walletVault'
+import { unlockChatAccess } from '../services/passcode/chatAccessGuard'
 import { isShellContext } from '../services/shellContext'
 import { accountEoaFor } from '../services/gossipAckSign'
 import { resolveSigningPrivateKeyArmor } from '../utils/resolveSigningPrivateKeyArmor'
 import { CoNET_Data } from '../utils/globals'
 
-/** The native unlock answer wait. A missing answer holds the lock, it never unlocks. */
+/** The native unlock answer wait (2026-11-20). A missing answer holds the lock, it never unlocks. */
 const NATIVE_UNLOCK_TIMEOUT_MS = 8000
 
 /** The native side deps for the UI unlock step (the shell's capability declaration gates every native call). */
@@ -29,6 +31,8 @@ const nativeUnlockDeps = (): UiUnlockNativeDeps => ({
 		const answer = await requestNativeAck(cmd, NATIVE_UNLOCK_TIMEOUT_MS, cmd.reqId as number)
 		return answer.kind === 'payload' ? answer.payload : null
 	},
+	readCipher: () => readPageCipherEnvelope(),
+	syncCipher: (cipher, eoa, passcode) => shellMnemonicSync.syncCipher(cipher, eoa, passcode),
 })
 
 /** The current account's address (public), from the unlocked profile. Null when none is loaded. */
@@ -41,7 +45,7 @@ const currentAccountEoa = (): string | null => {
 	}
 }
 
-/**: `lock` 'native' is a native-side lock; the forgot-passcode path is offered only for the page lock. */
+/** R-16: `lock` 'native' is a native-side lock; the forgot-passcode path is offered only for the page lock. */
 export default function PasscodeLockScreen({ onUnlocked, lock = 'page', onNativeMismatch }: { onUnlocked: () => void; lock?: 'page' | 'native'; onNativeMismatch?: () => void }) {
 	const [snap, setSnap] = useState<FlowSnapshot>(() => startFlow('unlock'))
 	const [digits, setDigits] = useState('')
@@ -71,12 +75,12 @@ export default function PasscodeLockScreen({ onUnlocked, lock = 'page', onNative
 	}, [snap, waitLeft, waitUntil])
 
 	const inputLocked = busy || waitLeft > 0 || snap.done
-	const canTry = !inputLocked && digits.length >= PASSCODE_MIN_DIGITS
+	const canTry = !inputLocked && digits.length >= PASSCODE_DIGITS
 
 	const submit = async () => {
 		if (!canTry) return
-		if (!/^[0-9]{8,12}$/.test(digits)) {
-			setNotice(`Enter ${PASSCODE_MIN_DIGITS} to ${PASSCODE_MAX_DIGITS} digits.`)
+		if (!/^[0-9]{6}$/.test(digits)) {
+			setNotice(`Enter ${PASSCODE_DIGITS} digits.`)
 			return
 		}
 		setBusy(true)
@@ -87,13 +91,15 @@ export default function PasscodeLockScreen({ onUnlocked, lock = 'page', onNative
 				const passcode = digits
 				setDigits('')
 				setSnap(applyFlowEvent(snap, 'submit_match'))
-				// The page unlock succeeded. The native side is checked before the app content mounts.
+				// The page unlock succeeded. The native side is checked before the app content mounts (rev2 §3–4, 2026-11-20).
 				const outcome = await afterUiUnlock({ shell: isShellContext(), eoa: currentAccountEoa(), passcode }, nativeUnlockDeps())
 				if (outcome === 'continue') {
+					// unit e: the UI unlock is the only unlock record for chat access (per account).
+					unlockChatAccess(currentAccountEoa() ?? '')
 					onUnlocked()
 					return
 				}
-				// mismatch: the account-conflict flow path is not yet located; until then this maps to the existing
+				// mismatch: the account-conflict flow path is not yet located (rev2 §4); until then this maps to the existing
 				// eoa_mismatch page (fail closed: no continue, no copy of another account is used).
 				if (outcome === 'mismatch') {
 					// the approved account-conflict flow: this account's operations stop; no copy of another account is used

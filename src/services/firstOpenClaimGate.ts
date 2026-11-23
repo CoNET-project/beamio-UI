@@ -1,5 +1,5 @@
 /**
- * The claimBUnits gate on the first-open path: a browser that enters Chat with no
+ * The claimBUnits gate on the first-open path (decided by the): a browser that enters Chat with no
  * PGP record, where the SDK confirms it, sends no automatic POST /api/claimBUnits. Other explicit entries are not changed. The gate reads the
  * AddressPGP answer in three states (absent is a definite empty answer; anything else is unknown). An unknown does not skip the claim: the
  * claim is not made on a failed read either (the gate fails closed on the first-open path only when the read says absent).

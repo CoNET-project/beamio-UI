@@ -1,5 +1,5 @@
 /**
- *BROWSER entry-level cases (no shell). A key without a valid mnemonic is not
+ * r94: BROWSER entry-level cases (no shell). A key without a valid mnemonic is not
  * an entry in the browser either; a browser read that is unknown is kept and retried. Derived from App.entryPoints (same mocks).
  * Original header: entry-level cases. The real App and AppEntryGate run; every case enters through the gate.
  * The native side is answered through the shell transports (window.BeamioShellRecord for walletEoaAddress and pwaWalletSync) and
@@ -163,7 +163,7 @@ function installShell() {
 			shellSent.push(req)
 			let envelope: Record<string, unknown>
 			if (req.type === 'nativeMnemonicPreread') {
-				// the re-read after a failed write: the native state
+				// the re-read after a failed write (spec §十一): the native state
 				envelope = { ok: true, result: { state: race.rereadState } }
 			} else if (req.type === 'walletEoaAddress') {
 				envelope = race.nativeEoa?.kind === 'address' ? { ok: true, result: { eoa: race.nativeEoa.eoa } } : { ok: false, error: race.nativeEoa?.code ?? 'no_key' }

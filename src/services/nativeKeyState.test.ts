@@ -63,9 +63,9 @@ describe('installNativeNoKeyWatcher', () => {
 	})
 })
 
-// Spec item 41 (2026-11-16): the native import screen is retired. The opener (openNativeKeyImport, nativeImportOpen) is deleted, so
+// Spec r2.3 item 41 (2026-11-16): the native import screen is retired. The opener (openNativeKeyImport, nativeImportOpen) is deleted, so
 // its six result cases are superseded and replaced by an absence assertion. The walletStatus read below is unchanged.
-describe('the native import opener is retired', () => {
+describe('the native import opener is retired (spec r2.3 item 41)', () => {
 	it('nativeKeyState no longer exports an import opener or sends nativeImportOpen', () => {
 		const ns = jest.requireActual('./nativeKeyState') as Record<string, unknown>
 		expect(ns).not.toHaveProperty('openNativeKeyImport')

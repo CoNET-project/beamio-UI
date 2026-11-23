@@ -1,5 +1,5 @@
 /**
- * The automatic first open. A browser account is registered without a
+ * The automatic first open (constraints of iOS and Android on r2.5.20). A browser account is registered without a
  * click only when the existing restore judgement confirms a first identity AND both chain answers are definite. Unknown never enters the
  * flow; a malformed record is unknown; the pending key is its own store; single-flight per wallet; the key is saved before it is sent; the
  * chain is read again before the send; one attempt per run with a backoff. The effects are fakes. SYNTHETIC values only.

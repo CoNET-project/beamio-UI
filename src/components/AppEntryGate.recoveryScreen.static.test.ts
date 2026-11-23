@@ -1,5 +1,5 @@
 /**
- * The unavailable screen for needs_native_recovery (spec item 41, rule (b) 2026-11-16). The native import entry is retired:
+ * The unavailable screen for needs_native_recovery (spec r2.3 item 41, rule (b) 2026-11-16). The native import entry is retired:
  * the screen offers the recovery-code entry (nativeRecoveryOpen) as its only action, and no source calls openNativeKeyImport or the
  * nativeImportOpen command. Rewritten from the import-first guide: the earlier assertions that required the import button are superseded.
  * The copy keys are existing ones. Source guard; no key or passcode value is used.
@@ -9,10 +9,12 @@ import { join } from 'path'
 
 const gate = readFileSync(join(__dirname, 'AppEntryGate.tsx'), 'utf8')
 
+// 0.53.44: the startup recovery button is removed; the recovery code entry is in the
+// onboarding page. The block helper slices from the marker that replaces it, so the old button pins below assert absence.
 const block = (() => {
-	const at = gate.indexOf("{storageUnavailable === 'native_recovery_needed' ? (")
+	const at = gate.indexOf("0.53.44: no recovery button at startup")
 	expect(at).toBeGreaterThan(0)
-	return gate.slice(at, gate.indexOf(') : null}', at) + 1)
+	return gate.slice(at, gate.indexOf('{storageUnavailable !== OLD_SHELL_UPGRADE_REASON', at))
 })()
 
 describe('the unavailable screen offers the recovery code only (item 41: the import entry is retired)', () => {
@@ -29,24 +31,20 @@ describe('the unavailable screen offers the recovery code only (item 41: the imp
 		expect(gate).not.toContain('nativeImportOpen')
 	})
 
-	it('the recovery-code entry is the only action of the screen (nativeRecoveryOpen, use_recovery_code)', () => {
+	it('the startup screen has no recovery button (0.53.44): the recovery code entry is in the onboarding page only', () => {
 		const rec = block.indexOf("tu('use_recovery_code')")
-		expect(rec).toBeGreaterThan(0)
-		expect(block).toContain('nativeRecoveryOpen()')
+		expect(rec).toBe(-1)
+		expect(block).not.toContain('nativeRecoveryOpen()')
 	})
 
-	it('the action has a tap area of at least 44 points by padding alone (text-sm line 20px + py-3 = 44px)', () => {
-		const rec = block.indexOf("tu('use_recovery_code')")
-		const before = block.slice(0, rec)
-		const cls = before.slice(before.lastIndexOf('className="'), before.lastIndexOf('>') + 1)
-		expect(cls).toContain('py-3')
-		expect(cls).toContain('bg-white')
+	it('0.53.44: there is no startup action to size (the tap-area pin moved with the removed button; no startup button)', () => {
+		expect(block.indexOf("tu('use_recovery_code')")).toBe(-1)
 	})
 
-	it('the no_key page is retired: NativeKeyImportRequired.tsx is deleted and the no_key answer enters the onboarding (rule (b))', () => {
+	it('the no_key page is retired: NativeKeyImportRequired.tsx is deleted and the no_key answer enters the onboarding', () => {
 		expect(existsSync(join(__dirname, 'NativeKeyImportRequired.tsx'))).toBe(false)
 		expect(gate).not.toContain('NativeKeyImportRequired')
-		expect(gate).toContain('// rule (b), spec item 42(2): both sides confirmed no mnemonic.')
+		expect(gate).toContain('// Per spec r2.4 item 42(2): both sides confirmed no mnemonic.')
 	})
 
 	it('no visibilitychange reload for an import return remains, and the gate reads no walletStatus of its own', () => {

@@ -16,6 +16,7 @@
  */
 import { getCashTreesNativeNfcHost } from '../utils/cashTreesNativeNfc'
 import { eventPayloadOf, NATIVE_EVENT_NAMES, postChatModuleCommand } from './nativeKeyState'
+import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
 
 type Loose = Record<string, unknown>
 
@@ -92,7 +93,7 @@ const originAllowed = (list: string[] | null): boolean => list === null || list.
 // ---- replies --------------------------------------------------------------------------------------------------------------
 
 /**
- * A reply is well formed when it is an ack with a result (ok) or with a string error (not ok). `bareOk`:
+ * A reply is well formed when it is an ack with a result (ok) or with a string error (not ok). `bareOk` (pwaWalletSync only, r94):
  * an ok ack with no result object is well formed too; the spec gives the reply as a code, not a result.
  */
 function wellFormedAck(data: Loose, bareOk = false): boolean {
@@ -121,6 +122,9 @@ type OpenRequest = { deliver: (payload: Loose) => void; bareOk: boolean }
 const hostOpen = new Map<unknown, OpenRequest>()
 let listenedHost: InjectedHost | null = null
 
+/** reqIds whose answer was taken (decided), bounded: a later reply for one of them is dropped with cause=decided ( ②). */
+const hostConcluded: unknown[] = []
+
 function ensureHostListener(host: InjectedHost): void {
 	if (listenedHost === host) return
 	listenedHost = host
@@ -128,7 +132,12 @@ function ensureHostListener(host: InjectedHost): void {
 		const data = parseReply((ev as { data?: unknown } | null)?.data ?? ev)
 		if (!data) return
 		const open = hostOpen.get(data.reqId)
-		if (!open) return // unknown reqId, a late or a duplicate reply
+		if (!open) {
+			// an unknown reqId, a late or a duplicate reply: dropped, with a log ( ②): cause=decided or reqid_mismatch
+			const cause = hostConcluded.includes(data.reqId) ? 'decided' : 'reqid_mismatch'
+			publishNativePwaLog('warn', `[start] late_result_discarded reqId=${data.reqId} cause=${cause}`)
+			return
+		}
 		if (!wellFormedAck(data, open.bareOk)) return // malformed: the request keeps waiting
 		open.deliver(data)
 	}
@@ -142,6 +151,10 @@ function sendViaHost(host: InjectedHost, cmd: Loose, timeoutMs: number, bareOk =
 		const finish = (answer: ShellRecordAnswer) => {
 			if (hostOpen.get(reqId) === entry) hostOpen.delete(reqId)
 			if (timer !== undefined) clearTimeout(timer)
+			if (answer.kind === 'payload') {
+				hostConcluded.push(reqId)
+				if (hostConcluded.length > 64) hostConcluded.shift()
+			}
 			resolve(answer)
 		}
 		const entry: OpenRequest = { deliver: (payload) => finish({ kind: 'payload', payload }), bareOk }
@@ -222,7 +235,7 @@ export function sendShellRecordCommand(cmd: Loose, timeoutMs: number = SHELL_REC
 }
 
 /**
- *`pwaWalletSync` and `nativeMnemonicPreread` over the same transports. Every ok reply carries a result (the spec's
+ * r94 (spec §十一): `pwaWalletSync` and `nativeMnemonicPreread` over the same transports. Every ok reply carries a result (the spec's
  * envelope); the bare-ok allowance is not used. The same origin check and reqId matching apply; nothing falls back.
  */
 export function sendShellWalletSyncCommand(cmd: Loose, timeoutMs: number = SHELL_RECORD_REPLY_TIMEOUT_MS): Promise<ShellRecordAnswer> {

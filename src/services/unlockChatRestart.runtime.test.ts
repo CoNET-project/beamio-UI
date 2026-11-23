@@ -25,7 +25,13 @@ jest.mock('@/services/chatWorkerBridge', () => {
 	})
 	return stub
 })
-jest.mock('@/services/argon2WorkerBridge', () => ({ argon2idAsync: jest.fn() }))
+// argon2idAsync must not run in these tests (the PBKDF2 stand-in is removed). The bridge module cannot load in jest (import.meta),
+// so it stays mocked, but a call fails closed. A test that needs the v3 KDF injects it with setMnemonicKdfForTest.
+jest.mock('@/services/argon2WorkerBridge', () => ({
+	argon2idAsync: () => {
+		throw new Error('argon2idAsync must not run in this test: inject the v3 KDF with setMnemonicKdfForTest')
+	},
+}))
 jest.mock('@/workers/beamioTag/client', () => mockDeepStub())
 jest.mock('@/services/shellContext', () => ({ isShellContext: () => true }))
 jest.mock('@/utils/cashTreesNativePwaLog', () => ({ publishNativePwaLog: jest.fn() }))

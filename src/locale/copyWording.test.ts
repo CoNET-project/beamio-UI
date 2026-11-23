@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * account-select CP-01..CP-08 (36(1) copy rule, rule 2026-11-17 #10): a locale-based wording test over every locale file. Forbidden
+ * account-select CP-01..CP-08 (36(1) copy rule, the rule #10): a locale-based wording test over every locale file. Forbidden
  * meanings (找回私钥, 找回钱包) must not appear in any string value. The exemption table (恢复钱包, the existing entry name) is listed and
  * must not be treated as forbidden. This checks the shipped copy, not the vector's synthetic inputs.
  */

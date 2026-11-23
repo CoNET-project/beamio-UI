@@ -2,18 +2,17 @@
  * Message keys and English drafts (design passcode-unified-ui-spec). Copy is PWA-owned; translation pending.
  * Results and message keys are never values: nothing here shows a passcode, a count or an error code.
  */
-import { PASSCODE_MAX_DIGITS, PASSCODE_MIN_DIGITS, type PasscodeReason } from './passcodeRules'
+import { PASSCODE_DIGITS, type PasscodeReason } from './passcodeRules'
 import type { FlowMode } from './passcodeFlow'
 
 export const POLICY_TEXT: Record<PasscodeReason, string> = {
 	non_digit: 'Use digits only.',
-	too_short: `Use ${PASSCODE_MIN_DIGITS} to ${PASSCODE_MAX_DIGITS} digits.`,
-	too_long: `Use ${PASSCODE_MIN_DIGITS} to ${PASSCODE_MAX_DIGITS} digits.`,
+	too_short: `Use ${PASSCODE_DIGITS} digits.`,
+	too_long: `Use ${PASSCODE_DIGITS} digits.`,
 	all_same: 'Do not use the same digit for every position.',
 	repeat_pair: 'Do not repeat a two-digit pattern.',
 	common: 'This passcode is too common.',
 	sequence: 'Do not use six digits in a row.',
-	birthday: 'Do not use a date (birthday-like) passcode.',
 }
 
 export const MISMATCH_TEXT = 'The passcodes do not match. Enter the new passcode again.'

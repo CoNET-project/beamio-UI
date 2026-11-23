@@ -93,7 +93,7 @@ describe('accountCleanupOld after recovery', () => {
 	})
 })
 
-describe('2026-11-17 rule: a page recovery never starts the cleanup; only the native ok does', () => {
+describe('2026-11-17 rule: a page recovery never starts the cleanup; only the native ok does (Y.91 c, Y.100 4)', () => {
 	it('the page-side restore does not start it: LoadingPage has no trigger and imports nothing from the cleanup module', () => {
 		const loading = readFileSync(join(__dirname, '..', 'pages', 'Home', 'LoadingPage.tsx'), 'utf8')
 		expect(loading).not.toContain('cleanupAfterOnboardingRecovery')
@@ -106,7 +106,7 @@ describe('2026-11-17 rule: a page recovery never starts the cleanup; only the na
 		expect(mod).not.toContain('eoaOfRestoredRecord')
 	})
 
-	it('the gate connects the silent cleanup on the recovery ok branch only, and resumes a pending marker at start (approval 75edef25)', () => {
+	it('the gate connects the silent cleanup on the recovery ok branch only, and resumes a pending marker at start', () => {
 		const gate = readFileSync(join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
 		const okAt = gate.indexOf("if (code === 'ok') {")
 		const callAt = gate.indexOf('cleanupAfterVerifiedRecovery(window.localStorage, eoa, readPageDerivedAddress)')

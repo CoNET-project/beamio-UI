@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- * item 3: the claimBUnits gate, behaviour. Simulated start of the browser first-open path: the automatic claim (the only path to
+ * R81 item 3: the claimBUnits gate, behaviour. Simulated start of the browser first-open path: the automatic claim (the only path to
  * POST /api/claimBUnits) is not called, so the count is 0. Other entries are unchanged. SYNTHETIC values only.
  */
 import { autoBUnitClaimGated } from './firstOpenClaimGateNow'
@@ -29,7 +29,7 @@ function start(over: { lookup?: 'no_record' | 'record' | 'network_error'; shell?
 	return { result, claim }
 }
 
-describe('claimBUnits on the browser first-open path', () => {
+describe('claimBUnits on the browser first-open path (R81 item 3)', () => {
 	it('simulated browser start with no PGP record: the automatic claim is not sent (0 calls of the POST path)', async () => {
 		const { result, claim } = start()
 		expect(await result).toBe('skipped_first_open')
@@ -63,10 +63,10 @@ describe('claimBUnits on the browser first-open path', () => {
 })
 
 /**
- *the first-open path sends no claim POST. The claim here posts to the same path the app's claim posts to; the network
+ * R81 §2.3 (R87 item 2): the first-open path sends no claim POST. The claim here posts to the same path the app's claim posts to; the network
  * spy is what the test observes. A mutation that lets the claim run on the first-open path makes the spy see the POST.
  */
-describe('the first-open path sends no POST /api/claimBUnits', () => {
+describe('the first-open path sends no POST /api/claimBUnits (R87 item 2)', () => {
 	it('a browser with no record: the network sees no claim request', async () => {
 		const realFetch = globalThis.fetch
 		const spy = jest.fn(async () => ({ ok: true, status: 200, text: async () => '{}' }))

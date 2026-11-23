@@ -1,24 +1,41 @@
 /**
  * @jest-environment node
  *
- * Production write functions on an in-memory WalletStores (0.53.39, independent review 4fd31f0a, item 3). No IndexedDB: the device key is a
+ * Production write functions on an in-memory WalletStores (0.53.39, independent review item 3). No IndexedDB: the device key is a
  * real AES-GCM CryptoKey (Node webcrypto) held by the in-memory store. Synthetic values only (the public BIP-39 test phrases; a made-up
  * passcode). Each step writes with the production function, then reads the key back through the production unlock and compares it with the
  * original key.
  */
+import { argon2idAsync } from '@noble/hashes/argon2'
+import { setPasscodeKdfForTest, type PasscodeKdf } from './walletWrap'
+import { setMnemonicKdfForTest } from './mnemonicCipherV3'
 import { webcrypto } from 'crypto'
 if (!(globalThis as { crypto?: { subtle?: unknown } }).crypto?.subtle) {
 	Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true })
 }
 import { ethers } from 'ethers'
-import { changeWalletPasscode, disableWalletPasscode, migratePlainWallet, readPlainForVerify, setWalletPasscode, unlockWalletPasscode, type WalletMeta, type WalletStores } from './walletVault'
+import { changeWalletPasscode, disableWalletPasscode, readPlainForVerify, setWalletPasscode, unlockWalletPasscode, type WalletMeta, type WalletStores } from './walletVault'
+import { memoryAtomicKeyValueDb, passcodeAttemptRecordStore } from './passcodeWrapStore'
+const attemptDb = memoryAtomicKeyValueDb()
+
+// TEST DOUBLE ONLY (unit f3): a fast Argon2id stand-in (the same algorithm at reduced m and t) through the production injection points, so
+// the suite stays inside the jest timeout. The production parameters (m 32 MiB, t 3) are exercised in walletVaultF3Legacy.test.ts.
+const fastArgon2: PasscodeKdf = (password, salt, opts) => argon2idAsync(password, salt, { ...opts, m: 1024, t: 1, p: 1 })
+beforeAll(() => {
+	setPasscodeKdfForTest(fastArgon2)
+	setMnemonicKdfForTest(fastArgon2)
+})
+afterAll(() => {
+	setPasscodeKdfForTest(null)
+	setMnemonicKdfForTest(null)
+})
 
 const PHRASE_A = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
 const PHRASE_B = 'legal winner thank year wave sausage worth useful legal winner thank yellow'
 const A = ethers.Wallet.fromPhrase(PHRASE_A)
 const B = ethers.Wallet.fromPhrase(PHRASE_B)
-const PASS1 = '517395823' // synthetic digits (the policy is digits, at least 8, not a common pattern)
-const PASS2 = '906284137'
+const PASS1 = '517395' // synthetic six digits (policy: six digits, not a common pattern)
+const PASS2 = '906284'
 
 type Stored = { init: unknown }
 
@@ -34,6 +51,7 @@ function memoryStores(initial: unknown): { stores: WalletStores; state: Stored; 
 			state.init = JSON.parse(JSON.stringify(data))
 		},
 		readMeta: async () => ({ ...meta }),
+		attemptsFor: (e: string) => passcodeAttemptRecordStore(attemptDb, e),
 		writeMeta: async (m: WalletMeta) => {
 			meta = { ...m }
 		},
@@ -121,21 +139,9 @@ describe('production write functions on an in-memory store: write, run, read bac
 		let keys = keysOf(((await unlockWalletPasscode(stores, PASS2)) as { data: unknown }).data)
 		expect(keys[A.address.toLowerCase()]).toBe(A.privateKey)
 		expect((await disableWalletPasscode(stores, PASS2)).ok).toBe(true)
-		// after disabling, the record is in device mode: read it back through the device key (no passcode)
+		// after disabling, the record is plaintext again: read it back without a passcode
 		const plain = await readPlainForVerify(stores)
 		expect(keysOf(plain)[A.address.toLowerCase()]).toBe(A.privateKey)
 	})
 
-	it('migratePlainWallet (production) on the in-memory store: the plain record is migrated or kept, and the keys read back unchanged', async () => {
-		const seeded = { mnemonicPhrase: PHRASE_A, isReady: true, profiles: [{ keyID: A.address.toLowerCase(), privateKeyArmor: A.privateKey }, { keyID: B.address.toLowerCase(), privateKeyArmor: B.privateKey }] }
-		const { stores } = memoryStores(seeded)
-		const result = await migratePlainWallet(stores)
-		expect(['migrated', 'kept']).toContain(result)
-		const plain = await readPlainForVerify(stores)
-		const keys = keysOf(plain)
-		expect(keys[A.address.toLowerCase()]).toBe(A.privateKey)
-		expect(keys[B.address.toLowerCase()]).toBe(B.privateKey)
-		// criterion (a) on the decrypted record: the whole init, JSON-normalised, equals the record before the migration
-		expect(JSON.stringify(withoutWrapMeta(plain))).toBe(JSON.stringify(withoutWrapMeta(seeded)))
-	})
 })

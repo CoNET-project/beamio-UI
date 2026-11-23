@@ -127,7 +127,7 @@ export async function startShellChatFromNativeIdentity(deps: ShellChatStartDeps)
 			deps.log('warn', 'shell chat: key present, not initialised (G1), and no persisted public EOA; the chat waits')
 			return 'identity_source_missing'
 		}
-		// Held: the chain does not send the G1 init until the owner rules; the injected initializer is absent
+		// Held: the chain does not send the G1 init until the rules; the injected initializer is absent
 		// while SHELL_G1_INIT_ENABLED is false, so the start waits here and nothing is sent.
 		if (!deps.initWithPersistedEoa) {
 			deps.log('info', 'shell chat: key present, not initialised (G1); the G1 init is held, the start waits')
@@ -256,7 +256,7 @@ async function evaluateMissingPgp(deps: ShellChatStartDeps, accountKey: string):
 		return 'pgp_not_ready'
 	}
 	if (ev.state === 'first_identity') {
-		// RULING 617d3dd9: a first identity needs the legacy report ABSENT and an unregistered chain. Anything else (a field missing, unknown,
+		// first-identity rule: a first identity needs the legacy report ABSENT and an unregistered chain. Anything else (a field missing, unknown,
 		// PRESENT, UNREADABLE, registered) is not a first identity: no create entry, and the identity waits for a restore.
 		if (firstIdentityConfirmed(ev)) {
 			grantPgpCreateEligibility(accountKey)

@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- * build-level check (scripts/check-ws-guard-build.js): the artifact must keep the probe report and the standalone pages' guard.
+ * R84 build-level check (scripts/check-ws-guard-build.js): the artifact must keep the probe report and the standalone pages' guard.
  * Fixtures: a build with every marker passes; a build whose main bundle lost the report text fails and names the missing check.
  */
 import { mkdtempSync, mkdirSync, writeFileSync } from 'fs'
@@ -24,7 +24,7 @@ const goodMain = `x();${REPORT} (probe=);${PROBE_GLOBAL};${REFUSAL}`
 const goodPage = `<head><script>${REFUSAL};window.${PROBE_GLOBAL}=p</script></head><body></body>`
 const goodPages = Object.fromEntries(PAGES.map((p: string) => [p, goodPage]))
 
-describe('WebSocket guard build check', () => {
+describe('WebSocket guard build check (R84)', () => {
 	it('a build with the report, the probe global and both standalone pages passes', () => {
 		const r = checkWsGuardBuild(build({ main: goodMain, pages: goodPages }))
 		expect(r.ok).toBe(true)

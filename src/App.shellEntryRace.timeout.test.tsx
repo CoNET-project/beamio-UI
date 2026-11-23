@@ -120,7 +120,7 @@ function renderApp() {
 	)
 }
 
-describe('A+B: the page read is held; it is unknown after the 2 s limit; init runs no chat and no home', () => {
+describe('A+B (R66 timing): the page read is held; it is unknown after the 2 s limit; init runs no chat and no home', () => {
 	afterEach(() => {
 		jest.useRealTimers()
 		race.storage = 'null'

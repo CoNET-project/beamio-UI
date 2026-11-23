@@ -1,5 +1,5 @@
 /**
- * HC-LOCK for walletCredential: a locked native answer is the lock, not a failure.
+ * HC-LOCK for walletCredential (v10 §12.3; D-19): a locked native answer is the lock, not a failure.
  * CRED-B1: blob mode refused with code locked -> the `locked` action; nothing is stored, nothing is asked again in a loop.
  * CRED-U1/U2: the unseal answer shares the parser; locked keeps its code (the caller reports need-unlock, not an unseal failure).
  */

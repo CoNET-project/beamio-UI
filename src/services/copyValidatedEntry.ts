@@ -1,5 +1,5 @@
 /**
- *when the page copy is validated natively for this account
+ * r94 (R-PWA-R94-01 reachability, §24.5): when the page copy is validated natively for this account
  * (`copyValidated`), the entry follows the native derivation path. The page does not derive or hold a key from the copy
  * (no holdFromPhrase, no loadShellSessionSigner) at any of the three entry points. The three helpers below are the explicit decisions.
  * A key held by another path is not decided here.
@@ -107,7 +107,7 @@ function recordHasAccountKey(data: { profiles?: unknown }): boolean {
 export type CopyPageEvidence = { kind: 'valid'; eoa: string; phrase: string; nativeValidated: true } | { kind: 'unknown' }
 
 /**
- *a validated copy takes its EOA from the native side, never from the page.
+ * r94 (§24.5; beamio.ts ~1697): a validated copy takes its EOA from the native side, never from the page.
  * - native address equal to the copy's EOA → valid with the native EOA;
  * - native no_key → the expected answer for a validated copy (beamio.ts ~1697): valid with the copy's EOA (keyID), no hold;
  * - native address for another account, or any other refusal (a read failure, not ready, unknown) → unknown (held, retried, nothing written).

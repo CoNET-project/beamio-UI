@@ -1,5 +1,5 @@
 /**
- * QA boot markers (coordinator request, 2026-11-16). They let the real-device QA read the screen and the sync events from the log,
+ * QA boot markers (request, 2026-11-16). They let the real-device QA read the screen and the sync events from the log,
  * since a devicectl screenshot is not available on the test rig:
  *   [BeamioBoot] screen=splash|onboarding|home launch=<n> t=<ms>
  *   [BeamioBoot] sync=send|reply|retry seq=<n> launch=<n> t=<ms>

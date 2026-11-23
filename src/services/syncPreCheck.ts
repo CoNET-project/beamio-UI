@@ -1,5 +1,5 @@
 /**
- * C1: before an automatic page-to-shell sync, the page reads the native walletState (passcodeStatus) and walletStatus.
+ * C1 (v10 §五): before an automatic page-to-shell sync, the page reads the native walletState (passcodeStatus) and walletStatus.
  * An automatic sync is not sent when walletState is locked, corrupt, unknown or timed out, or when walletStatus is locked, unknown or
  * timed out (ok or envelope). Such a sync is held as pending (pendingSync) and resumed once on the unlock. A manual retry is not this path.
  */

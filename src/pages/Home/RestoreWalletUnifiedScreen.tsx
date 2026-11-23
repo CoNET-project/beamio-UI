@@ -317,7 +317,7 @@ export default function RestoreWalletUnifiedScreen({
 		// Defensive guard, not only by render condition: a shell never writes a scanned code into the recovery code.
 		if (shell) return
 		setTab('recovery')
-		// rule 2026-11-16 (C-2): only the recovery code format fills the field; a mnemonic, a private key or a URL is refused here.
+		// Per C-2: only the recovery code format fills the field; a mnemonic, a private key or a URL is refused here.
 		if (/^http/i.test(code) || !isRecoveryCodeFormat(code)) {
 			setRecoveryError(tu('invalid_recovery_code_format'))
 			return

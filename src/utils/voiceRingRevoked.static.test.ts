@@ -1,5 +1,5 @@
 /**
- * Static wiring check: a looked-up tag that differs from the declared tag after ringing revokes the ring.
+ * Static wiring check (2026-11-20): a looked-up tag that differs from the declared tag after ringing revokes the ring.
  * The App and the chat page close their layers and the App records the call as cancelled. Reads the sources only.
  */
 import { readFileSync } from 'fs'

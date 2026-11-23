@@ -1,5 +1,5 @@
 /**
- * Q3 (plan C4(b), decision 2026-11-18). A private key or an address alone is not an account; a valid mnemonic is. Synthetic only.
+ * Q3 (plan §四, C4(b), decision 2026-11-18). A private key or an address alone is not an account; a valid mnemonic is. Synthetic only.
  */
 import { judgeShell, judgeShellFromNative } from './accountJudgement'
 import { readFileSync } from 'fs'

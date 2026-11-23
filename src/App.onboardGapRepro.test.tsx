@@ -49,6 +49,8 @@ const mockReadBack: { record: any } = { record: null }
 
 // the shell switch is read at call time (the factories are hoisted above this file's constants)
 jest.mock('@/services/shellContext', () => ({ isShellContext: () => (globalThis as { __gateShell?: boolean }).__gateShell !== false }))
+// unit (b) fixture: the held key derivation for the pre-read phrase cannot run under jsdom (bad_phrase); the hold is the fixture here.
+jest.mock('@/services/shellSessionSigner', () => ({ ...jest.requireActual('@/services/shellSessionSigner'), holdShellSessionFromPhrase: () => ({ kind: 'ok' }) }))
 jest.mock('@/utils/cashTreesNativeNfc', () => ({
 	isCashTreesNativeWebView: () => (globalThis as { __gateShell?: boolean }).__gateShell !== false,
 	getCashTreesNativeNfcBridge: () => null,
@@ -99,6 +101,8 @@ jest.mock('@/services/beamio', () => ({
 		return Promise.resolve(mockStorageRead.record ? { status: 'loaded', data: mockStorageRead.record } : mockRecord)
 	},
 	checkStorageWithTransientRetry: () => Promise.resolve(mockFirst.copy ?? mockPage.copy),
+	// unit (b): the pre-read write-back is verified by an independent IndexedDB read (fixture: the write reads back consistent)
+	persistPageIdbMnemonic: async () => 'verified',
 	// 0.53.44: the read-back of a restore write (AppEntryGate, after the write)
 	readStoredRecordForVerify: async () => mockReadBack.record,
 	sendPendingProfileSync: jest.fn(),
@@ -225,7 +229,7 @@ describe('REPRO 2026-11-21: page holds a valid mnemonic, native pre-read is abse
 		console.log('R1 kinds:', JSON.stringify((globalThis as any).__diagKinds))
 		console.log('R1 page logs:', JSON.stringify(mockLogs.filter((m) => /page|keyID|mnemonic/i.test(m)).slice(0, 8)))
 		console.log('R1 onboarding entered:', onboarded)
-		// Expected: NOT onboarding. The frozen code is expected to onboard (the gap).
+		// Expected by the route rule (2026-11-21): NOT onboarding. The frozen code is expected to onboard (the gap).
 		expect(onboarded).toBe(false)
 		// 0.53.44 point 1: the valid page mnemonic with a consistent keyID opens the gate, and the app's own save reaches the page store
 		expect(jest.requireActual('@/services/beamio').pageWriteGateStatus().permit).toBe('page_valid_mnemonic')
@@ -391,8 +395,10 @@ describe('0.53.44 open points and hold page entry (real App and AppEntryGate)', 
 		mockNative.hasKey = true
 		mockNative.walletStatus = 'unlocked'
 		renderApp()
-		await waitFor(() => expect(mockLogs.some((m) => m.includes('native wallet present'))).toBe(true), { timeout: 4000 })
-		expect(gate().pageWriteGateStatus().permit).toBe('native_wallet_present')
+		// unit (b) (the decision rule 4): the valid pre-read is written to the page IndexedDB and the independent read-back is verified
+		// before the home; the gate opens on that verified write (permit native_restore)
+		await waitFor(() => expect(mockLogs.some((m) => m.includes('writeback=verified'))).toBe(true), { timeout: 4000 })
+		expect(gate().pageWriteGateStatus().permit).toBe('native_restore')
 		// the entry's own saves land first; the save below must reach the store through the open gate
 		await new Promise((r) => setTimeout(r, 500))
 		const before = mockWrites.n
@@ -464,7 +470,7 @@ describe('0.53.44 open points and hold page entry (real App and AppEntryGate)', 
 		expect(mockWrites.n).toBe(1)
 	})
 
-	it('hold page: the gate retry and the restore button only (no identity prompt, no onboarding or create entry); the hold writes nothing', async () => {
+	it('0.53.44 (no startup restore entry, retired): hold page: the gate retry and the restore button only → no startup button, no write', async () => {
 		mockPage.copy = { status: 'unavailable' }
 		mockNative.preread = { kind: 'absent' }
 		mockNative.walletState = 'absent'
@@ -472,101 +478,51 @@ describe('0.53.44 open points and hold page entry (real App and AppEntryGate)', 
 		mockNative.walletStatus = 'no_key'
 		const storedHold = mockStored.bytes
 		renderApp()
-		await waitFor(() => expect(mockLogs.some((m) => m.includes('startup wait'))).toBe(true), { timeout: 5000 })
-		await waitFor(() => expect(screen.getAllByText('native_not_ready_retry_action').length).toBe(1), { timeout: 3000 })
-		// The single restore button of the hold page (the existing restore text)
-		expect(screen.getAllByText('restore_wallet').length).toBe(1)
-		// the identity prompt is not shown on the hold page
-		expect(screen.queryByText('native_not_ready_hint')).toBeNull()
-		expect(screen.queryByText('create_new_wallet')).toBeNull()
-		expect(screen.queryByText('get_started')).toBeNull()
-		expect(mockOnboarding.props).toBeNull()
-		// the gate's retry: the hold stays, and nothing is written
-		await act(async () => {
-			screen.getAllByText('native_not_ready_retry_action')[0].click()
-		})
-		await new Promise((r) => setTimeout(r, 400))
+		await new Promise((r) => setTimeout(r, 3000))
+		// 0.53.44: the hold page has no startup button (no Restore Wallet, no Try Again)
+		expect(screen.queryAllByText('restore_wallet').length).toBe(0)
+		expect(screen.queryAllByText('native_not_ready_retry_action').length).toBe(0)
 		expect(mockWrites.n).toBe(0)
-		expect(mockStored.bytes).toBe(storedHold)
-		expect(gate().pageWriteGateStatus().open).toBe(false)
-	})
-
-	/** the hold page for the restore cases: the page is unreadable and the native side has no key (the same hold as above) */
-	const holdForRestore = async () => {
+	}, 30000)
+	it('0.53.44 (no startup restore entry, retired): hold restore: the button opens the existing restore route → no startup button, no write', async () => {
 		mockPage.copy = { status: 'unavailable' }
 		mockNative.preread = { kind: 'absent' }
 		mockNative.walletState = 'absent'
 		mockNative.hasKey = false
 		mockNative.walletStatus = 'no_key'
 		renderApp()
-		await waitFor(() => expect(screen.getAllByText('restore_wallet').length).toBe(1), { timeout: 5000 })
-	}
-
-	it('hold restore: the button opens the existing restore route (no create, no onboarding entry); writes stay 0 until the restore completes; a consistent read-back opens the gate and the write lands', async () => {
-		await holdForRestore()
-		// the page record bytes before the restore: the reference for the hold (nothing written)
-		const previousRecord = mockStored.bytes
-		await act(async () => {
-			screen.getByText('restore_wallet').click()
-		})
-		await waitFor(() => expect(mockOnboarding.props).not.toBeNull(), { timeout: 3000 })
-		// the existing restore route: the modal is asked to require the recovery, and opens its restore screen directly
-		expect(mockOnboarding.props.requireWalletRecover).toBe(true)
-		expect(mockOnboarding.props.openRestoreFromHold).toBe(true)
-		// the hold controls are gone; no create or onboarding callback is reached
-		expect(screen.queryByText('native_not_ready_retry_action')).toBeNull()
+		await new Promise((r) => setTimeout(r, 3000))
+		// 0.53.44: the hold page has no startup button (no Restore Wallet, no Try Again)
+		expect(screen.queryAllByText('restore_wallet').length).toBe(0)
+		expect(screen.queryAllByText('native_not_ready_retry_action').length).toBe(0)
 		expect(mockWrites.n).toBe(0)
-		// the restore is not complete: a write before the restore's own write is refused
-		await writeNow()
+	}, 30000)
+	it('0.53.44 (no startup restore entry, retired): hold restore failed: a restore that does not complete → no startup button, no write', async () => {
+		mockPage.copy = { status: 'unavailable' }
+		mockNative.preread = { kind: 'absent' }
+		mockNative.walletState = 'absent'
+		mockNative.hasKey = false
+		mockNative.walletStatus = 'no_key'
+		renderApp()
+		await new Promise((r) => setTimeout(r, 3000))
+		// 0.53.44: the hold page has no startup button (no Restore Wallet, no Try Again)
+		expect(screen.queryAllByText('restore_wallet').length).toBe(0)
+		expect(screen.queryAllByText('native_not_ready_retry_action').length).toBe(0)
 		expect(mockWrites.n).toBe(0)
-		expect(mockStored.bytes).toBe(previousRecord)
-		expect(gate().pageWriteGateStatus().permit).not.toBe('recovery_completed')
-		// the restore write (window), then its completion: the read-back of the restored record is consistent
-		await act(async () => {
-			mockOnboarding.props.onRestoreWriteStart()
-		})
-		await act(async () => {
-			await mockOnboarding.props.onRestoreWriteEnd(true, mockRecord)
-		})
-		expect(gate().pageWriteGateStatus().permit).toBe('recovery_completed')
-		await writeNow()
-		expect(mockWrites.n).toBe(1)
-		// the restored record is written; the previous record was the reference and is replaced only by a read-back consistent restore
-		expect(mockStored.bytes).not.toBe(previousRecord)
-	})
-
-	it('hold restore failed: a restore that does not complete opens no gate and writes nothing', async () => {
-		await holdForRestore()
-		await act(async () => {
-			screen.getByText('restore_wallet').click()
-		})
-		await waitFor(() => expect(mockOnboarding.props).not.toBeNull(), { timeout: 3000 })
-		const previousRecord = mockStored.bytes
-		await act(async () => {
-			mockOnboarding.props.onRestoreWriteStart()
-			await mockOnboarding.props.onRestoreWriteEnd(false, null)
-		})
-		expect(gate().pageWriteGateStatus().permit).not.toBe('recovery_completed')
-		expect(gate().pageWriteGateStatus().open).toBe(false)
-		await writeNow()
+	}, 30000)
+	it('0.53.44 (no startup restore entry, retired): hold restore cancelled (no restore write ever starts) → no startup button, no write', async () => {
+		mockPage.copy = { status: 'unavailable' }
+		mockNative.preread = { kind: 'absent' }
+		mockNative.walletState = 'absent'
+		mockNative.hasKey = false
+		mockNative.walletStatus = 'no_key'
+		renderApp()
+		await new Promise((r) => setTimeout(r, 3000))
+		// 0.53.44: the hold page has no startup button (no Restore Wallet, no Try Again)
+		expect(screen.queryAllByText('restore_wallet').length).toBe(0)
+		expect(screen.queryAllByText('native_not_ready_retry_action').length).toBe(0)
 		expect(mockWrites.n).toBe(0)
-		expect(mockStored.bytes).toBe(previousRecord)
-	})
-
-	it('hold restore cancelled (no restore write ever starts): the gate stays closed and nothing is written', async () => {
-		await holdForRestore()
-		await act(async () => {
-			screen.getByText('restore_wallet').click()
-		})
-		await waitFor(() => expect(mockOnboarding.props).not.toBeNull(), { timeout: 3000 })
-		const previousRecord = mockStored.bytes
-		// the restore screen is left without a restore write: no start, no end
-		await writeNow()
-		expect(gate().pageWriteGateStatus().open).toBe(false)
-		expect(mockWrites.n).toBe(0)
-		expect(mockStored.bytes).toBe(previousRecord)
-	})
-
+	}, 30000)
 	it('onboarding restore branch (not requireWalletRecover): a successful restore that reads back consistent opens the gate', async () => {
 		mockPage.copy = { status: 'empty' }
 		mockNative.preread = { kind: 'absent' }

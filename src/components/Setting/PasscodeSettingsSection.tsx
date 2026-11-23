@@ -8,7 +8,7 @@ import { useEffect, useState, type CSSProperties } from 'react'
 import { disableWalletVaultPasscode, setWalletVaultPasscode, unlockWalletVaultWithPasscode } from '../../services/beamio'
 import { signOutLocalWallet } from '../../services/signOutLocal'
 import { tu } from '../../locale/beamioLocale'
-import { checkPasscodePolicy, PASSCODE_MAX_DIGITS, PASSCODE_MIN_DIGITS } from '../../services/passcode/passcodeRules'
+import { checkPasscodePolicy, PASSCODE_DIGITS } from '../../services/passcode/passcodeRules'
 import { PASSCODE_TOKENS as T } from '../../services/passcode/passcodeTokens'
 import { applyFlowEvent, startFlow, type FlowMode, type FlowSnapshot } from '../../services/passcode/passcodeFlow'
 import {
@@ -130,8 +130,8 @@ export default function PasscodeSettingsSection() {
 		switch (current.state) {
 			case 'verify_old':
 			case 'verify': {
-				if (!/^[0-9]{8,12}$/.test(oldCode)) {
-					setNotice({ ok: false, text: `Enter ${PASSCODE_MIN_DIGITS} to ${PASSCODE_MAX_DIGITS} digits.` })
+				if (!/^[0-9]{6}$/.test(oldCode)) {
+					setNotice({ ok: false, text: `Enter ${PASSCODE_DIGITS} digits.` })
 					return
 				}
 				setBusy(true)
@@ -189,6 +189,10 @@ export default function PasscodeSettingsSection() {
 					const r = await setWalletVaultPasscode(newCode)
 					if (r.ok) {
 						finishOk(current)
+					} else if (r.reason === 'sync_pending') {
+						// not a completed set: no done text, and the flow does not report the passcode as on
+						setNotice({ ok: false, text: tu('passcode_sync_pending') })
+						setSnap(applyFlowEvent(current, 'internal_error'))
 					} else {
 						setNotice({ ok: false, text: ERROR_TEXT })
 						setSnap(applyFlowEvent(current, 'internal_error'))
@@ -210,7 +214,7 @@ export default function PasscodeSettingsSection() {
 	const inputFor = (): { label: string; value: string; set: (v: string) => void } | null => {
 		if (!snap) return null
 		if (snap.state === 'verify_old' || snap.state === 'verify') return { label: 'Current passcode', value: oldCode, set: setOldCode }
-		if (snap.state === 'setup_new') return { label: `New passcode (${PASSCODE_MIN_DIGITS} to ${PASSCODE_MAX_DIGITS} digits)`, value: newCode, set: setNewCode }
+		if (snap.state === 'setup_new') return { label: `New passcode (${PASSCODE_DIGITS} digits)`, value: newCode, set: setNewCode }
 		if (snap.state === 'setup_confirm') return { label: 'Confirm passcode', value: confirmCode, set: setConfirmCode }
 		return null
 	}

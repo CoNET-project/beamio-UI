@@ -1,6 +1,6 @@
 /**
  * The page's transaction sequence for the trusted shell bridge. `pwaWalletSync` and `pwaEmptySignal` draw from this one sequence
- * The shell refuses a
+ * (spec r2.5.x: a shared, persistent, strictly increasing number; a retry keeps the number it was sent with). The shell refuses a
  * request older than its latest accepted number (`stale_seq`), so a restart must never issue a smaller number than before.
  *
  * Each value is above the stored value, above the values issued in this run, and above the current time in milliseconds. The stored

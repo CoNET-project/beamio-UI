@@ -27,7 +27,7 @@ const PEER = '0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB'
 const KEY = '0x' + '2'.repeat(64)
 
 type Loose = Record<string, any>
-const readOkWith = (record: Loose) => ({ kind: 'payload', payload: { type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record } } })
+const readOkWith = (record: Loose) => ({ kind: 'payload', payload: { type: 'ack', reqId: 1, ok: true, result: { code: 'ok', rev: (record as { rev?: number }).rev, record } } })
 const writeOkWith = (rev: number) => ({ kind: 'payload', payload: { type: 'ack', reqId: 1, ok: true, result: { code: 'ok', rev } } })
 const conflictAnswer = { kind: 'payload', payload: { type: 'ack', reqId: 1, ok: true, result: { code: 'conflict', currentRev: 9 } } }
 const migrating = { kind: 'payload', payload: { type: 'ack', reqId: 1, ok: true, result: { code: 'migrating' } } }
@@ -386,10 +386,11 @@ describe('the save basis, the editable write, the blocked write after a timeout,
 		}
 	})
 
-	it('every request waits up to 10 seconds for its reply', async () => {
+	// 0.53.44: only the record read waits 30 s for its reply; writes keep 10 s
+	it('a record read waits up to 30 seconds for its reply (a reply inside that window is taken)', async () => {
 		;(sendShellRecordCommand as jest.Mock).mockResolvedValueOnce(readOkWith(base()))
 		await shellRecordRead()
-		expect((sendShellRecordCommand as jest.Mock).mock.calls[0][1]).toBe(10_000)
+		expect((sendShellRecordCommand as jest.Mock).mock.calls[0][1]).toBe(30_000)
 	})
 
 	it('accountName is the registered BeamioTag, not page-editable: a page change to it is not written; the editable change is', async () => {
@@ -676,7 +677,7 @@ describe('a probe read that puts the record in the page copy keeps a held change
 	const withTax = (record: Loose): Loose => ({ ...record, beamio: { ...(record.beamio as Loose), tax: '5' } })
 
 	// Repro: the persistAndVerifyLocalWallet sequence. The page holds an unmerged language change; the probe read puts the record in the copy;
-	// the next save changes tax. Fails on 1b06c589 (the probe returned the stored 'zh-CN', so the held 'en' was read as a revert and dropped:
+	// the next save changes tax. Fails on (the probe returned the stored 'zh-CN', so the held 'en' was read as a revert and dropped:
 	// Expected "en", Received "zh-CN"). Passes on the commit, where a probe read returns the page's view.
 	it('(repro): the copy from a probe read keeps the held change; the next save writes it, not the basis value', async () => {
 		jest.useFakeTimers()

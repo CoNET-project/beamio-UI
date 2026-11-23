@@ -66,7 +66,7 @@ function peekRaw(kind: 'addr' | 'tag', value: string): BeamioTagBasicMetadata | 
 
 /**
  * 按当前搜索词尝试命中：完整地址 → addr 索引；否则 → tag 索引。The tag hit is exact: the cached username must equal the query as typed
- * (after trim and the leading @). A different case is a miss and goes to the server; an old entry keyed in lower case for a
+ * (after trim and the leading @). A different case is a miss and goes to the server (#1); an old entry keyed in lower case for a
  * name written in another case is also a miss (it is kept, not deleted or migrated).
  */
 export function peekBeamioTagBasicMetadataForQuery(keyward: string): BeamioTagBasicMetadata | null {
@@ -85,7 +85,7 @@ export function peekBeamioTagBasicMetadataForQuery(keyward: string): BeamioTagBa
 export function rememberBeamioTagBasicMetadata(meta: BeamioTagBasicMetadata): void {
 	const addr = (meta.address || '').trim().toLowerCase()
 	if (!addr || !ethers.isAddress(addr)) return
-	// the exact name as the server returned it
+	// the exact name as the server returned it (case kept; rule #1)
 	const tag = (meta.username || '').trim().replace(/^@+/, '')
 	const normAddr = ethers.getAddress(addr).toLowerCase()
 	const payload: StoredEntry = {

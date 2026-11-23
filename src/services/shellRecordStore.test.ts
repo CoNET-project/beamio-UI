@@ -1,3 +1,4 @@
+import { shellStorageErrorReason } from './shellStoreWait'
 /**
  * Plan N: the shell record over the bridge. The command set is fixed; the revision is inside the record;
  * a read is ok (with an integer rev) or absent, everything else an error; a write at a stale revision is a conflict; PGP
@@ -72,34 +73,48 @@ describe('read answers (4): ok with an integer rev, or absent; everything else i
 	beforeEach(() => resetShellRecordForTest())
 
 	it('ok with an integer rev is accepted and sets the known revision', () => {
-		const r = parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: { rev: 4, profiles: [{ keyID: ADDR, privateKeyArmor: '0x' + '2'.repeat(64) }], beamio: { accountName: 'alice' } } } })
+		const r = parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', rev: 4, record: { rev: 4, profiles: [{ keyID: ADDR, privateKeyArmor: '0x' + '2'.repeat(64) }], beamio: { accountName: 'alice' } } } })
 		expect(r).toEqual({ status: 'ok', record: { rev: 4, profiles: [{ keyID: ADDR, privateKeyArmor: '0x' + '2'.repeat(64) }], beamio: { accountName: 'alice' } }, rev: 4, walletFieldsRedacted: false })
 	})
 
 	it('a record with no profile at index 0 has no bound EOA key: needs_native_recovery (a hold), never absent', () => {
-		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: { rev: 3, profiles: [] } } })).toEqual({
+		// 0.53.44 (sc, the recorded rule): a keyless record with no mnemonic also carries keylessRecord (the 11-17 rule decides at the start)
+		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', rev: 3, record: { rev: 3, profiles: [] } } })).toMatchObject({
 			status: 'error',
 			reason: 'needs_native_recovery',
 		})
 	})
 
 	it('a profiles field that is not a list is a malformed record: wallet_fields_missing (a hold)', () => {
-		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: { rev: 3, profiles: {} } } })).toEqual({
+		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', rev: 3, record: { rev: 3, profiles: {} } } })).toEqual({
 			status: 'error',
 			reason: 'wallet_fields_missing',
 		})
 	})
 
 	it('.2: a read without the flag is not redacted (the W fields are carried); only an older native true is', () => {
-		const missing = parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: { rev: 2, profiles: [{ keyID: ADDR, privateKeyArmor: '0x' + '2'.repeat(64) }], beamio: { accountName: 'alice' } } } })
+		const missing = parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', rev: 2, record: { rev: 2, profiles: [{ keyID: ADDR, privateKeyArmor: '0x' + '2'.repeat(64) }], beamio: { accountName: 'alice' } } } })
 		expect(missing).toMatchObject({ status: 'ok', walletFieldsRedacted: false })
-		const legacy = parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: { rev: 2, profiles: [{ keyID: ADDR, privateKeyArmor: '0x' + '2'.repeat(64) }], beamio: { accountName: 'alice' } }, walletFieldsRedacted: true } })
+		const legacy = parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', rev: 2, record: { rev: 2, profiles: [{ keyID: ADDR, privateKeyArmor: '0x' + '2'.repeat(64) }], beamio: { accountName: 'alice' } }, walletFieldsRedacted: true } })
 		expect(legacy).toEqual({ status: 'ok', record: { rev: 2, profiles: [{ keyID: ADDR, privateKeyArmor: '0x' + '2'.repeat(64) }], beamio: { accountName: 'alice' } }, rev: 2, walletFieldsRedacted: true })
 	})
 
-	it('ok without an integer rev is an error (rev_missing)', () => {
+	it('the record rev is the read authority: no integer record rev is rev_missing, whatever the result carries', () => {
 		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: { profiles: [] } } })).toEqual({ status: 'error', reason: 'rev_missing' })
+		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', rev: 2, record: { profiles: [] } } })).toEqual({ status: 'error', reason: 'rev_missing' })
 		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: { rev: 1.5 } } })).toEqual({ status: 'error', reason: 'rev_missing' })
+	})
+	it('iOS shape: the result has no rev, the record has an integer rev: passes', () => {
+		const rec = { rev: 7, profiles: [{ keyID: ADDR, privateKeyArmor: '0x' + '2'.repeat(64) }], beamio: { accountName: 'alice' } }
+		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: rec } })).toMatchObject({ status: 'ok', rev: 7 })
+	})
+	it('Android shape: result.rev and record.rev equal: passes', () => {
+		const rec = { rev: 7, profiles: [{ keyID: ADDR, privateKeyArmor: '0x' + '2'.repeat(64) }], beamio: { accountName: 'alice' } }
+		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', rev: 7, schemaVersion: 1, record: rec } })).toMatchObject({ status: 'ok', rev: 7 })
+	})
+	it('result.rev and record.rev present but not equal: bad_answer', () => {
+		const rec = { rev: 7, profiles: [{ keyID: ADDR, privateKeyArmor: '0x' + '2'.repeat(64) }], beamio: { accountName: 'alice' } }
+		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', rev: 8, record: rec } })).toEqual({ status: 'error', reason: 'bad_answer' })
 	})
 
 	it('absent is accepted; migrating, record_unreadable, too_large, origin_refused, bad_request are errors', () => {
@@ -122,7 +137,7 @@ describe('read answers (4): ok with an integer rev, or absent; everything else i
 	})
 
 	it('a read answer that carries PGP material is an error, never a record', () => {
-		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: { rev: 1, ...pgpRecord() } } })).toEqual({
+		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', rev: 1, record: { rev: 1, ...pgpRecord() } } })).toEqual({
 			status: 'error',
 			reason: 'pgp_private_in_payload',
 		})
@@ -140,13 +155,14 @@ describe('+ : the read as the wallet record (absent is the only onboarding; ever
 	it('[读层] case 1: the record exists with the EOA key bound to the account: parsed and returned (read layer; the startup layer still decides the account)', () => {
 		const rec = { rev: 2, profiles: [{ keyID: ADDR, privateKeyArmor: KEY }] }
 		expect(shellRecordAsWalletRecord(ok(rec))).toBe(rec)
-		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: rec } })).toMatchObject({ status: 'ok' })
+		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: { ...rec, rev: (rec as { rev?: number }).rev ?? 1 } } })).toMatchObject({ status: 'ok' })
 	})
 
 	it('case 2: the record exists but the profile bound to the account has no EOA key: needs_native_recovery (a hold, never onboarding)', () => {
 		const rec = { rev: 2, profiles: [{ keyID: ADDR }] }
 		expect(() => shellRecordAsWalletRecord(ok(rec))).toThrow('shell_record_needs_native_recovery')
-		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: rec } })).toEqual({
+		// 0.53.44 (sc): keylessRecord is returned with the reason (no mnemonic on the record)
+		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: { ...rec, rev: (rec as { rev?: number }).rev ?? 1 } } })).toMatchObject({
 			status: 'error',
 			reason: 'needs_native_recovery',
 		})
@@ -167,7 +183,7 @@ describe('+ : the read as the wallet record (absent is the only onboarding; ever
 		const bad = '0x1563915e194d8CfBA1943570603F7606A3115508'
 		const rec = { rev: 2, profiles: [{ keyID: bad, privateKeyArmor: KEY }] }
 		expect(() => shellRecordAsWalletRecord(ok(rec))).toThrow('shell_record_wallet_fields_missing')
-		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: rec } })).toEqual({
+		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: { ...rec, rev: (rec as { rev?: number }).rev ?? 1 } } })).toEqual({
 			status: 'error',
 			reason: 'wallet_fields_missing',
 		})
@@ -175,14 +191,14 @@ describe('+ : the read as the wallet record (absent is the only onboarding; ever
 
 	it('an all-lower-case address is accepted and the read carries the checksum form (the app reads it with getAddress)', () => {
 		const lower = ADDR.toLowerCase()
-		const r = parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: { rev: 2, profiles: [{ keyID: lower, privateKeyArmor: KEY }] } } })
+		const r = parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', rev: 2, record: { rev: 2, profiles: [{ keyID: lower, privateKeyArmor: KEY }] } } })
 		expect(r.status).toBe('ok')
 		if (r.status === 'ok') expect((r.record.profiles as any)[0].keyID).toBe(ADDR)
 	})
 
 	it('an all-upper-case address (0x + upper hex) is accepted', () => {
 		const upper = '0x' + ADDR.slice(2).toUpperCase()
-		const r = parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: { rev: 2, profiles: [{ keyID: upper, privateKeyArmor: KEY }] } } })
+		const r = parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', rev: 2, record: { rev: 2, profiles: [{ keyID: upper, privateKeyArmor: KEY }] } } })
 		expect(r.status).toBe('ok')
 	})
 
@@ -199,7 +215,7 @@ describe('+ : the read as the wallet record (absent is the only onboarding; ever
 	it('(probe H): duplicate profiles for the account (the key on the second copy) cannot be selected: duplicate_profiles (a hold, never onboarding)', () => {
 		const rec = { rev: 2, profiles: [{ keyID: ADDR }, { keyID: ADDR, privateKeyArmor: KEY }] }
 		expect(() => shellRecordAsWalletRecord(ok(rec))).toThrow('shell_record_duplicate_profiles')
-		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: rec } })).toEqual({
+		expect(parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record: { ...rec, rev: (rec as { rev?: number }).rev ?? 1 } } })).toEqual({
 			status: 'error',
 			reason: 'duplicate_profiles',
 		})
@@ -270,5 +286,26 @@ describe('write refusals before anything is sent (5, .10)', () => {
 	it('the known revision is only set by a read (absent is 0)', () => {
 		resetShellRecordForTest()
 		expect(knownRevForTest()).toBeNull()
+	})
+})
+
+describe('a schema-2 record without the EOA key routes to the native recovery entry (interface; spec §25.52Y.156, §25.52U.4)', () => {
+	it('the native answer error sub needs_native_recovery maps to native_recovery_needed (the recovery hold), never an unknown re-read', () => {
+		const out = parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'error', sub: 'needs_native_recovery' } })
+		expect(out).toEqual({ status: 'error', reason: 'needs_native_recovery' })
+		const reason = shellStorageErrorReason('shell_record_needs_native_recovery')
+		expect(reason).toBe('native_recovery_needed')
+	})
+	it('a violating native ok with the wallet fields stripped also lands in the recovery hold, not read_failed or unknown', () => {
+		const stripped = { rev: 3, schemaVersion: 2, profiles: [{ keyID: ADDR }], beamio: { accountName: 'alice' } }
+		const out = parseShellRecordRead({ type: 'ack', reqId: 1, ok: true, result: { code: 'ok', rev: 3, schemaVersion: 1, record: stripped } })
+		// Resolved by the decision (2026-11-22, section 2; rules and): a keyless record with no mnemonic is the native side's
+		// explicit "no mnemonic" only after the page IndexedDB was read first (the unit b order). It is returned as keylessRecord, so the start
+		// applies the 11-17 rule: onboarding, data kept. The recovery entry is offered only inside the onboarding page, never at the start.
+		expect(out).toMatchObject({ status: 'error', reason: 'needs_native_recovery', keylessRecord: expect.anything() })
+		const reason = shellStorageErrorReason('shell_record_needs_native_recovery')
+		expect(reason).toBe('native_recovery_needed')
+		expect(reason).not.toBe('native_retry')
+		expect(reason).not.toBe('native_record')
 	})
 })

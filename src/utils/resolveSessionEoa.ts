@@ -10,7 +10,7 @@ type ProfileLike = { keyID?: string | null; privateKeyArmor?: string | null } | 
  * `admin` matches the actual signer (avoids API "Signer is not admin" on keyID drift).
  */
 /**
- * rule H (2026-11-17): this returns the session identity (the keyID of profiles[0]) for display and API identity. It is not an account
+ * this returns the session identity (the keyID of profiles[0]) for display and API identity. It is not an account
  * gate: the account is decided by the valid mnemonic (E7) and the start-up classification.
  */
 export function resolveSessionEoa(profiles?: ProfileLike[] | null): string {

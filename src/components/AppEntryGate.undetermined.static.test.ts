@@ -10,12 +10,12 @@ const src = fs.readFileSync(path.join(__dirname, 'AppEntryGate.tsx'), 'utf8')
 describe('AppEntryGate: undetermined is never onboarding', () => {
 	it('the storage router never goes to onboarding (every browser reason is undetermined)', () => {
 		const router = src.slice(src.indexOf('const handleStorageUnavailable'), src.indexOf('// Shell'))
-		expect(router).toContain("storageUnavailableRoute({ nativeShell, reason })")
+		expect(router).toContain('SHELL_SCREEN_REASONS.has(reason)')
 		expect(router).toContain('showStorageUnavailable(reason)')
 		expect(router).not.toContain('goOnboarding(')
 	})
 	it('the judged undetermined branch still routes through the same router', () => {
-		// (b): in a shell the undetermined answer is the start wait; the browser keeps the retry screen (shell branch first)
+		// R96 (b): in a shell the undetermined answer is the start wait; the browser keeps the retry screen (shell branch first)
 		expect(src).toContain("if (judged.account === 'undetermined') {")
 		expect(src).toContain("if (isShellContext()) startupWait('account judgement undetermined (shell): the start state, retry', 'read_failed')")
 		expect(src).toContain("else handleStorageUnavailable('undetermined')")

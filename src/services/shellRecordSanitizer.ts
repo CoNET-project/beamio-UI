@@ -154,8 +154,10 @@ function hasSealedCredential(record: unknown): boolean {
 }
 
 /**
- * Scheme A: the EOA private key is what a shell record must hold. A record without it is an error. A missing
- * mnemonic is not an error here: the shell keeps the EOA key natively and never routes to page recovery.
+ * Scheme A: the EOA private key is what a shell record must hold. A schema-2 record without it (the native side strips the wallet
+ * fields when it holds no key) is answered as error sub needs_native_recovery (spec §25.52Y.156, §25.52U.4): a hold that opens the
+ * native recovery entry (the user acts). It is never an endless re-read. A missing mnemonic is not an error here: the shell keeps the
+ * EOA key natively.
  */
 export function eoaPrivateKeyPresent(record: unknown): boolean {
 	if (!isObject(record)) return false
@@ -168,7 +170,7 @@ export function eoaPrivateKeyPresent(record: unknown): boolean {
 }
 
 /**
- * rule J (2026-11-17): the sanitizer's job is to know which secrets a record holds, so that they are stripped. A private key and a
+ * the sanitizer's job is to know which secrets a record holds, so that they are stripped. A private key and a
  * plaintext mnemonic are both secrets. This is a report of what is present, never an account gate (the account is decided by E7 and the
  * start-up classification).
  */

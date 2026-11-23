@@ -1,5 +1,5 @@
 /**
- * /: how many native inits reachNativeWallet sends. iOS not_ready with unreadable sends ONE init when the public
+ * Y.163 / Y.75: how many native inits reachNativeWallet sends. iOS not_ready with unreadable sends ONE init when the public
  * address hint is on this device (and identity is declared); no hint sends none; Android never sends it for unreadable;
  * g1_uninitialized keeps its own rule. The native bridge is stubbed at the request boundary.
  */
@@ -32,7 +32,7 @@ afterEach(() => {
 	jest.dontMock('./nativeRecovery')
 })
 
-describe('native init count', () => {
+describe('native init count (Y.163, iOS unreadable)', () => {
 	it('iOS unreadable with the public address on this device: exactly one init', async () => {
 		const { mod, initShellIdentityOnly } = load({ ios: true, hint: true, statuses: [{ status: 'not_ready', notReadyReason: 'unreadable' }, { status: 'not_ready', notReadyReason: 'unreadable' }] })
 		const out = await mod.reachNativeWallet()
@@ -48,7 +48,7 @@ describe('native init count', () => {
 		expect(out).toEqual({ status: 'not_ready', notReadyReason: 'unreadable' })
 	})
 
-	it('Android unreadable with a hint: zero inits', async () => {
+	it('Android unreadable with a hint: zero inits (Y.75 unchanged)', async () => {
 		const { mod, initShellIdentityOnly } = load({ ios: false, hint: true, statuses: [{ status: 'not_ready', notReadyReason: 'unreadable' }] })
 		await mod.reachNativeWallet()
 		expect(initShellIdentityOnly).not.toHaveBeenCalled()

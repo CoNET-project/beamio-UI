@@ -67,7 +67,7 @@ jest.mock('@/providers/DaemonProvider', () => {
 	}
 	return { DaemonProvider, useDaemonContext: () => React.useContext(Ctx) }
 })
-// steps 1 and 2: a shell start reads the old PWA store (PouchDB "init") first. This file keeps that store absent (its page record is
+// r92 steps 1 and 2: a shell start reads the old PWA store (PouchDB "init") first. This file keeps that store absent (its page record is
 // the race.idb switch above), so the database answers a missing document (404) instead of a missing PouchDB in jsdom.
 jest.mock('pouchdb', () => ({
 	__esModule: true,
@@ -82,7 +82,7 @@ jest.mock('pouchdb', () => ({
 	}),
 }))
 
-// step 6: the page sync checks the phrase's derivation; jsdom has no WebCrypto for BIP-39 derivation, so the test derivation is the
+// r92 step 6: the page sync checks the phrase's derivation; jsdom has no WebCrypto for BIP-39 derivation, so the test derivation is the
 // fixture's own (the standard phrase of PAGE_PHRASE derives to EOA above).
 jest.mock('@/services/shellLegacyIdbInit', () => ({
 	...jest.requireActual('@/services/shellLegacyIdbInit'),
@@ -120,6 +120,12 @@ jest.mock('@/services/beamio', () => ({
 	storeSystemData: async () => {
 		race.writes.push('storeSystemData')
 	},
+	// the pre-read write-back (page IndexedDB, read back): jsdom cannot open the device-key vault; counted, and the page then reads its own record
+	persistPageIdbMnemonic: async () => {
+		race.writes.push('persistPageIdbMnemonic')
+		;(race as { writeBack?: boolean }).writeBack = true
+		return 'verified'
+	},
 	storeSystemDataAndWait: async () => {
 		race.writes.push('storeSystemDataAndWait')
 		// after a write-back the page store reads its own record (the pre-read route syncs after the home)
@@ -148,7 +154,9 @@ jest.mock('@/utils/consumerWalletGate', () => ({
 // jsdom cannot derive a wallet (its Uint8Array is another realm than ethers'); the derivation is covered in the node tests.
 jest.mock('@/services/shellSessionSigner', () => ({ ...jest.requireActual('@/services/shellSessionSigner'), holdShellSessionFromPhrase: () => ({ kind: 'ok' }) }))
 jest.mock('@/services/recoveredMnemonicRecord', () => ({ ...jest.requireActual('@/services/recoveredMnemonicRecord'), checkRecoveredRecord: () => 'valid' }))
-// Spec item 42(2): the start-up pre-read answers valid / absent / unknown. The race's native state is mapped to that answer.
+// jsdom cannot run the BIP-39 checksum (ethers Mnemonic); the word-shape check is the app's, the derivation is stubbed in renderApp
+jest.mock('@/services/walletCredential', () => ({ ...jest.requireActual('@/services/walletCredential'), isMnemonicPhrase: (v: unknown) => typeof v === 'string' && /^[a-z]+( [a-z]+)*$/.test(v) && [12, 24].includes(v.split(' ').length) }))
+// Spec r2.4 item 42(2): the start-up pre-read answers valid / absent / unknown. The race's native state is mapped to that answer.
 const SAMPLE_EOA = '0x9858effd232b4033e47d90003d41ec34ecaeda94'
 jest.mock('@/services/nativeWallet', () => ({
 	NATIVE_WALLET_READY_EVENT: 'beamio:native-wallet-ready',
@@ -177,25 +185,47 @@ jest.mock('@/services/nativeRecovery', () => ({
 	queryNativeWalletStateSafe: async () => race.walletState,
 	// 0.53.39: the start reads passcodeStatus (walletState and hasKey); the stub reports the same walletState and no key marker
 	queryNativePasscodeStatus: async () => ({ walletState: race.walletState, hasKey: 'not_reported' as const }),
-	queryNativeMnemonicPreread: async () => {
-		// the pre-read is the start-up's native read: it takes the place of the walletStatus read (counted as reachCalls)
-		race.reachCalls += 1
-		const override = (race as { preread?: { kind: string } }).preread
-		const n = race.native
-		const answer: { kind: string; eoa?: string; phrase?: string } = override
-			? override
-			: n.status === 'locked'
-				? { kind: 'locked' }
-				: n.status === 'unlocked' || (n.status === 'not_ready' && n.notReadyReason === 'g1_uninitialized')
-				? { kind: 'valid', eoa: SAMPLE_EOA, phrase: PAGE_PHRASE }
-				: n.status === 'no_key'
-					? { kind: 'absent' }
-					: { kind: 'unknown' }
-		// recorded as the reducer received it (RM-05..07 read these arrivals)
-		mockTrail.arrivals.push(`pre-read-${answer.kind}`)
-		return answer
-	},
+	// the real pre-read (its transport and inner timeouts); the native answer comes from the window host (prereadReply below)
+	queryNativeMnemonicPreread: (...a: unknown[]) => (jest.requireActual('@/services/nativeRecovery') as { queryNativeMnemonicPreread: (...x: unknown[]) => unknown }).queryNativeMnemonicPreread(...a),
 }))
+/** The host's reply for the pre-read: the case's own override (race.preread), else the native state of the race (the same mapping as before). */
+function prereadReply(): { kind: string; eoa?: string; phrase?: string } {
+	const override = (race as { preread?: { kind: string; eoa?: string; phrase?: string } }).preread
+	if (override) return override
+	const n = race.native
+	return n.status === 'locked'
+		? { kind: 'locked' }
+		: n.status === 'unlocked' || (n.status === 'not_ready' && n.notReadyReason === 'g1_uninitialized')
+			? { kind: 'valid', eoa: SAMPLE_EOA, phrase: PAGE_PHRASE }
+			: n.status === 'no_key'
+				? { kind: 'absent' }
+				: { kind: 'unknown' }
+}
+/** the window host the App's pre-read transport talks to (the App.nativeLateReply shape). The reply body is the native envelope of each kind. */
+let hostOnMessage: ((ev: unknown) => void) | null = null
+function installNativeHost(): void {
+	const host = {
+		postMessage: (text: string) => {
+			const cmd = JSON.parse(text) as { type: string; reqId: number }
+			if (cmd.type !== 'nativeMnemonicPreread') return
+			// the pre-read is the start-up's native read: it takes the place of the walletStatus read (counted as reachCalls)
+			race.reachCalls += 1
+			const answer = prereadReply()
+			mockTrail.arrivals.push(`pre-read-${answer.kind}`) // recorded as the reducer received it (RM-05..07 read these arrivals)
+			const payload = answer.kind === 'valid'
+				? { ok: true, result: { code: 'ok', mnemonic: answer.phrase, eoa: answer.eoa } }
+				: answer.kind === 'absent'
+					? { ok: true, result: { code: 'confirmed_missing' } }
+					: answer.kind === 'locked'
+						? { ok: false, error: 'locked' }
+						: { ok: false, error: 'envelope_fail' }
+			setTimeout(() => hostOnMessage?.({ data: JSON.stringify({ type: 'ack', reqId: cmd.reqId, ...payload }) }), 0)
+		},
+		get onmessage() { return hostOnMessage },
+		set onmessage(fn: ((ev: unknown) => void) | null) { hostOnMessage = fn },
+	}
+	;(window as unknown as { BeamioShellRecord: unknown }).BeamioShellRecord = host
+}
 jest.mock('@/services/nativeIdentityPublic', () => ({
 	...jest.requireActual('@/services/nativeIdentityPublic'),
 	readNativeIdentityPublic: async () => ({ kind: 'no_key', kPresent: race.kPresent }),
@@ -240,6 +270,8 @@ jest.mock('@/components/Home/Home', () => {
 const { publishNativePwaLog } = require('@/utils/cashTreesNativePwaLog')
 
 function renderApp() {
+	installNativeHost()
+	jest.spyOn(require('ethers').Wallet, 'fromPhrase').mockReturnValue({ address: SAMPLE_EOA } as never)
 	return render(
 		<DaemonProvider>
 			<MemoryRouter initialEntries={['/home']}>
@@ -291,8 +323,8 @@ describe('account reset at the gate', () => {
 		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
 	})
 
-	// CP-05: native-keys reported, kpresent not reported: unknown, retry, no creation entry, never onboarding.
-	it('CP-05: native-keys reported, kpresent not, the pre-read unknown: startup wait, no onboarding, no creation entry (spec item 42(2)(3); the kPresent tier is not an answer of the pre-read)', async () => {
+	// CP-05 (Y.93 2c): native-keys reported, kpresent not reported: unknown, retry, no creation entry, never onboarding.
+	it('CP-05: native-keys reported, kpresent not, the pre-read unknown: startup wait, no onboarding, no creation entry (spec r2.4 item 42(2)(3); the kPresent tier is not an answer of the pre-read)', async () => {
 		race.caps = ['identity.native-keys.v1']
 		race.kPresent = undefined
 		race.native = { status: 'unknown' }
@@ -304,7 +336,7 @@ describe('account reset at the gate', () => {
 
 	// PNK-04 supersedes the earlier case here: a no_key answer with kPresent true holds the native key. It is the recovery entry only:
 	// never onboarding, never a creation entry.
-	it('no_key with kPresent true and no mnemonic on either side: the pre-read says absent, so onboarding (spec item 42(2)); the PNK-04 recovery entry is superseded here and pending a', async () => {
+	it('no_key with kPresent true and no mnemonic on either side: the pre-read says absent, so onboarding (spec r2.4 item 42(2)); the Y.151 PNK-04 recovery entry is superseded here and pending a rule', async () => {
 		race.kPresent = true
 		race.native = { status: 'no_key' }
 		renderApp()
@@ -323,7 +355,7 @@ describe('account reset at the gate', () => {
 		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
 	})
 
-	// CP-02: a storage-derived lock (not_ready, unreadable) is unknown: the startup wait (spec item 42(3), rule 2026-11-16).
+	// CP-02: a storage-derived lock (not_ready, unreadable) is unknown: the startup wait (spec r2.4 item 42(3)).
 	// Rewritten from "retry on the unavailable screen": unknown shows no error screen, no onboarding and no creation entry.
 	it('CP-02: storage-derived lock (not_ready, unreadable) is unknown: startup wait, no error screen, no onboarding, no creation entry', async () => {
 		race.native = { status: 'not_ready', notReadyReason: 'unreadable' }
@@ -364,7 +396,7 @@ describe('account reset at the gate', () => {
 		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
 	})
 
-	it('ST-03 (pre-read unknown, no public address to fall back on): startup wait, nothing guessed, never onboarding (spec item 42(3))', async () => {
+	it('ST-03 (pre-read unknown, no public address to fall back on): startup wait, nothing guessed, never onboarding (spec r2.4 item 42(3))', async () => {
 		race.native = { status: 'not_ready', notReadyReason: 'unreadable' }
 		race.eoa = null
 		renderApp()
@@ -392,7 +424,7 @@ describe('account reset at the gate', () => {
 	})
 })
 
-//iOS not_ready + unreadable goes silently to the PWA onboarding with nothing written; a usable
+// Y.163 (r7): iOS not_ready + unreadable goes silently to the PWA onboarding with nothing written; a usable
 // wallet leaves it for /home. g1_uninitialized is not intercepted here. The create entry is unchanged (A-3 revoked). No picker.
 const NATIVE_RESTORE_TITLE = 'native_restore_title'
 
@@ -420,10 +452,11 @@ async function idbSnapshot(): Promise<string> {
 }
 const POPUP_TITLES = ['Native wallet is not ready', NATIVE_RESTORE_TITLE]
 function snapshot(): string {
-	const local = Object.keys(window.localStorage).sort().map((k) => [k, window.localStorage.getItem(k)])
+	// the shell transport's request counter (beamio.shellTxSeq.v1) advances with every native request, the pre-read included; it is not user data
+	const local = Object.keys(window.localStorage).filter((k) => !k.startsWith('beamio.shellTxSeq.')).sort().map((k) => [k, window.localStorage.getItem(k)])
 	return JSON.stringify({ local, idb: race.idb, eoa: race.eoa, writes: race.writes, wipes: race.wipes })
 }
-describe('silent entry, no picker, no popup, data kept (iOS)', () => {
+describe('Y.163: silent entry, no picker, no popup, data kept (iOS)', () => {
 	beforeEach(() => {
 		;(window as unknown as { CashTreesIOS?: unknown }).CashTreesIOS = {}
 		window.localStorage.setItem('y163.sentinel', 'keep-me')
@@ -462,8 +495,8 @@ describe('silent entry, no picker, no popup, data kept (iOS)', () => {
 		expect(screen.queryByText(/native_pick_account/)).toBeNull()
 	}, 15000)
 
-	// Rewritten for rule 2026-11-16 (spec 42(2)(3)): an unreadable native answer with no valid page mnemonic is unknown. It is the startup
-	// wait: no popup, no onboarding, nothing written or cleared. The earlier "silent onboarding" is superseded by that rule.
+	// Rewritten for the current rule (spec 42(2)(3)): an unreadable native answer with no valid page mnemonic is unknown. It is the startup
+	// wait: no popup, no onboarding, nothing written or cleared. The earlier "silent onboarding" (r7) is superseded by that rule.
 	it('3. unreadable (not_ready), page confirmed empty: startup wait, no popup, no onboarding, and the data snapshot is identical before and after', async () => {
 		race.answered = true
 		race.caps = [...BOTH_CAPS]
@@ -494,7 +527,7 @@ describe('silent entry, no picker, no popup, data kept (iOS)', () => {
 		expect(screen.queryByText(/native_pick_account/)).toBeNull()
 	}, 15000)
 
-	// Rewritten for rule 2026-11-16: the startup wait is left for the home when a usable native wallet arrives (the ready event).
+	// Rewritten for the current rule: the startup wait is left for the home when a usable native wallet arrives (the ready event).
 	it('5. unreadable startup wait, then a usable wallet (ready event): the home', async () => {
 		race.answered = true
 		race.caps = [...BOTH_CAPS]
@@ -526,7 +559,7 @@ describe('silent entry, no picker, no popup, data kept (iOS)', () => {
 		expect(window.localStorage.getItem('y163.sentinel')).toBe('keep-me')
 	}, 15000)
 
-	// Rewritten for rule 2026-11-16: a ready event while the native side is still unreadable keeps the startup wait (no popup, no onboarding).
+	// Rewritten for the current rule: a ready event while the native side is still unreadable keeps the startup wait (no popup, no onboarding).
 	it('7. ready event while still unreadable: no popup, still the startup wait (no onboarding, no status screen), nothing written', async () => {
 		race.answered = true
 		race.caps = [...BOTH_CAPS]
@@ -544,8 +577,17 @@ describe('silent entry, no picker, no popup, data kept (iOS)', () => {
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
 		expect(snapshot()).toBe(before)
 	}, 15000)
-	// Rewritten for rule 2026-11-16: the startup wait re-reads on its interval until a definite answer. The re-read is a read: 60 s of
+	// Rewritten for the current rule: the startup wait re-reads on its interval until a definite answer. The re-read is a read: 60 s of
 	// fake time writes nothing, shows no popup and never onboards.
+	/** Moves the fake clock in 100 ms steps; each step settles the microtask queue first (the gate awaits before it sends a request). */
+	const tick = async (ms: number) => {
+		for (let i = 0; i < ms / 100; i += 1) {
+			await act(async () => {
+				for (let k = 0; k < 20; k += 1) await Promise.resolve()
+				jest.advanceTimersByTime(100)
+			})
+		}
+	}
 	it('8. the startup wait re-reads on its interval: 60 s of fake time reads only (no write, no onboarding, no popup)', async () => {
 		race.answered = true
 		race.caps = [...BOTH_CAPS]
@@ -556,16 +598,14 @@ describe('silent entry, no picker, no popup, data kept (iOS)', () => {
 		jest.useFakeTimers()
 		try {
 			renderApp()
-			await act(async () => {
-				await Promise.resolve()
-			})
+			// the host answers on a timer (the real transport), and the first unknown is re-asked after 750 ms: one second covers both answers
+			// the host answers on the fake clock: each 100 ms step settles the microtask chain (the gate's awaits before a request) first
+			await tick(2_000)
 			expect(publishNativePwaLog).toHaveBeenCalledWith('warn', expect.stringContaining('startup wait'))
 			const before = snapshot()
 			const reachBefore = race.reachCalls
 			for (let i = 0; i < 60; i += 1) {
-				await act(async () => {
-					jest.advanceTimersByTime(1_000)
-				})
+				await tick(1_000)
 			}
 			await act(async () => {
 				await Promise.resolve()
@@ -598,7 +638,7 @@ describe('silent entry, no picker, no popup, data kept (iOS)', () => {
 		POPUP_TITLES.forEach((t) => expect(screen.queryByText(t)).toBeNull())
 	}, 15000)
 
-	// Rewritten for rule 2026-11-16 (spec 42(1)): a valid page mnemonic is the one current account, the home. The native not_ready answer
+	// Rewritten for the current rule (spec 42(1)): a valid page mnemonic is the one current account, the home. The native not_ready answer
 	// is not compared with it and shows no status screen.
 	it('10. walletState present with a not-ready native answer and a valid page mnemonic: the home, no status screen, no popup', async () => {
 		race.answered = true
@@ -611,7 +651,7 @@ describe('silent entry, no picker, no popup, data kept (iOS)', () => {
 		expect(screen.queryByText(/Native wallet is not ready/)).toBeNull()
 		POPUP_TITLES.forEach((t) => expect(screen.queryByText(t)).toBeNull())
 	}, 15000)
-	// Rewritten for rule 2026-11-16: the startup wait (native unreadable, page confirmed empty) writes nothing to the device database.
+	// Rewritten for the current rule: the startup wait (native unreadable, page confirmed empty) writes nothing to the device database.
 	it('11. real IndexedDB snapshot: the startup wait writes nothing to the device database (before and after compared)', async () => {
 		// fake-indexeddb (jest only) is installed for this test alone; the other tests keep indexedDB absent, as before.
 		const { IDBFactory } = require('fake-indexeddb') as typeof import('fake-indexeddb')
@@ -664,7 +704,7 @@ describe('silent entry, no picker, no popup, data kept (iOS)', () => {
 	}, 15000)
 
 
-	// Rewritten for rule 2026-11-16: a device hint is never evidence. With no valid page mnemonic and an unreadable native side the answer is
+	// Rewritten for the current rule: a device hint is never evidence. With no valid page mnemonic and an unreadable native side the answer is
 	// unknown: the startup wait, never the home and never onboarding.
 	it('12. a device hint alone (no valid mnemonic, native unreadable): the startup wait, never the home, never onboarding', async () => {
 		window.localStorage.setItem('beamio.shellPublicEoa.v1', EOA)
@@ -695,7 +735,7 @@ describe('silent entry, no picker, no popup, data kept (iOS)', () => {
 
 })
 
-// rule 2026-11-16 (spec item 42(3)): PWA unknown is the startup wait. The native side is not asked at all.
+// Per spec r2.4 item 42(3): PWA unknown is the startup wait. The native side is not asked at all.
 describe('ST-07: PWA unknown does not ask the native side', () => {
 	beforeEach(() => {
 		race.reachCalls = 0
@@ -728,7 +768,7 @@ describe('ST-07: PWA unknown does not ask the native side', () => {
 	})
 })
 
-// QA boot markers and the sync call points. The markers come through publishNativePwaLog.
+// QA boot markers and the sync call points (spec 44). The markers come through publishNativePwaLog.
 describe('boot markers and the shell sync (QA only)', () => {
 	const { setShellMnemonicSyncBridge } = require('@/services/shellMnemonicSync') as typeof import('@/services/shellMnemonicSync')
 	const labels = (): string[] =>
@@ -794,11 +834,11 @@ describe('boot markers and the shell sync (QA only)', () => {
 	})
 })
 
-// rule (a), 2026-11-16 (spec item 42(5), without identity.native-keys.v1 the walletStatus route stays. Only an explicit
+// rule (a), 2026-11-16 (spec r2.4 item 42(5), §25.29.5): without identity.native-keys.v1 the walletStatus route stays. Only an explicit
 // native `no_key` enters the onboarding. unknown (read failure or timeout), not_ready and a contradicting walletState stay in the start-up
 // state. rule (c): a native locked answer never routes to the onboarding. rule (f): the ready event does not route while the hello is
 // unanswered (no hello backoff is read by the ready path).
-describe('walletStatus route without identity.native-keys.v1 (rule (a), (c), (f))', () => {
+describe('walletStatus route without identity.native-keys.v1 ((c), (f))', () => {
 	beforeEach(() => {
 		race.reachCalls = 0
 		race.answered = true
@@ -854,7 +894,7 @@ describe('walletStatus route without identity.native-keys.v1 (rule (a), (c), (f)
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
 	})
 
-	// M4 (item 2; spec 42(2) and 57(6)). The page store is locked, so its answer is unknown and it is not a confirmed empty page. The native
+	// M4 (R70 item 2; spec 42(2) and 57(6)). The page store is locked, so its answer is unknown and it is not a confirmed empty page. The native
 	// side is not asked and the start waits; the onboarding must not open. A locked store is `unknown` with `locked: true`, which reaches
 	// the pageEvidence branch only past the earlier `unknown && !locked` return. Mutation M4 (that branch enters the onboarding) fails here.
 	it('M4: page store locked (pageEvidence unknown), native no_key and walletState absent: start-up wait, never onboarding, native side not asked', async () => {
@@ -874,7 +914,7 @@ describe('walletStatus route without identity.native-keys.v1 (rule (a), (c), (f)
 		expect(race.walletStateCalls).toBe(0)
 	})
 
-	it('c1: native locked, capability missing: no local home on a locked wallet (unknown), never onboarding', async () => {
+	it('c1 (r11 LK-P1): native locked, capability missing: no local home on a locked wallet (unknown), never onboarding', async () => {
 		race.native = { status: 'locked', eoa: EOA }
 		renderApp()
 		await waitFor(() => expect(publishNativePwaLog).toHaveBeenCalledWith('warn', expect.stringContaining('startup wait')), { timeout: 3000 })
@@ -908,7 +948,7 @@ describe('walletStatus route without identity.native-keys.v1 (rule (a), (c), (f)
 	})
 })
 
-// rule (spec 57(6), C-3, C-5; vectors RM-05, RM-06, RM-07): the whole start-up trajectory never enters the onboarding, at any
+// rule r2.5.11 (spec 57(6), C-3, C-5; vectors RM-05, RM-06, RM-07): the whole start-up trajectory never enters the onboarding, at any
 // moment, whichever order the shell's record error and the native pre-read arrive in. An error is never read as confirmed "no account".
 describe('start-up trajectory, record error and pre-read in either order (RM-05, RM-06, RM-07)', () => {
 	const { requestNativeIdentityRetry } = require('@/services/nativeIdentityProbeRetry') as typeof import('@/services/nativeIdentityProbeRetry')
@@ -964,9 +1004,9 @@ describe('start-up trajectory, record error and pre-read in either order (RM-05,
 		expect(publishNativePwaLog).not.toHaveBeenCalledWith('info', expect.stringContaining('native pre-read absent'))
 	})
 
-	// RM-07 (negative control, spec 57(5) and 57(6)). REWRITTEN: the check reads the arrivals that the real start-up reducer
+	// RM-07 (negative control, spec 57(5) and 57(6)). REWRITTEN (R70 item 1): the check reads the arrivals that the real start-up reducer
 	// recorded (mockTrail.arrivals), not hand-written arrays. An onboarding arrival is legal only after the page is confirmed empty AND the
-	// native pre-read is confirmed absent. A variant that reads an error as "no account" puts an onboarding
+	// native pre-read is confirmed absent. A variant that reads an error as "no account" (mutation M5 in the R70 list) puts an onboarding
 	// arrival without that confirmation into the recorded trail; the check flags it and RM-07 fails. Self-test: with M5 applied to the
 	// source, both orders fail (receipt, mutation log).
 	const onboardingWithoutConfirmedNone = (trail: string[]): boolean => {

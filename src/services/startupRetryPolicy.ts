@@ -1,5 +1,5 @@
 /**
- * step 5: an unknown start is never given up and never goes to onboarding. The automatic re-read
+ * r92 step 5: an unknown start is never given up and never goes to onboarding. The automatic re-read
  * backs off 2, 4, 8, 16 seconds, then repeats every 30 seconds for as long as the start stays unknown. Each re-read re-evaluates the
  * start from the beginning (an init skip is never permanent). Pure: the attempt number is 1 for the first automatic retry.
  */

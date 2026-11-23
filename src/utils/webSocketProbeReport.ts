@@ -1,5 +1,5 @@
 /**
- * Report of the boot-time WebSocket refusal probe.
+ * Report of the boot-time WebSocket refusal probe (R84 item 1).
  *
  * The production build strips console calls (craco.config.js: drop_console), so a report written only with console.error never
  * reaches the artifact's users. The result is therefore kept on a global that the page and the testers can read, and a failure is

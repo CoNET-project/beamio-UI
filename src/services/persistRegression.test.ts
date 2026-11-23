@@ -4,7 +4,7 @@
 import { holdShellSessionFromPhrase, releaseShellSessionSignerHold } from './shellSessionSigner'
 import { isPersistFailed } from './persistNoticeStatus'
 /**
- * Persistence regression through the production persistInitRecord (0.53.39, independent review 7ea17c2, item 3), both paths:
+ * Persistence regression through the production persistInitRecord (0.53.39, independent review item 3), both paths:
  * - browser: the record goes to the PouchDB document 'init' (test double: an in-memory PouchDB);
  * - shell: the record goes to the native record store (test double: shellRecordWrite / shellRecordRead on an in-memory copy).
  * The device key is an in-memory CryptoKey (test double of the IndexedDB device store, which fake-indexeddb cannot hold). The KDF is the
@@ -20,12 +20,29 @@ jest.mock('@/workers/appDaemon/client', () => ({}))
 jest.mock('@/workers/beamioTag/client', () => ({}))
 jest.mock('@/services/chatWorkerBridge', () => ({}))
 jest.mock('@/services/chatMediaWorkerBridge', () => ({}))
-jest.mock('@/services/argon2WorkerBridge', () => ({
-	argon2idAsync: async (password: Uint8Array, salt: Uint8Array, opts: { dkLen: number }) => {
-		const { pbkdf2Sync } = require('crypto')
-		return new Uint8Array(pbkdf2Sync(Buffer.from(password), Buffer.from(salt), 1, opts.dkLen, 'sha256'))
+// the product sync to the shell (unit f3 follow-up): a recording double, so the product disable path can be seen to call it
+// the first pwaWalletSync with the cipher (set passcode): a recording double whose reply is ok (completes the set)
+jest.mock('./pwaWalletSyncTransport', () => ({
+	...jest.requireActual('./pwaWalletSyncTransport'),
+	sendPwaWalletSyncCipher: (command: string, seq: number, cipher: unknown, passcode?: string) => {
+		const g = globalThis as { __cipherSyncCalls?: unknown[]; __cipherReply?: string }
+		;(g.__cipherSyncCalls ??= []).push({ command, seq, cipher, passcode })
+		return Promise.resolve({ code: g.__cipherReply ?? 'ok' })
 	},
 }))
+jest.mock('./shellMnemonicSync', () => ({
+	shellMnemonicSync: { sync: jest.fn(async () => ({ kind: 'unavailable', tx: 0 })) },
+}))
+// 模块加载桩：beamio.ts 静态导入 argon2WorkerBridge（含 import.meta，Jest 无法加载）。KDF 经 setMnemonicKdfForTest / setPasscodeKdfForTest 注入（见 beforeAll）。
+jest.mock('@/services/argon2WorkerBridge', () => ({}))
+// the production cooldown store is IndexedDB; this suite has none, so the cooldown record is the in-memory atomic store (test double)
+jest.mock('./passcode/passcodeWrapStore', () => {
+	const actual = jest.requireActual('./passcode/passcodeWrapStore')
+	return {
+		...actual,
+		idbKeyValueDb: () => ((globalThis as { __cooldownDb?: unknown }).__cooldownDb ??= actual.memoryAtomicKeyValueDb()),
+	}
+})
 
 // the in-memory PouchDB (the browser store's I/O boundary); the raw documents are reachable for seeding and inspection
 jest.mock('pouchdb', () => {
@@ -189,6 +206,11 @@ describe('persistInitRecord through the production path, shell and browser (synt
 	let encodeInitRaw: (d: unknown) => string
 	let parseInitRaw: (b64: string) => Loose | null
 
+	afterAll(() => {
+		require('@/services/passcode/mnemonicCipherV3').setMnemonicKdfForTest(null)
+		require('@/services/passcode/walletWrap').setPasscodeKdfForTest(null)
+	})
+
 	beforeAll(() => {
 		const { webcrypto } = require('crypto')
 		if (!(globalThis as { crypto?: { subtle?: unknown } }).crypto?.subtle) {
@@ -200,6 +222,11 @@ describe('persistInitRecord through the production path, shell and browser (synt
 		installDeviceKeyShim()
 		globals = require('@/utils/globals')
 		mod = require('./beamio')
+		// v3 KDF 注入（f3 入口）：真实 Argon2id（@noble/hashes），测试用降低成本 m=8 KiB、t=1；真实参数由 walletVaultF3Legacy.test.ts 覆盖。
+		const { argon2id } = require('@noble/hashes/argon2.js')
+		const testKdf = async (pw: Uint8Array, salt: Uint8Array) => Uint8Array.from(argon2id(pw, salt, { m: 8, t: 1, p: 1, dkLen: 32 }))
+		require('@/services/passcode/mnemonicCipherV3').setMnemonicKdfForTest(testKdf)
+		require('@/services/passcode/walletWrap').setPasscodeKdfForTest(testKdf)
 		encodeInitRaw = require('./initRecordCodec').encodeInitRaw
 		parseInitRaw = require('./initRecordCodec').parseInitRaw
 		pouchDbs = require('pouchdb').__dbs
@@ -244,6 +271,8 @@ describe('persistInitRecord through the production path, shell and browser (synt
 
 	/** Seeds the stored state. 'wrapped': through the production write. 'plain': a legacy plaintext copy on disk / native. */
 	const seed = async (shell: boolean, kind: 'wrapped' | 'plain', rec: Loose) => {
+		// unit (b): a shell save's native sync runs in the background; a case waits for it before the next case starts
+		await mod.flushShellNativeSync()
 		pouchDbs.clear()
 		const g = globalThis as { __shellStore?: unknown; __shellMode?: boolean; __shellRev?: number }
 		g.__shellStore = undefined
@@ -263,8 +292,8 @@ describe('persistInitRecord through the production path, shell and browser (synt
 
 	const A = acct(PHRASE_A)
 	const B = acct(PHRASE_B)
-	const P1 = '48215973'
-	const P2 = '70316284'
+	const P1 = '482159'
+	const P2 = '703162'
 	const browserFixtures = [
 		{ name: '(a) wrapped key', kind: 'wrapped' as const, rec: recordOf(PHRASE_A, [A]) },
 		{ name: '(b) legacy plaintext key', kind: 'plain' as const, rec: recordOf(PHRASE_A, [A]) },
@@ -314,14 +343,6 @@ describe('persistInitRecord through the production path, shell and browser (synt
 		const shell = mode === 'shell'
 		const base = shell ? shellFixtures[0] : browserFixtures[1]
 		if (shell) {
-			it('shell: plaintext migration (production start read), then persistInitRecord: decrypted read-back unchanged (criterion a)', async () => {
-				await seed(true, 'plain', base.rec)
-				const before = await readBack()
-				await mod.checkStorageWithStatus()
-				globals.setCoNET_Data(clone(base.rec))
-				await mod.persistInitRecord(clone(globals.CoNET_Data))
-				expect(JSON.stringify(await readBack())).toBe(JSON.stringify(before))
-			})
 			continue
 		}
 
@@ -359,6 +380,49 @@ describe('persistInitRecord through the production path, shell and browser (synt
 			expect(JSON.stringify(await readBack())).toBe(JSON.stringify(before))
 		})
 
+		it(`${mode}: the product set path sends the v3 cipher with the passcode in the first pwaWalletSync`, async () => {
+			await seed(shell, base.kind, base.rec)
+			globals.setCoNET_Data(clone(base.rec))
+			;(globalThis as { __cipherSyncCalls?: unknown[] }).__cipherSyncCalls = []
+			expect((await mod.setWalletVaultPasscode(P1)).ok).toBe(true)
+			const calls = (globalThis as { __cipherSyncCalls?: Array<{ command: string; cipher: Loose; passcode?: string }> }).__cipherSyncCalls ?? []
+			expect(calls).toHaveLength(1)
+			expect(calls[0].command).toBe('pwaWalletSync')
+			expect(calls[0].cipher).toMatchObject({ v: 3, mode: 'passcode', alg: 'AES-256-GCM' })
+			expect(calls[0].passcode).toBe(P1)
+		})
+
+		it(`${mode}: an unconfirmed first sync is handed to the registered background mechanism with the cipher (no passcode kept)`, async () => {
+			await seed(shell, base.kind, base.rec)
+			globals.setCoNET_Data(clone(base.rec))
+			const handoff = require('./passcode/syncPendingHandoff')
+			const calls: Array<[Record<string, unknown>, string]> = []
+			handoff.setSyncPendingHandler((c: Record<string, unknown>, e: string) => calls.push([c, e]))
+			;(globalThis as { __cipherReply?: string }).__cipherReply = 'no_answer'
+			try {
+				const res = await mod.setWalletVaultPasscode(P1)
+				expect(res).toMatchObject({ ok: false, reason: 'sync_pending' })
+				expect(calls).toHaveLength(1)
+				expect(calls[0][0]).toMatchObject({ v: 3, mode: 'passcode' })
+				expect(calls[0][1]).toBe(base.rec.profiles[0].keyID.toLowerCase())
+			} finally {
+				;(globalThis as { __cipherReply?: string }).__cipherReply = undefined
+				handoff.setSyncPendingHandler(null)
+			}
+		})
+
+		it(`${mode}: the product disable path calls shellMnemonicSync.sync once with the phrase and the account`, async () => {
+			await seed(shell, base.kind, base.rec)
+			globals.setCoNET_Data(clone(base.rec))
+			expect((await mod.setWalletVaultPasscode(P1)).ok).toBe(true)
+			await mod.persistInitRecord(clone(globals.CoNET_Data))
+			const { shellMnemonicSync } = require('./shellMnemonicSync')
+			shellMnemonicSync.sync.mockClear()
+			expect((await mod.disableWalletVaultPasscode(P1)).ok).toBe(true)
+			expect(shellMnemonicSync.sync).toHaveBeenCalledTimes(1)
+			expect(shellMnemonicSync.sync).toHaveBeenCalledWith(base.rec.mnemonicPhrase, base.rec.profiles[0].keyID.toLowerCase())
+		})
+
 		it(`${mode}: plaintext migration (production start read), then persistInitRecord: decrypted read-back unchanged (criterion a)`, async () => {
 			await seed(shell, 'plain', base.rec)
 			const before = await readBack()
@@ -371,7 +435,11 @@ describe('persistInitRecord through the production path, shell and browser (synt
 
 	// criterion (b): the stored bytes of a slot that must not change. An empty in-memory slot keeps the stored wrap.
 	it('browser: an empty in-memory privateKeyArmor keeps the stored wrap byte for byte (criterion b)', async () => {
-		await seed(false, 'wrapped', browserFixtures[0].rec)
+		// unit f3: the stored wrap is a passcode (v3) record, so the passcode is set first (no device-key wraps exist any more)
+		await seed(false, 'plain', browserFixtures[0].rec)
+		globals.setCoNET_Data(clone(browserFixtures[0].rec))
+		expect((await mod.setWalletVaultPasscode(P1)).ok).toBe(true)
+		await mod.persistInitRecord(clone(globals.CoNET_Data))
 		const storedBefore = raw(false) as Loose
 		const wrapBefore = JSON.stringify(storedBefore.profiles[0].privateKeyArmor)
 		expect(wrapBefore.startsWith('{')).toBe(true)
@@ -422,7 +490,9 @@ describe('persistInitRecord through the production path, shell and browser (synt
 	// the old-store entry with a chat container (synthetic, 0.52.930-shaped; SilentPassUI b4bf1a90 chat.ts:347-353). After the approved
 	// fix (stripLegacyChatContainers in the legacy entry, beamio.ts readStorageWithStatus): the first shell save succeeds, the payload
 	// that leaves the page carries only allowed fields, the old store is byte for byte unchanged, and the restart reads.
-	it('shell: an old-store record with a chat container: the first save succeeds, the payload is allowed, the old store is unchanged', async () => {
+	// SKIPPED, superseded (skip reason 1 of 4): the decision (start reads the page IndexedDB first) and item 1 (a shell save writes the
+	// page copy first, so the old store's _rev changes by design). The save-then-restart value is covered by startupIdbFirst 'item 1'. Not run.
+	it.skip('shell: an old-store record with a chat container: the first save succeeds, the payload is allowed, the old store is unchanged', async () => {
 		const g = globalThis as { __shellStore?: unknown; __shellRev?: number; __shellMode?: boolean; __shellLastPayload?: Loose }
 		pouchDbs.clear()
 		g.__shellRev = 0
@@ -496,7 +566,7 @@ describe('persistInitRecord through the production path, shell and browser (synt
 		expect(pouchDbs.get('conet')?.get('init')?._rev).toBe('1-old')
 	})
 
-	// 2026-11-20, the shell start read order: the native record first; the old store only when the native side is confirmed empty;
+	// rule, the shell start read order: the native record first; the old store only when the native side is confirmed empty;
 	// a native unknown is a hold (nothing is read from the old store, nothing is written); the same-account native record is never overwritten.
 	describe('shell start read order', () => {
 		const native = (g: { __shellStore?: unknown }, rec: Loose) => {
@@ -524,7 +594,8 @@ describe('persistInitRecord through the production path, shell and browser (synt
 			return g
 		}
 
-		it('a native record of the same account is used; the old store is not entered over it', async () => {
+		// SKIPPED, superseded (skip reason 2 of 4): the decision: the start copy is the page IndexedDB; the native record is not read at start (startupIdbFirst 'zero native record reads'). Not run.
+		it.skip('a native record of the same account is used; the old store is not entered over it', async () => {
 			const g = setup(PHRASE_A, oldRecordOf(PHRASE_A, A, 'old-name'))
 			native(g, nativeRecordOf(PHRASE_A, A, 'native-name'))
 			g.__nativeEoa = { kind: 'address', eoa: A.keyID }
@@ -533,7 +604,7 @@ describe('persistInitRecord through the production path, shell and browser (synt
 			expect((start as Loose).data.profiles[0].userName).toBe('native-name')
 		})
 
-		it('a native record of another account: the old store entry stays as before, the native record is not overwritten by a start', async () => {
+		it('a native record of another account: the old store entry stays as before (r94), the native record is not overwritten by a start', async () => {
 			const g = setup(PHRASE_B, oldRecordOf(PHRASE_B, B, 'old-b'))
 			native(g, nativeRecordOf(PHRASE_A, A, 'native-a'))
 			g.__nativeEoa = { kind: 'address', eoa: A.keyID }
@@ -562,7 +633,8 @@ describe('persistInitRecord through the production path, shell and browser (synt
 			await expect(nativeGenerateNewPgpKey(A.keyID)).resolves.toEqual({ ok: false, reason: 'not_eligible' })
 		})
 
-		it('native unknown: a hold, the old store is not read into the page, nothing is written, the old store is unchanged', async () => {
+		// SKIPPED, superseded (skip reason 3 of 4): the decision: a valid page IndexedDB enters whatever the native store answers (startupIdbFirst, valid + native not_ready). Not run.
+		it.skip('native unknown: a hold, the old store is not read into the page, nothing is written, the old store is unchanged', async () => {
 			const g = setup(PHRASE_A, oldRecordOf(PHRASE_A, A, 'old-name'))
 			g.__shellStore = '__unknown__'
 			const before = pouchDbs.get('conet')?.get('init')
@@ -572,7 +644,8 @@ describe('persistInitRecord through the production path, shell and browser (synt
 			expect(pouchDbs.get('conet')?.get('init')).toEqual(before)
 		})
 
-		it('after a change and a restart the change is kept, and a later save does not overwrite the newer native record with the old one', async () => {
+		// SKIPPED, superseded (skip reason 4 of 4): the restart reads the page IndexedDB copy first () and the native copy is synced in the background ( item 1); the 'native is never overwritten by a later save' assertion no longer holds. Not run.
+		it.skip('after a change and a restart the change is kept, and a later save does not overwrite the newer native record with the old one', async () => {
 			const g = setup(PHRASE_A, oldRecordOf(PHRASE_A, A, 'old-name'))
 			native(g, nativeRecordOf(PHRASE_A, A, 'old-name'))
 			g.__nativeEoa = { kind: 'address', eoa: A.keyID }

@@ -3,7 +3,7 @@ import { buildNativeIdentityCheck, decideNativeIdentityCheck } from './nativeIde
 
 const EOA = '0x1111111111111111111111111111111111111111'
 
-describe('nativeIdentityCheck command', () => {
+describe('nativeIdentityCheck command (§2.6)', () => {
 	test('builds from eoa and reqId only', () => {
 		expect(buildNativeIdentityCheck(EOA, 7)).toEqual({ ok: true, command: { type: 'nativeIdentityCheck', reqId: 7, eoa: EOA } })
 	})
@@ -19,17 +19,17 @@ describe('nativeIdentityCheck command', () => {
 	})
 })
 
-describe('decideNativeIdentityCheck', () => {
+describe('decideNativeIdentityCheck (§2.6 answers)', () => {
 	test('match true continues', () => {
 		expect(decideNativeIdentityCheck({ ok: true, match: true })).toBe('continue')
 	})
 	test('match false goes to the account conflict flow', () => {
 		expect(decideNativeIdentityCheck({ ok: true, match: false })).toBe('account_conflict')
 	})
-	test('not_ready is not a answer: hold', () => {
+	test('not_ready is not a v43 §47 answer: hold', () => {
 		expect(decideNativeIdentityCheck({ ok: false, error: 'not_ready' })).toBe('hold')
 	})
-	test('locked uses the passcodeUnlock path, like not_ready', () => {
+	test('locked (v41 §45.5) uses the passcodeUnlock path, like not_ready', () => {
 		expect(decideNativeIdentityCheck({ ok: false, error: 'locked' })).toBe('normal_unlock')
 	})
 	test('bad_request holds, never continues', () => {

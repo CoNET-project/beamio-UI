@@ -1,5 +1,5 @@
 /**
- * Beamio digital asset display — global protocol (see beamio-digital-asset-display-protocol.mdc).
+ * Beamio digital asset display — global protocol.
  *
  * - Significant digits ≤ 9 (digits + decimal point; commas excluded from count)
  * - Prefer 4 fractional digits

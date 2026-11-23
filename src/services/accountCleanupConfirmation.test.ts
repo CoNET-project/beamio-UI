@@ -1,5 +1,5 @@
 /**
- * The silent cleanup trigger. Table-driven: recovery (ok, not ok) × read-back (agrees, not, unreadable) × in-flight/done.
+ * The silent cleanup trigger (owner decision 2026-11-21). Table-driven: recovery (ok, not ok) × read-back (agrees, not, unreadable) × in-flight/done.
  * Only "recovery ok, read-back agrees, not in flight or done" runs. Failure, incomplete, read-back failure, mismatch and repeat never run.
  */
 import { cleanupMayRun, readBackAgrees, silentCleanupDecision } from './accountCleanupConfirmation'

@@ -734,7 +734,7 @@ export const COMMAND_PRIVACY: Record<ChatDaemonCommandType, CommandPrivacy> = {
 		viaEntry: true,
 		nodeSees: 'Registration POST to the cluster API (wallet, keyID, public armor, sealed backup, route key ID, signature): the same fields as regiestChatRoute. The backup is ciphertext; the account EOA and the RPC reads (searchKey, getEncryptedPrivateKey) are public.',
 		rules: [14, 16, 18, 19, 22],
-		gap: 'Browser only. The shell answers unsupported. Real worker and chain check is with the BCHAT browser test seat.',
+		gap: 'Browser only. The shell answers unsupported. Real worker and chain check is with the BCHAT browser test.',
 	},
 	queryNativeWake: {
 		walletSignature: ['peerMailbox'],

@@ -1,5 +1,5 @@
 /**
- * HC-LOCK device-mode: a locked wallet reads and writes nothing, and is never the missing or undecryptable state.
+ * HC-LOCK device-mode (v10 §3.2, L-DEV): a locked wallet reads and writes nothing, and is never the missing or undecryptable state.
  */
 import { pageStateForAck } from './pgpMigrationClient'
 import * as fs from 'fs'

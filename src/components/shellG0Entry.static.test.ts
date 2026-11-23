@@ -18,7 +18,7 @@ describe('G0 entry: the no-key state goes to the onboarding, not the import rout
 		expect(gate).not.toMatch(/status === 'no_key'\) \{ setSplashVisible\(false\); setNativeNoKey\(true\)/)
 	})
 
-	// The init-level "page wallet decides (boundary)" branch was removed by cebd7e0; the boundary is now the pure rule: a valid page
+	// The init-level "page wallet decides (boundary)" branch was removed; the boundary is now the pure rule: a valid page
 	// mnemonic decides the account whatever the native no_key says (accountJudgement.test.ts, "a valid IndexedDB key still makes an existing account").
 	it('a valid page mnemonic decides for a no_key native wallet (boundary: the PWA keeps its own EOA)', () => {
 		expect(judgeShellFromNative({ idb: 'valid_mnemonic', walletState: 'not_reported', walletStatus: 'no_key' })).toEqual({ account: 'has_account', action: 'enter' })

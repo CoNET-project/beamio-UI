@@ -3,8 +3,11 @@
  * through the probe read when the store has one. The unlock read, which builds the page copy, keeps the baseline read.
  */
 import { passcodeEnabled, readPlainForVerify, unlockWalletPasscode, type WalletStores } from './walletVault'
+import { memoryAtomicKeyValueDb, passcodeAttemptRecordStore } from './passcodeWrapStore'
+const attemptDb = memoryAtomicKeyValueDb()
 
-const storeWith = (readInit: jest.Mock, probeInit: jest.Mock): WalletStores => ({ readInit, probeInit } as unknown as WalletStores)
+const storeWith = (readInit: jest.Mock, probeInit: jest.Mock): WalletStores =>
+	({ readInit, probeInit, attemptsFor: (e: string) => passcodeAttemptRecordStore(attemptDb, e) } as unknown as WalletStores)
 
 describe('verification reads use the probe in the shell', () => {
 	it('readPlainForVerify reads through the probe, not the baseline read', async () => {
@@ -26,8 +29,8 @@ describe('verification reads use the probe in the shell', () => {
 	it('the passcode unlock reads through the probe, not the baseline read', async () => {
 		const readInit = jest.fn(async () => ({ stale: true }))
 		const probeInit = jest.fn(async () => null)
-		const s = { readInit, probeInit, readMeta: async () => ({ failures: 0, nextAt: 0 }) } as unknown as WalletStores
-		await unlockWalletPasscode(s, '12395784')
+		const s = { readInit, probeInit, readMeta: async () => ({ failures: 0, nextAt: 0 }), attemptsFor: (e: string) => passcodeAttemptRecordStore(attemptDb, e) } as unknown as WalletStores
+		await unlockWalletPasscode(s, '395784')
 		expect(probeInit).toHaveBeenCalledTimes(1)
 		expect(readInit).not.toHaveBeenCalled()
 	})

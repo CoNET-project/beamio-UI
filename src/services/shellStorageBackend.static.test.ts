@@ -14,7 +14,7 @@ describe('shell wallet record path (plan N)', () => {
 		const at = beamio.indexOf('const readStorageWithStatus = async')
 		// 2026-11-18: the window grew by the blob-compatibility probe await (idbBlobCompat); the pin still covers the whole read.
 		const block = beamio.slice(at, at + 7000)
-		// step 3: the shell startup read calls shellRecordRead directly (to take the copyValidated result), or readInitObject.
+		// r92 step 3: the shell startup read calls shellRecordRead directly (to take the copyValidated result), or readInitObject.
 		expect(block).toMatch(/if \(isShellContext\(\)\) \{[\s\S]{0,1600}(readInitObject\(|shellRecordRead\(|shellNativeFirstRead\()/)
 		expect(block).toMatch(/\} else \{[\s\S]{0,2600}database\.get\("init"/)
 		// a read error maps through shellStorageErrorReason (native_record, native_recovery_needed, native_retry).
@@ -35,12 +35,17 @@ describe('shell wallet record path (plan N)', () => {
 		expect(block).toContain('assertNoPgpPrivate(data)')
 	})
 
-	it('the write path uses persistInitRecord; the Cache API copy and the PouchDB write are browser-only', () => {
+	it('the write path uses persistInitRecord; the Cache API copy is browser-only and is taken after the accepted write', () => {
 		const at = beamio.indexOf('const persistInitRecord = async')
-		// step 3: the shell branch carries the fresh-write guard (prepareShellFreshWrite) before its return.
+		// r92 step 3: the shell branch carries the fresh-write guard before its return; the browser write moved to persistInitRecordBrowser
+		// (改写：产品现将 Cache API 备份放在 persistInitRecordBrowser 中，写入被接受之后才缓存；shell 分支仍先 return)
 		const block = beamio.slice(at, at + 2400)
 		expect(block).toMatch(/if \(isShellContext\(\)\) \{[\s\S]{0,2000}return\s*\}/)
-		expect(block.indexOf('cacheStorageBackup(encodeInitRaw(record))')).toBeGreaterThan(block.indexOf('return'))
+		expect(block.indexOf('await persistInitRecordBrowser(temp)')).toBeGreaterThan(block.indexOf('return'))
+		const br = beamio.slice(beamio.indexOf('const persistInitRecordBrowser = async'), beamio.indexOf('const walletStores'))
+		const cacheAt = br.indexOf('cacheStorageBackup(encodeInitRaw(record))')
+		expect(cacheAt).toBeGreaterThan(-1)
+		expect(cacheAt).toBeGreaterThan(br.indexOf('await writeInitObject(record)'))
 		expect(beamio).toContain('await persistInitRecord(temp)')
 		expect(beamio).not.toMatch(/await storageHashData\("init", dataB64\)\s*\n\s*stored = true/)
 	})

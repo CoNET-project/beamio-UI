@@ -1,5 +1,5 @@
 /**
- * `nativeAccountCreateResult` acceptance, nested shape.
+ * `nativeAccountCreateResult` acceptance, nested shape (r11 §10, §11, §12; plan IDs NR-*, AND-SHAPE-*).
  * Shape: {type, reqId, ok, result:{code, eoa?, cleanupPending?, W?}}. Top-level keys: type, reqId, ok, result.
  * W fields (privateKeyArmor, mnemonicPhrase, recoveryWords) are accepted on ok only and dropped at once.
  * Synthetic values only.

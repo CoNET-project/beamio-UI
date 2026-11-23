@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- * build-level regression: the gossip worker chunk must contain its listener and replies. The check is the same code the build runs
+ * R82 build-level regression: the gossip worker chunk must contain its listener and replies. The check is the same code the build runs
  * (scripts/check-worker-chunks.js). Fixtures: a chunk with the markers passes; a chunk without them fails and names what is missing.
  */
 import { mkdtempSync, mkdirSync, writeFileSync } from 'fs'
@@ -19,7 +19,7 @@ function build(chunkName: string, body: string): string {
 	return root
 }
 
-describe('gossip worker chunk regression', () => {
+describe('gossip worker chunk regression (R82)', () => {
 	it('a chunk that carries the listener and the replies passes', () => {
 		const body = REQUIRED.join(';')
 		const r = checkWorkerBuild(build('beamio-chat-gossip-relay.abc123.chunk.js', body))
@@ -40,7 +40,7 @@ describe('gossip worker chunk regression', () => {
 	})
 })
 
-/** extension: every project worker has its own named chunk with a listener and a reply. */
+/** R82 extension: every project worker has its own named chunk with a listener and a reply. */
 function buildAll(skip?: string, dropListener?: string): string {
 	const root = mkdtempSync(join(tmpdir(), 'worker-chunks-all-'))
 	mkdirSync(join(root, 'static', 'js'), { recursive: true })
@@ -52,7 +52,7 @@ function buildAll(skip?: string, dropListener?: string): string {
 	return root
 }
 
-describe('every project worker chunk is checked', () => {
+describe('every project worker chunk is checked (R82 extension)', () => {
 	it('all named worker chunks with their listeners pass', () => {
 		const r = checkWorkerBuild(buildAll())
 		expect(r.ok).toBe(true)
@@ -73,7 +73,7 @@ describe('every project worker chunk is checked', () => {
 	})
 })
 
-describe('shell mode of the worker check: the shell compiles the gossip worker out', () => {
+describe('shell mode of the worker check (R83): the shell compiles the gossip worker out', () => {
 	function shellBuild(opts: { gossip: boolean; listenersOff?: string }): string {
 		const root = mkdtempSync(join(tmpdir(), 'worker-chunks-shell-'))
 		mkdirSync(join(root, 'static', 'js'), { recursive: true })

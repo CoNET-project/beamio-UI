@@ -3,8 +3,8 @@
  */
 /**
  * BCHAT 36, end to end at the service level (real OpenPGP keys, injected fetch, no UI, no network):
- * first contact held -> "Verified, continue" writes the trust -> the trust is persisted (a JSON round trip of the stored rows)
- * -> the held message goes out on the verified key -> after a restart the trust still holds -> a changed key is held, never sent.
+ *   first contact held -> "Verified, continue" writes the trust -> the trust is persisted (a JSON round trip of the stored rows)
+ *   -> the held message goes out on the verified key -> after a restart the trust still holds -> a changed key is held, never sent.
  * The page code (chat.tsx applyPeerRoute) is the same sequence as `applyLikePage` below; a static test pins that wiring.
  * The browser run of the same flow is the QA harness (harness/v2/bidi-text.mjs) on the candidate build.
  */
@@ -146,7 +146,7 @@ describe('the defect this fixes', () => {
 	})
 })
 
-describe('after a reload: the verify panel writes the trust, and only then the held text goes out', () => {
+describe('after a reload: the verify panel writes the trust, and only then the held text goes out (BCHAT 38, R86 item 1)', () => {
 	/** The first send is held before the reload; the message is held and keeps its wire. */
 	async function heldBeforeReload() {
 		const rows0: Row[] = [emptyRow()]

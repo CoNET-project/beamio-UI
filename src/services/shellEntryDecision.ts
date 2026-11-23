@@ -55,7 +55,7 @@ export function missingIdentityNotReadyEntry(eoaKnown: boolean): 'local_home' | 
 }
 
 /**
- * CAP display rule. The identity entry shows the unified "unavailable" state only
+ * CAP display rule (PWA, 2026-11-17 rule; account-select CAP-01/02/05/06/07). The identity entry shows the unified "unavailable" state only
  * when the capability is missing AND the native side explicitly answers no key (absent is the same as no_key, 58(2)(e)). An unanswered or
  * not-ready native shows no unified state (`none`): the start stays in its startup state. A declared capability never shows it. This is a
  * display rule only; it does not route (CAP-04/07: a valid PWA mnemonic still goes to the home).

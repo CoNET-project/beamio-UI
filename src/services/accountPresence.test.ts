@@ -3,6 +3,7 @@
  * The table below carries each vector's input and expected result.
  */
 import { nativePresence, onboardingAllowed, type NativePresenceInput } from './accountPresence'
+import { nativeStartRoute } from './accountJudgement'
 
 const cases: Array<{ id: string; input: NativePresenceInput; expect: string }> = [
 	{ id: 'TS-01', input: { ws: 'no_key', kPresent: false, snapshotUnknown: false }, expect: 'confirmed_none' },
@@ -13,15 +14,32 @@ const cases: Array<{ id: string; input: NativePresenceInput; expect: string }> =
 	{ id: 'TS-06', input: { ws: 'no_key', kPresent: true, snapshotUnknown: false }, expect: 'unknown' }, // PNK-04 supersedes the earlier case here
 ]
 
-describe('native presence', () => {
+describe('TS-06b (account-select v3, f9db38dd): no_key, kPresent true, read ok, preread confirmed_missing, IDB empty -> onboarding, nothing discarded', () => {
+	it('the start route onboards (the onboarding decision, not the presence mapping); the presence stays unknown (TS-06 unchanged)', () => {
+		expect(nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'absent', hasKey: true, walletStatus: 'no_key' })).toEqual({ route: 'onboard', reason: 'confirmed_absent' })
+		expect(nativePresence({ ws: 'no_key', kPresent: true, snapshotUnknown: false })).toBe('unknown')
+	})
+
+	it('TS-06 (read failure, readOk false) keeps the startup hold: unknown, retry, never onboarding', () => {
+		expect(nativeStartRoute({ pre: { kind: 'unknown', reason: 'read_error' }, walletState: 'unknown', hasKey: true, walletStatus: 'no_key' }).route).toBe('retry')
+	})
+})
+
+describe('Y.89 native presence (TS-01–06; TS-06 per Y.151, superseding Y.108)', () => {
 	for (const c of cases) {
 		it(`${c.id}: ${c.expect}`, () => {
 			expect(nativePresence(c.input)).toBe(c.expect)
 		})
 	}
 
-	it('locked is unknown, not has: a locked wallet does not prove the account on this page', () => {
+	it('locked is unknown, not has (LK-P7, r11 / Q5 A): a locked wallet does not prove the account on this page', () => {
 		expect(nativePresence({ ws: 'locked', snapshotUnknown: false })).toBe('unknown')
+	})
+
+	it('key_only is confirmed none (C5 / Q3); an unknown reason is unknown; phrase_only with an eoa is has', () => {
+		expect(nativePresence({ ws: 'not_ready', reason: 'key_only', snapshotUnknown: false })).toBe('confirmed_none')
+		expect(nativePresence({ ws: 'not_ready', reason: 'unreadable', snapshotUnknown: false })).toBe('unknown')
+		expect(nativePresence({ ws: 'phrase_only', snapshotUnknown: false })).toBe('has')
 	})
 
 	it('key_only is confirmed none (C5 / Q3); an unknown reason is unknown; phrase_only with an eoa is has', () => {

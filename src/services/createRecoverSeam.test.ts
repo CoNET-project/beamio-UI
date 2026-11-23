@@ -1,5 +1,5 @@
 /**
- * 2.2 (d): the createRecover test seam (`options.deps`) is honoured only under the test runner. A production build fixes NODE_ENV
+ * R78 2.2 (d): the createRecover test seam (`options.deps`) is honoured only under the test runner. A production build fixes NODE_ENV
  * at build time, so a caller cannot inject its own store probe or wallet creation there. SYNTHETIC values only.
  */
 // beamio.ts reads TextEncoder at module load (jsdom does not provide it): set the globals before the module is required.
@@ -13,7 +13,7 @@ jest.mock('../workers/appDaemon/client', () => new Proxy({}, { get: () => () => 
 jest.mock('openpgp', () => ({ readKey: async () => ({ getKeyIDs: () => [] }) }))
 const { createRecover } = require('./beamio') as typeof import('./beamio')
 
-describe('createRecover deps seam (2.2 (d))', () => {
+describe('createRecover deps seam (R78 2.2 (d))', () => {
 	const env = process.env as Record<string, string | undefined>
 	const savedEnv = env.NODE_ENV
 	afterEach(() => {

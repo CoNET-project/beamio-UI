@@ -1,5 +1,5 @@
 /**
- * closed state of the shell's chat identity (option (a); Android review dfc05b7).
+ * closed state of the shell's chat identity (option (a); Android review).
  *
  * When the native layer closes the module, the page does not retry on its own: it shows a notice with a button.
  * - `init` answers `clear_failed` (the module is closed until a clearIdentity succeeds), or `unregister_refused` (an account switch

@@ -1,5 +1,5 @@
 /**
- * UI-side unlock backoff (project rule 4bc1a2ac; FROZEN protocol section five, 5.1 to 5.2). Pure rules plus a store interface.
+ * UI-side unlock backoff (project rule; FROZEN protocol section five, 5.1 to 5.2). Pure rules plus a store interface.
  *
  * - the third consecutive wrong input locks for LOCK_MS (300 000 ms, 5 minutes) from the moment of that failure;
  * - after the lock expires one attempt is allowed; the failure count is kept, so a wrong input locks again for the full LOCK_MS;

@@ -87,7 +87,7 @@ describe('synthetic regression: the signer clear never blanks a stored or in-mem
 				for (const a of armorsAfter) expect(a === '' || a === undefined).toBe(false)
 				expect(shellSessionEoa()).toBe(path.heldAfter ?? '') // the previous signer is dropped (switch: the new account is held)
 				// the write layer, the production entry (writeInitWithKeep) on an in-memory store: the record written, read back and normalised
-				// (JSON) is equal to the stored record before the write, byte for byte, for every account (2026-11-20, criterion (a)).
+				// (JSON) is equal to the stored record before the write, byte for byte, for every account (criterion (a)).
 				const stored = fx.data() as Record<string, unknown>
 				let saved: unknown = JSON.parse(JSON.stringify(stored))
 				const memStore = {

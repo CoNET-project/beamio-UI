@@ -78,7 +78,7 @@ describe('the answer outcome (pure)', () => {
 		expect(generateAnswerOutcome({ ok: false })).toBe('retry')
 	})
 
-	it('RULING 617d3dd9: shell without the first-identity eligibility renders no create button (the switch is not the gate)', () => {
+	it('first-identity rule: shell without the first-identity eligibility renders no create button (the switch is not the gate)', () => {
 		isShell.mockReturnValue(true)
 		revokePgpCreateEligibility('synthetic-account-key')
 		render(<PgpRestoreFailedNotice code="pgp_backup_missing" />)

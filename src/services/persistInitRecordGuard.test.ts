@@ -13,12 +13,8 @@ jest.mock('@/workers/appDaemon/client', () => ({}))
 jest.mock('@/workers/beamioTag/client', () => ({}))
 jest.mock('@/services/chatWorkerBridge', () => ({}))
 jest.mock('@/services/chatMediaWorkerBridge', () => ({}))
-jest.mock('@/services/argon2WorkerBridge', () => ({
-	argon2idAsync: async (password: Uint8Array, salt: Uint8Array, opts: { dkLen: number }) => {
-		const { pbkdf2Sync } = require('crypto')
-		return new Uint8Array(pbkdf2Sync(Buffer.from(password), Buffer.from(salt), 1, opts.dkLen, 'sha256'))
-	},
-}))
+// 模块加载桩：beamio.ts 静态导入 argon2WorkerBridge（含 import.meta，Jest 无法加载）。KDF 经 setMnemonicKdfForTest / setPasscodeKdfForTest 注入（见 beforeAll）。
+jest.mock('@/services/argon2WorkerBridge', () => ({}))
 
 // the in-memory PouchDB (the browser store's I/O boundary; unused in shell mode, kept so the production module loads)
 jest.mock('pouchdb', () => {
@@ -187,13 +183,27 @@ describe('persistInitRecord refusal floor, shell branch (0.53.44 PART 1, FIXTURE
 		installDeviceKeyShim()
 		globals = require('@/utils/globals')
 		mod = require('./beamio')
+		// v3 KDF 注入（f3 入口）：真实 Argon2id（@noble/hashes），测试用降低成本 m=8 KiB、t=1；生产 KDF 经桥调用，本套件不走桥。
+		const { argon2id } = require('@noble/hashes/argon2.js')
+		const testKdf = async (pw: Uint8Array, salt: Uint8Array) => Uint8Array.from(argon2id(pw, salt, { m: 8, t: 1, p: 1, dkLen: 32 }))
+		require('@/services/passcode/mnemonicCipherV3').setMnemonicKdfForTest(testKdf)
+		require('@/services/passcode/walletWrap').setPasscodeKdfForTest(testKdf)
 	})
 
-	beforeEach(() => {
+	afterAll(() => {
+		require('@/services/passcode/mnemonicCipherV3').setMnemonicKdfForTest(null)
+		require('@/services/passcode/walletWrap').setPasscodeKdfForTest(null)
+	})
+
+	beforeEach(async () => {
+		// unit (b): a shell save's native sync runs in the background; each case waits for the previous one's sync before it resets state
+		await mod.flushShellNativeSync()
 		g.__shellStore = undefined
 		g.__shellRev = 0
 		g.__shellWrites = 0
 		g.__shellReads = 0
+		// the page IndexedDB is part of the shell save now (unit b item 1): each case starts with no page copy
+		require('pouchdb').__dbs.clear()
 	})
 
 	/** FIXTURE record with a valid mnemonic for the account (the in-memory copy the page writes). */
@@ -210,6 +220,7 @@ describe('persistInitRecord refusal floor, shell branch (0.53.44 PART 1, FIXTURE
 		g.__shellStore = clone(keyOnly(A))
 		const restored = fullRecord(PHRASE_A, A)
 		await expect(mod.persistInitRecord(clone(restored))).resolves.toBeUndefined()
+		await mod.flushShellNativeSync()
 		expect(g.__shellWrites).toBe(1)
 		expect(JSON.stringify(g.__shellStore)).toContain(A.keyID)
 	})
@@ -218,6 +229,7 @@ describe('persistInitRecord refusal floor, shell branch (0.53.44 PART 1, FIXTURE
 	it('(b) brand-new account write with no existing record still writes', async () => {
 		g.__shellStore = undefined
 		await expect(mod.persistInitRecord(clone(fullRecord(PHRASE_B, B)))).resolves.toBeUndefined()
+		await mod.flushShellNativeSync()
 		expect(g.__shellWrites).toBe(1)
 	})
 
@@ -227,6 +239,7 @@ describe('persistInitRecord refusal floor, shell branch (0.53.44 PART 1, FIXTURE
 		const edited = fullRecord(PHRASE_A, A)
 		edited.profiles[0].userName = 'fixture-edited'
 		await expect(mod.persistInitRecord(clone(edited))).resolves.toBeUndefined()
+		await mod.flushShellNativeSync()
 		expect(g.__shellWrites).toBe(1)
 	})
 
@@ -239,7 +252,7 @@ describe('persistInitRecord refusal floor, shell branch (0.53.44 PART 1, FIXTURE
 		expect(storeBytes()).toBe(before)
 	})
 
-	// 0.53.44: a legitimate save of the same account whose copy carries no mnemonic (the publicWalletSeed copy of a valid page entry)
+	// 0.53.44 (item 2): a legitimate save of the same account whose copy carries no mnemonic (the publicWalletSeed copy of a valid page entry)
 	// is not refused: the complete existing record is read first and the new copy is merged in. The mnemonic is kept byte for byte.
 	it('same account without a mnemonic in the new copy: not refused; the existing mnemonic and private key armor are kept byte for byte', async () => {
 		g.__shellStore = clone(fullRecord(PHRASE_A, A))
@@ -247,6 +260,7 @@ describe('persistInitRecord refusal floor, shell branch (0.53.44 PART 1, FIXTURE
 		const existingArmor = (g.__shellStore as Loose).profiles[0].privateKeyArmor as string
 		const noMnemonic = { isReady: true, profiles: [{ keyID: A.keyID, userName: 'fixture-edited' }] }
 		await expect(mod.persistInitRecord(clone(noMnemonic))).resolves.toBeUndefined()
+		await mod.flushShellNativeSync()
 		expect(g.__shellWrites).toBe(1)
 		// the written copy and the stored record keep the account's mnemonic: compared on the decrypted plain record (byte for byte)
 		const written = g.__lastWrite as Loose
@@ -292,8 +306,9 @@ describe('persistInitRecord refusal floor, shell branch (0.53.44 PART 1, FIXTURE
 		expect(results).toEqual([false, false, false])
 		// 0.53.44 (item 4): each refused overwrite is counted (diagnostic code page_record_overwrite_refused; no UI)
 		expect(mod.pageWriteGateStatus().overwriteRefused - refusedBefore).toBe(3)
-		// one guard read per save (3 total), no write, the stored bytes are unchanged
-		expect((g.__shellReads ?? 0) - readsBefore).toBe(3)
+		// unit (b) item 1: a refused save reads the native copy for the native-side refusal check (at least one read per save, so the guard
+		// is never skipped); no write, and the stored bytes are unchanged. The exact count is not a contract.
+		expect((g.__shellReads ?? 0) - readsBefore).toBeGreaterThanOrEqual(3)
 		expect(g.__shellWrites).toBe(0)
 		expect(storeBytes()).toBe(before)
 		expect(isPersistFailed()).toBe(false)

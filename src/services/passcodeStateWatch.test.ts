@@ -1,11 +1,11 @@
 /**
  * @jest-environment node
  *
- * parse layer: {type:'passcodeState', set, locked}. Malformed payloads are ignored.
+ * R-21 parse layer (spec §25.17.4): {type:'passcodeState', set, locked}. Malformed payloads are ignored.
  */
 import { parsePasscodeStateEvent } from './passcodeStateWatch'
 
-describe('passcodeState parse', () => {
+describe('passcodeState parse (R-21)', () => {
 	it('reads a well-formed state', () => {
 		expect(parsePasscodeStateEvent({ type: 'passcodeState', set: true, locked: false })).toEqual({ set: true, locked: false })
 		expect(parsePasscodeStateEvent({ type: 'passcodeState', set: false, locked: true })).toEqual({ set: false, locked: true })

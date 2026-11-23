@@ -1,5 +1,5 @@
 /**
- * rule 2026-11-16 (1c): a mnemonic the native shell returns for a restore is written into the PWA's own record, in the record's
+ * Per 1c: a mnemonic the native shell returns for a restore is written into the PWA's own record, in the record's
  * existing format. The mnemonic goes in the plain `mnemonicPhrase` secret field; wrapForDisk wraps it (device key, AES-GCM) on its
  * way to the store, and in a shell the store is the native record (shellRecordWrite). No new plaintext field is introduced.
  */

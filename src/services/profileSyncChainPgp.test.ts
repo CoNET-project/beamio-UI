@@ -12,7 +12,7 @@ jest.mock('./chatMediaWorkerBridge', () => new Proxy({}, { get: () => () => unde
 jest.mock('./chatWorkerBridge', () => new Proxy({}, { get: () => () => undefined }))
 jest.mock('../workers/beamioTag/client', () => new Proxy({}, { get: () => () => undefined }))
 jest.mock('../workers/appDaemon/client', () => new Proxy({}, { get: () => () => undefined }))
-// openpgp does not load under jest here. The self-consistency check reads the keyID of a SYNTHETIC armor through this stub.
+// openpgp does not load under jest here. The self-consistency check reads the keyID of a SYNTHETIC armor ("SYNTH-PGP:<keyID>") through this stub.
 jest.mock('openpgp', () => ({ readKey: async ({ armoredKey }: { armoredKey: string }) => ({ getKeyIDs: () => [{ toHex: () => 'x' }, { toHex: () => armoredKey.replace(/^SYNTH-PGP:/, '') }] }) }))
 const { postBeamio, chainIdentityRead, sendPendingProfileSync } = require('./beamio') as typeof import('./beamio')
 const { markLocallyCreatedAccount } = require('./localAccountCreation') as typeof import('./localAccountCreation')
@@ -37,7 +37,7 @@ const setOwnRecord = (own: { keyID: string; publicKey: string } | null) => {
 
 beforeEach(() => {
 	bodies = []
-	// the local creation record is per test: none unless a test writes it (2.1 (b))
+	// the local creation record is per test: none unless a test writes it (R78 2.1 (b))
 	localStorage.clear()
 	;(globalThis as { fetch?: unknown }).fetch = jest.fn(async (_url: unknown, init?: { body?: unknown }) => {
 		bodies.push(JSON.parse(String(init?.body ?? '{}')))
@@ -77,7 +77,7 @@ describe('T-R2 profile sync sends the chain PGP identity, unchanged', () => {
 	})
 })
 
-describe('T-R2 first registration: the chain has no PGP identity', () => {
+describe('T-R2 first registration: the chain has no PGP identity (R78 2.1: the user saved AND this device created the account)', () => {
 	it('positive: the account was created on this device (local record) and the user saved: the self-consistent own key is sent, exactly once', async () => {
 		chainEmpty()
 		setOwnRecord({ keyID: OWN_ID, publicKey: OWN_ARMOR })
@@ -89,7 +89,7 @@ describe('T-R2 first registration: the chain has no PGP identity', () => {
 		expect(bodies[0].pgpKey).toBe(OWN_ARMOR)
 	})
 
-	it('negative (2.1 (a)): a queued re-send is not a user save: the first registration is refused even on a locally created account, nothing sent', async () => {
+	it('negative (R78 2.1 (a)): a queued re-send is not a user save: the first registration is refused even on a locally created account, nothing sent', async () => {
 		chainEmpty()
 		setCoNET_Data({ profiles: [{ keyID: EOA.toLowerCase(), privateKeyArmor: PK, chatManager: { pgpKey: { keyID: OWN_ID, publicKey: OWN_ARMOR } } }], beamio: profileRecord() } as never)
 		markLocallyCreatedAccount(EOA)
@@ -97,7 +97,7 @@ describe('T-R2 first registration: the chain has no PGP identity', () => {
 		expect(bodies).toEqual([])
 	})
 
-	it('negative (2.1 (c)): a restored account (no local creation record) with an empty chain is never first-registered, even with a self-consistent own key: refused, nothing sent', async () => {
+	it('negative (R78 2.1 (c)): a restored account (no local creation record) with an empty chain is never first-registered, even with a self-consistent own key: refused, nothing sent', async () => {
 		chainEmpty()
 		setOwnRecord({ keyID: OWN_ID, publicKey: OWN_ARMOR })
 		expect(await postBeamio(profileRecord(), PK)).toBe(false)

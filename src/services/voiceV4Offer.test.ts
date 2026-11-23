@@ -24,7 +24,7 @@ async function makeOffer() {
 	return { offer: { ...base, from: s.from, sig: s.sig, cv: cv.public, cV: cV.public }, cv, cV }
 }
 
-describe('caller v4 offer', () => {
+describe('caller v4 offer (v101 §108.2–108.4, §108.7)', () => {
 	test('a fresh offer verifies for the callee account', async () => {
 		const { offer } = await makeOffer()
 		expect(await verifyOfferV4(offer, CALLEE, NOW)).toBe(true)

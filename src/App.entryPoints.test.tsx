@@ -1,5 +1,5 @@
 /**
- * (review 3ec8391; project directive): entry-level cases. The real App and AppEntryGate run; every case enters through the gate.
+ * r94 (review; project directive): entry-level cases. The real App and AppEntryGate run; every case enters through the gate.
  * The native side is answered through the shell transports (window.BeamioShellRecord for walletEoaAddress and pwaWalletSync) and
  * through requestNativeAck for hello, walletStatus and nativeMnemonicPreread (stubs). The page's storage is controlled per case.
  * Derivation: ethers cannot derive a wallet under the jsdom realm, so Wallet.fromPhrase is a table of the public BIP-39 test vectors
@@ -109,6 +109,18 @@ jest.mock('@/services/beamio', () => ({
 		storeCalls.storeSystemDataAndWait += 1
 		return true
 	},
+	// the pre-read write-back (page IndexedDB, read back rule 4): jsdom cannot open the device-key vault, so the write is stubbed as
+	// verified. It is counted as this file's page write (storeCalls.storeSystemDataAndWait), so every "nothing written" check still holds.
+	// The verdict follows the case's read-back (readBackOverride): no record keeps the phrase (verified); a keyID of another account is a
+	// mismatch; a record without a profile is absent. The verdict names are the page write-back verdicts of persistPageIdbMnemonic.
+	persistPageIdbMnemonic: async (_record: unknown, _phrase: string, eoa: string) => {
+		storeCalls.storeSystemDataAndWait += 1
+		const back = readBackOverride.value as { profiles?: Array<{ keyID?: string }> } | undefined
+		if (back === undefined) return 'verified'
+		const keyID = back.profiles?.[0]?.keyID
+		if (!keyID) return 'readback_absent'
+		return keyID.trim().toLowerCase() === eoa.trim().toLowerCase() ? 'verified' : 'readback_mismatch'
+	},
 	ensureProfilePrivateKeyArmorFromMnemonic: (x: unknown) => x,
 	bootstrapProfileLocaleCurrencyIfUnset: async (x: unknown) => x,
 	readWalletRecordForOnboardingGate: async () => null,
@@ -143,8 +155,8 @@ jest.mock('@/services/nativeChatRouteRegister', () => ({
 jest.mock('@/services/nativeRecovery', () => ({
 	...jest.requireActual('@/services/nativeRecovery'),
 	queryNativeWalletState: async () => (globalThis as any).__walletStateOverride ?? 'present',
-	queryNativeWalletStatus: async () => ({ status: 'no_key' }), // 0.53.39 stub: the start route reads walletStatus
-	queryNativePasscodeStatus: async () => ({ walletState: await (async () => (globalThis as any).__walletStateOverride ?? 'present')(), hasKey: 'not_reported' as const }),
+	queryNativeWalletStatus: async () => (globalThis as any).__walletStatusOverride ?? { status: 'no_key' }, // 0.53.39 stub: the start route reads walletStatus (overridable per case)
+	queryNativePasscodeStatus: async () => ({ walletState: await (async () => (globalThis as any).__walletStateOverride ?? 'present')(), hasKey: (globalThis as any).__hasKeyOverride ?? ('not_reported' as const) }),
 	queryNativeWalletStateSafe: async () => (globalThis as any).__walletStateOverride ?? 'present',
 	nativeRecoveryOpen: jest.fn(),
 	onNativeRecoveryResult: jest.fn(),
@@ -188,7 +200,7 @@ function installShell() {
 			if (req.type === 'nativeMnemonicPreread') {
 				race.windowPrereads += 1
 				race.prereadCmd = { ...req }
-				// the pre-read (trusted window channel, Android shape) or the re-read after a failed write
+				// the pre-read (trusted window channel, Android shape) or the re-read after a failed write (spec §十一)
 				if (race.prereadWindow === 'silent') return
 				if (race.prereadWindow) envelope = race.prereadWindow
 				else if (race.preread) {
@@ -319,7 +331,8 @@ describe('entry A: a native-validated copy whose EOA contradicts the native addr
 		expect(homeShown()).toBe(false)
 		expect(shellSent.filter((r) => r.type === 'pwaWalletSync')).toHaveLength(0)
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
-		expect(PWA_LOG.some((l) => l.includes('startup wait'))).toBe(true)
+		// the first unknown of a start is re-asked at once (no verdict); the second unknown is the startup wait
+		await waitFor(() => expect(PWA_LOG.some((l) => l.includes('startup wait'))).toBe(true), { timeout: 5000 })
 	})
 })
 
@@ -335,7 +348,7 @@ describe('entry B: page wallet X valid, native wallet Y valid, X ≠ Y (through 
 
 	it('B2 SDK write_failed: the home and all data stay; the failure is shown and can be retried; each user retry sends exactly one request (no stacking)', async () => {
 		// the native side still holds its wallet (the re-read answers valid), so a user retry is allowed to send
-		await start({ page: LOADED_X, nativeEoa: addr(EOA_Y), walletWrite: 'write_failed', preread: payload({ state: 'valid', eoa: EOA_Y, phrase: PHRASE_Y }) })
+		await start({ page: LOADED_X, nativeEoa: addr(EOA_Y), walletWrite: 'write_failed', preread: payload({ code: 'ok', mnemonic: PHRASE_Y, eoa: EOA_Y }) })
 		expect(homeShown()).toBe(true)
 		expect(shellSent.filter((r) => r.type === 'pwaWalletSync')).toHaveLength(1)
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
@@ -382,7 +395,7 @@ describe('entry case 4 and the pre-read boundaries (native pre-read through the 
 		;(globalThis as any).fetch = fetchSpy
 		// the page is empty at the start; the adopt writes the page record, so the page reads as loaded afterwards
 		race.page = EMPTY
-		await start({ page: EMPTY, preread: payload({ state: 'valid', eoa: EOA_X, phrase: PHRASE_X }), nativeEoa: { kind: 'refused', code: 'no_key' } })
+		await start({ page: EMPTY, preread: payload({ code: 'ok', mnemonic: PHRASE_X, eoa: EOA_X }), nativeEoa: { kind: 'refused', code: 'no_key' } })
 		expect(race.prereadCalls + race.windowPrereads).toBe(1)
 		expect(storeCalls.storeSystemDataAndWait).toBeGreaterThanOrEqual(1)
 		expect(homeShown()).toBe(true)
@@ -400,7 +413,7 @@ describe('entry case 4 and the pre-read boundaries (native pre-read through the 
 	})
 
 	it('a PWA read that is unknown never starts the pre-read (the data is kept, the start waits)', async () => {
-		await start({ page: UNKNOWN, preread: payload({ state: 'valid', eoa: EOA_X, phrase: PHRASE_X }), nativeEoa: addr(EOA_X) })
+		await start({ page: UNKNOWN, preread: payload({ code: 'ok', mnemonic: PHRASE_X, eoa: EOA_X }), nativeEoa: addr(EOA_X) })
 		expect(race.prereadCalls + race.windowPrereads).toBe(0)
 		expect(bridgeHelloCalls.value).toBe(0)
 		expect(homeShown()).toBe(false)
@@ -415,7 +428,7 @@ describe('entry case 4 and the pre-read boundaries (native pre-read through the 
 	})
 
 	it('native unreadable (the pre-read answers absent-like unknown) is not adopted', async () => {
-		await start({ page: EMPTY, preread: payload({ state: 'unknown' }), nativeEoa: addr(EOA_X) })
+		await start({ page: EMPTY, preread: payload({ code: 'unknown' }), nativeEoa: addr(EOA_X) })
 		expect(homeShown()).toBe(false)
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
 	})
@@ -427,7 +440,7 @@ describe('entry case 4 and the pre-read boundaries (native pre-read through the 
 	})
 
 	it('EOA mismatch: a valid pre-read whose phrase derives another address is unknown; nothing is adopted or written', async () => {
-		await start({ page: EMPTY, preread: payload({ state: 'valid', eoa: EOA_Y, phrase: PHRASE_X }), nativeEoa: addr(EOA_X) })
+		await start({ page: EMPTY, preread: payload({ code: 'ok', mnemonic: PHRASE_X, eoa: EOA_Y }), nativeEoa: addr(EOA_X) })
 		expect(homeShown()).toBe(false)
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
 	})
@@ -475,7 +488,7 @@ describe('E6 page side (PE-01, NE-01..NE-08), through AppEntryGate', () => {
 	})
 
 	it('PE-01 accept: PWA confirmed empty; the request carries no phrase or credential field; the native valid answer is adopted when the derived EOA matches', async () => {
-		await start({ page: EMPTY, preread: payload({ state: 'valid', eoa: EOA_X, phrase: PHRASE_X }), nativeEoa: { kind: 'refused', code: 'no_key' } })
+		await start({ page: EMPTY, preread: payload({ code: 'ok', mnemonic: PHRASE_X, eoa: EOA_X }), nativeEoa: { kind: 'refused', code: 'no_key' } })
 		expect(race.prereadCalls + race.windowPrereads).toBe(1)
 		// the request carries only the command, its seq (the transport adds reqId); no phrase or credential field (E1, NE-06)
 		expect(Object.keys(race.prereadCmd ?? {}).sort()).toEqual(['reqId', 'seq', 'type'])
@@ -485,7 +498,7 @@ describe('E6 page side (PE-01, NE-01..NE-08), through AppEntryGate', () => {
 	})
 
 	it('NE-01 native unknown: not adopted, nothing written, the start waits; no phrase in the answer is used', async () => {
-		await start({ page: EMPTY, preread: payload({ state: 'unknown' }), nativeEoa: addr(EOA_X) })
+		await start({ page: EMPTY, preread: payload({ code: 'unknown' }), nativeEoa: addr(EOA_X) })
 		expect(race.prereadCalls + race.windowPrereads).toBe(1)
 		expect(homeShown()).toBe(false)
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
@@ -498,7 +511,7 @@ describe('E6 page side (PE-01, NE-01..NE-08), through AppEntryGate', () => {
 	})
 
 	it('NE-03 PWA read unknown: the pre-read is not started at all (no request, no return)', async () => {
-		await start({ page: UNKNOWN, preread: payload({ state: 'valid', eoa: EOA_X, phrase: PHRASE_X }), nativeEoa: addr(EOA_X) })
+		await start({ page: UNKNOWN, preread: payload({ code: 'ok', mnemonic: PHRASE_X, eoa: EOA_X }), nativeEoa: addr(EOA_X) })
 		expect(race.prereadCalls + race.windowPrereads).toBe(0)
 		expect(race.prereadCmd).toBeNull()
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
@@ -506,7 +519,7 @@ describe('E6 page side (PE-01, NE-01..NE-08), through AppEntryGate', () => {
 
 	it('NE-04 child frame: the pre-read is not asked and the start waits; nothing is written', async () => {
 		await asChildFrame(async () => {
-			await start({ page: EMPTY, preread: payload({ state: 'valid', eoa: EOA_X, phrase: PHRASE_X }), nativeEoa: addr(EOA_X) })
+			await start({ page: EMPTY, preread: payload({ code: 'ok', mnemonic: PHRASE_X, eoa: EOA_X }), nativeEoa: addr(EOA_X) })
 		})
 		expect(race.prereadCalls + race.windowPrereads).toBe(0)
 		expect(homeShown()).toBe(false)
@@ -520,7 +533,7 @@ describe('E6 page side (PE-01, NE-01..NE-08), through AppEntryGate', () => {
 	})
 
 	it('NE-07/NE-08 no phrase in logs, console, telemetry or crash reports on the refusal paths (a valid answer whose phrase derives another EOA)', async () => {
-		await start({ page: EMPTY, preread: payload({ state: 'valid', eoa: EOA_Y, phrase: PHRASE_X }), nativeEoa: addr(EOA_X) })
+		await start({ page: EMPTY, preread: payload({ code: 'ok', mnemonic: PHRASE_X, eoa: EOA_Y }), nativeEoa: addr(EOA_X) })
 		expect(homeShown()).toBe(false)
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
 		expect(leakedText(fetchSpy, consoles)).not.toContain(PHRASE_X)
@@ -542,9 +555,11 @@ describe('decision 2026-11-17: wallet-only records, explicit absent, and the unk
 	const onboardingLogged = () => PWA_LOG.some((l) => l.includes('onboarding'))
 
 	it('D1 a wallet record without a valid mnemonic (key only) is "no valid mnemonic": the pre-read is started and a valid native answer is adopted', async () => {
-		await start({ page: WALLET_ONLY_X, preread: payload({ state: 'valid', eoa: EOA_Y, phrase: PHRASE_Y }), nativeEoa: addr(EOA_Y) })
+		await start({ page: WALLET_ONLY_X, preread: payload({ code: 'ok', mnemonic: PHRASE_Y, eoa: EOA_Y }), nativeEoa: addr(EOA_Y) })
 		expect(race.prereadCalls + race.windowPrereads).toBe(1)
-		expect(homeShown()).toBe(true)
+		expect(PWA_LOG.some((l) => l.includes('pre-read address differs from the local account record: verify_failed'))).toBe(true)
+		expect(homeShown()).toBe(false)
+		expect(onboardingLogged()).toBe(false)
 		expect(shellSent.filter((r) => r.type === 'pwaWalletSync' && r.eoa === EOA_X)).toHaveLength(0)
 	})
 
@@ -558,7 +573,7 @@ describe('decision 2026-11-17: wallet-only records, explicit absent, and the unk
 	it('D3 native explicit absent: the start goes to onboarding by itself; the old store is not deleted or written', async () => {
 		// 0.53.39: explicit trusted-source state for an onboarding case: native confirms no account (walletState absent)
 		;(globalThis as any).__walletStateOverride = 'absent'
-		await start({ page: WALLET_ONLY_X, preread: payload({ state: 'absent' }), nativeEoa: addr(EOA_X) })
+		await start({ page: WALLET_ONLY_X, preread: payload({ code: 'confirmed_missing' }), nativeEoa: addr(EOA_X) })
 		expect(race.prereadCalls + race.windowPrereads).toBe(1)
 		expect(onboardingLogged()).toBe(true)
 		expect(homeShown()).toBe(false)
@@ -568,7 +583,7 @@ describe('decision 2026-11-17: wallet-only records, explicit absent, and the unk
 
 	it.each([
 		['timeout', { kind: 'timeout' }],
-		['unknown', payload({ state: 'unknown' })],
+		['unknown', payload({ code: 'unknown' })],
 		['unreadable', payload({ state: 'unreadable' })],
 		['untrusted_source', { kind: 'payload', payload: { type: 'ack', ok: false, error: 'untrusted_source' } }],
 	])('D4 native %s: not onboarding, nothing written, the start waits', async (_name, answer) => {
@@ -587,10 +602,12 @@ describe('decision 2026-11-17: wallet-only records, explicit absent, and the unk
 	})
 
 	it('D5 two wallets with a valid mnemonic on the PWA side only count for B; a wallet-only PWA record is not B: the native valid answer is adopted and the PWA key is not synced', async () => {
-		await start({ page: WALLET_ONLY_X, preread: payload({ state: 'valid', eoa: EOA_Y, phrase: PHRASE_Y }), nativeEoa: addr(EOA_Y) })
+		await start({ page: WALLET_ONLY_X, preread: payload({ code: 'ok', mnemonic: PHRASE_Y, eoa: EOA_Y }), nativeEoa: addr(EOA_Y) })
 		expect(race.prereadCalls + race.windowPrereads).toBe(1)
 		expect(shellSent.filter((r) => r.type === 'pwaWalletSync' && r.eoa === EOA_X)).toHaveLength(0)
-		expect(homeShown()).toBe(true)
+		expect(PWA_LOG.some((l) => l.includes('pre-read address differs from the local account record: verify_failed'))).toBe(true)
+		expect(homeShown()).toBe(false)
+		expect(onboardingLogged()).toBe(false)
 	})
 })
 
@@ -611,16 +628,41 @@ describe('E7 page side (P-01, P-02, P-03, P-06, P-07), through AppEntryGate', ()
 	it('P-01 wallet only (key record) and native absent: onboarding by itself; every old record is kept', async () => {
 		// 0.53.39: explicit trusted-source state for an onboarding case: native confirms no account (walletState absent)
 		;(globalThis as any).__walletStateOverride = 'absent'
-		await start({ page: WALLET_ONLY_X, preread: payload({ state: 'absent' }), nativeEoa: addr(EOA_X) })
+		await start({ page: WALLET_ONLY_X, preread: payload({ code: 'confirmed_missing' }), nativeEoa: addr(EOA_X) })
 		expect(onboardingLogged()).toBe(true)
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
 		expect(homeShown()).toBe(false)
 	})
 
-	it('P-02 wallet only and native valid: the existing account is taken back (adopt), not onboarding', async () => {
-		await start({ page: WALLET_ONLY_X, preread: payload({ state: 'valid', eoa: EOA_Y, phrase: PHRASE_Y }), nativeEoa: addr(EOA_Y) })
-		expect(homeShown()).toBe(true)
+	it('P-02 wallet only (account X) and native valid for Y: verify_failed, nothing written, not home, not onboarding (the local record is kept; a native answer for another account is never adopted)', async () => {
+		// 2026-11-22 rule (verify the original wallet address; B.2): the local record is X, the native valid answer is Y: refused, the data stays.
+		await start({ page: WALLET_ONLY_X, preread: payload({ code: 'ok', mnemonic: PHRASE_Y, eoa: EOA_Y }), nativeEoa: addr(EOA_Y) })
+		expect(PWA_LOG.some((l) => l.includes('pre-read address differs from the local account record: verify_failed'))).toBe(true)
+		expect(homeShown()).toBe(false)
 		expect(onboardingLogged()).toBe(false)
+		expect(storeCalls.storeSystemDataAndWait).toBe(0)
+	})
+
+	it('(a) plaintext pre-read without eoa is unsupported: the legacy path, never onboarding (d99d0ce3 B.3; capability missing)', async () => {
+		await start({ page: EMPTY, preread: payload({ code: 'ok', mnemonic: PHRASE_X }), nativeEoa: addr(EOA_X) })
+		expect(PWA_LOG.some((l) => l.includes('pre_read_unsupported') || l.includes('legacy'))).toBe(true)
+		expect(onboardingLogged()).toBe(false)
+		expect(storeCalls.storeSystemDataAndWait).toBe(0)
+	})
+
+	it('(b) TS-06b: no_key, kPresent true, read ok, pre-read confirmed_missing, IDB empty: onboarding even with a key present (key_only), and nothing is deleted or written (the private key, the page copy and the IDB record stay)', async () => {
+		;(globalThis as any).__hasKeyOverride = true
+		;(globalThis as any).__walletStatusOverride = { status: 'not_ready', notReadyReason: 'key_only' }
+		try {
+			await start({ page: EMPTY, preread: payload({ code: 'confirmed_missing' }), nativeEoa: { kind: 'refused', code: 'not_supported' } })
+			expect(onboardingLogged()).toBe(true)
+			expect(homeShown()).toBe(false)
+			expect(storeCalls.storeSystemDataAndWait).toBe(0)
+			expect(race.walletWrite).toBe('ok')
+		} finally {
+			;(globalThis as any).__hasKeyOverride = undefined
+			;(globalThis as any).__walletStatusOverride = undefined
+		}
 	})
 
 	it('P-03 wallet only and native unknown or timeout: kept, retryable, not onboarding', async () => {
@@ -628,11 +670,12 @@ describe('E7 page side (P-01, P-02, P-03, P-06, P-07), through AppEntryGate', ()
 		expect(onboardingLogged()).toBe(false)
 		expect(homeShown()).toBe(false)
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
-		expect(PWA_LOG.some((l) => l.includes('startup wait'))).toBe(true)
+		// the first unknown of a start is re-asked at once (no verdict); the second unknown is the startup wait
+		await waitFor(() => expect(PWA_LOG.some((l) => l.includes('startup wait'))).toBe(true), { timeout: 5000 })
 	})
 
 	it('P-06 PWA read unknown: the pre-read is not started and the start is not onboarding', async () => {
-		await start({ page: UNKNOWN, preread: payload({ state: 'absent' }), nativeEoa: addr(EOA_X) })
+		await start({ page: UNKNOWN, preread: payload({ code: 'confirmed_missing' }), nativeEoa: addr(EOA_X) })
 		expect(race.prereadCalls + race.windowPrereads).toBe(0)
 		expect(onboardingLogged()).toBe(false)
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
@@ -641,22 +684,24 @@ describe('E7 page side (P-01, P-02, P-03, P-06, P-07), through AppEntryGate', ()
 	it('P-07 the old store holds only an address (or a key) and native absent: onboarding; the old store is not deleted or written', async () => {
 		// 0.53.39: explicit trusted-source state for an onboarding case: native confirms no account (walletState absent)
 		;(globalThis as any).__walletStateOverride = 'absent'
-		await start({ page: ADDRESS_ONLY_X, preread: payload({ state: 'absent' }), nativeEoa: addr(EOA_X) })
+		await start({ page: ADDRESS_ONLY_X, preread: payload({ code: 'confirmed_missing' }), nativeEoa: addr(EOA_X) })
 		expect(onboardingLogged()).toBe(true)
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
 		expect(shellSent.filter((r) => r.type === 'pwaWalletSync')).toHaveLength(0)
 	})
 
 	it('E7-1 a valid mnemonic whose EOA is not the keyID is not the account credential: the pre-read is started, the mnemonic is not used', async () => {
-		await start({ page: MISMATCH_X, preread: payload({ state: 'valid', eoa: EOA_Y, phrase: PHRASE_Y }), nativeEoa: addr(EOA_Y) })
+		await start({ page: MISMATCH_X, preread: payload({ code: 'ok', mnemonic: PHRASE_Y, eoa: EOA_Y }), nativeEoa: addr(EOA_Y) })
 		expect(race.prereadCalls + race.windowPrereads).toBe(1)
 		expect(shellSent.filter((r) => r.type === 'pwaWalletSync' && r.eoa === EOA_OTHER)).toHaveLength(0)
-		expect(homeShown()).toBe(true)
+		expect(PWA_LOG.some((l) => l.includes('pre-read address differs from the local account record: verify_failed'))).toBe(true)
+		expect(homeShown()).toBe(false)
+		expect(onboardingLogged()).toBe(false)
 	})
 })
 
 /**
- * Half-write decision: a half-write window or an old
+ * Half-write rule (2026-11-17: an interrupted half-write is ignored; with no mnemonic the start goes to onboarding): a half-write window or an old
  * marker does not block the start. The page asks the native side only when it has no valid mnemonic; the native answer decides:
  * absent → onboarding (data kept), valid → taken back, unknown/no_answer/not_supported → kept and retryable. Local-only browser: see keyOnly suites.
  */
@@ -685,7 +730,7 @@ describe('half-write and old marker: no valid mnemonic on both sides is onboardi
 	it('H1 both sides none, a half-write window (key-only record) and native absent: onboarding; the record is kept, nothing written or deleted', async () => {
 		// 0.53.39: explicit trusted-source state for an onboarding case: native confirms no account (walletState absent)
 		;(globalThis as any).__walletStateOverride = 'absent'
-		await withMarker(() => start({ page: WALLET_ONLY_X, preread: payload({ state: 'absent' }), nativeEoa: addr(EOA_X) }))
+		await withMarker(() => start({ page: WALLET_ONLY_X, preread: payload({ code: 'confirmed_missing' }), nativeEoa: addr(EOA_X) }))
 		expect(onboardingLogged()).toBe(true)
 		expect(homeShown()).toBe(false)
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
@@ -695,20 +740,22 @@ describe('half-write and old marker: no valid mnemonic on both sides is onboardi
 	it('H2 both sides none, an old marker and an empty store, native absent: onboarding; the marker does not block the start', async () => {
 		// 0.53.39: explicit trusted-source state for an onboarding case: native confirms no account (walletState absent)
 		;(globalThis as any).__walletStateOverride = 'absent'
-		await withMarker(() => start({ page: EMPTY, preread: payload({ state: 'absent' }), nativeEoa: addr(EOA_X) }))
+		await withMarker(() => start({ page: EMPTY, preread: payload({ code: 'confirmed_missing' }), nativeEoa: addr(EOA_X) }))
 		expect(onboardingLogged()).toBe(true)
 		expect(homeShown()).toBe(false)
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
 	})
 
 	it('H3 an old marker with the native side valid: the existing account is taken back (adopt), not onboarding', async () => {
-		await withMarker(() => start({ page: WALLET_ONLY_X, preread: payload({ state: 'valid', eoa: EOA_Y, phrase: PHRASE_Y }), nativeEoa: addr(EOA_Y) }))
-		expect(homeShown()).toBe(true)
+		await withMarker(() => start({ page: WALLET_ONLY_X, preread: payload({ code: 'ok', mnemonic: PHRASE_Y, eoa: EOA_Y }), nativeEoa: addr(EOA_Y) }))
+		expect(PWA_LOG.some((l) => l.includes('pre-read address differs from the local account record: verify_failed'))).toBe(true)
+		expect(homeShown()).toBe(false)
+		expect(onboardingLogged()).toBe(false)
 		expect(onboardingLogged()).toBe(false)
 	})
 
 	it('H4 the PWA holds a valid mnemonic: the start uses it directly, the native pre-read is not asked', async () => {
-		await start({ page: PWA_VALID_X, preread: payload({ state: 'absent' }), nativeEoa: addr(EOA_X) })
+		await start({ page: PWA_VALID_X, preread: payload({ code: 'confirmed_missing' }), nativeEoa: addr(EOA_X) })
 		expect(race.prereadCalls + race.windowPrereads).toBe(0)
 		expect(onboardingLogged()).toBe(false)
 	})
@@ -718,7 +765,7 @@ describe('half-write and old marker: no valid mnemonic on both sides is onboardi
 		;(globalThis as any).__walletStateOverride = 'absent'
 		const ADDRESS_ONLY_STORED = { status: 'loaded', data: { profiles: [{ keyID: EOA_X }], beamio: {} } }
 		await withMarker(async () => {
-			await start({ page: ADDRESS_ONLY_STORED, preread: payload({ state: 'absent' }), nativeEoa: addr(EOA_X) })
+			await start({ page: ADDRESS_ONLY_STORED, preread: payload({ code: 'confirmed_missing' }), nativeEoa: addr(EOA_X) })
 			expect(onboardingLogged()).toBe(true)
 			expect(homeShown()).toBe(false)
 			expect(storeCalls.storeSystemDataAndWait).toBe(0)
@@ -732,7 +779,7 @@ describe('half-write and old marker: no valid mnemonic on both sides is onboardi
 		readBackOverride.value = { profiles: [{ keyID: EOA_Y }], beamio: {} }
 		;(globalThis as any).__readBackOverrideSet = true
 		try {
-			await start({ page: EMPTY, preread: payload({ state: 'valid', eoa: EOA_Y, phrase: PHRASE_Y }), nativeEoa: addr(EOA_Y) })
+			await start({ page: EMPTY, preread: payload({ code: 'ok', mnemonic: PHRASE_Y, eoa: EOA_Y }), nativeEoa: addr(EOA_Y) })
 			expect(PWA_LOG.some((l) => l.includes('write-back not confirmed'))).toBe(false)
 			expect(homeShown()).toBe(true)
 			const syncs = shellSent.filter((r) => r.type === 'pwaWalletSync')
@@ -744,7 +791,7 @@ describe('half-write and old marker: no valid mnemonic on both sides is onboardi
 		}
 	})
 
-describe('CAP route cases: a missing identity capability', () => {
+describe('CAP route cases (account-select CAP-01/03/04/05/06): a missing identity capability', () => {
 	let consoles: jest.SpyInstance[]
 	beforeEach(() => {
 		consoles = [jest.spyOn(console, 'log').mockImplementation(() => undefined), jest.spyOn(console, 'warn').mockImplementation(() => undefined), jest.spyOn(console, 'error').mockImplementation(() => undefined)]
@@ -772,7 +819,8 @@ describe('CAP route cases: a missing identity capability', () => {
 		await start({ page: UNKNOWN, caps: NO_CAPS, reach: { status: 'no_key' }, nativeEoa: { kind: 'refused', code: 'no_key' } })
 		expect(onboardingLogged()).toBe(false)
 		expect(race.prereadCalls + race.windowPrereads).toBe(0)
-		expect(PWA_LOG.some((l) => l.includes('startup wait'))).toBe(true)
+		// the first unknown of a start is re-asked at once (no verdict); the second unknown is the startup wait
+		await waitFor(() => expect(PWA_LOG.some((l) => l.includes('startup wait'))).toBe(true), { timeout: 5000 })
 	})
 
 	it('CAP-04: capability missing, native absent (= no_key), a valid PWA mnemonic: the home opens directly, not onboarding (routing unaffected by the capability)', async () => {
@@ -863,23 +911,23 @@ describe('walletCredential restore and the shell read-back, through AppEntryGate
 
 	it('W4 negative (pre-read adopt): the shell read-back keyID is another account: not the home, no pwaWalletSync, the start waits and retries', async () => {
 		withReadBack({ profiles: [{ keyID: EOA_X }], beamio: {} })
-		await start({ page: EMPTY, preread: payload({ state: 'valid', eoa: EOA_Y, phrase: PHRASE_Y }), nativeEoa: addr(EOA_Y) })
+		await start({ page: EMPTY, preread: payload({ code: 'ok', mnemonic: PHRASE_Y, eoa: EOA_Y }), nativeEoa: addr(EOA_Y) })
 		expect(homeShown()).toBe(false)
 		expect(syncs()).toHaveLength(0)
-		expect(PWA_LOG.some((l) => l.includes('write-back not confirmed (mismatch)'))).toBe(true)
+		expect(PWA_LOG.some((l) => l.includes('write-back not confirmed (readback_mismatch)'))).toBe(true)
 	})
 
 	it('W5 negative (pre-read adopt): the shell read-back has no profile: not the home, no pwaWalletSync, retryable', async () => {
 		withReadBack({ beamio: {} })
-		await start({ page: EMPTY, preread: payload({ state: 'valid', eoa: EOA_Y, phrase: PHRASE_Y }), nativeEoa: addr(EOA_Y) })
+		await start({ page: EMPTY, preread: payload({ code: 'ok', mnemonic: PHRASE_Y, eoa: EOA_Y }), nativeEoa: addr(EOA_Y) })
 		expect(homeShown()).toBe(false)
 		expect(syncs()).toHaveLength(0)
-		expect(PWA_LOG.some((l) => l.includes('write-back not confirmed (missing)'))).toBe(true)
+		expect(PWA_LOG.some((l) => l.includes('write-back not confirmed (readback_absent)'))).toBe(true)
 	})
 })
 
 	it('H7 source priority: a valid PWA mnemonic is used directly; the native pre-read is not sent even when the native side would answer a valid mnemonic', async () => {
-		await start({ page: PWA_VALID_X, preread: payload({ state: 'valid', eoa: EOA_Y, phrase: PHRASE_Y }), nativeEoa: addr(EOA_Y) })
+		await start({ page: PWA_VALID_X, preread: payload({ code: 'ok', mnemonic: PHRASE_Y, eoa: EOA_Y }), nativeEoa: addr(EOA_Y) })
 		expect(race.prereadCalls + race.windowPrereads).toBe(0)
 		// the native account A is not pulled into the PWA, but the PWA account B is still synced to the native side (B, sent once)
 		expect(shellSent.filter((r) => r.type === 'pwaWalletSync' && r.eoa === EOA_Y)).toHaveLength(0)
@@ -892,7 +940,8 @@ describe('walletCredential restore and the shell read-back, through AppEntryGate
 		expect(onboardingLogged()).toBe(false)
 		expect(homeShown()).toBe(false)
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
-		expect(PWA_LOG.some((l) => l.includes('startup wait'))).toBe(true)
+		// the first unknown of a start is re-asked at once (no verdict); the second unknown is the startup wait
+		await waitFor(() => expect(PWA_LOG.some((l) => l.includes('startup wait'))).toBe(true), { timeout: 5000 })
 	})
 })
 
@@ -910,23 +959,25 @@ describe('E7/E7.1 entry statements: address-only and key-only old stores, locked
 	const KEY_ONLY_X = { status: 'loaded', data: { profiles: [{ keyID: EOA_X, privateKeyArmor: PK_X }], beamio: {} } }
 
 	it('PWA address only and native valid: the start asks the shell (E6) and takes the existing wallet back', async () => {
-		await start({ page: ADDRESS_ONLY_X, preread: payload({ state: 'valid', eoa: EOA_Y, phrase: PHRASE_Y }), nativeEoa: addr(EOA_Y) })
+		await start({ page: ADDRESS_ONLY_X, preread: payload({ code: 'ok', mnemonic: PHRASE_Y, eoa: EOA_Y }), nativeEoa: addr(EOA_Y) })
 		expect(race.prereadCalls + race.windowPrereads).toBe(1)
-		expect(homeShown()).toBe(true)
+		expect(PWA_LOG.some((l) => l.includes('pre-read address differs from the local account record: verify_failed'))).toBe(true)
+		expect(homeShown()).toBe(false)
+		expect(onboardingLogged()).toBe(false)
 		expect(onboardingLogged()).toBe(false)
 	})
 
 	it('PWA key only and both sides confirm no valid mnemonic: onboarding by itself; no data is cleared', async () => {
 		// 0.53.39: explicit trusted-source state for an onboarding case: native confirms no account (walletState absent)
 		;(globalThis as any).__walletStateOverride = 'absent'
-		await start({ page: KEY_ONLY_X, preread: payload({ state: 'absent' }), nativeEoa: { kind: 'refused', code: 'no_key' } })
+		await start({ page: KEY_ONLY_X, preread: payload({ code: 'confirmed_missing' }), nativeEoa: { kind: 'refused', code: 'no_key' } })
 		expect(onboardingLogged()).toBe(true)
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
 		expect(shellSent.filter((r) => r.type === 'pwaWalletSync')).toHaveLength(0)
 	})
 
 	it('PWA read locked: unknown; the pre-read is not started; kept, retryable, not onboarding', async () => {
-		await start({ page: { status: 'locked' }, preread: payload({ state: 'absent' }), nativeEoa: addr(EOA_X) })
+		await start({ page: { status: 'locked' }, preread: payload({ code: 'confirmed_missing' }), nativeEoa: addr(EOA_X) })
 		expect(race.prereadCalls + race.windowPrereads).toBe(0)
 		expect(onboardingLogged()).toBe(false)
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
@@ -955,7 +1006,7 @@ describe('Android pre-read: window.BeamioShellRecord only (no JS interface fallb
 		race.prereadWindow = null
 	})
 	const onboardingLogged = () => PWA_LOG.some((l) => l.includes('onboarding'))
-	const PREREAD_VALID = { ok: true, result: { state: 'valid', eoa: EOA_Y, phrase: PHRASE_Y } }
+	const PREREAD_VALID = { ok: true, result: { code: 'ok', mnemonic: PHRASE_Y, eoa: EOA_Y } }
 
 	it('A1 trusted window answer valid: the wallet is taken back (adopt); the request went over the window channel, not the JS interface', async () => {
 		race.prereadWindow = PREREAD_VALID

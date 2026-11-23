@@ -42,7 +42,7 @@ describe('T-R3 integration: the create path sends addUser only for an unregister
 		// A fixed synthetic account (a jest test key and the public test phrase), not random: ethers' node crypto returns Buffers, which jsdom cannot hexlify.
 		// The unregistered path is not driven here: after newUser it waits for the chain record (up to 45 s); assertUnregisteredBeforeCreate covers it.
 		const { ethers } = require('ethers')
-		jest.spyOn(ethers.Wallet, 'createRandom').mockImplementation(() => Object.assign(new ethers.Wallet('0x' + '11'.repeat(32)), { mnemonic: { phrase: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about' } }) as never)
+		jest.spyOn(ethers.Wallet, 'createRandom').mockImplementation(() => Object.assign(new ethers.Wallet('0x' + '11'.repeat(32)), { mnemonic: { phrase: 'test test test test test test test test test test test junk' } }) as never)
 		;(globalThis as { fetch?: unknown }).fetch = jest.fn(async (url: unknown) => {
 			if (String(url).includes('/api/addUser')) posts.push(String(url))
 			return { ok: true, status: 200, json: async () => ({}) }
@@ -65,7 +65,7 @@ describe('T-R3 integration: createRecover reaches newUser only for an unregister
 	let posts: string[] = []
 	const SYN_KEY = '0x' + '11'.repeat(32)
 	const emptyStore = async () => ({ status: 'empty' }) as never
-	const newWallet = async () => ({ mnemonicPhrase: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about', profiles: [{ keyID: '0x1111111111111111111111111111111111111111', privateKeyArmor: SYN_KEY }] }) as never
+	const newWallet = async () => ({ mnemonicPhrase: 'test test test test test test test test test test test junk', profiles: [{ keyID: '0x1111111111111111111111111111111111111111', privateKeyArmor: SYN_KEY }] }) as never
 	beforeEach(() => {
 		posts = []
 		;(globalThis as { fetch?: unknown }).fetch = jest.fn(async (url: unknown) => {

@@ -1,13 +1,13 @@
 /**
- * Build-level check of the WebSocket refusal. Runs after every artifact build (package.json build:react).
+ * Build-level check of the WebSocket refusal (project rule). Runs after every artifact build (package.json build:react).
  *
  * The built artifact must carry:
  * - the app's probe report path in the main bundle: the report text and the probe global must survive the minifier
- * (craco drop_console removes console calls, so the report is not on console alone);
+ *   (craco drop_console removes console calls, so the report is not on console alone);
  * - in each standalone page (receive-wallet-send.html, receive-wallet-send-sw.html): the refusal, the probe global, and no
- * WebSocket URL in the page.
+ *   WebSocket URL in the page.
  *
- * Usage: node scripts/check-ws-guard-build.js <buildDir> (exit 0 = ok, 1 = failed; prints one JSON line)
+ * Usage: node scripts/check-ws-guard-build.js <buildDir>   (exit 0 = ok, 1 = failed; prints one JSON line)
  */
 const fs = require('fs')
 const path = require('path')

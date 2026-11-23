@@ -1,5 +1,5 @@
 /**
- * Runtime gate: the runtime decision table, the transitions and the QA flags. Pure: the window is a plain
+ * RUNTIME-GATE v2.3: the runtime decision table (2.3), the transitions (2.4, Q12) and the QA flags (4.2, 4.3). Pure: the window is a plain
  * object. SYNTHETIC values only.
  */
 import {
@@ -23,7 +23,7 @@ const S1S2 = { s1: true, s2: true, bridge: false }
 const SHELL_ORIGIN = { location: { origin: 'cashtrees-local://localhost' } }
 const NONCE = '0x' + 'ab'.repeat(16)
 
-describe('decision table', () => {
+describe('decision table (RUNTIME-GATE 2.3)', () => {
 	it('the browser needs zero signals', () => {
 		expect(classifyRuntime(SIGNALS_NONE, { kind: 'pending' }, null)).toBe('browser')
 	})
@@ -48,7 +48,7 @@ describe('decision table', () => {
 		expect(classifyRuntime(S1S2, { kind: 'answered', nonce: NONCE, shellProtocol: 1 }, NONCE)).toBe('shell-ready')
 	})
 
-	it('S2 present but S3 without shellProtocol (a publication-order violation): unavailable', () => {
+	it('S2 present but S3 without shellProtocol (a publication-order breach): unavailable', () => {
 		expect(classifyRuntime(S1S2, { kind: 'answered', nonce: NONCE }, NONCE)).toBe('shell-unavailable')
 	})
 
@@ -64,7 +64,7 @@ describe('decision table', () => {
 	})
 })
 
-describe('transitions', () => {
+describe('transitions (RUNTIME-GATE 2.4, Q12)', () => {
 	it('the moves the table allows', () => {
 		expect(isAllowedMove('probing', 'browser')).toBe(true)
 		expect(isAllowedMove('shell-pending', 'shell-ready')).toBe(true)

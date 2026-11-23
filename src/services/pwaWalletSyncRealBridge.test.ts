@@ -1,5 +1,5 @@
 /**
- *pwaWalletSync and nativeMnemonicPreread over the REAL production transport
+ * r94 (contract v3.2 §十一): pwaWalletSync and nativeMnemonicPreread over the REAL production transport
  * (sendPwaWalletSync / sendNativeMnemonicPreread → sendShellWalletSyncCommand → window.BeamioShellRecord).
  * A fake shell answers on the injected object's onmessage, in the flat envelope {type:"ack", reqId, ok, result?|error?, reason?}.
  * The fake records every request, so the cases can check what the page sent. SYNTHETIC values only
@@ -7,7 +7,7 @@
  * Test-double note: this file maps its one public phrase to its public EOA. It checks the wire behaviour when the derivation equals the
  * mapped value; it does not check the derivation itself. The derivation is covered by the node-environment vector tests.
  */
-//the sync now checks that the canonical phrase derives to the EOA before it sends. Derivation does not run in the jsdom realm
+// r95: the sync now checks that the canonical phrase derives to the EOA before it sends. Derivation does not run in the jsdom realm
 // (see mnemonicEoaCrossImpl.test.ts, node environment), so the one public test phrase is mapped to its public EOA here. Only this phrase.
 jest.mock('./shellLegacyIdbInit', () => {
 	const actual = jest.requireActual('./shellLegacyIdbInit')
@@ -77,7 +77,7 @@ beforeEach(() => {
 })
 afterAll(() => removeShell())
 
-describe('pwaWalletSync request and reply mapping', () => {
+describe('pwaWalletSync request and reply mapping (contract v3.2 §十一)', () => {
 	it('the request is {type, reqId, eoa, phrase, seq}; updated is ok; the state is synced', async () => {
 		installShell(() => OK_UPDATED)
 		expect(await syncOverRealBridge().sync(PHRASE, EOA)).toEqual({ kind: 'synced', tx: 1 })
@@ -97,7 +97,7 @@ describe('pwaWalletSync request and reply mapping', () => {
 	})
 
 	it('write_failed with reason internal_state: one attempt, no automatic retry; retryable; the reason is kept (PHRASE_ONLY: the native side keeps answering the same)', async () => {
-		installShell((req) => (req.type === 'nativeMnemonicPreread' ? { ok: true, result: { state: 'valid' } } : fail('write_failed', 'internal_state')))
+		installShell((req) => (req.type === 'nativeMnemonicPreread' ? { ok: true, result: { code: 'ok', mnemonic: PHRASE_CANON, eoa: '0x9858effd232b4033e47d90003d41ec34ecaeda94' } } : fail('write_failed', 'internal_state')))
 		const out = await syncOverRealBridge().sync(PHRASE, EOA)
 		expect(out).toEqual({ kind: 'failed', tx: 1, code: 'write_failed', retryable: true, reason: 'internal_state' })
 		expect(sent.filter((r) => r.type === SHELL_MNEMONIC_SYNC_COMMAND).length).toBe(1)
@@ -106,7 +106,7 @@ describe('pwaWalletSync request and reply mapping', () => {
 	})
 
 	it('write_failed with reason storage_write is kept as storage_write', async () => {
-		installShell((req) => (req.type === 'nativeMnemonicPreread' ? { ok: true, result: { state: 'absent' } } : fail('write_failed', 'storage_write')))
+		installShell((req) => (req.type === 'nativeMnemonicPreread' ? { ok: true, result: { code: 'confirmed_missing' } } : fail('write_failed', 'storage_write')))
 		const out = await syncOverRealBridge().sync(PHRASE, EOA)
 		expect(out).toMatchObject({ kind: 'failed', code: 'write_failed', reason: 'storage_write', retryable: true })
 	})
@@ -133,7 +133,7 @@ describe('pwaWalletSync request and reply mapping', () => {
 	})
 
 	it('PHRASE_ONLY (E5.1): every pwaWalletSync answers write_failed/internal_state; one attempt each, no automatic retry; the same account is never ok; the state is the native-unavailable failure, never syncing', async () => {
-		installShell((req) => (req.type === 'nativeMnemonicPreread' ? { ok: true, result: { state: 'valid' } } : fail('write_failed', 'internal_state')))
+		installShell((req) => (req.type === 'nativeMnemonicPreread' ? { ok: true, result: { code: 'ok', mnemonic: PHRASE_CANON, eoa: '0x9858effd232b4033e47d90003d41ec34ecaeda94' } } : fail('write_failed', 'internal_state')))
 		const sync = syncOverRealBridge()
 		expect(await sync.sync(PHRASE, EOA)).toEqual({ kind: 'failed', tx: 1, code: 'write_failed', retryable: true, reason: 'internal_state' })
 		expect(sent.filter((r) => r.type === SHELL_MNEMONIC_SYNC_COMMAND).length).toBe(1)
@@ -223,9 +223,11 @@ describe('pwaWalletSync request and reply mapping', () => {
 	})
 })
 
+const PHRASE_CANON = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+
 describe('nativeMnemonicPreread (valid | absent | unknown; anything else is unknown)', () => {
-	it('valid, absent and unknown map as the shell states; a missing state is unknown', async () => {
-		installShell((req) => ({ ok: true, result: { state: req.seq === 1 ? 'valid' : req.seq === 2 ? 'absent' : undefined } }) as Envelope)
+	it('ok+mnemonic is valid, confirmed_missing is absent, anything else is unknown', async () => {
+		installShell((req) => ({ ok: true, result: req.seq === 1 ? { code: 'ok', mnemonic: PHRASE_CANON, eoa: '0x9858effd232b4033e47d90003d41ec34ecaeda94' } : req.seq === 2 ? { code: 'confirmed_missing' } : { code: 'unknown' } }) as Envelope)
 		expect(await sendNativeMnemonicPreread(1)).toBe('valid')
 		expect(await sendNativeMnemonicPreread(2)).toBe('absent')
 		expect(await sendNativeMnemonicPreread(9)).toBe('unknown')

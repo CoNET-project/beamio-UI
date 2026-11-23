@@ -42,6 +42,24 @@ const openSettingsForBackup = () => {
 }
 
 type View = 'idle' | 'confirm' | 'busy'
+/**
+ * The local account state of a refused reset (the decision): key_only = a private key and no recovery phrase on this device; has_mnemonic =
+ * a valid phrase here (backup not confirmed); unknown = the state cannot be read. Read from the page record only (no native call, no write).
+ */
+type LocalKeyState = 'unknown' | 'key_only' | 'has_mnemonic'
+async function readLocalKeyState(): Promise<LocalKeyState> {
+	try {
+		// loaded on demand: the page store module is heavy and is not needed for the other states of this notice
+		const { readPageIdbInit, readPageIdbKeyState } = await import('../services/beamio')
+		const st = await readPageIdbInit()
+		if (st.status === 'valid') return 'has_mnemonic'
+		// key_only needs both: no phrase here, and a private key in the record (); anything else is unknown
+		if (st.status === 'unknown' && st.reason === 'no_mnemonic_record' && (await readPageIdbKeyState()) === 'key_only') return 'key_only'
+		return 'unknown'
+	} catch {
+		return 'unknown'
+	}
+}
 /** The last clear answer that the notice shows. `none` shows nothing extra. Neither answer counts as cleared or as "no account". */
 type ClearNotice = 'none' | 'refused' | 'incomplete'
 
@@ -56,6 +74,17 @@ export function ShellIdentityClosedNotice({
 	const closed = useIdentityClosedState()
 	const [view, setView] = useState<View>('idle')
 	const [notice, setNotice] = useState<ClearNotice>('none')
+	const [localKey, setLocalKey] = useState<LocalKeyState>('unknown')
+	useEffect(() => {
+		if (notice !== 'refused') return
+		let alive = true
+		void readLocalKeyState().then((v) => {
+			if (alive) setLocalKey(v)
+		})
+		return () => {
+			alive = false
+		}
+	}, [notice])
 	if (!closed) return null
 	const fromImport = closed.source === 'import'
 
@@ -91,7 +120,7 @@ export function ShellIdentityClosedNotice({
 				)}
 				{notice === 'refused' && view !== 'confirm' && (
 					<p role="alert" className="mt-3 text-sm leading-6 text-amber-200">
-						{tu('chat.clear_refused.body')}
+						{localKey === 'key_only' ? tu('chat.refused_key_only.body') : localKey === 'has_mnemonic' ? tu('chat.clear_refused.body') : tu('chat.refused_unknown.body')}
 					</p>
 				)}
 				<div className="mt-5 flex flex-wrap justify-center gap-3">
@@ -131,7 +160,7 @@ export function ShellIdentityClosedNotice({
 							{tu('chat.clear_failed.entry')}
 						</button>
 					)}
-					{notice === 'refused' && view !== 'confirm' && (
+					{notice === 'refused' && view !== 'confirm' && localKey === 'has_mnemonic' && (
 						<button
 							type="button"
 							disabled={view === 'busy'}

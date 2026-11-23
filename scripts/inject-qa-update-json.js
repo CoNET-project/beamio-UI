@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Build-time injection for an internal QA shell ZIP.
+ * Build-time injection for an internal QA shell ZIP (2026-11-21).
  *
  * It writes build/update.json for the embedded ZIP ONLY. The repository file public/update.json (the public OTA manifest) is never
  * changed by this script. The version and file name come from package.json at build time.
  *
- * Usage: node scripts/inject-qa-update-json.js [buildDir] (default: build)
+ * Usage: node scripts/inject-qa-update-json.js [buildDir]   (default: build)
  * Run after the React build (wired into build:shell-qa-embedded).
  */
 const fs = require('fs')

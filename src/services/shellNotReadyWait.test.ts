@@ -2,7 +2,7 @@ import { shellNotReadyWaitReason } from './shellNotReadyWait'
 
 const WAIT = /wait and retry, no creation, recovery or import entry/
 
-describe('shell guard: any walletStatus that is not an explicit no_key waits', () => {
+describe('shell guard: any walletStatus that is not an explicit no_key waits (2026-11-21)', () => {
 	test('the original leak combination (walletState absent, idb absent, walletStatus not_ready) waits', () => {
 		expect(shellNotReadyWaitReason({ isShell: true, walletStatus: 'not_ready', presence: 'no_account' })).toMatch(WAIT)
 	})

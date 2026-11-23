@@ -1,6 +1,6 @@
 /**
  * Shell native record read: a command the shell does not support (not_supported) is a definite old-shell capability gap, not an
- * unknown or a read failure. The native record is then absent, so the start reads the page's own store next, as the
+ * unknown or a read failure (2026-11-21). The native record is then absent, so the start reads the page's own store next, as the
  * 0.52.935 start did (AppEntryGate read the page store). A timeout, a refusal or any other error stays a hold (retry).
  */
 export const SHELL_RECORD_NOT_SUPPORTED_ERROR = 'shell_record_not_supported'
@@ -8,7 +8,7 @@ export const SHELL_RECORD_NOT_SUPPORTED_ERROR = 'shell_record_not_supported'
 export const SHELL_RECORD_UNKNOWN_COMMAND_ERROR = 'shell_record_unknown_command'
 /**
  * The shell refuses this page as untrusted (its bridge trust check, `ok:false error:"untrusted_source"`). It is NOT a fallback
- *the native lock is checked first on that shell, and the page
+ *: the native lock is checked first on that shell, and the page
  * store may hold a plaintext mnemonic. The start waits and retries (native_retry), never enters from the page, never onboards.
  */
 export const SHELL_RECORD_UNTRUSTED_SOURCE_ERROR = 'shell_record_untrusted_source'
@@ -32,7 +32,7 @@ export function terminalEvidenceOf(storage: { status: string; reason?: string })
 
 /**
  * The fallback shell (its native record command is definitely absent: shellRecordRead not_supported / unknown_command) start outcome
- * It never consults walletEoaAddress and never writes the native side:
+ * (the decision, 2026-11-21). It never consults walletEoaAddress and never writes the native side:
  * - the page store holds an account → `enter` (/chat);
  * - the page store is confirmed empty → `terminal` (the update prompt; no entry, no creation, recovery or import);
  * - a read failure, timeout or unknown legacy answer → `wait` (retry).

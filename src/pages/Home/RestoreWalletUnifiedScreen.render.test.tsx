@@ -50,7 +50,7 @@ describe('restore screen: the entries (real component)', () => {
 	})
 })
 
-// rule 2026-11-16 (C-2): the scan path accepts only the recovery code format. The scan:url callback is captured by the mock above.
+// Per C-2: the scan path accepts only the recovery code format. The scan:url callback is captured by the mock above.
 describe('scan path: only the recovery code format fills the field (a QR is not a mnemonic or key import)', () => {
 	const scan = (value: string) => {
 		const fn = (globalThis as { __scanUrl?: (v: string) => void }).__scanUrl

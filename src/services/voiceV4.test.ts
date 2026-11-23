@@ -13,7 +13,7 @@ const ch = (over: Partial<V4Channel> = {}): V4Channel => ({
 	...over,
 })
 
-describe('voice protocol v4 digests and canonical texts', () => {
+describe('voice protocol v4 digests and canonical texts (v101 §108)', () => {
 	test('armorSha256 is empty without armor and the SHA-256 hex of the UTF-8 armor otherwise', () => {
 		expect(armorSha256(undefined)).toBe('')
 		expect(armorSha256(ARMOR)).toBe(sha(ARMOR))

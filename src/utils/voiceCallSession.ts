@@ -259,7 +259,7 @@ const VOICE_CALL_END_TYPES: ReadonlySet<string> = new Set([
  */
 export function voiceCallHandlesEndedInBatch(
 	lines: readonly string[],
-	// Kept for the call sites; the signer is no longer taken from it: only a verified envelope counts.
+	// Kept for the call sites; the signer is no longer taken from it (v54 §61): only a verified envelope counts.
 	_signerOf?: (text: string, signature: string) => string | null | undefined,
 ): Set<string> {
 	const ended = new Set<string>()
@@ -401,9 +401,9 @@ export function dismissNativeIncomingVoiceCall(callId: string, sessionId: string
 }
 
 /**
- * Dismiss for an UNANSWERED ring that is ended locally: a late tag lookup that contradicts the declared tag, or the
- * caller hung up before it was answered. Sends the local-only shell action dismissIncomingSystemCall {callId, sessionId}
- * Never endSystemCall (it uplinks voice_end_v1).
+ * Dismiss for an UNANSWERED ring that is ended locally: a late tag lookup that contradicts the declared tag (v45 §50), or the
+ * caller hung up before it was answered (v50 §56). Sends the local-only shell action dismissIncomingSystemCall {callId, sessionId}
+ * (2026-11-20: the shells implement it; no uplink, no signature, no answer). Never endSystemCall (it uplinks voice_end_v1).
  * It also stops this call's retry timers and forgets the offer exactly (no other call with a shared handle is touched).
  */
 export function dismissRevokedIncomingCall(callId: string, sessionId: string): void {
@@ -478,9 +478,9 @@ export function isVoiceCallOfferRinging(signal: {
 	sessionId?: unknown
 } | null | undefined): boolean {
 	if (!isVoiceCallOfferActive(signal)) return false
-	// Only createdAt is the issue time: timestamp is not a verification input.
+	// Only createdAt is the issue time (v20 §22 / v21 §23): timestamp is not a verification input.
 	const createdMs = normalizeVoiceTimestampMs(signal?.createdAt)
-	// No issue time: not an admissible offer. Never ringing without it.
+	// No issue time: not an admissible offer (v20 §22). Never ringing without it.
 	if (!createdMs) return false
 	return Date.now() - createdMs <= INCOMING_CALL_RING_TIMEOUT_MS + 15_000
 }
@@ -610,7 +610,7 @@ const VOICE_OFFER_REPLAY_HOLD_MS = 1_000
 const replayedVoiceOfferTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 /**
- * The offer carried by a chat line, verified. The outer envelope signature is required: the line must
+ * The offer carried by a chat line, verified (draft-v55 §62, v54 §61.2). The outer envelope signature is required: the line must
  * be an envelope {text, signMessage, from?}; the outer signer (recovered from signMessage over text) must equal envelope.from (when
  * present) and the inner offer's from; the inner text must be the offer itself (no nested envelope). A bare offer JSON is refused.
  * Returns the inner offer, or null (silent drop).
@@ -624,7 +624,7 @@ function parseJsonObject(raw: string): unknown {
 }
 
 /**
- * Any voice signal carried by a chat line, verified: the line must be a signed chat envelope
+ * Any voice signal carried by a chat line, verified (draft-v55 §62, v54 §61): the line must be a signed chat envelope
  * {text, signMessage, from}; the outer signer (EIP-191 over text) must equal envelope.from; the inner text must be the signal itself
  * (no nested envelope); the inner from, when present, must equal the outer signer. An offer also needs its own inner signature
  * (recoverVoiceCallOfferSigner). Returns the inner signal, or null (silent drop). This is the only parser for ringing and for the
@@ -640,12 +640,12 @@ export function verifiedVoiceSignalFromLine(raw: string): VoiceCallSignal | null
 		return null
 	}
 	if (!/^0x[0-9a-f]{40}$/.test(outerSigner)) return null
-	// envelope.from is required and must be the outer signer.
+	// envelope.from is required and must be the outer signer (v54 §61.2, v60 §67.2).
 	if (typeof env.from !== 'string' || env.from.toLowerCase() !== outerSigner) return null
 	const inner = parseJsonObject(env.text) as VoiceCallSignal | null
 	if (!inner || typeof inner !== 'object' || typeof inner.callId !== 'string' || typeof inner.sessionId !== 'string') return null
 	if (typeof inner.type !== 'string' || !inner.type.startsWith('voice_')) return null
-	// Every voice signal carries its inner from, and it must be the outer signer. A missing from is refused silently.
+	// Every voice signal carries its inner from, and it must be the outer signer (v68 §75). A missing from is refused silently.
 	if (typeof inner.from !== 'string' || inner.from.toLowerCase() !== outerSigner) return null
 	if (inner.type === 'voice_call_offer_v1') {
 		// the offer's own signature is checked as well (the inner check stays; the outer one is added, not a replacement)
@@ -671,7 +671,7 @@ export function verifiedVoiceOfferFromLine(raw: string): VoiceCallSignal | null 
 }
 
 export function applyNativeIncomingVoiceOfferFromLine(raw: string): boolean {
-	// Bare JSON and any line whose outer envelope signature does not match are dropped silently.
+	// Bare JSON and any line whose outer envelope signature does not match are dropped silently (v55 §62).
 	const signal = verifiedVoiceOfferFromLine(raw)
 	if (!signal) {
 		publishNativePwaLog(
@@ -692,7 +692,7 @@ export function applyNativeIncomingVoiceOfferFromLine(raw: string): boolean {
 		)
 		return false
 	}
-	// Late window: valid only while now <= the signed expiresAt, never past +300 s.
+	// Late window (draft-v37 §41): valid only while now <= the signed expiresAt, never past +300 s.
 	if (!voiceOfferWithinLateWindow(signal, Date.now())) {
 		console.warn(
 			`[voice] incoming offer ignored: outside late window expiresAtPresent=${Boolean(signal.expiresAt)} ` +
@@ -725,8 +725,8 @@ export function applyNativeIncomingVoiceOfferFromLine(raw: string): boolean {
 }
 
 /**
- * Admission of an incoming offer that is about to ring (draft- v3 verification, draft- dedup,
- * draft- late window and `from` check). Registers the offer in the dedup table when admitted, so only the
+ * Admission of an incoming offer that is about to ring (draft-v33 §33.2 v3 verification, draft-v36 §40 dedup,
+ * draft-v37 §41 late window and §41.4 `from` check). Registers the offer in the dedup table when admitted, so only the
  * path that admits it rings; every later delivery of the same (callId, sessionId) is refused as a duplicate.
  * Called only by a path that actually rings: the shell's native report, the App's ring branch, the chat page's ring.
  */
@@ -746,7 +746,7 @@ export function admitIncomingVoiceOffer(signal: VoiceCallSignal, now = Date.now(
 	const signer = recoverVoiceCallOfferSigner(signal)
 	const refusal = voiceOfferAdmissibilityRefusal(signal, signer)
 	if (refusal || !signer) return { ok: false, reason: refusal ?? 'no_signer' }
-	// / a declared @tag that differs from the tag looked up for the signed address is refused (not a warning).
+	// v10 §12 / v18 §18.1: a declared @tag that differs from the tag looked up for the signed address is refused (not a warning).
 	// An unknown lookup (empty lookedUpTag) cannot decide here; see the report.
 	const claimed = claimedVoiceCallerTag(signal)
 	const lookedUpTag = lookedUpTagArg || (incomingOfferTagLookup && signer ? incomingOfferTagLookup(signer) : '')
@@ -789,7 +789,7 @@ function reportNativeIncomingVoiceOffer(signal: VoiceCallSignal): boolean {
 	// CallKit layout collapses when displayName is a short EOA capsule and a
 	// later report swaps in @tag. Never send an address as CallKit title.
 	const proven = callerEoa || ''
-	// / a declared tag is not shown unless it was looked up and matches the signer. This report has no lookup,
+	// v10 §12 / v18 §18.1: a declared tag is not shown unless it was looked up and matches the signer. This report has no lookup,
 	// so the title is 'Beamio' (the App's ring branch sets the looked-up tag).
 	const displayName = 'Beamio'
 	const payload = nativeIncomingSystemCallPayload({
@@ -1483,7 +1483,7 @@ export const isFreshVoiceFrame = (frame: { payload?: unknown; seq?: unknown; tim
 }
 
 /**
- * Whether an offer may detach the current live call: only a ringing offer that is not the current call and arrived after
+ * Whether an offer may detach the current live call (v70 §77): only a ringing offer that is not the current call and arrived after
  * the current call started. An older, terminal or unrelated offer never tears down a dial or another live call.
  */
 export function offerReplacesLiveCall(

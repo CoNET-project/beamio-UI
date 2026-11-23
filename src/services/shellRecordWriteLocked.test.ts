@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * HC-LOCK L-WRITE: a locked write is named shell_record_locked (classified native_locked),
+ * HC-LOCK L-WRITE (v10 §3.2 shellRecordWrite): a locked write is named shell_record_locked (classified native_locked),
  * never native_unavailable, and the write path keeps the change for after the unlock.
  */
 import { parseShellRecordWrite, shellRecordWrite, writeFailureDisposition } from './shellRecordStore'

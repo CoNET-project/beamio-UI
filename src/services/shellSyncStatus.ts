@@ -1,10 +1,10 @@
 /**
- *the home's view of the page-to-shell sync (`pwaWalletSync`). It holds only a state, a reason code and a retry callback.
+ * r94: the home's view of the page-to-shell sync (`pwaWalletSync`). It holds only a state, a reason code and a retry callback.
  * It never holds the mnemonic, the EOA or any record value, and it never clears local data: a failure keeps the old data and the home.
  */
 import { useSyncExternalStore } from 'react'
 
-export type ShellSyncCode = 'write_failed' | 'stale_seq' | 'untrusted_source' | 'key_over_bridge_refused' | 'bad_request' | 'no_answer' | 'locked'
+export type ShellSyncCode = 'write_failed' | 'stale_seq' | 'untrusted_source' | 'key_over_bridge_refused' | 'bad_request' | 'no_answer' | 'locked' | 'unlock_failed' | 'verify_failed'
 
 export type ShellSyncState =
 	| { kind: 'idle' }
@@ -67,7 +67,7 @@ export function useShellSyncState(): ShellSyncState {
 	return useSyncExternalStore(subscribeShellSync, getShellSyncState, getShellSyncState)
 }
 
-/** the gate registers the live check for the manual retry button (the rule is pure; the inputs are read here). */
+/** v10 §六.2: the gate registers the live check for the manual retry button (the rule is pure; the inputs are read here). */
 let manualCheckFn: (() => Promise<boolean>) | null = null
 export function setShellSyncManualCheck(fn: (() => Promise<boolean>) | null): void {
 	manualCheckFn = fn

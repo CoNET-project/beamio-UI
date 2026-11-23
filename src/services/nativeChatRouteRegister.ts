@@ -10,6 +10,7 @@
  */
 import { NATIVE_KEYS_CAPABILITY, ROUTE_REGISTER_CAPABILITY } from './shellChatState'
 import { eventPayloadOf, NATIVE_EVENT_NAMES, postChatModuleCommand } from './nativeKeyState'
+import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
 
 export const CHAT_ROUTE_REGISTER_COMMAND = 'chatRouteRegister'
 /** Same protocol version the chat transports send in `hello`. */
@@ -88,17 +89,44 @@ export function precheckRouteInput(input: NativeRouteInput): NativeRouteErrorCod
 }
 
 /** One request on the chat-module channel. Resolves with the ack or ready payload for its reqId. */
+/** reqIds whose answer was taken (decided). A later reply with one of them is dropped and logged ( ②). Bounded. */
+const concludedReqIds: number[] = []
+/** reqIds with a request still open (waiting for their answer). */
+const openReqIds = new Set<number>()
+let concludedWatchInstalled = false
+function ensureConcludedWatch(): void {
+	if (concludedWatchInstalled || typeof window === 'undefined') return
+	concludedWatchInstalled = true
+	// an ack for a request that is not open is dropped, with a log ( ②): cause=decided when its answer was taken, otherwise reqid_mismatch
+	const watch = (ev: Event) => {
+		const payload = eventPayloadOf(ev)
+		if (!payload || payload.type !== 'ack' || typeof payload.reqId !== 'number') return
+		if (openReqIds.has(payload.reqId)) return
+		const cause = concludedReqIds.includes(payload.reqId) ? 'decided' : 'reqid_mismatch'
+		publishNativePwaLog('warn', `[start] late_result_discarded reqId=${payload.reqId} cause=${cause}`)
+	}
+	for (const name of NATIVE_EVENT_NAMES) window.addEventListener(name, watch)
+}
+function markConcluded(reqId: number): void {
+	concludedReqIds.push(reqId)
+	if (concludedReqIds.length > 64) concludedReqIds.shift()
+}
+
 function request(
 	cmd: Loose,
 	timeoutMs: number,
 ): Promise<{ kind: 'payload'; payload: Loose } | { kind: 'timeout' } | { kind: 'unavailable' }> {
 	if (typeof window === 'undefined') return Promise.resolve({ kind: 'unavailable' })
 	const reqId = cmd.reqId as number
+	ensureConcludedWatch()
+	openReqIds.add(reqId)
 	return new Promise((resolve) => {
 		let timer: ReturnType<typeof setTimeout> | undefined
 		const done = (answer: { kind: 'payload'; payload: Loose } | { kind: 'timeout' } | { kind: 'unavailable' }) => {
 			for (const name of NATIVE_EVENT_NAMES) window.removeEventListener(name, listener)
 			if (timer !== undefined) clearTimeout(timer)
+			openReqIds.delete(reqId)
+			if (answer.kind === 'payload') markConcluded(reqId)
 			resolve(answer)
 		}
 		const listener = (ev: Event) => {
@@ -139,7 +167,7 @@ export async function probeNativeCapabilities(
 	const result = p.result as Loose | undefined
 	const caps = isPlainObject(result) && Array.isArray(result.capabilities) ? result.capabilities : []
 	// A refusal (ok false) declares nothing: its capability list is not read, so a refused hello counts as unanswered.
-	// nativeApp: the native version of the shell, read from the same ack result; never a PWA or SDK version.
+	// nativeApp (decision 2026-11-21): the native version of the shell, read from the same ack result; never a PWA or SDK version.
 	const nativeApp = ok && isPlainObject(result) ? result.nativeApp : undefined
 	return { answered: ok, capabilities: ok ? caps.filter((c): c is string => typeof c === 'string') : [], nativeApp }
 }

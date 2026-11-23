@@ -1,5 +1,5 @@
 /**
- * 0.53.39: a save that did not complete shows the notice in the sync notice's position, with a retry button
+ * 0.53.39 (item 3): a save that did not complete shows the notice in the sync notice's position, with a retry button
  * that runs the save again. The text is the localized key (the test renders the key).
  */
 import { act, fireEvent, render, screen } from '@testing-library/react'

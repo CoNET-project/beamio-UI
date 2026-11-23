@@ -83,7 +83,9 @@ const RecoveryBackupScreen: React.FC<prof> = ({colse}) => {
 			return setShowRegenerateConfirm(true)
 		}
 
-		const mnemonicPhrase = CoNET_Data.mnemonicPhrase
+		// only a plaintext phrase is regenerated; an envelope or other shape is never passed as the phrase
+		const mnemonicPhrase = typeof CoNET_Data.mnemonicPhrase === 'string' ? CoNET_Data.mnemonicPhrase : ''
+		if (!mnemonicPhrase) return
 		const profile: profile = profiles[0]
 		setLoading(true)
 		

@@ -44,7 +44,7 @@ describe('reqId spaces on the native ack channel (preventive correction; millise
 		expect(SHELL_PASSCODE_REQ_BASE).toBeGreaterThan(IMPORT_REQ_BASE + 10_000_000)
 	})
 
-	it('the page passcode range and the native repair range are disjoint, each has an upper bound, and the page range refuses to exceed its bound', () => {
+	it('r2: the page passcode range and the native repair range are disjoint, each has an upper bound, and the page range refuses to exceed its bound', () => {
 		expect(SHELL_PASSCODE_REQ_LIMIT).toBeLessThanOrEqual(NATIVE_REPAIR_REQ_BASE)
 		expect(NATIVE_REPAIR_REQ_LIMIT).toBeGreaterThan(NATIVE_REPAIR_REQ_BASE)
 		expect(NATIVE_REPAIR_REQ_BASE).toBeGreaterThan(prereadReqIdFor(SEQ_MAX))

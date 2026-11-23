@@ -3,7 +3,7 @@ import { callerDisplay, parseIncomingUnlockRequest, remainingAt, shouldSendShown
 const EOA = '0x' + '11'.repeat(20)
 const good = { callId: 'call-ABC_123', eoa: EOA, remainingMs: 10000, phase: 'load' }
 
-describe('incoming unlock request parsing', () => {
+describe('incoming unlock request parsing (v114 §133.1)', () => {
 	test('a complete request is accepted', () => {
 		expect(parseIncomingUnlockRequest(good, EOA)).toEqual(good)
 	})
@@ -30,7 +30,7 @@ describe('incoming unlock request parsing', () => {
 	})
 })
 
-describe('countdown', () => {
+describe('countdown (v114 §133.2)', () => {
 	test('the countdown starts from remainingMs, not the full amount, and runs down with time', () => {
 		const req = { remainingMs: 7000 }
 		expect(remainingAt(req, 1000, 1000)).toBe(7000)
@@ -44,7 +44,7 @@ describe('countdown', () => {
 	})
 })
 
-describe('the Shown rule', () => {
+describe('the Shown rule (v114 §133.2 and §133.4)', () => {
 	test('phase load sends Shown once', () => {
 		expect(shouldSendShown({ phase: 'load' }, false)).toBe(true)
 		expect(shouldSendShown({ phase: 'load' }, true)).toBe(false)
@@ -55,7 +55,7 @@ describe('the Shown rule', () => {
 	})
 })
 
-describe('caller display', () => {
+describe('caller display (v114 §133.3, v116 §135 transitional)', () => {
 	const FROM = '0xABCDEF0000000000000000000000000000000001'
 
 	test('the identity is the verified from, shown as a short address; no name is ever looked up', () => {

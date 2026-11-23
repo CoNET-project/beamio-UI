@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- * step 6 (draft 24.2 P2, 24.3): the page sends its mnemonic to the shell only from its own valid evidence. An empty phrase, an
+ * r92 step 6 (draft 24.2 P2, 24.3): the page sends its mnemonic to the shell only from its own valid evidence. An empty phrase, an
  * unknown read, a confirmed empty store, or a phrase that does not derive to the EOA sends nothing. An unconfirmed reply never counts as
  * synced (the native side confirms after its read-back). P1 (the old-store migration) runs on the native side and is not tested here.
  */
@@ -70,7 +70,7 @@ describe('static pins: the gate sends only through pageSyncPayload', () => {
 	it('AppEntryGate calls pageSyncPayload before shellMnemonicSync.sync', () => {
 		const gate = require('fs').readFileSync(require('path').join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8') as string
 		const at = gate.indexOf('const syncPageMnemonicToShell')
-		// the window covers the C1 pre-check and the record clear before the send
+		// the window covers the C1 pre-check and the record clear (v10 §五, §六.1) before the send
 		const block = gate.slice(at, at + 1500)
 		expect(block.indexOf('pageSyncPayload(ev)')).toBeGreaterThan(0)
 		// the send goes through the per-session send-once guard (review item A), which calls shellMnemonicSync.sync after the guard

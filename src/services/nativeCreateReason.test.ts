@@ -1,8 +1,8 @@
 /**
  * @jest-environment node
  *
- * (OB-2…OB-4),: the write_failed reason. In-vocabulary reasons are kept; a missing or out-of-vocabulary reason is
- * undefined; a reason on any other code is a shape violation. Test IDs OB-R1…OB-R4 are my own naming.
+ * v10 §九 (OB-2…OB-4), rule: the write_failed reason. In-vocabulary reasons are kept; a missing or out-of-vocabulary reason is
+ * undefined; a reason on any other code is a shape violation. Test IDs OB-R1…OB-R4 are my own naming (the r11 IDs were not found).
  */
 import { acceptNativeCreateResult } from './nativeRecovery'
 

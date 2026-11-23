@@ -14,7 +14,7 @@ const META_STORE = 'meta'
 
 let dbPromise: Promise<IDBDatabase> | null = null
 
-/** A blocked or stalled open fails after this time, with a named error: it never hangs silently. */
+/** A blocked or stalled open fails after this time, with a named error: it never hangs silently (R77). */
 export const OPEN_DB_TIMEOUT_MS = 10_000
 export const OPEN_DB_BLOCKED = 'beamio_tag_db_blocked'
 export const OPEN_DB_TIMEOUT = 'beamio_tag_db_open_timeout'

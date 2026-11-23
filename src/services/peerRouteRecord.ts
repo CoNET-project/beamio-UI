@@ -1,5 +1,5 @@
 /**
- * Writes a peer's key and route onto the chat row.
+ * Writes a peer's key and route onto the chat row (BCHAT field test, sections 34-36).
  *
  * The chat page holds a shallow copy of the stored row (initMessage returns the stored row object and the page copies it), so the copy's
  * `chatData` is the same object as the stored row's `chatData`. A write that changes that object in place before it compares the stored row
@@ -65,7 +65,7 @@ export function applyPeerRouteToRows<T extends PeerRouteRow>(rows: T[], address:
 		changed = true
 		const written: PeerRouteFields = { ...(row.chatData ?? {}) }
 		for (const key of PEER_ROUTE_KEYS) written[key] = next[key]
-		// Never a downgrade: an untrusted write carries no verified fingerprint of its own. An empty value keeps the row's trust.
+		// Never a downgrade (BCHAT 43): an untrusted write carries no verified fingerprint of its own. An empty value keeps the row's trust.
 		if (!next.verifiedFingerprint && row.chatData?.verifiedFingerprint) written.verifiedFingerprint = row.chatData.verifiedFingerprint
 		return { ...row, chatData: written }
 	})

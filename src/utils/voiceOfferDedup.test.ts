@@ -21,7 +21,7 @@ const R1 = '0x1111111111111111111111111111111111111111'
 const R2 = '0x2222222222222222222222222222222222222222'
 const T0 = 1_800_000_000_000
 
-describe('dedup key', () => {
+describe('dedup key (draft-v36 §40, draft-v37 §29)', () => {
 	test('key is JSON array of [callId, sessionId], not | or :', () => {
 		expect(voiceOfferDedupKey('c1', 's1')).toBe('["c1","s1"]')
 		expect(voiceOfferDedupKey(' c1 ', 's:1')).toBe('["c1","s:1"]')
@@ -44,7 +44,7 @@ describe('register: duplicate and retention', () => {
 	})
 })
 
-describe('per-caller quota', () => {
+describe('per-caller quota (draft-v36 §40 1)', () => {
 	test('51st unexpired offer from one R is refused, other R unaffected', () => {
 		const warnings: string[] = []
 		const d = createVoiceOfferDedup({ storage: null, warn: (m) => warnings.push(m) })
@@ -70,7 +70,7 @@ describe('per-caller quota', () => {
 	})
 })
 
-describe('global cap', () => {
+describe('global cap (draft-v36 §40 2–3)', () => {
 	test('full table of unexpired records refuses new offers and evicts none', () => {
 		const warnings: string[] = []
 		const d = createVoiceOfferDedup({ storage: null, warn: (m) => warnings.push(m) })
@@ -112,7 +112,7 @@ describe('persistence', () => {
 	})
 })
 
-describe('late window', () => {
+describe('late window (draft-v37 §41)', () => {
 	const expiresAt = T0 + 900_000
 	test('accepted while now <= signed expiresAt', () => {
 		expect(voiceOfferWithinLateWindow({ expiresAt, createdAt: expiresAt - 900_000 }, expiresAt)).toBe(true)
@@ -127,7 +127,7 @@ describe('late window', () => {
 		expect(voiceOfferWithinLateWindow({ expiresAt: sec, createdAt: sec - 900 }, expiresAt - 1000)).toBe(true)
 		expect(voiceOfferWithinLateWindow({ expiresAt: sec, createdAt: sec - 900 }, expiresAt + 1000)).toBe(false)
 	})
-	test('expiresAt is never extended by 300 s', () => {
+	test('expiresAt is never extended by 300 s (v39 §43)', () => {
 		expect(voiceOfferWithinLateWindow({ expiresAt, createdAt: expiresAt - 900_000 }, expiresAt + 1)).toBe(false)
 	})
 	test('issuedAt more than 300 s in the future is refused; the past is not', () => {
@@ -136,7 +136,7 @@ describe('late window', () => {
 		expect(voiceOfferWithinLateWindow({ expiresAt, createdAt: now + 300_000 }, now)).toBe(true)
 		expect(voiceOfferWithinLateWindow({ expiresAt, createdAt: now - 3_600_000 }, now)).toBe(true)
 	})
-	test('missing issue time (createdAt) is refused', () => {
+	test('missing issue time (createdAt) is refused (v20 §22)', () => {
 		expect(voiceOfferWithinLateWindow({ expiresAt }, expiresAt - 1000)).toBe(false)
 		expect(voiceOfferWithinLateWindow({ expiresAt, createdAt: 0 }, expiresAt - 1000)).toBe(false)
 	})

@@ -1,9 +1,9 @@
 /**
- * The automatic first open of the chat identity, as one flow in the SDK (2026-11-16; interface names are provisional:
+ * The automatic first open of the chat identity, as one flow in the SDK (the rule; interface r2.5.20 names are provisional:
  * chatInit and the status values follow the temporary plan until the fifth interface version). The page calls runFirstOpen and shows the
  * status; the page never receives a private key.
  *
- * One flow, one lock per wallet: decision → generate → save (pending, its own store) → re-read the pending copy from storage →
+ * One flow, one lock per wallet (R80 M1): decision → generate → save (pending, its own store) → re-read the pending copy from storage →
  * re-read the chain → register (one send; 4xx is a permanent refusal, 5xx and network retry with the backoff) → clear the pending copy.
  * A busy lock means another tab runs the flow: it is not a failure.
  */
@@ -30,7 +30,7 @@ export type FirstOpenInputs = {
 const PUB_BEGIN = '-----BEGIN PGP PUBLIC KEY BLOCK-----'
 const PUB_END = '-----END PGP PUBLIC KEY BLOCK-----'
 
-/** A structural check of an armored public key: a record that is not an armor is not a record. */
+/** A structural check of an armored public key: a record that is not an armor is not a record (R80 M4). */
 export function wellFormedPublicArmor(armor: string): boolean {
 	const b = armor.indexOf(PUB_BEGIN)
 	const e = armor.indexOf(PUB_END)
@@ -157,7 +157,7 @@ export type FirstOpenDeps = {
 export type ChatInitResult = { status: ChatInitStatus; keyID?: string }
 
 /**
- * The whole flow under one lock. The status is the only output for the page: no key crosses this boundary.
+ * The whole flow under one lock (R80 M1). The status is the only output for the page: no key crosses this boundary.
  */
 /**
  * The flow without the lock: the caller holds the wallet's lock (the worker command takes it, so it can read and write its persisted hold too).
@@ -167,7 +167,7 @@ export async function runFirstOpenLocked(_eoa: string, deps: FirstOpenDeps): Pro
 	const inputs = await deps.readInputs()
 	const decision = firstOpenDecision(inputs)
 	if (decision === 'use_record') {
-		// the chain holds the record: a pending copy kept for a delayed read is no longer needed
+		// the chain holds the record: a pending copy kept for a delayed read is no longer needed (R92)
 		await deps.clearPending()
 	return { status: 'ready' }
 	}
@@ -189,7 +189,7 @@ export async function runFirstOpenLocked(_eoa: string, deps: FirstOpenDeps): Pro
 	if (again === 'unknown') return { status: 'unknown' }
 	const cls = await deps.register(pending)
 	if (cls === 'registered') {
-		//the pending copy stays until the chain shows the record (relay writes can be delayed). A later run reads the record
+		// R92: the pending copy stays until the chain shows the record (relay writes can be delayed). A later run reads the record
 		// (use_record clears it) or resumes this same key; it never generates a second key while the copy is kept.
 	return { status: 'registering', keyID: pending.keyID }
 	}

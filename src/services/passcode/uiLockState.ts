@@ -1,11 +1,11 @@
 /**
- * UI lock report and the step after a UI unlock (
- * not involved here). Pure: the send function is injected; nothing here reads or writes secrets.
+ * UI lock report and the step after a UI unlock (the recorded rule §3.1–3.2, §4;
+ * v39 §43 not involved here). Pure: the send function is injected; nothing here reads or writes secrets.
  *
  * - The page reports only `uiLockState {locked:true}` when it shows its UI lock (any UI lock, including the hot-restore lock).
- * The page never sends `locked:false`: the SDK sets `uiUnlocked` true only on a successful `passcodeUnlock`.
+ *   The page never sends `locked:false`: the SDK sets `uiUnlocked` true only on a successful `passcodeUnlock`.
  * - After a UI unlock: when the native session is already unlocked the page does NOT send `passcodeUnlock`; it runs
- * `nativeIdentityCheck {eoa}` instead. When the native session is locked, the page sends `passcodeUnlock`.
+ *   `nativeIdentityCheck {eoa}` instead. When the native session is locked, the page sends `passcodeUnlock`.
  */
 import { passcodeCapabilityDeclared } from './passcodeCommands'
 

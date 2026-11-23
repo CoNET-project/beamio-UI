@@ -70,6 +70,7 @@ import { ackInboundHashesInBrowser } from './browserInboundAck'
 import { createHistoryLoadGate, type HistoryLoadCaller } from './historyLoadGate'
 import { inboundLineForAccount } from './historyClientBinding'
 import { createHistoryLoadPath } from './historyLoadPath'
+import { createHistoryTailWaiter } from './historyTailWaiter'
 import { hasInboundDedupeMarker } from '../utils/inboundDedupeStore'
 import { issueInboundAck, type InboundAckTarget } from './inboundBatchSettle'
 import { postAndroidChatCommand } from '../utils/androidChatChannel'
@@ -78,6 +79,7 @@ import { NATIVE_WALLET_ESTABLISHED_EVENT } from './nativeWalletEstablished'
 import { createInitRefusalLatch, type IdentityClosedInitReason } from './nativeInitRefusal'
 import { isMailboxAckSent, noteMailboxAckSent } from '../utils/chatDeliveryReceipt'
 import { WORKER_READY_TIMEOUT, WorkerReadyTimeout, withWorkerReadyWatchdog } from './workerReadyWatchdog'
+import { chatAccessRefused } from './passcode/chatAccessGuard'
 
 /** True when any native shell path must own Chat (no TS gossip Worker). */
 function mustUseNativeChatBridge(): boolean {
@@ -147,6 +149,8 @@ export async function sendChatViaNativeDaemon(
 	payload: string,
 	opts?: { beamioNoPush?: boolean },
 ): Promise<boolean> {
+	// unit e: the UI lock refuses the send before any bridge request.
+	if (chatAccessRefused('send')) return false
 	const deadline = Date.now() + NATIVE_SEND_READY_WAIT_MS
 	while (!nativeSendReady() && Date.now() < deadline) {
 		await new Promise((resolve) => setTimeout(resolve, 200))
@@ -321,6 +325,7 @@ export const issueWorkerGroupRoster = async (
 }
 
 export const sendWorkerGroupMessage = async (request: GroupSendRequest): Promise<GroupSendResult> => {
+	if (chatAccessRefused('send')) throw new Error('Chat is locked')
 	const client = activeClient
 	if (!client) throw new Error('Chat is not connected')
 	return client.sendGroupMessage(request)
@@ -351,6 +356,13 @@ const runHistoryLoad = async (options?: HistoryLoadOptions): Promise<void> => {
  * The load path (historyLoadPath.ts): a request before the worker client exists is queued (the race fix: `initChat`sets React
  * `gossip=true` before the client exists, and App effects do not retry), and the queue is flushed by the first ready request.
  */
+/**
+ * Completion signal of the history load (historyTailWaiter.ts): a tail batch (`isTail`) of the active worker client means the on-chain
+ * pointer was read, the IPFS index fetched and the tail decrypted. The chat preheat waits on it (awaitWorkerHistoryTail).
+ */
+const HISTORY_TAIL_TIMEOUT_MS = 90_000
+const historyTail = createHistoryTailWaiter()
+
 const historyLoadPath = createHistoryLoadPath<HistoryLoadOptions>({
 	gate: historyLoadGate,
 	runLoad: runHistoryLoad,
@@ -368,8 +380,10 @@ export const loadWorkerHistory = async (
 	options?: HistoryLoadOptions,
 	caller: HistoryLoadCaller = 'other',
 ): Promise<void> => {
+	// unit e: no history load while the UI is locked (no bridge request).
+	if (chatAccessRefused('history_load')) return
 	// the load's new entries reach the page through the history buffer (see the buffer handler below). Nothing is read back and
-	// re-sent to the listeners after a load: that replayed the whole history on every gossip restart (history-replay-plan-.md).
+	// re-sent to the listeners after a load: that replayed the whole history on every gossip restart.
 	await historyLoadPath.load(options, caller, activeClient !== null)
 }
 
@@ -394,9 +408,13 @@ export const appendWorkerHistory = async (
  * `null` means the worker is not ready — keep the last trusted transcript.
  * A `query` searches the whole local corpus (message text, call status, file name).
  */
+export const awaitWorkerHistoryTail = (): Promise<boolean> =>
+	historyTail.await(() => activeClient, HISTORY_TAIL_TIMEOUT_MS)
+
 export const readDecryptedChatHistory = async (
 	options?: HistoryReadOptions,
 ): Promise<HistoryEntry[] | null> => {
+	if (chatAccessRefused('history_read')) return null
 	if (!activeClient) return null
 	try {
 		return await activeClient.history.read(options)
@@ -414,6 +432,7 @@ export const openLocalChatPage = async (
 	convKey: string,
 	viewport: ChatLocalViewport,
 ): Promise<ChatLocalPageResult | null> => {
+	if (chatAccessRefused('local_read')) return null
 	const h = activeClient?.history
 	if (!h || typeof h.openConversation !== 'function') return null
 	try {
@@ -429,6 +448,8 @@ export const openLocalChatPage = async (
  */
 export type LocalChatHistoryRead = { kind: 'page'; source: string; items: number } | { kind: 'no_library' } | { kind: 'not_ready' } | { kind: 'read_error' }
 export const readLocalChatHistory = async (convKey: string, viewport: ChatLocalViewport): Promise<LocalChatHistoryRead> => {
+	// unit e: locked is not judged as a result (the page shows nothing); no bridge request.
+	if (chatAccessRefused('local_read')) return { kind: 'not_ready' }
 	const h = activeClient?.history
 	// no history client yet: not ready, nothing is judged
 	if (!h || typeof h.openConversation !== 'function') return { kind: 'not_ready' }
@@ -447,6 +468,7 @@ export const loadOlderLocalChatPage = async (
 	cursor: string,
 	viewport: ChatLocalViewport,
 ): Promise<ChatLocalPageResult | null> => {
+	if (chatAccessRefused('local_read')) return null
 	const h = activeClient?.history
 	if (!h || typeof h.loadOlder !== 'function') return null
 	try {
@@ -904,6 +926,7 @@ const startWorkerGossipListenInternal = async (p: StartWorkerGossipParams): Prom
 	unsubs.push(
 		client.history.onBuffer((batch) => {
 			if (p.rootSignal.aborted) return
+			historyTail.noteTail(client, batch?.isTail)
 			// Counted by the gate, then forwarded (historyLoadPath.deliverBuffer).
 			historyLoadPath.deliverBuffer(batch, (b) => {
 				// each batch carries the account of the client that produced it.
@@ -941,7 +964,7 @@ const startWorkerGossipListenInternal = async (p: StartWorkerGossipParams): Prom
 	p.rootSignal.addEventListener('abort', teardown)
 
 	try {
-		// -watchdog: a start that never reaches the worker's ready is bounded and named (the step where it stopped)
+		// R79-watchdog: a start that never reaches the worker's ready is bounded and named (the step where it stopped)
 		// (a native client has no worker start to bound: it is awaited as before)
 		await (client.startStep !== undefined ? withWorkerReadyWatchdog(client.init(), () => client.startStep ?? '') : client.init())
 		initLatch.noteReady()

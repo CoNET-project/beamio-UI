@@ -159,7 +159,7 @@ export type {
 /** Local-library key derivation for the wallet layer. The wallet layer derives; the store receives subkeys. */
 export { deriveLocalKeys, deriveRootDb, kcvOf, sendKeyFromRecord, stableIdFromSendKey, convBlindOf, cidBlindOf, layoutKeyBlindOf } from './local/keys.js'
 
-/** The automatic first open and the claim gate. */
+/** The automatic first open and the claim gate (names provisional until interface r2.5.20 v5). */
 export {
 	chainReadFromLookup,
 	chainBackupFromRead,

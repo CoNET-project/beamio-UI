@@ -1,5 +1,5 @@
 /**
- * steps 1 and 2: a shell start reads the old PWA store first. The 0.52.930 format is
+ * r92 steps 1 and 2 (decision 2026-11-17, draft 24.1 and 24.5): a shell start reads the old PWA store first. The 0.52.930 format is
  * PouchDB "conet", document "init", title = base64(JSON) of the whole record, with the mnemonic in plain `mnemonicPhrase`.
  * The old store is the route authority for an existing account: a valid mnemonic whose derived address equals profiles[0].keyID enters
  * the account at its address. A mismatch, a read failure or a timeout is unknown (held, never written). An absent document or a
@@ -35,7 +35,7 @@ export function decideLegacyInit(data: Loose | null | undefined): LegacyInitDeci
 	if (!eoa) return { status: 'unknown', reason: 'native_retry' }
 	const first = Array.isArray(data.profiles) ? (data.profiles[0] as Loose | undefined) : undefined
 	const keyID = first && typeof first.keyID === 'string' ? first.keyID.trim().toLowerCase() : ''
-	// rule C (2026-11-17): a PWA-local mnemonic that derives to an address other than keyID is a deterministic "no valid mnemonic" (E7),
+	// a PWA-local mnemonic that derives to an address other than keyID is a deterministic "no valid mnemonic" (E7),
 	// not an unknown read. It is not used, nothing is written, and the native pre-read (E6) decides: the same as an absent document.
 	if (keyID !== eoa) return { status: 'absent' }
 	return { status: 'valid', eoa }

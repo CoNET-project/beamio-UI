@@ -1,5 +1,5 @@
 /**
- * Voice protocol v4 canonical texts and digests.
+ * Voice protocol v4 canonical texts and digests (v101 §108, field names fixed by the interface maintainers).
  * Pure functions: no key material. Times are in milliseconds, except the pay notAfter (seconds).
  */
 import { ethers } from 'ethers'
@@ -14,19 +14,19 @@ export type V4Channel = {
 	temp: string
 	tempPgpFpr: string
 	tempPgpArmor?: string
-	/** The authorization {from, validUntil, sig} only. The fingerprint is the top-level `tempPgpFpr`. */
+	/** The authorization {from, validUntil, sig} only (v111 §128). The fingerprint is the top-level `tempPgpFpr`. */
 	auth: { from: string; validUntil: number; sig: string }
 }
 
-/** One pay: the callee's payment authorization for a channel. */
+/** One pay (§108.6): the callee's payment authorization for a channel. */
 export type V4Pay = { role: V4Role; temp: string; notAfter: number; maxBytes: number; maxSeconds: number; sig: string }
 
 const sha256Hex = (text: string): string => ethers.sha256(ethers.toUtf8Bytes(text)).slice(2).toLowerCase()
 
-/** SHA-256 hex of the armor text (UTF-8); '' when there is no armor. */
+/** SHA-256 hex of the armor text (UTF-8); '' when there is no armor (§108.3). */
 export const armorSha256 = (armor: string | undefined): string => (armor ? sha256Hex(armor) : '')
 
-/** chansDigest: one line per channel in the given order, joined by \n with no trailing newline. */
+/** chansDigest (§108.3): one line per channel in the given order, joined by \n with no trailing newline. */
 export function chansDigest(role: [V4Role, V4Role], channels: [V4Channel, V4Channel]): string {
 	const lines = channels.map((c, i) =>
 		[
@@ -42,7 +42,7 @@ export function chansDigest(role: [V4Role, V4Role], channels: [V4Channel, V4Chan
 	return sha256Hex(lines.join('\n'))
 }
 
-/** payDigest: one line per pay, in the order cv, cV, ev, eV, joined by \n with no trailing newline. */
+/** payDigest (§108.6): one line per pay, in the order cv, cV, ev, eV, joined by \n with no trailing newline. */
 export function payDigest(pays: V4Pay[]): string {
 	const lines = pays.map((p) =>
 		[`role:${p.role}`, `temp:${p.temp.toLowerCase()}`, `notAfter:${p.notAfter}`, `maxBytes:${p.maxBytes}`, `maxSeconds:${p.maxSeconds}`, `sig:${p.sig}`].join(' '),
@@ -50,7 +50,7 @@ export function payDigest(pays: V4Pay[]): string {
 	return sha256Hex(lines.join('\n'))
 }
 
-/** offer v4 canonical. timestamp is the same value as createdAt. */
+/** offer v4 canonical (§108.4). timestamp is the same value as createdAt. */
 export function offerV4Text(f: {
 	callId: string
 	sessionId: string
@@ -75,7 +75,7 @@ export function offerV4Text(f: {
 	].join('\n')
 }
 
-/** accept v4 canonical. offerSigSha256 is the SHA-256 hex of the offer's sig text (with 0x). */
+/** accept v4 canonical (§108.5). offerSigSha256 is the SHA-256 hex of the offer's sig text (with 0x). */
 export function acceptV4Text(f: {
 	callId: string
 	sessionId: string

@@ -11,7 +11,8 @@ const logLines = store.split('\n').filter((l) => l.includes('[shellRecordRead]')
 
 describe('shell record read diagnostics (caller label, codes and times only)', () => {
 	it('every read log line carries the caller label', () => {
-		expect(logLines.length).toBe(3)
+		// 0.53.44 (30 s read window): the read logs also carry the shared-request and still-waiting lines (both with the caller label)
+		expect(logLines.length).toBe(5)
 		for (const l of logLines) expect(l).toMatch(/source/)
 	})
 

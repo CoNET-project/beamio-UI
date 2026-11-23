@@ -1,5 +1,5 @@
 /**
- * The shell's identity source after a restart (ruling of the interface owner, 2026-11-13).
+ * The shell's identity source after a restart (of the interface).
  *
  * - After a restore or a create answers `ok`, the public EOA is kept in non-secret storage: the address only, never a key,
  *   passphrase or backup. After a restart it is the EOA input of `init`; the native layer checks it against its record.

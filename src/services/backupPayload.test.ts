@@ -1,5 +1,5 @@
 /**
- * Registration and backup payload (spec item 36(2)-(3), item 37, the 1440 rule). Only the encrypted mnemonic may leave the
+ * Registration and backup payload (spec §25.52Y.163 item 36(2)-(3), item 37, the 1440 rule). Only the encrypted mnemonic may leave the
  * page: no private key, no private-key ciphertext and no plaintext mnemonic in the outbound body (BK-02, BK-03, BK-05).
  * The third argument of newUser (the wallet private key) is used only to derive the address and sign it; it is never serialized.
  * SYNTHETIC values only: the key below is an arbitrary test value and not an account.
@@ -46,7 +46,7 @@ function stringLeaves(node: unknown, out: string[] = []): string[] {
 }
 /**
  * The recover hashes are keccak256 values (0x plus 64 hex): the same form as a private key. Spec 38(4) detects by value form, so the
- * detector takes the exact hash values of the recover entries as the only allowed 0x-64-hex values.
+ * detector takes the exact hash values of the recover entries as the only allowed 0x-64-hex values (needed; see receipt).
  */
 function leakForms(body: unknown, raw: string): string[] {
 	const hits: string[] = []
@@ -110,5 +110,5 @@ describe('registration payload carries only the encrypted mnemonic (spec 36(2)-(
 describe('backup cases not covered by this file (receipt lists them)', () => {
 	it.todo('BK-01: the two recovery methods decrypt the same phrase and derive the same EOA (needs WebCrypto and argon2)')
 	it.todo('BK-04: an IPFS reference only in the registry; the backup path does not upload the phrase to IPFS')
-	it.todo('BK-06: not defined in spec; awaiting a decision')
+	it.todo('BK-06: not defined in spec 25.52Y.163 item 36; awaiting rule')
 })

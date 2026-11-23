@@ -2,7 +2,7 @@
  * @jest-environment node
  *
 
- * The pre-read valid path drops a held signer of another account WITHOUT changing the in-memory profile (review of be1b9c3, item 2).
+ * The pre-read valid path drops a held signer of another account WITHOUT changing the in-memory profile (review, item 2).
  * Synthetic test vector only (the public BIP-39 test phrase); no real or QA account.
  */
 import { ethers } from 'ethers'

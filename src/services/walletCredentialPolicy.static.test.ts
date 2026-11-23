@@ -34,8 +34,8 @@ describe('the copy for the update prompt exists in every locale', () => {
 
 describe('the new branches are reached only from the shell branch of the gate', () => {
 	it('the shell branch sits inside init before the browser storage read (the native-shell start never falls through to the browser read)', () => {
-		// The local home (judgeLocalOnly) and the init-level restorePageCopy call were removed on purpose by cebd7e0; their pins are deleted.
-		// rule (a), spec item 42(5): the explicit no_key guard lengthens init; the window is 16000 characters so the browser read stays inside it.
+		// The local home (judgeLocalOnly) and the init-level restorePageCopy call were removed on purpose; their pins are deleted.
+		// rule (a), spec r2.4 item 42(5): the explicit no_key guard lengthens init; the window is 16000 characters so the browser read stays inside it.
 		const init = gate.slice(gate.indexOf('const init = async () => {'), gate.indexOf('const init = async () => {') + 16000)
 		const shellBranch = init.indexOf('if (nativeShellRef.current) {')
 		const browserRead = init.indexOf('const storageResult = await checkStorageWithTransientRetry()')

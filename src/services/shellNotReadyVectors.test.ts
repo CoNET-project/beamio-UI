@@ -1,9 +1,9 @@
 import { diagnosticCode } from './diagnosticCodes'
 /**
- * v4: the shellRecordRead not_ready shape and its ceilings, checked against the three spec vectors:
- * - test vector;
- * - test vector;
- * - test vector.
+ * v4 (2026-11-21): the shellRecordRead not_ready shape and its ceilings, checked against the three spec vectors:
+ * - the vector file (SHAPE-01..11);
+ * - the vector file (SRR-01..07);
+ * - the vector file (UNR-01..05).
  * not_ready is result.code under ok:true; not_ready_persistent is result.code "error" with sub; origin_refused and bad_request are
  * envelope-level ok:false. Each case below names its vector id.
  */
@@ -61,15 +61,15 @@ describe('v4 not_ready_persistent (result.code "error", sub)', () => {
 	})
 })
 
-describe('superseded envelope forms are not valid not_ready answers', () => {
-	it('SRR-02 envelope ok:false error not_ready with retryable true: bounded, never endless', () => {
+describe('superseded envelope forms (v159/v160 SRR-*, UNR-*) are not valid not_ready answers', () => {
+	it('SRR-02 envelope ok:false error not_ready with retryable true (v168 compatibility): bounded, never endless', () => {
 		const p = { type: 'ack', ok: false, error: 'not_ready', notReadyReason: 'g1_uninitialized', retryable: true }
 		expect(storageReasonOf(p)).toBe('native_not_ready_bounded')
 	})
 	it('SRR-01 envelope not_ready with retryable false: explicit at once', () => {
 		expect(storageReasonOf({ type: 'ack', ok: false, error: 'not_ready', notReadyReason: 'storage_locked', retryable: false })).toBe('native_not_ready_final')
 	})
-	it('an envelope not_ready without retryable: bounded, then the terminal (the re-reads end in native_not_ready_final)', () => {
+	it('an envelope not_ready without retryable (v168): bounded, then the terminal (the re-reads end in native_not_ready_final)', () => {
 		expect(storageReasonOf({ type: 'ack', ok: false, error: 'not_ready' })).toBe('native_not_ready_bounded')
 	})
 	it('UNR-01 envelope unreadable, retryable false (entitlement): explicit at once', () => {
@@ -135,7 +135,7 @@ describe('static: the read hold follows each answered read (independent review, 
 	})
 })
 
-describe('legacy envelope: the reason decides when retryable is absent', () => {
+describe('v168 §188.2 legacy envelope: the reason decides when retryable is absent', () => {
 	it('notReadyReason storage_locked without retryable: zero (explicit at once)', () => {
 		expect(storageReasonOf({ type: 'ack', ok: false, error: 'not_ready', notReadyReason: 'storage_locked' })).toBe('native_not_ready_final')
 	})
@@ -151,7 +151,7 @@ describe('legacy envelope: the reason decides when retryable is absent', () => {
 })
 
 
-describe('the superseded persistent envelope keeps its reason for the diagnostic', () => {
+describe('the superseded persistent envelope keeps its reason for the diagnostic (v168 §188.2)', () => {
 	it('ok:false error not_ready_persistent with notReadyReason: the terminal, and notReadyReason is kept', () => {
 		const p = { type: 'ack', ok: false, error: 'not_ready_persistent', notReadyReason: 'storage_locked', retryable: false }
 		expect(parseShellRecordRead(p)).toMatchObject({ status: 'error', reason: 'not_ready_persistent', notReady: { notReadyReason: 'storage_locked', persistent: true } })
@@ -159,11 +159,11 @@ describe('the superseded persistent envelope keeps its reason for the diagnostic
 	})
 })
 
-describe('a snapshot-unknown not_ready reuses g1_uninitialized (retryable true); no snapshot_unknown code', () => {
+describe('v171 §191: a snapshot-unknown not_ready reuses g1_uninitialized (retryable true); no snapshot_unknown code', () => {
 	it('ok:true not_ready g1_uninitialized retryable true: bounded (five re-reads, then explicit)', () => {
 		expect(storageReasonOf(ack({ code: 'not_ready', notReadyReason: 'g1_uninitialized', retryable: true }))).toBe('native_not_ready_bounded')
 	})
-	it('snapshot_unknown is not a printable code', () => {
+	it('snapshot_unknown is not a printable code (withdrawn by v171)', () => {
 		expect(diagnosticCode('snapshot_unknown')).toBe('other')
 	})
 })

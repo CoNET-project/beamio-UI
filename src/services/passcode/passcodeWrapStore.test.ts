@@ -1,5 +1,5 @@
 /**
- * The page passcode documents, keyed per account. SYNTHETIC values only. The in-memory KeyValueDb stands in for IndexedDB.
+ * The page passcode documents, keyed per account (r2c §二, §9.2, §10). SYNTHETIC values only. The in-memory KeyValueDb stands in for IndexedDB.
  */
 import { passcodeAttemptStore, passcodeWrapStore, mainKey, stagingKey, attemptKey, PASSCODE_DB_NAME, PASSCODE_STORE, type KeyValueDb } from './passcodeWrapStore'
 import { attemptUnlock, LOCK_MS, ZERO_ATTEMPTS } from './passcodeBackoff'
@@ -32,10 +32,10 @@ const memDb = (): MemDb => {
 	return db
 }
 
-const WRAP: WrapRecord = { v: 1, mode: 'passcode', eoa: EOA, kdf: 'PBKDF2-HMAC-SHA256/600000/32', salt: 'c2FsdA==', iv: 'aXY=', ct: 'Y3Q=' } as WrapRecord
+const WRAP: WrapRecord = { v: 3, mode: 'passcode', eoa: EOA, kdf: 'argon2id-aes256gcm/m32768/t3/p1', salt: 'c2FsdA==', iv: 'aXY=', ct: 'Y3Q=' } as WrapRecord
 const WRAP2: WrapRecord = { ...WRAP, ct: 'Y3Qy' } as WrapRecord
 
-describe('frozen names and per-account keys', () => {
+describe('frozen names and per-account keys (r2c §二.1)', () => {
 	it('database and store are the frozen names', () => {
 		expect(PASSCODE_DB_NAME).toBe('beamio-passcode-v1')
 		expect(PASSCODE_STORE).toBe('records')
@@ -47,7 +47,7 @@ describe('frozen names and per-account keys', () => {
 	})
 })
 
-describe('staged write', () => {
+describe('staged write (§9.2)', () => {
 	it('stages, reads back, replaces the main record and removes the staged copy', async () => {
 		const db = memDb()
 		await passcodeWrapStore(db, EOA).writeWrap('mnemonic', WRAP)
@@ -89,7 +89,7 @@ describe('staged write', () => {
 	})
 })
 
-describe('startup with a staged copy', () => {
+describe('startup with a staged copy (§9.2)', () => {
 	it('a staged copy with no main record is never promoted and reads as identity pending', async () => {
 		const db = memDb()
 		db.raw.set(stagingKey(EOA), { eoa: EOA.toLowerCase(), wraps: { mnemonic: WRAP } })
@@ -101,7 +101,7 @@ describe('startup with a staged copy', () => {
 	})
 })
 
-describe('two accounts are independent', () => {
+describe('two accounts are independent (§10, r2c §三)', () => {
 	it('account B can set its wrap while account A has a main record; B never touches A', async () => {
 		const db = memDb()
 		await passcodeWrapStore(db, OTHER).writeWrap('mnemonic', { ...WRAP, eoa: OTHER } as WrapRecord)
@@ -144,7 +144,7 @@ describe('two accounts are independent', () => {
 	})
 })
 
-describe('attempt counter', () => {
+describe('attempt counter (passcodeAttempt:<eoa>, r2c §二.2–§二.3)', () => {
 	it('a missing document reads as null, so the first attempt starts from zero', async () => {
 		expect(await passcodeAttemptStore(memDb(), EOA).read()).toBeNull()
 	})

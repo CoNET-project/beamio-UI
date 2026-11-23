@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- * steps 1 and 2: the old PWA store (PouchDB "conet" / "init", plaintext mnemonicPhrase) read first in a shell.
+ * r92 steps 1 and 2: the old PWA store (PouchDB "conet" / "init", plaintext mnemonicPhrase) read first in a shell.
  * The vector is the standard BIP-39 test phrase (public, no funds): m/44'/60'/0'/0/0 = 0x9858EfFD232B4033E47d90003D41EC34EcaEda94.
  */
 import { readFileSync } from 'fs'

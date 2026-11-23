@@ -80,7 +80,7 @@ class FakeWorker {
 			now: () => 1_000_000,
 			random: () => '0x' + '22'.repeat(16),
 		}
-		// a new worker instance for every command (the page ends it after each answer): a fresh module state, as in the browser
+		// a new worker instance for every command (the page ends it after each answer): a fresh module state, as in the browser (R93)
 		let runFirstOpenCommand!: (r: FirstOpenRequestFixture, e: FirstOpenEnv) => Promise<unknown>
 		jest.isolateModules(() => {
 			runFirstOpenCommand = require('../../vendor/conet-chat-sdk/dist/worker/first-open.js').runFirstOpenCommand
@@ -151,7 +151,7 @@ describe('the page runs the first open in its own worker (plan c)', () => {
 		expect(silent.terminated).toBe(true)
 	})
 
-	it('three new worker instances in a row inside the hold: one registration; the hold lives in the store, per wallet', async () => {
+	it('R93: three new worker instances in a row inside the hold: one registration; the hold lives in the store, per wallet', async () => {
 		const f = fixtures()
 		const sealKey = await legacySealCryptoKey(ACCOUNT_KEY)
 		const a = await runFirstOpenInWorker(() => new FakeWorker(f) as unknown as Worker, request(sealKey), f.hostSign, 5_000)

@@ -1,10 +1,10 @@
 /**
- * The runtime gate (one source of truth for "may this page take a browser key path").
+ * The runtime gate (RUNTIME-GATE v2.3, one source of truth for "may this page take a browser key path").
  * One ZIP serves the browser, the iOS shell and the Android shell. Nothing is decided at build time: the signals below decide at run time.
  *
  * Signals:
  * - S1: the document origin is a shell origin (iOS cashtrees-local://localhost, Android https://appassets.androidplatform.net).
- * S1 is the only basis for "inside a shell"; a page script cannot set it.
+ *   S1 is the only basis for "inside a shell"; a page script cannot set it.
  * - S2: the document-start marker `window.__beamioShellNonce` (writable:false, configurable:false), injected only by a new shell.
  * - B: a shell bridge object (CashTreesIOS, CashTreesAndroid, BeamioChat, BeamioShell, BeamioShellRecord). Used only to fail closed.
  * - S3: the `hello` answer (nonce, shellProtocol, s2Unsupported). Dynamic: each retry asks again.
@@ -22,7 +22,7 @@ export const SHELL_ORIGINS: readonly string[] = ['cashtrees-local://localhost', 
 /** Bridge objects of B. */
 export const SHELL_BRIDGE_NAMES: readonly string[] = ['CashTreesIOS', 'CashTreesAndroid', 'BeamioChat', 'BeamioShell', 'BeamioShellRecord']
 
-/** The bounded hello timeout. After it the start-up wait shows the retry button. */
+/** The bounded hello timeout (RUNTIME-GATE 2.9, Q3 / R75). After it the start-up wait shows the retry button. */
 export const HELLO_TIMEOUT_MS = 10_000
 
 export type StaticSignals = { s1: boolean; s2: boolean; bridge: boolean }
@@ -36,7 +36,7 @@ export type HelloState =
 
 export const SIGNALS_NONE: StaticSignals = { s1: false, s2: false, bridge: false }
 
-/** The decision table. Pure. */
+/** RUNTIME-GATE 2.3 (the decision table). Pure. */
 export function classifyRuntime(sig: StaticSignals, hello: HelloState, s2Nonce: string | null): RuntimeMode {
 	if (!sig.s1 && !sig.s2 && !sig.bridge) return 'browser'
 	// a shell signal outside the shell origin: a page that fakes a bridge or the marker never gets a browser key path
@@ -55,7 +55,7 @@ export function classifyRuntime(sig: StaticSignals, hello: HelloState, s2Nonce: 
 	return hello.s2Unsupported === true ? 'legacy-shell' : 'shell-unavailable'
 }
 
-/** The allowed moves. Anything else is refused: the state stays. */
+/** The allowed moves (RUNTIME-GATE 2.4, Q12). Anything else is refused: the state stays. */
 const ALLOWED: Record<RuntimeMode, readonly RuntimeMode[]> = {
 	probing: ['browser', 'legacy-shell', 'shell-pending', 'shell-ready', 'shell-unavailable'],
 	browser: ['shell-unavailable'],
@@ -141,7 +141,7 @@ export function runtimeState(): RuntimeMode {
 
 /**
  * The browser key-path guard. Re-reads the signals on every call: a browser page whose shell signals appear later is
- * unavailable from then on. Never true outside the browser state.
+ * unavailable from then on (RUNTIME-GATE 2.4 (4)). Never true outside the browser state.
  */
 export function isBrowserKeyPath(win?: WindowLike | undefined): boolean {
 	const read = readSignalsNow(win)
@@ -163,7 +163,7 @@ export function assertBrowserKeyPath(code: string, win?: WindowLike | undefined)
 	if (!isBrowserKeyPath(win)) throw new Error(code)
 }
 
-/** The QA flags: only a QA shell injects `window.__BEAMIO_QA_FLAGS__`; a Release page reads false. */
+/** The QA flags (RUNTIME-GATE 4.2, 4.3): only a QA shell injects `window.__BEAMIO_QA_FLAGS__`; a Release page reads false. */
 export function readQaFlag(name: 'bootTrace' | 'pgpIdentityCreate', win?: WindowLike): boolean {
 	const root = win ?? (typeof window === 'undefined' ? undefined : (window as unknown as WindowLike))
 	const flags = root?.__BEAMIO_QA_FLAGS__
@@ -172,7 +172,7 @@ export function readQaFlag(name: 'bootTrace' | 'pgpIdentityCreate', win?: Window
 }
 
 /**
- * The hello probe: asks once, and turns no answer into `timed_out` after HELLO_TIMEOUT_MS. The send returns the
+ * The hello probe (RUNTIME-GATE 2.9): asks once, and turns no answer into `timed_out` after HELLO_TIMEOUT_MS. The send returns the
  * answer, or `refused` for an error answer. A browser state is not probed.
  */
 export function startHelloProbe(send: () => Promise<HelloState>, timeoutMs: number = HELLO_TIMEOUT_MS): Promise<RuntimeMode> {

@@ -1,5 +1,5 @@
 /**
- * valid_mnemonic. The account evidence on the page is a valid mnemonic only.
+ * valid_mnemonic (decision 2026-11-18; plan r11 §六 and M-1, M-2). The account evidence on the page is a valid mnemonic only.
  * A private key or an address on the record is not account evidence and never enters the home on its own.
  * Synthetic values only; the mnemonic predicate is injected so the test does not depend on a key derivation.
  */

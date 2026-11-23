@@ -1,5 +1,5 @@
 /**
- * the confirmation command's accountKey is the page-read, derived address (lower-case 0x + 40 hex); unreadable means no command.
+ * v191 §211: the confirmation command's accountKey is the page-read, derived address (lower-case 0x + 40 hex); unreadable means no command.
  */
 import { confirmationAccountKey } from './accountCleanupConfirmation'
 

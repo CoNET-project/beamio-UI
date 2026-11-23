@@ -1,5 +1,5 @@
 /**
- * step 5: the automatic retry schedule of an unknown start, and the static pins of the retry button and the no-give-up rule.
+ * r92 step 5: the automatic retry schedule of an unknown start, and the static pins of the retry button and the no-give-up rule.
  */
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -27,10 +27,10 @@ describe('static pins: the visible retry button and no permanent skip', () => {
 	const app = readFileSync(join(__dirname, '..', 'App.tsx'), 'utf8')
 	const helper = readFileSync(join(__dirname, 'shellTerminalState.ts'), 'utf8')
 
-	it('the gate shows a visible retry button while the start is unknown and re-runs the start on click', () => {
-		expect(gate).toContain('startupRetryOffered &&')
-		expect(gate).toContain('onClick={retryStartupNow}')
-		expect(gate).toContain("tu('native_not_ready_retry_action')")
+	it('0.53.44: the gate shows no startup button while the start is unknown (background re-read only)', () => {
+		expect(gate).not.toContain('startupRetryOffered &&')  // 0.53.44: retired startup control (two-landing rule); must be absent
+		expect(gate).not.toContain('onClick={retryStartupNow}')  // 0.53.44: retired startup control (two-landing rule); must be absent
+		expect(gate).not.toContain("tu('native_not_ready_retry_action')")  // 0.53.44: retired startup control (two-landing rule); must be absent
 	})
 
 	it('the gate does not switch to the generic fallback screen in the startup wait', () => {
@@ -62,7 +62,8 @@ describe('static pins: the visible retry button and no permanent skip', () => {
 		expect(body.indexOf("if (action === 'skip_terminal') return action")).toBeLessThan(body.indexOf('io.log('))
 		expect((body.match(/if \(terminal\) return 'skip_terminal'/g) ?? []).length).toBeGreaterThanOrEqual(4)
 		// the timer callback never re-reads once terminal
-		expect(app).toMatch(/shellEmptyReadTimerRef\.current = null\s*if \(isShellTerminal\(\)\) return\s*void init\('empty-read-retry'\)/)
+		// (option A): the terminal check stays first; an in-flight pre-read round is awaited, and the terminal is checked again before the re-read
+		expect(app).toMatch(/shellEmptyReadTimerRef\.current = null\s*if \(isShellTerminal\(\)\) return\s*(\/\/[^\n]*\s*)?const inFlight = nativePrereadRoundInFlight\(\)\s*if \(inFlight\) \{\s*void inFlight\.then\(\(\) => \{\s*if \(!isShellTerminal\(\)\) void init\('empty-read-retry'\)\s*\}\)\s*return\s*\}\s*void init\('empty-read-retry'\)/)
 	})
 
 	it('terminal: the pending App re-read timer is cleared when the gate decides the terminal', () => {
@@ -110,7 +111,8 @@ describe('static pins: the visible retry button and no permanent skip', () => {
 	})
 
 	it('terminal screen: the generic reload Retry is not rendered for the terminal (a second control), and the terminal control is "Retry"', () => {
-		expect(gate).toContain('{storageUnavailable !== OLD_SHELL_UPGRADE_REASON && (')
+		// the spec (f2): the shell has no retry button on a storage-unavailable or terminal screen; the browser path keeps its Retry.
+		expect(gate).toContain('{!(isShellContext() || nativeShellRef.current || isCashTreesNativeWebView()) && storageUnavailable !== OLD_SHELL_UPGRADE_REASON && (')
 		expect(gate).toContain("{tu('retry')}")
 		const term = gate.indexOf('onClick={() => void retryTerminalOnce()}')
 		expect(term).toBeGreaterThan(0)

@@ -196,7 +196,7 @@ export const NATIVE_BACKUP_VIEW_COMMAND = 'walletBackupView'
 export type BackupViewKind = 'privateKey' | 'mnemonic' | 'recoveryCode'
 
 /**
- * (Android review, this batch): no native error reason is shown to the user. An unknown_command (the command is absent in the
+ * no native error reason is shown to the user. An unknown_command (the command is absent in the
  * bridge) or not_supported gives the neutral "update the app" copy; any other error gives the neutral failure copy. Never retried.
  */
 export function backupViewErrorKey(reason: string): 'native_backup_view_unsupported' | 'native_backup_view_failed' {
@@ -204,7 +204,7 @@ export function backupViewErrorKey(reason: string): 'native_backup_view_unsuppor
 }
 
 /**
- * (2026-11-18, MERGE-EDITS A23): the capability wallet.backup-view.v1 gates walletBackupView. A shell that declares
+ * Per MERGE-EDITS A23: the capability wallet.backup-view.v1 gates walletBackupView. A shell that declares
  * identity.native-keys.v1 but not wallet.backup-view.v1 gets no command: the neutral update copy. A shell that declares it sends the
  * command; unknown_command or not_supported from it is the same neutral copy. A shell never falls back to a page view of the key or the
  * phrase. A shell without identity.native-keys.v1 keeps its previous behaviour (the command goes through sendNativeCommand as before).

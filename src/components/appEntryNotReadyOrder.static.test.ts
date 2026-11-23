@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * Ordering check: every goOnboarding call in AppEntryGate is either after the shell guard in the start, or sits in a
+ * Ordering check (2026-11-21): every goOnboarding call in AppEntryGate is either after the shell guard in the start, or sits in a
  * branch that is already gated by an explicit native no_key (the source-order check; the behaviour is in shellNotReadyWait.test.ts).
  */
 import { readFileSync } from 'fs'

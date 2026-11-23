@@ -1,5 +1,5 @@
 /**
- * QA boot markers (coordinator request, 2026-11-16): the line format, the QA-only switch, and no secret material in a line.
+ * QA boot markers (request, 2026-11-16): the line format, the QA-only switch, and no secret material in a line.
  * The screen order and the sync order are checked in App.accountReset.test.tsx (the real gate).
  */
 import { markBootScreen, markBootSync } from './bootTrace'

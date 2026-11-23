@@ -1,5 +1,5 @@
 /**
- * Sealing key for the chat PGP backup, held as a non-extractable CryptoKey that can only encrypt.
+ * Sealing key for the chat PGP backup, held as a non-extractable CryptoKey that can only encrypt (2026-11-16 owner plan, step 1).
  *
  * The key is the one the current write format uses: AES-256-GCM under SHA-256 of the account key string (the legacy layout that
  * `sealLegacyPgpBlob` writes and `openLegacyPgpBlob` reads). Nothing about the format changes. The CryptoKey can be handed to a worker

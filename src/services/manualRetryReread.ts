@@ -1,5 +1,5 @@
 /**
- * PWA-RETRY-03: a manual retry of write_failed internal_state or storage_write first rereads the native account
+ * PWA-RETRY-03 (v10.2 R-22): a manual retry of write_failed internal_state or storage_write first rereads the native account
  * (walletEoaAddress). A valid (address) or absent (no_key) answer sends; unknown (anything else, or no answer) does not send.
  * unknown_reply is not produced by the current sync path, so it has no branch here (noted in the receipt).
  */
@@ -14,7 +14,7 @@ export function rereadDecision(a: RereadAnswer): 'send' | 'hold' {
 }
 
 /**
- * Whether a manual retry of this state must reread first: write_failed internal_state or
+ * Whether a manual retry of this state must reread first (PWA-RETRY-03; R-22 rule): write_failed internal_state or
  * storage_write, and no_answer (the unknown-reply class). A manual retry after no_answer rereads first too; an unknown reread does not send.
  */
 export function needsReread(state: ShellSyncState): boolean {

@@ -1,5 +1,5 @@
 /**
- * / 1428: the real onboarding splash (InitialEntrySplash, not a stand-in). The create entry (Get Started, create a mnemonic)
+ * Y.163 / 1428: the real onboarding splash (InitialEntrySplash, not a stand-in). The create entry (Get Started, create a mnemonic)
  * and the restore entry are both rendered on the not_ready onboarding; the three 1428 onboarding paths are reachable from them:
  * create a mnemonic (Get Started), recovery code (RestoreWalletUnifiedScreen, Use Recovery Code), username and password (its unlock screen).
  */

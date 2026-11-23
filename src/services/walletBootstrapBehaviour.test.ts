@@ -10,7 +10,7 @@ import { BRIDGE_TRUST_DEADLINE_MS, bridgeTrustReasonCode, bridgeTrustState, judg
 import { prereadFromAnswer } from './nativeRecovery'
 
 // the public Hardhat test phrase (no funds, no account of anyone): a fixed vector, since random generation fails under jsdom
-const PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about' // BIP-39 official 12-word zero-entropy vector
+const PHRASE = 'test test test test test test test test test test test junk'
 const EOA = ethers.Wallet.fromPhrase(PHRASE).address
 
 const ack = (result: unknown) => ({ kind: 'payload', payload: { type: 'ack', ok: true, result } })
@@ -28,13 +28,12 @@ describe('account judgement (shell): the six cases of the handoff order', () => 
 	})
 
 	it('2. the native side returns a valid mnemonic that derives the EOA: the account is restored (pre-read valid)', () => {
-		const out = prereadFromAnswer(ack({ state: 'valid', eoa: EOA, phrase: PHRASE }))
+		const out = prereadFromAnswer(ack({ code: 'ok', mnemonic: PHRASE, eoa: EOA }))
 		expect(out).toEqual({ kind: 'valid', eoa: EOA.toLowerCase(), phrase: PHRASE })
 	})
 
-	it('2b. a valid answer whose phrase does not derive the EOA is unknown, never valid', () => {
-		const other = '0x' + '1'.repeat(40)
-		expect(prereadFromAnswer(ack({ state: 'valid', eoa: other, phrase: PHRASE })).kind).toBe('unknown')
+	it('2b. a code ok answer is valid with the EOA its phrase derives (the code shape has no separate EOA field)', () => {
+		expect(prereadFromAnswer(ack({ code: 'ok', mnemonic: PHRASE, eoa: EOA })).kind).toBe('valid')
 	})
 
 	it('3. both sides confirm no valid mnemonic: onboarding is allowed (absent answers, no key marker)', () => {
@@ -47,7 +46,7 @@ describe('account judgement (shell): the six cases of the handoff order', () => 
 				hasKey: false,
 			}),
 		).toEqual({ account: 'no_account', action: 'onboard', via: 'native_no_key' })
-		expect(prereadFromAnswer(ack({ state: 'absent' }))).toEqual({ kind: 'absent' })
+		expect(prereadFromAnswer(ack({ code: 'confirmed_missing' }))).toEqual({ kind: 'absent' })
 	})
 
 	it('3b. no_key with a key marker present, or unreadable: unknown, never onboarding', () => {
@@ -74,7 +73,7 @@ describe('account judgement (shell): the six cases of the handoff order', () => 
 		expect(prereadFromAnswer(ack({ state: 'present' })).kind).toBe('unknown')
 	})
 
-	it('5. locked: the existing passcode unlock route, never onboarding', () => {
+	it('5. locked: the existing passcode unlock route, never onboarding (see receipt: conflict with the handoff rule, pending rule)', () => {
 		const out = judgeShellFromNative({ idb: 'absent', walletState: 'locked', walletStatus: 'locked', storeEmpty: true })
 		expect(out.action).toBe('unlock')
 		expect(out.account).toBe('undetermined')
@@ -91,13 +90,13 @@ describe('account judgement (shell): the six cases of the handoff order', () => 
 	})
 })
 
-describe('native route after the sealed-copy check', () => {
+describe('native route after the sealed-copy check (0.53.39, rule A and B)', () => {
 	it('a readable valid sealed copy: restore (the recovery flow), never onboarding', () => {
-		const pre = prereadFromAnswer(ack({ state: 'valid', eoa: EOA, phrase: PHRASE }))
+		const pre = prereadFromAnswer(ack({ code: 'ok', mnemonic: PHRASE, eoa: EOA }))
 		expect(nativeNoKeyRoute(pre)).toBe('restore')
 	})
 	it('a confirmed absence of the current record and the sealed copy: onboarding', () => {
-		expect(nativeNoKeyRoute(prereadFromAnswer(ack({ state: 'absent' })))).toBe('onboard')
+		expect(nativeNoKeyRoute(prereadFromAnswer(ack({ code: 'confirmed_missing' })))).toBe('onboard')
 	})
 	it('a native lock: the passcode page (A), never onboarding and never a new wallet', () => {
 		const pre = prereadFromAnswer({ kind: 'payload', payload: { type: 'ack', ok: false, error: 'locked' } })
@@ -105,13 +104,13 @@ describe('native route after the sealed-copy check', () => {
 	})
 	it('an unreadable sealed copy, a timeout, or a refused answer: retry, never onboarding (B)', () => {
 		expect(nativeNoKeyRoute(prereadFromAnswer({ kind: 'timeout' }))).toBe('retry')
-		expect(nativeNoKeyRoute(prereadFromAnswer(ack({ state: 'valid', eoa: '0x' + '2'.repeat(40), phrase: PHRASE })))).toBe('retry')
+		expect(nativeNoKeyRoute(prereadFromAnswer(ack({ code: 'read_error' })))).toBe('retry')
 		expect(nativeNoKeyRoute(prereadFromAnswer({ kind: 'payload', payload: { type: 'ack', ok: true, result: 'garbled' } }))).toBe('retry')
 	})
 })
 
 /**
- * The native webview start route: the decision the native branch of init takes after the pre-read.
+ * The native webview start route (0.53.39): the decision the native branch of init takes after the pre-read.
  * The pre-read is never a dead end: walletState, hasKey and walletStatus are read after it, and an unknown is a retry with a reason code.
  */
 describe('native webview start route (0.53.39)', () => {
@@ -122,9 +121,51 @@ describe('native webview start route (0.53.39)', () => {
 		expect(nativeStartRoute({ ...base, pre: UNKNOWN_PRE, walletState: 'unknown' as const })).toEqual({ route: 'retry', reason: 'pre_unknown' })
 	})
 
-	it('hasKey true with no mnemonic: retry with reason key_marker, never onboarding', () => {
-		expect(nativeStartRoute({ ...base, pre: { kind: 'absent' }, hasKey: true })).toEqual({ route: 'retry', reason: 'key_marker' })
+	it('hasKey true with no mnemonic and a confirmed absent pre-read (class i, 441f9ea4): onboarding, data kept; an unknown pre-read stays a key_marker retry; the iOS key-only shape onboards too', () => {
+		const o = nativeStartRoute({ ...base, pre: { kind: 'absent' }, hasKey: true })
+		expect(o).toEqual({ route: 'onboard', reason: 'confirmed_absent' })
+		expect(Object.keys(o).sort()).toEqual(['reason', 'route']) // no delete or clear instruction: the key marker and the key stay
+		// A synthetic shape (walletState present, hasKey true, pre-read absent): not what either shell reports for key-only (see the measured shapes below);
+		// class (i) all the same, since `present` only says a record exists and the pre-read says no mnemonic.
+		const synthetic = nativeStartRoute({ ...base, pre: { kind: 'absent' }, hasKey: true, walletState: 'present' as const })
+		expect(synthetic).toEqual({ route: 'onboard', reason: 'confirmed_absent' })
+		expect(Object.keys(synthetic).sort()).toEqual(['reason', 'route'])
+		// PRR-06 counter examples (concrete evidence of a mnemonic or a ciphertext, so a contradiction, never onboarding): a present record that reports no
+		// key marker, a pending passcode, a cipher or locked pre-read
+		expect(nativeStartRoute({ ...base, pre: { kind: 'absent' }, hasKey: 'not_reported', walletState: 'present' as const })).toEqual({ route: 'retry', reason: 'record_without_mnemonic' })
+		expect(nativeStartRoute({ ...base, pre: { kind: 'absent' }, hasKey: false, walletState: 'present' as const })).toEqual({ route: 'retry', reason: 'record_without_mnemonic' })
+		expect(nativeStartRoute({ ...base, pre: { kind: 'absent' }, hasKey: true, walletState: 'present' as const, passcodePending: true })).toEqual({ route: 'retry', reason: 'key_marker' })
+		expect(nativeStartRoute({ ...base, pre: { kind: 'cipher' }, hasKey: true, walletState: 'present' as const }).route).toBe('native_locked')
+		expect(nativeStartRoute({ ...base, pre: { kind: 'locked' }, hasKey: true, walletState: 'present' as const }).route).toBe('native_locked')
 		expect(nativeStartRoute({ ...base, pre: UNKNOWN_PRE, hasKey: true })).toEqual({ route: 'retry', reason: 'key_marker' })
+	})
+
+	/**
+	 * The key-only shapes the two shells report (measured, 2026-11-22). A device that holds a private key and no mnemonic:
+	 * Android passcodeStatus answers hasKey true and no walletState field (not_reported); walletStatus answers no_key.
+	 * iOS passcodeStatus answers walletState absent and hasKey false; walletStatus answers no_key. The pre-read is absent on both.
+	 * Class (i): onboarding, data kept. A read failure on either shape is a retry, never onboarding.
+	 */
+	it('measured key-only shape, Android (walletState not_reported, hasKey true, walletStatus no_key, pre-read absent): onboarding, data kept', () => {
+		const o = nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'not_reported', hasKey: true, walletStatus: 'no_key' })
+		expect(o).toEqual({ route: 'onboard', reason: 'confirmed_absent' })
+		expect(Object.keys(o).sort()).toEqual(['reason', 'route'])
+	})
+	it('measured key-only shape, iOS (walletState absent, hasKey false, walletStatus no_key, pre-read absent): onboarding, data kept', () => {
+		const o = nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'absent', hasKey: false, walletStatus: 'no_key' })
+		expect(o).toEqual({ route: 'onboard', reason: 'confirmed_absent' })
+		expect(Object.keys(o).sort()).toEqual(['reason', 'route'])
+	})
+	it('measured key-only shapes with a read failure: retry, never onboarding', () => {
+		// Android: the walletStatus read fails, or the pre-read itself is unknown; hasKey true then holds as a key marker
+		expect(nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'not_reported', hasKey: true, walletStatus: 'unknown' })).toEqual({ route: 'retry', reason: 'key_marker' })
+		expect(nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'not_reported', hasKey: true, walletStatus: 'timeout' })).toEqual({ route: 'retry', reason: 'key_marker' })
+		expect(nativeStartRoute({ pre: { kind: 'unknown' }, walletState: 'not_reported', hasKey: true, walletStatus: 'no_key' })).toEqual({ route: 'retry', reason: 'key_marker' })
+		// iOS: the walletState read fails, the walletStatus read fails, or the pre-read is unknown
+		expect(nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'unknown', hasKey: false, walletStatus: 'no_key' })).toEqual({ route: 'retry', reason: 'read_failed' })
+		expect(nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'timeout', hasKey: false, walletStatus: 'no_key' })).toEqual({ route: 'retry', reason: 'read_failed' })
+		expect(nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'absent', hasKey: false, walletStatus: 'unknown' })).toEqual({ route: 'retry', reason: 'read_failed' })
+		expect(nativeStartRoute({ pre: { kind: 'unknown' }, walletState: 'absent', hasKey: false, walletStatus: 'no_key' })).toEqual({ route: 'retry', reason: 'pre_unknown' })
 	})
 
 	it('native locked (pre-read or walletState): the passcode page, never onboarding', () => {
@@ -154,12 +195,15 @@ describe('native webview start route (0.53.39)', () => {
 		})
 	})
 
-	it('absent pre-read but walletStatus not no_key: retry, never onboarding', () => {
-		expect(nativeStartRoute({ ...base, pre: { kind: 'absent' }, walletStatus: 'not_ready' })).toEqual({ route: 'retry', reason: 'status_not_no_key' })
+	it('absent pre-read with walletStatus not_ready (class i, 441f9ea4 / 8ca9299e; R88 superseded): onboarding, data kept; an unreadable status is a read_failed retry', () => {
+		const o = nativeStartRoute({ ...base, pre: { kind: 'absent' }, walletStatus: 'not_ready' })
+		expect(o).toEqual({ route: 'onboard', reason: 'confirmed_absent' })
+		expect(Object.keys(o).sort()).toEqual(['reason', 'route'])
+		expect(nativeStartRoute({ ...base, pre: { kind: 'absent' }, walletStatus: 'unavailable' })).toEqual({ route: 'retry', reason: 'read_failed' })
 	})
 })
 
-describe('bridge trust deadline', () => {
+describe('bridge trust deadline (0.53.39, 3)', () => {
 	it('S25: a hello that answers after 9.9 s with the identity declared completes the path (never a failure)', () => {
 		expect(bridgeTrustState({ identity: 'declared', elapsedMs: 9_900 })).toEqual({ state: 'declared' })
 	})
@@ -178,12 +222,12 @@ describe('bridge trust deadline', () => {
 	})
 })
 
-describe('pre-read valid path and the page copy', () => {
+describe('pre-read valid path and the page copy (0.53.39, A)', () => {
 	it('a page copy that exists is checked by prepareShellEntry before the native entry (loaded or locked)', () => {
 		expect(prereadPageRoute('loaded')).toBe('check_record')
 		expect(prereadPageRoute('locked')).toBe('check_record')
 	})
-	it('an unreadable page copy is unknown: wait and retry with reason page_read_failed; no native restore over the page', () => {
+	it('an unreadable page copy is unknown: wait and retry with reason page_read_failed; no native restore over the page (2)', () => {
 		expect(prereadPageRoute('unavailable')).toBe('wait_retry')
 	})
 	it('an empty page is not checked (it would block the native restore); the restore write lands the wallet on the page', () => {
@@ -191,7 +235,7 @@ describe('pre-read valid path and the page copy', () => {
 	})
 })
 
-describe('native lock under the project (2026-11-20)', () => {
+describe('native lock under the project rule (2026-11-20)', () => {
 	it('PWA mnemonic valid and native locked: enters /home (the native lock does not hold the PWA)', () => {
 		expect(judgeShell('valid_mnemonic', 'locked')).toEqual({ account: 'has_account', action: 'enter' })
 		expect(judgeShellFromNative({ idb: 'valid_mnemonic', walletState: 'locked', walletStatus: 'locked' })).toEqual({ account: 'has_account', action: 'enter' })
@@ -201,13 +245,16 @@ describe('native lock under the project (2026-11-20)', () => {
 		expect(judgeShellFromNative({ idb: 'absent', walletState: 'locked', walletStatus: 'locked' }).action).toBe('unlock')
 		expect(judgeShellFromNative({ idb: 'absent', walletState: 'locked', walletStatus: 'locked' }).account).toBe('undetermined')
 	})
-	it('the native read not ready while the PWA is missing: retry, never onboarding', () => {
-		expect(nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'absent', hasKey: false, walletStatus: 'not_ready' }).route).toBe('retry')
+	it('the native status not_ready while the PWA is missing and the pre-read confirms absent (class i): onboarding, data kept; an unknown pre-read is a retry', () => {
+		const o = nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'absent', hasKey: false, walletStatus: 'not_ready' })
+		expect(o.route).toBe('onboard')
+		expect(Object.keys(o).sort()).toEqual(['reason', 'route'])
+		expect(nativeStartRoute({ pre: { kind: 'unknown' }, walletState: 'absent', hasKey: false, walletStatus: 'not_ready' }).route).toBe('retry')
 	})
 })
 
 /**
- * Fresh-install fixtures. iOS values are read-only derivations from SDK a2767b6 (not yet run on a simulator).
+ * Fresh-install fixtures (0.53.39, 2026-11-20). iOS values are read-only derivations from SDK a2767b6 (not yet run on a simulator).
  * Android values are read-only derivations from SDK 866dec70 (walletStatus has no absent or present value; passcodeStatus has no walletState
  * field until the settle, and hasKey false can be reported before the settle). Onboarding is only on a confirmed absence on the trusted sides.
  */
@@ -224,11 +271,12 @@ describe('fresh-install fixtures: iOS (SDK a2767b6, read-only derivation)', () =
 describe('fresh-install fixtures: Android (SDK 866dec70, read-only derivation)', () => {
 	// passcodeStatus before the settle: no walletState field (reported as not_reported), hasKey false
 	const ANDROID_BEFORE_SETTLE = { walletState: 'not_reported' as const, hasKey: false as const }
-	it('not_ready phase (adoption not settled): pre-read absent, walletStatus not_ready: retry (status_not_no_key), never onboarding', () => {
+	it('not_ready phase: pre-read absent, walletStatus not_ready, no record (class i): onboarding, data kept; an unknown pre-read in the same phase is a retry', () => {
 		expect(nativeStartRoute({ ...ANDROID_BEFORE_SETTLE, pre: { kind: 'absent' }, walletStatus: 'not_ready' })).toEqual({
-			route: 'retry',
-			reason: 'status_not_no_key',
+			route: 'onboard',
+			reason: 'confirmed_absent',
 		})
+		expect(nativeStartRoute({ ...ANDROID_BEFORE_SETTLE, pre: { kind: 'unknown' }, walletStatus: 'not_ready' }).route).toBe('retry')
 	})
 	it('after the settle: pre-read absent, walletStatus no_key, no walletState field: onboarding (the absence is the walletStatus and the pre-read, not the missing field)', () => {
 		expect(nativeStartRoute({ ...ANDROID_BEFORE_SETTLE, pre: { kind: 'absent' }, walletStatus: 'no_key' })).toEqual({

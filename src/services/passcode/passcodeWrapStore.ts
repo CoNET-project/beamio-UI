@@ -1,8 +1,8 @@
 /**
- * The page's passcode documents, keyed per account:
- * database `beamio-passcode-v1`, store `records`; keys `passcodeWrap:<eoa>` (main), `passcodeWrap:<eoa>.staging`, `passcodeAttempt:<eoa>`.
+ * The page's passcode documents, keyed per account (r2c §二, frozen §9.2 with the per-account keys):
+ *   database `beamio-passcode-v1`, store `records`; keys `passcodeWrap:<eoa>` (main), `passcodeWrap:<eoa>.staging`, `passcodeAttempt:<eoa>`.
  * `<eoa>` is the lower-case address. Each account has its own keys, so writing one account never reads or touches another account's
- * documents. The legacy single keys (`passcodeWrap`, `passcodeAttempt`, `passcodeWrap.staging`) are never read.
+ * documents (frozen §10). The legacy single keys (`passcodeWrap`, `passcodeAttempt`, `passcodeWrap.staging`) are never read (r2e §一).
  * It is NOT part of the legacy init document: persistInitRecord, cacheStorageBackup and the PGP strip rules never touch these keys.
  *
  * Write: stage first, read back and compare, then replace the main record and delete the staging copy. A failed readback deletes the
@@ -19,10 +19,31 @@ export interface KeyValueDb {
 	delete(key: string): Promise<void>
 }
 
+/** A key-value store with one atomic read-modify-write (IndexedDB: a single readwrite transaction). Used for the cooldown record. */
+export interface AtomicKeyValueDb extends KeyValueDb {
+	/**
+	 * `fn` gets the stored value (undefined when absent) and returns the next value; null deletes the key. Atomic across tabs.
+	 * Resolves with the value read back INSIDE the same transaction (undefined when absent), so another tab's later write cannot be
+	 * mistaken for a failed write.
+	 */
+	update(key: string, fn: (prev: unknown) => unknown): Promise<unknown>
+}
+
+/** The cooldown record of one account (unit f3, 2026-11-22): the count, the lock end and the last failure. Never a passcode or a key. */
+export interface AttemptRecordStore {
+	/** The stored record (null when none). Throws on a read failure or a malformed record. */
+	read(): Promise<AttemptState | null>
+	/**
+	 * Atomic update: `fn` decides the next state from the stored one (null clears and deletes the record). The write is read back;
+	 * a mismatch or a failed read throws, so the caller refuses the attempt. Returns the state read back.
+	 */
+	update(fn: (prev: AttemptState | null) => AttemptState | null): Promise<AttemptState | null>
+}
+
 export const PASSCODE_DB_NAME = 'beamio-passcode-v1'
 export const PASSCODE_STORE = 'records'
 
-/** The per-account keys. `eoa` is lower-cased here, so callers may pass either case. */
+/** The per-account keys (r2c §二.1). `eoa` is lower-cased here, so callers may pass either case. */
 export const mainKey = (eoa: string): string => `passcodeWrap:${eoa.toLowerCase()}`
 export const stagingKey = (eoa: string): string => `passcodeWrap:${eoa.toLowerCase()}.staging`
 export const attemptKey = (eoa: string): string => `passcodeAttempt:${eoa.toLowerCase()}`
@@ -69,7 +90,7 @@ export function passcodeAttemptStore(db: KeyValueDb, eoa: string): AttemptStore 
 	}
 }
 
-/** Wrap records for one account, under the account's main key, with the staged write of */
+/** Wrap records for one account, under the account's main key, with the staged write of §9.2. */
 export function passcodeWrapStore(db: KeyValueDb, eoa: string) {
 	const lower = eoa.toLowerCase()
 	const main = mainKey(lower)
@@ -128,7 +149,7 @@ export function passcodeWrapStore(db: KeyValueDb, eoa: string) {
 }
 
 /** Production adapter: one IndexedDB database `beamio-passcode-v1`, one store `records`. Not exercised by tests (no IndexedDB in jsdom). */
-export function idbKeyValueDb(dbName: string = PASSCODE_DB_NAME): KeyValueDb {
+export function idbKeyValueDb(dbName: string = PASSCODE_DB_NAME): AtomicKeyValueDb {
 	const open = (): Promise<IDBDatabase> =>
 		new Promise((resolve, reject) => {
 			const req = indexedDB.open(dbName, 1)
@@ -159,6 +180,98 @@ export function idbKeyValueDb(dbName: string = PASSCODE_DB_NAME): KeyValueDb {
 		},
 		delete: async (key) => {
 			await run<undefined>('readwrite', (s) => s.delete(key))
+		},
+		update: async (key, fn) => {
+			const db = await open()
+			try {
+				return await new Promise<unknown>((resolve, reject) => {
+					const tx = db.transaction(PASSCODE_STORE, 'readwrite')
+					const store = tx.objectStore(PASSCODE_STORE)
+					const get = store.get(key)
+					let readBack: unknown = undefined
+					get.onsuccess = () => {
+						try {
+							const next = fn(get.result)
+							if (next === null) store.delete(key)
+							else store.put(next, key)
+							// the read-back is part of this transaction: it sees this write and nothing another tab writes later
+							const rb = store.get(key)
+							rb.onsuccess = () => {
+								readBack = rb.result
+							}
+						} catch (ex) {
+							tx.abort()
+							reject(ex instanceof Error ? ex : new Error('passcode_db_update_failed'))
+						}
+					}
+					tx.oncomplete = () => resolve(readBack)
+					tx.onerror = () => reject(new Error('passcode_db_tx_failed'))
+					tx.onabort = () => reject(new Error('passcode_db_tx_aborted'))
+				})
+			} finally {
+				db.close()
+			}
+		},
+	}
+}
+
+/**
+ * The cooldown record for one account, in the same passcode store (key `passcodeAttempt:<eoa>`). A cleared record is deleted.
+ * Every change is one atomic transaction, so two tabs cannot lose a count. The write is read back before the caller may show a result.
+ */
+export function passcodeAttemptRecordStore(db: AtomicKeyValueDb, eoa: string): AttemptRecordStore {
+	const lower = eoa.toLowerCase()
+	const key = attemptKey(lower)
+	const fromDoc = (v: unknown): AttemptState | null => {
+		if (v === undefined || v === null) return null
+		const r = v as AttemptState & { eoa?: string }
+		if (!isAttemptState(r) || r.eoa !== lower) throw new Error('passcode_attempt_malformed')
+		return { failures: r.failures, lockedUntilMs: r.lockedUntilMs, lastFailureMs: r.lastFailureMs }
+	}
+	const toDoc = (s: AttemptState) => ({ eoa: lower, failures: s.failures, lockedUntilMs: s.lockedUntilMs, lastFailureMs: s.lastFailureMs })
+	return {
+		async read() {
+			return fromDoc(await db.get(key))
+		},
+		async update(fn) {
+			let written: AttemptState | null = null
+			const readBack = await db.update(key, (prev) => {
+				const next = fn(fromDoc(prev))
+				written = next
+				return next === null ? null : toDoc(next)
+			})
+			const back = fromDoc(readBack)
+			if (JSON.stringify(back) !== JSON.stringify(written)) throw new Error('attempt_readback_mismatch')
+			return back
+		},
+	}
+}
+
+/** Test double (never used in production): an atomic in-memory store. Updates are queued, as IndexedDB serialises readwrite transactions. */
+export function memoryAtomicKeyValueDb(): AtomicKeyValueDb & { raw: Map<string, unknown> } {
+	const raw = new Map<string, unknown>()
+	let queue: Promise<unknown> = Promise.resolve()
+	const clone = (v: unknown) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)))
+	return {
+		raw,
+		async get(k) {
+			return clone(raw.get(k))
+		},
+		async put(k, v) {
+			raw.set(k, clone(v))
+		},
+		async delete(k) {
+			raw.delete(k)
+		},
+		update(k, fn) {
+			const run = queue.then(() => {
+				const next = fn(clone(raw.get(k)))
+				if (next === null) raw.delete(k)
+				else raw.set(k, clone(next))
+				return clone(raw.get(k))
+			})
+			queue = run.catch(() => undefined)
+			return run
 		},
 	}
 }

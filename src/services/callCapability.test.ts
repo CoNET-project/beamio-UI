@@ -13,12 +13,12 @@ const NATIVE = { platform: 'ios', version: '1.5.8', build: '105' }
 const OK = { answered: true, capabilities: [V4], nativeApp: NATIVE } as const
 
 describe('the capability name', () => {
-	test('is voiceCallV4', () => {
+	test('is voiceCallV4 (v139 §159)', () => {
 		expect(V4).toBe('voiceCallV4')
 	})
 })
 
-describe('the final rule: only a valid hello with voiceCallV4 is allowed', () => {
+describe('the final rule (the decision; v154 §174): only a valid hello with voiceCallV4 is allowed', () => {
 	test('browser: its own flow, no prompt, calls allowed', () => {
 		const s = callCapabilityStateOf({ inShell: false, probe: 'failed' })
 		expect(s).toBe('browser')
@@ -113,7 +113,7 @@ describe('settling and shape (a malformed answer is failed at the parse)', () =>
 	})
 })
 
-describe('the native app of the hello ack: compatible needs a valid nativeApp and voiceCallV4', () => {
+describe('the native app of the hello ack (the decision / ebecfe52; v156 §176): compatible needs a valid nativeApp and voiceCallV4', () => {
 	test('valid nativeApp (ios or android, version and build in format) with voiceCallV4: compatible', () => {
 		for (const nativeApp of [
 			{ platform: 'ios', version: '1.5.8', build: '105' },
@@ -154,8 +154,8 @@ describe('the native app of the hello ack: compatible needs a valid nativeApp an
 	})
 })
 
-/** format-level vectors (the positive values are illustrative, not a release declaration). */
-describe('vectors', () => {
+/** v156 §176.4 format-level vectors (the positive values are illustrative, not a release declaration). */
+describe('v156 §176.4 vectors', () => {
 	const cap = [V4]
 	test('positive 1: ios 1.5.8 build 105 → compatible', () => {
 		expect(callCapabilityStateOf({ inShell: true, probe: { answered: true, capabilities: cap, nativeApp: { platform: 'ios', version: '1.5.8', build: '105' } } })).toBe('compatible')

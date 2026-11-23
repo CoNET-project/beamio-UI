@@ -16,9 +16,9 @@ describe('AppEntryGate: native recovery exit and storage decision', () => {
 	it('the unavailable screen offers the existing native recovery command, with the existing button label and error keys', () => {
 		const g = read('AppEntryGate.tsx')
 		expect(g).toContain("storageUnavailable === 'native_recovery_needed'")
-		expect(g).toContain('nativeRecoveryOpen()')
-		expect(g).toContain("{tu('use_recovery_code')}")
-		expect(g).toContain('recoveryOpenErrorKey(out.reason)')
+		expect(g).not.toContain('nativeRecoveryOpen()')  // 0.53.44: retired startup control (two-landing rule); must be absent
+		expect(g).not.toContain("{tu('use_recovery_code')}")  // 0.53.44: retired startup control (two-landing rule); must be absent
+		expect(g).not.toContain('recoveryOpenErrorKey(out.reason)')  // 0.53.44: retired startup control (two-landing rule); must be absent
 	})
 
 	it('a native recovery ok enters the app through the existing wallet-ready path; legacy_record uses the existing copy', () => {
@@ -36,11 +36,11 @@ describe('AppEntryGate: native recovery exit and storage decision', () => {
 		}
 	})
 
-	it('the store-not-ready reasons keep a wait with a retry, never onboarding (native_retry)', () => {
+	it('the store-not-ready reasons keep a background wait with the re-read schedule, never onboarding (shell)', () => {
 		const g = read('AppEntryGate.tsx')
-		// the native retry is decided by the pure router (storageRoute.ts); every other reason is the unavailable screen.
-		expect(g).toContain("storageUnavailableRoute({ nativeShell, reason }) === 'native_retry'")
-		expect(g).toContain('window.setTimeout(() => void init(), step.delayMs)')
+		// 2026-11-22: the shell has no screen for these reasons; the native retry branch was unreachable and is removed.
+		expect(g).toContain('if (nativeShell && !SHELL_SCREEN_REASONS.has(reason)) {')
+		expect(g).toContain('startupWait(`shell background: ${reason}`, shellWaitCodeOf(reason))')
 		expect(g).toContain('splashDeadlineAction({ decided: decisionMadeRef.current, nativeWaiting: nativeWaitRef.current })')
 		expect(g).not.toContain('goOnboarding(false)\n\t\t\treturn\n\t\t}\n\t\tshowStorageUnavailable')
 		expect(read('../services/shellStoreWait.ts')).toMatch(/shell_record_\(migrating\|import_not_done\|not_ready\|timeout\|native_unavailable\)\\b/)

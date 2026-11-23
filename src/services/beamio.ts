@@ -1,5 +1,6 @@
 //			beamio.ts
 
+import { pageMnemonicField } from './pageMnemonicField'
 import { idbBlobCompatReady } from './idbBlobCompat'
 import { CoNET_Data, setCoNET_Data } from '@/utils/globals'
 import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
@@ -10,19 +11,23 @@ import { loadOwnPgpPublicMaterial, shellPgpForServerRequest } from './ownPgpPubl
 import { completePendingServerSync, enqueuePendingServerSync, ensurePendingServerSync, pendingServerSyncGeneration, type FlushOutcome } from './pendingServerSync'
 import { diagnosticCode } from './diagnosticCodes'
 import { fallbackStartOutcome, nativeRecordFallbackOf, noteShellRecordFallback, OLD_SHELL_UPGRADE_REASON, type ShellRecordFallbackReason } from './shellRecordFallback'
-import { shellRecordAsWalletRecord, shellRecordRead, shellRecordWrite, prepareShellFreshWrite, validatedCopyAccount } from './shellRecordStore'
+import { buildShellRecordWriteCommand, shellRecordAsWalletRecord, shellRecordRead, shellRecordWrite, prepareShellFreshWrite, validatedCopyAccount } from './shellRecordStore'
 import { isUntrustedSourceAnswer, shellStorageErrorReason } from './shellStoreWait'
 import { setShellReadHold } from './shellTerminalState'
 import { commitStoredRead, type StoredReadEffects } from './walletCopyCommit'
 import { assertNoPgpPrivate } from './shellRecordSanitizer'
-import { indexedDbDeviceKeyStore } from './passcode/walletWrap'
 import { notifyPasscodeStateChanged } from './walletVaultEvents'
+import { shellMnemonicSync } from './shellMnemonicSync'
+import { sendPwaWalletSyncCipher } from './pwaWalletSyncTransport'
+import { nextShellTxSeq } from './shellTxSeq'
+import { classifyPageKeyState } from './pageRecordKeyState'
+import { handOffSyncPending } from './passcode/syncPendingHandoff'
+import { idbKeyValueDb, passcodeAttemptRecordStore } from './passcode/passcodeWrapStore'
 import {
   changeWalletPasscode,
   disableWalletPasscode,
   hasPlainSecrets,
   lockWalletSession,
-  migratePlainWallet,
   openWalletForStartup,
   passcodeEnabled,
   readPlainForVerify,
@@ -37,6 +42,7 @@ import {
   type WalletMeta,
   type WalletStores,
 } from './passcode/walletVault'
+import { clearChatAccessState } from './passcode/chatAccessGuard'
 import { applyBeamioUiLanguageFromProfile } from '@/locale/i18n'
 import {
 	buildBrowserLocaleCurrencyDefaults,
@@ -61,6 +67,7 @@ import { shellRecordReadState } from './pageRecordDecision'
 import { injectShellSessionKey } from './shellSessionSigner'
 import { clearPersistFailed, setPersistFailed, setPersistRetry } from './persistNoticeStatus'
 import { shellChatBlockedNow } from './shellChatCapability'
+import { markPendingSync } from './pendingSync'
 import {
 	customJsonStringify,
 	initProfileTokens,
@@ -613,7 +620,7 @@ async function signAuthorizationPayload(wallet: ethers.Wallet, amount: bigint, t
 		const base64 = toBase64(json)
 		return base64
 	} catch (ex: any) {
-		console.log(`wallet.signTypedData Error: ${ex.message}`)
+		console.log(`wallet.signTypedData Error: ${diagnosticCode(ex?.message)}`) // a code only: the message of a signing error may carry the typed data
 		return ''
 	}
 	
@@ -1172,7 +1179,7 @@ export const ensureProfilePrivateKeyArmorFromMnemonic = (
     if (profiles === data.profiles) return data
     return { ...data, profiles }
   }
-  const phrase = data.mnemonicPhrase?.trim() ?? ''
+  const phrase = typeof data.mnemonicPhrase === 'string' ? data.mnemonicPhrase.trim() : ''
   if (!phrase) return data
   // Shell: the page never derives an account key from a mnemonic; the native layer holds the keys.
   if (isShellContext()) return data
@@ -1347,14 +1354,14 @@ export const createOrGetWallet = async (secretPhrase: string | null, initAccount
 export type CheckStorageResult =
   | { status: 'loaded'; data: encrypt_keys_object; copyValidated?: true }
   | { status: 'empty' }
-  | { status: 'unavailable'; reason: 'timeout' | 'indexeddb' | 'invalid_document' | 'vault_unreadable' | 'native_record' | 'native_recovery_needed' | 'native_retry' | 'native_reading' | 'native_unreadable' | 'native_locked' | 'eoa_mismatch' | 'app_update_required' | 'old_shell_upgrade_required' | 'native_not_ready_bounded' | 'native_not_ready_final' }
+  | { status: 'unavailable'; reason: 'timeout' | 'indexeddb' | 'invalid_document' | 'vault_unreadable' | 'native_record' | 'native_recovery_needed' | 'native_retry' | 'native_reading' | 'native_unreadable' | 'native_locked' | 'eoa_mismatch' | 'app_update_required' | 'old_shell_upgrade_required' | 'native_not_ready_bounded' | 'native_not_ready_final' | 'native_passcode_not_provided' }
   /** Encrypted with a passcode and not unlocked yet. Never treated as empty: the gate asks for the passcode. */
   | { status: 'locked' }
 
 // ---------------------------------------------------------------------------
 // Wallet storage (logic in passcode/walletVault.ts). The init document keeps the blob with each
 // secret replaced in place by a wrap record. `meta` holds the failure counter and the marker. `vault` is the
-// 127eb973 document, read only to convert data written by that build.
+// document, read only to convert data written by that build.
 // ---------------------------------------------------------------------------
 
 /** Title (base64 blob or JSON text) of a PouchDB document, or null when it is missing. */
@@ -1428,7 +1435,7 @@ const readInitObject = async (options: { probe?: boolean } = {}): Promise<Loose 
 }
 
 const writeInitObject = async (data: Loose): Promise<void> => {
-  // 0.53.39 (independent review 4fd31f0a, item 2): the one persistence writer refuses a record that would lose a stored secret, on both
+  // 0.53.39 (independent review item 2): the one persistence writer refuses a record that would lose a stored secret, on both
   // the shell and the browser path. The records built by wrapForDisk already keep the stored secrets; this is the last check before the write.
   // a read that fails throws here: nothing is written and the stored record stays as it is. Only a confirmed absence (null) is an empty record.
   const stored = ((await readInitObject({ probe: true })) ?? {}) as Loose
@@ -1470,16 +1477,17 @@ const mergeKeepingAccount = (existing: Loose, temp: encrypt_keys_object): encryp
 }
 
 /**
- * 0.53.44: the shell page record is read first and kept whole, then the new copy is merged or written.
+ * 0.53.44 (item 2, after PART 1): the shell page record is read first and kept whole, then the new copy is merged or written.
  * - No existing record, or an existing record with no mnemonic (a key-only copy): the new copy is written as it is.
  * - The existing record holds a phrase that cannot be derived (fail-closed), or a valid mnemonic for another keyID than the new copy:
- * refused, nothing written.
+ *   refused, nothing written.
  * - The same account (keyID = the EOA of the existing valid mnemonic): a new copy with its own valid mnemonic for that EOA is written;
- * a new copy without a mnemonic is merged into the complete existing record (the mnemonic is never lost); any other phrase is refused.
+ *   a new copy without a mnemonic is merged into the complete existing record (the mnemonic is never lost); any other phrase is refused.
  * A read that fails throws before this check, so nothing is written either. Returns the copy to write.
  */
-const assertPageRecordNotOverwritten = async (temp: encrypt_keys_object): Promise<encrypt_keys_object> => {
-  const existing = ((await readInitObject({ probe: true })) ?? null) as Loose | null
+const assertPageRecordNotOverwritten = async (temp: encrypt_keys_object, pageExisting?: Loose | null): Promise<encrypt_keys_object> => {
+  // unit (b) item 1 (): the page IndexedDB copy, when given, is the existing record (the shell start copy is no longer the native one)
+  const existing = (pageExisting !== undefined ? pageExisting : ((await readInitObject({ probe: true })) ?? null)) as Loose | null
   if (!existing) return temp
   const phrase = typeof existing.mnemonicPhrase === 'string' ? existing.mnemonicPhrase.trim() : ''
   if (!phrase) return temp
@@ -1496,9 +1504,56 @@ const assertPageRecordNotOverwritten = async (temp: encrypt_keys_object): Promis
 }
 
 // exported for the persistence regression (0.53.39): the production write of the wallet record, shell and browser paths
+/** Shell native copy syncs still in flight (unit (b) item 1). Tests and a QA flush wait on them with flushShellNativeSync. */
+const shellNativeSyncs = new Set<Promise<void>>()
+export const flushShellNativeSync = async (): Promise<void> => {
+  await Promise.allSettled([...shellNativeSyncs])
+}
+
+/**
+ * Unit (b) item 1 (the decision): a shell save writes the page's own IndexedDB first (existing wrap format, the same merge and refusal
+ * rules as before), then reads the mnemonic back from it. The save resolves on that verified write. The native copy is synced in the background
+ * through the trusted bridge; its failure is a pending sync, never a failed save and never a change of the page copy.
+ */
+const persistPageIdbCopy = async (written: encrypt_keys_object): Promise<void> => {
+  let raw: string | null
+  try {
+    raw = await readDocTitle('init')
+  } catch {
+    throw new Error('page_idb_unknown')
+  }
+  const existing = raw ? parseInitRaw(raw) : null
+  const record = (await wrapForDisk(pageIdbWalletStores(existing), written as unknown as Loose)) as Loose
+  await putDocDurable('init', encodeInitRaw(record))
+  const phrase = typeof (written as Loose).mnemonicPhrase === 'string' ? ((written as Loose).mnemonicPhrase as string).trim() : ''
+  if (phrase) {
+    const back = await readPageIdbInit()
+    if (back.status !== 'valid' || back.phrase !== phrase || back.eoa !== validMnemonicEoa(written)) throw new Error('page_idb_readback_mismatch')
+  }
+}
+
 export const persistInitRecord = async (temp: encrypt_keys_object): Promise<void> => {
   if (isShellContext()) {
-    const written = await assertPageRecordNotOverwritten(temp)
+    const pageState = await readPageIdbInit()
+    if (pageState.status === 'unknown') throw new Error('page_idb_unknown')
+    // the refusal floor holds against both copies: the page IndexedDB (the start copy) and the native copy (a valid account there is never replaced)
+    const nativeExisting = ((await readInitObject({ probe: true })) ?? null) as Loose | null
+    const byPage = await assertPageRecordNotOverwritten(temp, pageState.status === 'valid' ? pageState.data : null)
+    const written = await assertPageRecordNotOverwritten(byPage, nativeExisting)
+    // the shell write whitelist (PGP private and public fields, size) is checked here, synchronously, as before the save resolves
+    buildShellRecordWriteCommand(0, written as unknown as Loose, 0)
+    await persistPageIdbCopy(written)
+    const sync = syncShellNativeCopy(written)
+    shellNativeSyncs.add(sync)
+    void sync.finally(() => shellNativeSyncs.delete(sync))
+    return
+  }
+  await persistInitRecordBrowser(temp)
+}
+
+/** The native copy of a shell save (background): the pre-existing shell write, unchanged, and a failure is a pending sync. */
+const syncShellNativeCopy = async (written: encrypt_keys_object): Promise<void> => {
+  try {
     const record = (await wrapForDisk(walletStores(), written as unknown as Loose)) as Loose
     // draft 22.4: a key-only copy (both sides confirmed no mnemonic) is isolated with an audit before any full write. Any other
     // record takes the editable-field path, unchanged. Refusal or unknown throws before anything is written.
@@ -1513,9 +1568,14 @@ export const persistInitRecord = async (temp: encrypt_keys_object): Promise<void
       const got = back.status === 'ok' && Array.isArray(back.record.profiles) ? String((back.record.profiles[0] as Loose)?.keyID ?? '').toLowerCase() : ''
       if (back.status !== 'ok' || !wanted || got !== wanted) throw new Error('fresh_write_readback_mismatch')
     }
-    return
+  } catch (err) {
+    markPendingSync('native_profile_sync')
+    publishNativePwaLog('warn', `[persistInitRecord] native copy sync pending (${diagnosticCode(err instanceof Error ? err.message : 'failed')}): the page copy is saved`)
   }
-  // 0.53.39 (independent review 7ea17c2, item 2): the browser write goes through the same guarded writer as the shell (read, refuse a loss or an
+}
+
+const persistInitRecordBrowser = async (temp: encrypt_keys_object): Promise<void> => {
+  // 0.53.39 (independent review item 2): the browser write goes through the same guarded writer as the shell (read, refuse a loss or an
   // unknown read, then write). The backup copy is taken only after the write was accepted, so a refused record is never cached.
   const record = (await wrapForDisk(walletStores(), temp as unknown as Loose)) as Loose
   await writeInitObject(record)
@@ -1535,6 +1595,7 @@ const walletStores = (): WalletStores => ({
       return {
         failures: Number(m.failures) || 0,
         nextAt: Number(m.nextAt) || 0,
+        lastFailureMs: Number(m.lastFailureMs) || 0,
         ...(m.walletWrapState === 'wrapped' ? { walletWrapState: 'wrapped' as const } : {}),
       }
     } catch {
@@ -1542,30 +1603,16 @@ const walletStores = (): WalletStores => ({
     }
   },
   writeMeta: (m: WalletMeta) => putDocDurable('meta', JSON.stringify(m)),
-  deviceKeys: indexedDbDeviceKeyStore(),
+  // unit f3: the cooldown record per account (PWA IndexedDB, atomic update, read back)
+  attemptsFor: (eoa: string) => passcodeAttemptRecordStore(idbKeyValueDb(), eoa),
 })
 
 /** Persist: the in-memory wallet is written wrapped (a locked passcode session refuses; see wrapForPersist). */
 const encodePersistBlob = async (temp: encrypt_keys_object): Promise<string> =>
   encodeInitRaw(await wrapForDisk(walletStores(), temp as unknown as Loose))
 
-let plainMigrationInFlight: Promise<PlainMigration> | null = null
-
-/** one run at a time. 'kept' leaves the plaintext copy in use; the next start retries. */
-const runPlainWalletMigration = (): Promise<PlainMigration> => {
-  if (!plainMigrationInFlight) {
-    plainMigrationInFlight = migratePlainWallet(walletStores())
-      .then((r) => {
-        if (r === 'kept') console.warn('[wallet] plaintext wrap kept the existing copy')
-        return r
-      })
-      .catch(() => 'kept' as const)
-      .finally(() => {
-        plainMigrationInFlight = null
-      })
-  }
-  return plainMigrationInFlight
-}
+/** Device-key plaintext migration is removed (unit f3, 2026-11-22): no wrap is made here, so the result is always 'none'. */
+const runPlainWalletMigration = (): Promise<PlainMigration> => Promise.resolve('none' as const)
 
 /** Result of a passcode operation; `retryAfterMs` is set while a wait applies. */
 export type VaultOpResult = { ok: true } | { ok: false; reason: string; retryAfterMs?: number; attempts?: number }
@@ -1588,22 +1635,42 @@ export const unlockWalletVaultWithPasscode = async (passcode: string): Promise<V
 }
 
 /** Turns the passcode on. The caller must have the wallet loaded (the in-memory secrets are what gets wrapped). */
+/** The first pwaWalletSync with the cipher and the passcode (set or change). Completed only on the shell's confirmed ok. */
+const firstSyncWithPasscode = async (envelope: Loose, passcode: string): Promise<'ok' | 'not_completed'> => {
+  const r = await sendPwaWalletSyncCipher('pwaWalletSync', nextShellTxSeq(), envelope, passcode)
+  return r.code === 'ok' ? 'ok' : 'not_completed'
+}
+
+/**
+ * A pending first sync (sync_pending) goes to the app's existing background sync mechanism (passcode/syncPendingHandoff): the passcode is
+ * not kept, the cipher carries none, and completion is only the shell's confirmed read-back. No retry is added here.
+ */
+const handOffPendingSet = (cipher: Loose): void => {
+  handOffSyncPending(cipher, String(cipher.eoa ?? ''))
+}
+
 export const setWalletVaultPasscode = async (passcode: string): Promise<SetResult> => {
   if (!CoNET_Data?.profiles?.length) return { ok: false, reason: 'error' }
-  const res = await setWalletPasscode(walletStores(), passcode, CoNET_Data as unknown as Loose)
+  const res = await setWalletPasscode(walletStores(), passcode, CoNET_Data as unknown as Loose, firstSyncWithPasscode)
+  if (!res.ok && res.reason === 'sync_pending') handOffPendingSet(res.cipher)
   checkStorageInFlight = null
   if (res.ok) notifyPasscodeStateChanged()
   return res
 }
 
 export const changeWalletVaultPasscode = async (oldPasscode: string, newPasscode: string): Promise<VaultOpResult | SetResult> => {
-  const res = await changeWalletPasscode(walletStores(), oldPasscode, newPasscode, Date.now())
+  const res = await changeWalletPasscode(walletStores(), oldPasscode, newPasscode, Date.now(), firstSyncWithPasscode)
+  if (!res.ok && 'reason' in res && res.reason === 'sync_pending') handOffPendingSet(res.cipher)
   checkStorageInFlight = null
   return res
 }
 
 export const disableWalletVaultPasscode = async (passcode: string): Promise<VaultOpResult> => {
-  const res = await disableWalletPasscode(walletStores(), passcode, Date.now())
+  // after the plaintext read-back, the plain phrase goes to the shell once, in the background (decision)
+  const res = await disableWalletPasscode(walletStores(), passcode, Date.now(), (phrase, eoa) => {
+    // background: a throw or a missing answer never reaches the caller (the sync is retried by its own rules)
+    void Promise.resolve().then(() => shellMnemonicSync.sync(phrase, eoa)).catch(() => undefined)
+  })
   checkStorageInFlight = null
   if (!res.ok) return res
   notifyPasscodeStateChanged()
@@ -1627,6 +1694,8 @@ const withoutSecretsInMemory = (data: encrypt_keys_object): encrypt_keys_object 
 export const lockWalletVaultOnLogout = async (): Promise<boolean> => {
   const pc = await walletVaultHasPasscode()
   lockWalletSession()
+  // unit e: sign-out drops the previous account's chat unlock record; the chat lock is shown again only when a passcode is on.
+  clearChatAccessState(pc)
   if (pc && CoNET_Data) {
     setCoNET_Data(withoutSecretsInMemory(CoNET_Data))
     checkStorageInFlight = null
@@ -1683,7 +1752,7 @@ const storedReadEffects: StoredReadEffects = {
 }
 
 /**
- *the shell's native side answers no_key, and the raw shell record (if any) has no mnemonic and is not a completed account. Read-only:
+ * R95: the shell's native side answers no_key, and the raw shell record (if any) has no mnemonic and is not a completed account. Read-only:
  * the raw read is a probe; nothing is written, deleted or regenerated. A read failure (any other answer, or a throw) is false.
  */
 const shellNoKeyWithoutMnemonic = async (): Promise<boolean> => {
@@ -1691,6 +1760,8 @@ const shellNoKeyWithoutMnemonic = async (): Promise<boolean> => {
     const native = await readWalletEoaAddress()
     if (!(native.kind === 'refused' && native.code === NO_KEY_ERROR)) return false
     const raw = await shellRecordRead({ probe: true, raw: true, source: 'probe' })
+    // 0.53.44 (sc): the parser returns a keyless record with no mnemonic as keylessRecord; with native no_key that is no account (11-17 rule)
+    if (raw.status === 'error' && raw.keylessRecord) return true
     if (raw.status === 'absent') return true
     if (raw.status !== 'ok') return false
     const rec = raw.record as unknown as encrypt_keys_object
@@ -1703,19 +1774,23 @@ const shellNoKeyWithoutMnemonic = async (): Promise<boolean> => {
   }
 }
 
-/** steps 1 and 2: the old PWA store read in a shell (read-only; a timeout is unknown). */
+/** r92 steps 1 and 2: the old PWA store read in a shell (read-only; a timeout is unknown). */
 const LEGACY_SHELL_READ_TIMEOUT_MS = 5_000
 const readLegacyShellInit = async (): Promise<{ status: 'valid'; data: Loose } | { status: 'absent' } | { status: 'unknown'; reason: 'native_retry' }> => {
   let raw: string | null
   try {
-    raw = await Promise.race([
-      readDocTitle('init'),
-      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('legacy_timeout')), LEGACY_SHELL_READ_TIMEOUT_MS)),
-    ])
+    // the timer is cleared when the read settles (no open handle after the read; 2026-11-22 startupIdbFirst)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeoutP = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('legacy_timeout')), LEGACY_SHELL_READ_TIMEOUT_MS)
+    })
+    raw = await Promise.race([readDocTitle('init'), timeoutP]).finally(() => clearTimeout(timer))
   } catch {
     publishNativePwaLog('warn', '[startup] old PWA store not read (failure or timeout): unknown, held, nothing written')
     return { status: 'unknown', reason: 'native_retry' }
   }
+  // unit (b): a stored document that cannot be parsed is corrupt, never absent (parseInitRaw returns null for it)
+  if (raw && !parseInitRaw(raw)) return { status: 'unknown', reason: 'native_retry' }
   const data = raw ? parseInitRaw(raw) : null
   const decision = decideLegacyInit(data)
   if (decision.status === 'unknown') publishNativePwaLog('warn', '[startup] old PWA store does not match its account: unknown, held, nothing written')
@@ -1727,7 +1802,7 @@ const readLegacyShellInit = async (): Promise<{ status: 'valid'; data: Loose } |
  * The native side of a shell start (the native record first). Returns `result` when the answer is final (loaded, or a hold), `empty` when
  * the native side confirms there is no account (the old store then decides), or `rec` for the common read (the page copy from the native record).
  */
-/** The fallback decision of the last shell start read: null, 'onboard' (walletEoaAddress no_key) or 'hold'. */
+/** The fallback decision of the last shell start read (2026-11-21): null, 'onboard' (walletEoaAddress no_key) or 'hold'. */
 
 type ShellNativeFirst = { kind: 'result'; result: CheckStorageResult } | { kind: 'empty' } | { kind: 'fallback'; reason: ShellRecordFallbackReason } | { kind: 'rec'; rec: Loose }
 const shellNativeFirstRead = async (options: { probe?: boolean }): Promise<ShellNativeFirst> => {
@@ -1752,20 +1827,20 @@ const shellNativeFirstRead = async (options: { probe?: boolean }): Promise<Shell
     // the hold follows this answer: a not_ready keeps its ceiling; any other answered reply (origin_refused, bad_request, a record error…) releases it
     setShellReadHold(readReason === 'native_not_ready_bounded' ? 'bounded' : readReason === 'native_not_ready_final' ? 'final' : 'none')
     if (isUntrustedSourceAnswer(msg)) {
-      // 7590d172: the shell refused the page as untrusted. Nothing is read from the page store, entered, onboarded or written: a wait.
+      // the shell refused the page as untrusted. Nothing is read from the page store, entered, onboarded or written: a wait.
       publishNativePwaLog('warn', '[startup] shell refused the page (untrusted_source): wait and retry; page store not read, nothing entered or written')
     }
-    // A definite fallback (shellRecordRead not_supported / unknown_command) is decided before walletEoaAddress is
+    // 2026-11-21 (review): a definite fallback (shellRecordRead not_supported / unknown_command) is decided before walletEoaAddress is
     // consulted, so the fallback path never reads walletEoaAddress.
     const isFallback = nativeRecordFallbackOf(msg) !== null
-    //the native side answers no_key and the record has no mnemonic: both sides confirm no account, so the read is empty.
+    // R95: the native side answers no_key and the record has no mnemonic: both sides confirm no account, so the read is empty.
     // Read-only; a completed account, a mnemonic, or any other answer keeps the state below.
-    // untrusted_source (7590d172) is never an empty account: no native no_key check is made for it either.
+    // untrusted_source () is never an empty account: no native no_key check is made for it either.
     const shellEmpty = isFallback || isUntrustedSourceAnswer(msg) ? false : await shellNoKeyWithoutMnemonic()
-    // step 4: the inputs of the decision, status codes only (no record, key or value)
+    // r92 step 4: the inputs of the decision, status codes only (no record, key or value)
     publishNativePwaLog('info', `[startup] decision inputs: store=error(${diagnosticCode(msg.replace(/^shell_record_/, ''))}) native_empty=${shellEmpty}`)
     if (shellEmpty) return { kind: 'empty' }
-    // The shell does not support the native record command (a definite old shell): no native record, so the page store is read next.
+    // 2026-11-21: the shell does not support the native record command (a definite old shell): no native record, so the page store is read next.
     const fallback = nativeRecordFallbackOf(msg)
     if (fallback) return { kind: 'fallback', reason: fallback.reason }
     // the store is not ready yet (migrating, import not done): a wait and a retry, never onboarding and never the old store.
@@ -1788,7 +1863,7 @@ const shellNativeFirstRead = async (options: { probe?: boolean }): Promise<Shell
     const native = await readWalletEoaAddress().catch(() => ({ kind: 'refused' as const, code: 'error' }))
     // a page copy exists and the native layer answers no_key: the native key is missing. Recovery only (no retry loop, no onboarding).
     if (native.kind === 'refused' && native.code === NO_KEY_ERROR) {
-      //a key-only copy with no mnemonic, and the native side answering no_key, is no account: empty.
+      // R94: a key-only copy with no mnemonic, and the native side answering no_key, is no account: empty.
       if (!hasLocalPlaintextMnemonic(rec as unknown as encrypt_keys_object) || isKeyOnlyCopyWithoutMnemonic(rec as unknown as encrypt_keys_object)) return { kind: 'empty' }
       return { kind: 'result', result: { status: 'unavailable', reason: 'native_recovery_needed' } }
     }
@@ -1805,19 +1880,34 @@ const shellNativeFirstRead = async (options: { probe?: boolean }): Promise<Shell
 const readStorageWithStatus = async (allowMigration = true, options: { probe?: boolean } = {}): Promise<CheckStorageResult> => {
   try {
     let data: encrypt_keys_object
+    if (isShellContext() && !options.probe) {
+      // Unit (b), the decision: the page's own IndexedDB is read first and on its own. A native not_ready, lock or
+      // refusal does not block it, and a valid mnemonic here enters the home without any native read (the native side is a background
+      // sync target). Absent means the native pre-read decides (the gate asks it only then). Unknown is held: nothing is entered or written.
+      const page = await readPageIdbInit()
+      if (page.status === 'unknown') {
+        publishNativePwaLog('warn', `[startup] page IndexedDB read unknown (${page.reason}): held, nothing entered, written or deleted`)
+        return { status: 'unavailable', reason: 'native_retry' }
+      }
+      if (page.status === 'absent') return { status: 'empty' }
+      const entered = injectShellSessionKey(stripLegacyChatContainers(page.data))
+      await commitStoredRead(options, { cleaned: entered, hadPeerPrivateArmored: false }, storedReadEffects)
+      publishNativePwaLog('info', '[startup] page IndexedDB mnemonic valid: entered on the page record; native reads are not needed at start')
+      return { status: 'loaded', data: entered as unknown as encrypt_keys_object }
+    }
     if (isShellContext()) {
-      // 0.53.39, 2026-11-20 (read order for the shell start): the native record first. The old PWA store is read only when the
+      // 0.53.39, rule (read order for the shell start): the native record first. The old PWA store is read only when the
       // native side confirms there is no account (empty). A native unknown or failure is a hold (retried), never a fallback to the old store,
       // and nothing is written from it. The old store is never rewritten by this read.
       const nativeFirst = await shellNativeFirstRead(options)
       if (nativeFirst.kind === 'result') return nativeFirst.result
-      // steps 1 and 2 (24.1, 24.5): the old store is read after the native answer (never before, never instead of a hold). A valid mnemonic
+      // r92 steps 1 and 2 (24.1, 24.5): the old store is read after the native answer (never before, never instead of a hold). A valid mnemonic
       // for this account enters it; unknown is a hold; absent means no old account.
       const legacy = await readLegacyShellInit()
       if (legacy.status === 'unknown') return { status: 'unavailable', reason: legacy.reason }
       if (legacy.status === 'valid') {
         // the native record of the same account is newer and authoritative: it is used, and the old store is not
-        // entered over it. A different account (or no native record) keeps the entry, as before.
+        // entered over it. A different account (or no native record) keeps the r94 entry, as before.
         const legacyEoa = String((legacy.data.profiles as Loose[] | undefined)?.[0]?.keyID ?? '').toLowerCase()
         const nativeEoa = nativeFirst.kind === 'rec' ? String((nativeFirst.rec.profiles as Loose[] | undefined)?.[0]?.keyID ?? '').toLowerCase() : ''
         if (!(nativeFirst.kind === 'rec' && nativeEoa !== '' && nativeEoa === legacyEoa)) {
@@ -1830,7 +1920,7 @@ const readStorageWithStatus = async (allowMigration = true, options: { probe?: b
       }
       if (nativeFirst.kind === 'empty') return { status: 'empty' }
       if (nativeFirst.kind === 'fallback') {
-        // (2026-11-21): the shell's native record command is definitely absent. The page store was read above:
+        // the decision (2026-11-21): the shell's native record command is definitely absent. The page store was read above:
         // here it is absent (an unknown answer returned earlier). A confirmed empty page store is the terminal update prompt; nothing
         // is entered, created, recovered, imported or written, and walletEoaAddress is not consulted on this path.
         noteShellRecordFallback(nativeFirst.reason)
@@ -1881,6 +1971,10 @@ const readStorageWithStatus = async (allowMigration = true, options: { probe?: b
       // undetermined (unavailable, retried), never first-time onboarding and never an overwrite.
       // a browser record with a completed BeamioTag but no EOA key is undetermined (retry), not loaded and not onboarding.
       if (hasCompletedBeamioAccount(data)) {
+        // Current code (11-17 reading, the recorded rule). A completed Beamio account with no EOA key in a shell
+        // is the recovery entry (native_recovery_needed). The owner's reaffirmed rule:
+        // a BeamioTag or a legacy address does not change the result; onboarding follows only when the mnemonic is confirmed missing. That change is
+        // pending (a product change in the shared record parser), not made here. A trusted blank is onboarding (isTrustedEmptyWalletBlob below).
         return { status: 'unavailable', reason: isShellContext() ? 'native_recovery_needed' : 'invalid_document' }
       }
       if (isTrustedEmptyWalletBlob(data)) {
@@ -1888,6 +1982,10 @@ const readStorageWithStatus = async (allowMigration = true, options: { probe?: b
         await commitStoredRead(options, null, storedReadEffects)
         return { status: 'empty' }
       }
+      // Current code (11-17 reading, the recorded rule): a shell record with no EOA key is the recovery entry
+      // (native_recovery_needed); only isTrustedEmptyWalletBlob above is onboarding. The owner's reaffirmed rule
+      // makes onboarding follow a confirmed missing mnemonic; that change is
+      // pending, not made here. A browser keeps invalid_document.
       return { status: 'unavailable', reason: isShellContext() ? 'native_recovery_needed' : 'invalid_document' }
     }
     if (isTrustedEmptyWalletBlob(hydrated)) {
@@ -1901,6 +1999,183 @@ const readStorageWithStatus = async (allowMigration = true, options: { probe?: b
   } catch {
     return { status: 'unavailable', reason: 'indexeddb' }
   }
+}
+
+/**
+ * Unit (b), the decision: the page's own IndexedDB `init` record, read on its own (no native call). Three states:
+ * - valid: the record holds a mnemonic that derives an EOA (opened from its wrap when it is wrapped). The EOA may differ from keyID; the
+ *   gate decides that mismatch (a hold), not this read.
+ * - absent: the document is missing, or it holds no mnemonic and is a trusted empty blob (a key-only copy is not an account).
+ * - unknown: a timeout, a read failure, a locked or unreadable vault, a corrupt document, or a record without a mnemonic that is not empty.
+ *   Unknown is never absent: nothing is onboarded, deleted or overwritten on it.
+ */
+export type PageIdbState =
+  | { status: 'valid'; eoa: string; phrase: string; data: Loose }
+  | { status: 'absent' }
+  | { status: 'unknown'; reason: 'timeout' | 'read_failed' | 'corrupt_record' | 'locked' | 'vault_unreadable' | 'no_mnemonic_record' }
+
+/**
+ * The wallet stores for the page's IndexedDB record only (unit (b)): the existing record is the one read from IndexedDB, never the shell
+ * record, so the wrap and the open never touch the native store. The device key still comes from the page's own device store.
+ */
+const pageIdbWalletStores = (existing: Loose | null): WalletStores => ({
+  ...walletStores(),
+  readInit: async () => existing,
+  probeInit: async () => existing,
+})
+
+/** Read-only: the key-only test of the page record (see pageRecordKeyState). Never changes readPageIdbInit's answer. */
+export const readPageIdbKeyState = async (): Promise<'key_only' | 'unknown'> => {
+  let raw: string | null
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const timeoutP = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('idb_timeout')), LEGACY_SHELL_READ_TIMEOUT_MS)
+    })
+    raw = await Promise.race([readDocTitle('init'), timeoutP]).finally(() => clearTimeout(timer))
+  } catch {
+    return 'unknown'
+  }
+  if (raw === null) return 'unknown'
+  return classifyPageKeyState(parseInitRaw(raw) as Loose | null)
+}
+
+/**
+ * The v3 mnemonic envelope of the page's own IndexedDB record, exactly as stored (nothing is decrypted, opened or written). Null when the
+ * record is missing, unreadable, or its mnemonic is not an envelope. Used by the passcode unlock sync (M6): the cipher goes to the shell with the
+ * passcode just typed.
+ */
+export const readPageCipherEnvelope = async (): Promise<Record<string, unknown> | null> => {
+  let raw: string | null
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const timeoutP = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('idb_timeout')), LEGACY_SHELL_READ_TIMEOUT_MS)
+    })
+    raw = await Promise.race([readDocTitle('init'), timeoutP]).finally(() => clearTimeout(timer))
+  } catch {
+    return null
+  }
+  if (raw === null) return null
+  const parsed = parseInitRaw(raw) as Loose | null
+  if (!parsed) return null
+  const field = pageMnemonicField(parsed)
+  return field.kind === 'envelope' ? field.envelope : null
+}
+
+export const readPageIdbInit = async (): Promise<PageIdbState> => {
+  let raw: string | null
+  try {
+    // the timer is cleared when the read settles (no open handle after the read; 2026-11-22 startupIdbFirst)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeoutP = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('idb_timeout')), LEGACY_SHELL_READ_TIMEOUT_MS)
+    })
+    raw = await Promise.race([readDocTitle('init'), timeoutP]).finally(() => clearTimeout(timer))
+  } catch (err) {
+    return { status: 'unknown', reason: err instanceof Error && err.message === 'idb_timeout' ? 'timeout' : 'read_failed' }
+  }
+  if (raw === null) return { status: 'absent' }
+  const parsed = parseInitRaw(raw)
+  if (!parsed) return { status: 'unknown', reason: 'corrupt_record' }
+  let data: Loose = parsed
+  if (hasPlainSecrets(parsed)) {
+    // a plaintext copy (0.52.930 format): read as it is. No migration write from a startup read.
+  } else {
+    // a wrapped copy: opened with the page's device key, as the browser start opens it (read-only; no write from here)
+    try {
+      const opened = await openWalletForStartup(pageIdbWalletStores(parsed), parsed)
+      if (opened.status === 'locked') return { status: 'unknown', reason: 'locked' }
+      if (opened.status === 'error') return { status: 'unknown', reason: 'vault_unreadable' }
+      data = opened.data as Loose
+    } catch {
+      return { status: 'unknown', reason: 'vault_unreadable' }
+    }
+  }
+  const phrase = typeof data.mnemonicPhrase === 'string' ? data.mnemonicPhrase.trim() : ''
+  if (!phrase) {
+    if (isTrustedEmptyWalletBlob(data as encrypt_keys_object)) return { status: 'absent' }
+    return { status: 'unknown', reason: 'no_mnemonic_record' }
+  }
+  const eoa = validMnemonicEoa(data as encrypt_keys_object)
+  if (!eoa) return { status: 'unknown', reason: 'corrupt_record' }
+  return { status: 'valid', eoa, phrase, data }
+}
+
+/**
+ * Unit (b): the write-back of a mnemonic that the native pre-read returned for this account (the decision rule 4). The record is written
+ * to the page's own IndexedDB in the existing format (wrapForDisk, then the durable put). Verified only by an independent read of the mnemonic
+ * from IndexedDB whose derived address equals the account. A shell record read, an address read or a generic record read-back is not evidence.
+ * A valid mnemonic of another account in IndexedDB is refused (nothing written); an unknown read before the write is not overwritten.
+ */
+export type PageIdbWriteResult = 'verified' | 'refused_other_account' | 'unknown_before' | 'write_failed' | 'readback_absent' | 'readback_unknown' | 'readback_mismatch'
+
+/**
+ * M6, entry (b) (the shell answered a ciphertext pre-read and the page decrypted it with the passcode just typed): the page's own IndexedDB gets the
+ * account as a PASSCODE record (the v3 envelope in `mnemonicPhrase`, the other secrets wrapped under the same passcode key), never the plaintext
+ * phrase. The plaintext lives only in memory (the record argument and the unlocked session). The first pwaWalletSync{eoa, cipher, passcode, seq}
+ * is sent inside this call, once; a sync that is not confirmed is handed to the background mechanism (the record is already written and read back).
+ * A refusal, a weak passcode, a failed write or a failed read-back writes nothing readable as plaintext and clears nothing. `verified` means the
+ * read-back is the envelope of this account.
+ */
+export const persistPageIdbPasscodeRecord = async (record: Loose, phrase: string, eoa: string, passcode: string): Promise<PageIdbWriteResult> => {
+  const want = eoa.trim().toLowerCase()
+  const before = await readPageIdbInit()
+  if (before.status === 'unknown') return 'unknown_before'
+  if (before.status === 'valid' && before.eoa !== want) return 'refused_other_account'
+  const pageStores: WalletStores = {
+    ...walletStores(),
+    readInit: async () => {
+      const raw = await readDocTitle('init')
+      return raw ? parseInitRaw(raw) : null
+    },
+    probeInit: async () => {
+      const raw = await readDocTitle('init')
+      return raw ? parseInitRaw(raw) : null
+    },
+    writeInit: async (data: Loose) => {
+      const raw = await readDocTitle('init')
+      assertStoredSecretsKept(((raw ? parseInitRaw(raw) : null) ?? {}) as Loose, data)
+      await putDocDurable('init', encodeInitRaw(data))
+    },
+  }
+  let res: SetResult
+  try {
+    res = await setWalletPasscode(pageStores, passcode, record, firstSyncWithPasscode)
+  } catch {
+    return 'write_failed'
+  }
+  if (!res.ok && res.reason === 'sync_pending') handOffPendingSet(res.cipher)
+  else if (!res.ok) return 'write_failed'
+  const env = await readPageCipherEnvelope()
+  if (!env) return 'readback_absent'
+  void phrase
+  return String(env.eoa ?? '').toLowerCase() === want ? 'verified' : 'readback_mismatch'
+}
+
+export const persistPageIdbMnemonic = async (record: Loose, phrase: string, eoa: string): Promise<PageIdbWriteResult> => {
+  const want = eoa.trim().toLowerCase()
+  const before = await readPageIdbInit()
+  if (before.status === 'unknown') return 'unknown_before'
+  if (before.status === 'valid' && before.eoa !== want) return 'refused_other_account'
+  // the existing stored document (IndexedDB, as it is) keeps the stored secrets on the wrap; a read that fails was refused above
+  let existing: Loose | null = null
+  try {
+    const raw = await readDocTitle('init')
+    existing = raw ? parseInitRaw(raw) : null
+  } catch {
+    return 'unknown_before'
+  }
+  try {
+    const wrapped = (await wrapForDisk(pageIdbWalletStores(existing), record as Loose)) as Loose
+    await putDocDurable('init', encodeInitRaw(wrapped))
+  } catch {
+    return 'write_failed'
+  }
+  const back = await readPageIdbInit()
+  if (back.status === 'absent') return 'readback_absent'
+  if (back.status === 'unknown') return 'readback_unknown'
+  return back.eoa === want && back.phrase === phrase.trim() ? 'verified' : 'readback_mismatch'
 }
 
 /** A read for a user action that does not feed the page copy (H2): a probe in the shell, so it does not move the write basis. */
@@ -1976,13 +2251,20 @@ export async function checkStorageWithStatusWithTimeout(
   timeoutMs = CHECK_STORAGE_TIMEOUT_MS,
 ): Promise<CheckStorageResult> {
   if (typeof window === 'undefined') return { status: 'unavailable', reason: 'indexeddb' }
-  const read = checkStorageWithStatus()
+  return raceCheckStorageWithTimeout(checkStorageWithStatus(), timeoutMs)
+}
+
+/**
+ * Races one read the caller holds with a limit. The read itself is never cancelled by the limit. Browser: a timed-out shared in-flight
+ * is dropped so Retry / remount can start a fresh read (an IndexedDB read has no cap). Shell (0.53.44): the in-flight read is kept; its
+ * native request is capped at 30 s, and a retry awaits the same request.
+ */
+function raceCheckStorageWithTimeout(read: Promise<CheckStorageResult>, timeoutMs: number): Promise<CheckStorageResult> {
   return Promise.race([
     read,
     new Promise<CheckStorageResult>((resolve) => {
       window.setTimeout(() => {
-        // Drop hung shared in-flight so Retry / remount can start a fresh read.
-        if (checkStorageInFlight === read) checkStorageInFlight = null
+        if (!isShellContext() && checkStorageInFlight === read) checkStorageInFlight = null
         resolve({ status: 'unavailable', reason: 'timeout' })
       }, timeoutMs)
     }),
@@ -1999,20 +2281,37 @@ export async function checkStorageWithTransientRetry(
   timeoutMs = 5_000,
   maxAttempts = 2,
 ): Promise<CheckStorageResult> {
-  let result = await checkStorageWithStatusWithTimeout(timeoutMs)
-  for (let attempt = 1; attempt < maxAttempts; attempt += 1) {
+  // unit (c), 2026-11-22: in the shell this call keeps the read it started by reference. The module-level in-flight slot is cleared by
+  // other paths (a write, a passcode or a reset) while the native request is open; a retry or the final await that re-reads that slot
+  // would then miss the read, and its late ok (for example at 12 s) would be dropped. Every attempt races this same read.
+  const shell = isShellContext()
+  let shellRead: Promise<CheckStorageResult> | null = null
+  const attempt = (): Promise<CheckStorageResult> => {
+    if (typeof window === 'undefined') return Promise.resolve({ status: 'unavailable', reason: 'indexeddb' })
+    if (!shell) return checkStorageWithStatusWithTimeout(timeoutMs)
+    if (shellRead === null) shellRead = checkStorageWithStatus()
+    return raceCheckStorageWithTimeout(shellRead, timeoutMs)
+  }
+  let result = await attempt()
+  for (let round = 1; round < maxAttempts; round += 1) {
     if (
       result.status !== 'unavailable' ||
       result.reason === 'invalid_document' ||
+      result.reason === 'native_recovery_needed' ||
       result.reason === 'native_not_ready_bounded' ||
       result.reason === 'native_not_ready_final'
     ) {
       return result
     }
     await new Promise<void>((resolve) => {
-      window.setTimeout(resolve, 350 * attempt)
+      window.setTimeout(resolve, 350 * round)
     })
-    result = await checkStorageWithStatusWithTimeout(timeoutMs)
+    result = await attempt()
+  }
+  // 0.53.44: in the shell, a read whose native request is still open after the races is awaited to its answer. The request is capped
+  // by the native side (30 s), so a late ok (for example at 11 s) is taken by this start instead of being lost.
+  if (shell && result.status === 'unavailable' && result.reason === 'timeout' && shellRead !== null) {
+    result = await shellRead
   }
   return result
 }
@@ -2077,7 +2376,8 @@ const storageHashData = async (docId: string, data: string) => {
         await new Promise((r) => setTimeout(r, 30 + attempt * 40))
         continue
       }
-      console.warn(`[storageHashData] Error:`, ex?.message ?? ex)
+      // the error name and status only (a library error text is not printed: it could name a document or a value)
+      console.warn(`[storageHashData] Error: name=${/^[A-Za-z_]{1,40}$/.test(String(ex?.name)) ? String(ex?.name) : 'other'} status=${Number(ex?.status) || 0}`)
       throw ex instanceof Error ? ex : new Error(String(ex?.message ?? ex ?? 'storageHashData failed'))
     }
   }
@@ -2211,7 +2511,7 @@ export const storeSystemData = async () => {
       console.warn(`[storeSystemData] Error:`, ex)
       // 0.53.44: a refused overwrite is final for this save. One attempt, no retry notice (a retry would be refused the same way).
       if (!(ex instanceof Error && ex.message === PAGE_RECORD_OVERWRITE_REFUSED)) {
-        // 0.53.39: the save did not complete; the notice shows it and offers a retry (no record is shown)
+        // 0.53.39 (item 3): the save did not complete; the notice shows it and offers a retry (no record is shown)
         setPersistFailed()
       }
     }
@@ -2814,10 +3114,10 @@ const ownBrowserPgpIdentity = async (eoa: string): Promise<{ keyID: string; armo
  * The PGP identity of a browser save (profile sync) or backup update, from the chain record just read. One rule for both:
  * - the chain has both pgpKey and pgpKeyID: the chain's values, unchanged (a non-empty chain value is never overwritten);
  * - a partial chain value: null, and the caller refuses (nothing is sent);
- * - the chain has neither: the first registration, from this account's own browser PGP key, only when BOTH hold:
- * (a) the user saved the profile (`firstRegistrationAllowed`: postBeamio's 'save', never a queued re-send and never a backup update);
- * (b) this device created the account (the local creation record, localAccountCreation.ts; a restored account never has it);
- * and the own key is self-consistent. Otherwise null (refused, nothing sent).
+ * - the chain has neither: the first registration, from this account's own browser PGP key, only when BOTH hold (R78 2.1):
+ *   (a) the user saved the profile (`firstRegistrationAllowed`: postBeamio's 'save', never a queued re-send and never a backup update);
+ *   (b) this device created the account (the local creation record, localAccountCreation.ts; a restored account never has it);
+ *   and the own key is self-consistent. Otherwise null (refused, nothing sent).
  * An empty value is never sent.
  */
 const pgpIdentityFromChainRecord = async (
@@ -2865,7 +3165,7 @@ const postBeamioFrom = async (beamio: beamio, privateKey: string, from: PostBeam
 	try {
 		signWallet = new ethers.Wallet(privateKey)
 	} catch (ex: any) {
-		console.warn('[postBeamio] Wallet creation failed:', ex?.message || ex)
+		console.warn('[postBeamio] Wallet creation failed:', diagnosticCode(ex?.message)) // a code only: the message of a wallet error may carry key material
 		return false
 	}
 	const shell = isShellContext()
@@ -3152,7 +3452,7 @@ export async function assertUnregisteredBeforeCreate(
 export type CreateRecoverDeps = { checkStatus: typeof checkStorageWithStatus; createWallet: typeof createOrGetWallet }
 
 export const createRecover = async (BeamioName: string, pin: string, options: { mustReuseKey?: boolean; deps?: Partial<CreateRecoverDeps> } = {}) => {
-	// The test seam is honoured only under the test runner: NODE_ENV is fixed at build time, so a production page cannot pass deps (2.2 (d)).
+	// The test seam is honoured only under the test runner: NODE_ENV is fixed at build time, so a production page cannot pass deps (R78 2.2 (d)).
 	const testSeam = process.env.NODE_ENV === 'test' ? options.deps : undefined
 	const deps: CreateRecoverDeps = { checkStatus: checkStorageWithStatus, createWallet: createOrGetWallet, ...testSeam }
 	let step = 'createOrGetWallet'
@@ -3306,10 +3606,10 @@ export const unlockDetachedRecoverPrivateKey = async (
 /**
  * Recovery-code restore with a reason. 2026-11-17: the old form returned false for every failure, so a failed chain read showed as
  * "invalid code". Now each outcome has its own kind; no kind writes or clears anything (the caller saves only after a verified read-back).
- * - ok: a wallet record (the chain read may have failed; the local copy is then used, as before)
- * - invalid_code: no chain record for this code, or the stored record does not open with it (AES-GCM auth failure)
- * - chain_read_failed: the chain read itself threw (network / RPC)
- * - unknown: the record opened but the wallet could not be derived; treat as a failure to retry, not as a wrong code
+ *  - ok: a wallet record (the chain read may have failed; the local copy is then used, as before)
+ *  - invalid_code: no chain record for this code, or the stored record does not open with it (AES-GCM auth failure)
+ *  - chain_read_failed: the chain read itself threw (network / RPC)
+ *  - unknown: the record opened but the wallet could not be derived; treat as a failure to retry, not as a wrong code
  */
 export type RestoreRedeemResult =
 	| { kind: 'ok'; temp: encrypt_keys_object }
@@ -3644,10 +3944,10 @@ export const RegenerateUser = async (beamio: beamio, recoverData:IAccountRecover
 		}
 		if (r?.status === 'ok') {
 			// kind (4) backup update: the same rule as a profile sync (chain value unchanged; first registration from the own record; else refused)
-			// a backup update never makes the first registration (2.1 (a)): the chain must already hold the identity
+			// a backup update never makes the first registration (R78 2.1 (a)): the chain must already hold the identity
 			pgp = await pgpIdentityFromChainRecord(r, signWallet.address, false)
 		}
-		// no_account (review 2026-11-17): a backup update never makes a first registration (3ff76d0; 2.1 (a)). The page's own
+		// no_account (review 2026-11-17): a backup update never makes a first registration (R78 2.1 (a)). The page's own
 		// profile key is not sent from here: pgp stays null and the request is refused. First registration runs only through the
 		// save path (newUser / createRecover, pgpIdentityFromChainRecord with firstRegistrationAllowed).
 	}

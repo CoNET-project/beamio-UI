@@ -1,20 +1,20 @@
 /**
- * Local wallet database compatibility.
+ * Local wallet database compatibility (2026-11-18, owner decision: option 5, narrow and feature-detected).
  *
- * Problem:
+ * Problem (reproduced in WebKit with a short-lived context):
  * PouchDB 9's IndexedDB setup runs one readwrite transaction over meta-store, detect-blob-support and document-store. It issues the
  * meta-store read first, then writes an empty Blob to detect-blob-support (checkBlobSupport). In a short-lived WebKit context that Blob
  * write fails with UnknownError, and the earlier read in the same transaction never settles, so every PouchDB call hangs and the
  * entry gate times out ("storage unavailable"). The storage itself works (a bare indexedDB.open succeeds in about 2 ms).
  *
  * What this module does, and only this:
- * 1. Probe once per page, in a separate one-off database that is deleted afterwards, whether an empty Blob can be written at all.
- * Success: nothing changes (ordinary Safari, Chrome and PWA behaviour). An open failure or hang: the storage is genuinely unavailable,
- * nothing is installed, and the read reports it as unavailable.
- * 2. Only when the Blob write itself fails or hangs, install a narrow shim: a put into the object store named
- * 'detect-blob-support' whose value is a Blob throws DataCloneError synchronously. PouchDB's checkBlobSupport catches that inside its
- * Promise executor and resolves false (= no Blob support, attachments stored as base64). No request is left pending, so the
- * transaction completes. Every other put is passed through unchanged.
+ *  1. Probe once per page, in a separate one-off database that is deleted afterwards, whether an empty Blob can be written at all.
+ *     Success: nothing changes (ordinary Safari, Chrome and PWA behaviour). An open failure or hang: the storage is genuinely unavailable,
+ *     nothing is installed, and the read reports it as unavailable.
+ *  2. Only when the Blob write itself fails or hangs, install a narrow shim: a put into the object store named
+ *     'detect-blob-support' whose value is a Blob throws DataCloneError synchronously. PouchDB's checkBlobSupport catches that inside its
+ *     Promise executor and resolves false (= no Blob support, attachments stored as base64). No request is left pending, so the
+ *     transaction completes. Every other put is passed through unchanged.
  * The wallet document ('init') holds text, not attachments (see beamio.ts: storageHashData, putDocDurable), so base64 storage is not a
  * data-format change for it. Nothing is deleted, migrated or rewritten.
  */
@@ -30,7 +30,7 @@ export type IdbBlobCompatOutcome =
 	| 'storage_unavailable'
 	| 'shim_installed'
 	/** The probe write neither succeeded nor failed within the limit. No conclusion: nothing is installed, the original path runs, and the
-	 * existing gate timeout decides availability. Not storage_unavailable, not shim_installed. */
+	 * existing gate timeout decides availability (2026-11-18 rule). Not storage_unavailable, not shim_installed. */
 	| 'probe_inconclusive'
 
 type ShimMarker = { __beamioBlobShim?: true }

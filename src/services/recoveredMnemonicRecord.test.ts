@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * rule 2026-11-16 (1c): a restored mnemonic is written in the PWA's own format. Checks: the stored blob has no plain mnemonic, the
+ * Per 1c: a restored mnemonic is written in the PWA's own format. Checks: the stored blob has no plain mnemonic, the
  * read-back opens to the same phrase, and the derived address equals the native account. SYNTHETIC values only: the BIP-39 public test
  * vector (zero entropy), not an account.
  */
@@ -13,6 +13,8 @@ if (!(globalThis as { crypto?: { subtle?: unknown } }).crypto?.subtle) {
 import { isWrapRecord } from '@/services/passcode/walletWrap'
 import { openWalletForStartup, wrapForDisk, type Loose } from '@/services/passcode/walletVault'
 import { checkRecoveredRecord, recoveredPageRecord } from './recoveredMnemonicRecord'
+import { memoryAtomicKeyValueDb, passcodeAttemptRecordStore } from './passcode/passcodeWrapStore'
+const attemptDb = memoryAtomicKeyValueDb()
 
 const PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
 const EOA = '0x9858effd232b4033e47d90003d41ec34ecaeda94'
@@ -31,6 +33,7 @@ function memoryStores(initial: Loose | null) {
 			probeInit: async () => (stored ? JSON.parse(JSON.stringify(stored)) : null),
 			writeInit: write,
 			readMeta: async () => ({ failures: 0, nextAt: 0 }),
+			attemptsFor: (e: string) => passcodeAttemptRecordStore(attemptDb, e),
 			writeMeta: async () => undefined,
 			deviceKeys: {
 				load: async () => devKey,
@@ -46,13 +49,13 @@ function memoryStores(initial: Loose | null) {
 describe('1c: a restored mnemonic is written in the PWA format and reads back as the same account', () => {
 	const seed: Loose = { profiles: [{ keyID: EOA, isPrimary: true }], beamio: {}, isReady: true }
 
-	it('the stored record wraps the mnemonic: no plain phrase, the blob is kept', async () => {
+	it('no-passcode state (unit f3, 2026-11-22: device key removed): the phrase is written as plain, the blob is kept', async () => {
 		const { stores, read, write } = memoryStores({})
 		const out = await wrapForDisk(stores, recoveredPageRecord(seed, PHRASE, BLOB))
 		await write(out)
 		const onDisk = read() as Loose
-		expect(isWrapRecord(onDisk.mnemonicPhrase)).toBe(true)
-		expect(JSON.stringify(onDisk)).not.toContain('abandon')
+		expect(isWrapRecord(onDisk.mnemonicPhrase)).toBe(false)
+		expect(onDisk.mnemonicPhrase).toBe(PHRASE)
 		expect(onDisk.walletCredentialBlob).toBe(BLOB)
 	})
 

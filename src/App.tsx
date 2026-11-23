@@ -1,4 +1,5 @@
 import { isBeamioWebHostname } from '@/utils/beamioWebHost'
+import { nativePrereadRoundInFlight } from '@/services/prereadRound'
 import { resolveRecipientForSend } from "@/utils/recipientPublicKey"
 // App.tsx
 import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect, startTransition, useSyncExternalStore } from "react"
@@ -40,7 +41,7 @@ import { ensureNativePushBoundForWallet, ensurePushDeviceTokenListener } from "@
 import { mirrorChatMessageToHistory } from "@/services/chatHistoryMirror"
 import { runChatLocalMigration } from "@/services/chatLocalMigration"
 import { unlockChatLocalWallet } from "@/services/chatLocalWallet"
-import { onHistoryBuffer, loadWorkerHistory, resumeNativeChatListen, onWorkerReady, readDecryptedChatHistory, boundAccountOfActiveClient, setCurrentAccountGetter, captureInboundAckTarget, releaseInboundLines, inboundAckIsBrowser, inboundArmorHashesOf, isInboundLineMarked } from "@/services/chatWorkerBridge"
+import { awaitWorkerHistoryTail, onHistoryBuffer, loadWorkerHistory, resumeNativeChatListen, onWorkerReady, readDecryptedChatHistory, boundAccountOfActiveClient, setCurrentAccountGetter, captureInboundAckTarget, releaseInboundLines, inboundAckIsBrowser, inboundArmorHashesOf, isInboundLineMarked } from "@/services/chatWorkerBridge"
 import { settleInboundBatch } from "@/services/inboundBatchSettle"
 import { recordInboundLine, recordDroppedLine, recordRejectedLine, newInboundLists, classifyInboundLine, parseInboundLine, settleInputOf } from "@/services/inboundRowRecord"
 import { recordInboundDedupeMarkers, forgetInboundDedupeMarkers } from "@/utils/inboundDedupeStore"
@@ -133,6 +134,7 @@ import { applyPendingConsumerDeepLinkIfNeeded } from "@/utils/pendingConsumerDee
 import { routeDiscoverMerchantDeepLink } from "@/utils/routeDiscoverMerchantDeepLink"
 import { publishNativePwaLog } from "@/utils/cashTreesNativePwaLog"
 import { registerUnlockChatRestart, runUnlockChatStart, takeUnlockChatOwnership } from "@/services/unlockChatRestart"
+import { startChatPreheat } from "@/services/chatPreheat"
 import { startupRetryDelayMs, STARTUP_RETRY_OFFER_EVENT } from "@/services/startupRetryPolicy"
 import { isShellTerminal, runEmptyReadBranch, subscribeShellTerminal } from "@/services/shellTerminalState"
 import { declineIncomingVoiceOffer, notifyIncomingVoiceRinging, resolvePeerVoiceMaterialAsync, timeoutIncomingVoiceOffer } from '@/services/voiceCallController'
@@ -176,12 +178,12 @@ function ChatAddressDeepLinkRedirect() {
 	const navigate = useNavigate()
 	const { setChatHomeItem } = useDaemonContext()
 	const { resolvePeerSearchResult } = useBeamioTagDatabase()
-	// Every admission path (the shell's applyNative included) checks a declared @tag against this local lookup.
+	// Every admission path (the shell's applyNative included) checks a declared @tag against this local lookup (v10 §12).
 	useEffect(() => {
 		setIncomingOfferTagLookup((addr) => formatLookedUpBeamioTag(resolvePeerSearchResult(addr)?.username))
 		return () => setIncomingOfferTagLookup(null)
 	}, [resolvePeerSearchResult])
-	// Native local hangup of a connected call: global, so it works when the chat page is not mounted. One watcher only.
+	// Native local hangup of a connected call (v66 §73): global, so it works when the chat page is not mounted. One watcher only.
 	useEffect(() => installNativeCallHangupWatcher((payload) => {
 		handleRegisteredNativeCallHangup(payload)
 	}) ?? undefined, [])
@@ -278,14 +280,14 @@ function AppShell() {
   const [couponClaimSubmitting, setCouponClaimSubmitting] = useState(false)
   /** Already-claimed open-claim → OpenContainer QR for POS 核销. */
   const [couponClaimShowPayOpen, setCouponClaimShowPayOpen] = useState(false)
-  // Call capability: one hello probe in a shell; an old shell gets the upgrade copy and no Accept.
+  // Call capability (the decision): one hello probe in a shell; an old shell gets the upgrade copy and no Accept.
   const callCapState = useSyncExternalStore(subscribeCallCapabilityState, getCallCapabilityState, getCallCapabilityState)
-  // One startup probe, after the start has had time to settle: it never runs concurrently with the start's own reads.
+  // One startup probe, after the start has had time to settle (2026-11-21): it never runs concurrently with the start's own reads.
   useEffect(() => {
     const t = window.setTimeout(() => startCallCapabilityProbe(isCashTreesNativeWebView()), 4000)
     return () => window.clearTimeout(t)
   }, [])
-  // Foreground re-probe: on return to the foreground a fresh hello decides.
+  // Foreground re-probe (decision 2026-11-21): on return to the foreground a fresh hello decides.
   useEffect(() => {
     const onVisible = () => { if (!document.hidden) void probeCallCapabilityNow() }
     document.addEventListener('visibilitychange', onVisible)
@@ -382,7 +384,7 @@ function AppShell() {
   const shellEnteredAccountRef = useRef<string | null>(null)
   /** the bounded re-reads of a shell init whose storage read ended empty (reset when an account is read). */
   const shellEmptyReadRetryRef = useRef(0)
-  /** step 5: the pending re-read of an init skip; cleared on unmount so no old App instance re-reads. */
+  /** r92 step 5: the pending re-read of an init skip; cleared on unmount so no old App instance re-reads. */
   const shellEmptyReadTimerRef = useRef<number | null>(null)
   useEffect(() => () => {
     if (shellEmptyReadTimerRef.current !== null) window.clearTimeout(shellEmptyReadTimerRef.current)
@@ -577,7 +579,7 @@ function AppShell() {
       return
     }
     bUnitClaimAttemptedRef.current = true
-    // 2026-11-16: on the browser first-open path (no PGP record, the SDK confirms it) no automatic claim is sent. Other entries are unchanged.
+    // on the browser first-open path (no PGP record, the SDK confirms it) no automatic claim is sent. Other entries are unchanged.
     void autoBUnitClaimGated({ privateKeyArmor: p0.privateKeyArmor!, profile: p0, shell: isShellContext(), lookup: lookupRecipientRecord, claimant, claim: runAutoBUnitFreeClaimIfEligible }).catch(() => {})
   }, [profiles])
 
@@ -899,7 +901,7 @@ function AppShell() {
 				// (B): a shell with no account read yet does not set the loading flag. The entry gate owns the bar, and its native or
 				// page entry asks this init to run again (dispatchBeamioWalletReady) once the account is in memory.
 				// shellTerminalState.runEmptyReadBranch: the terminal is decided first; a terminal at any point before this line schedules nothing
-				// and logs nothing. Bounded re-reads (2, 4, 8, 16 s, then 30 s) only while the start is not terminal.
+				// and logs nothing. Bounded re-reads (2, 4, 8, 16 s, then 30 s) only while the start is not terminal (r92 step 5).
 				runEmptyReadBranch({
 					nextAttempt: () => {
 						const attempt = shellEmptyReadRetryRef.current + 1
@@ -915,6 +917,14 @@ function AppShell() {
 						shellEmptyReadTimerRef.current = window.setTimeout(() => {
 							shellEmptyReadTimerRef.current = null
 							if (isShellTerminal()) return
+							// (option A): while a pre-read round is open, the retry sends no native read; it waits for that round's conclusion
+							const inFlight = nativePrereadRoundInFlight()
+							if (inFlight) {
+								void inFlight.then(() => {
+									if (!isShellTerminal()) void init('empty-read-retry')
+								})
+								return
+							}
 							void init('empty-read-retry')
 						}, delay)
 					},
@@ -943,7 +953,7 @@ function AppShell() {
 
 		const keyOnlyEntry = keyOnlyEntryDecision(temp, isShellContext())
 		if (keyOnlyEntry === 'hold_no_key') {
-			// rule: a record without a valid mnemonic is not an account, so it is
+			// Per: "只要没有助记词，就进入 onboarding 页面": a record without a valid mnemonic is not an account, so it is
 			// not an entry and binds no push. The loading flag is not set here: the entry gate decides (onboarding when both sides confirm none;
 			// unknown is kept and retried). The record is kept; nothing is written or deleted here.
 			publishNativePwaLog('info', '[AppShell] init skip: no valid mnemonic — not an entry (entry gate decides)')
@@ -986,6 +996,17 @@ function AppShell() {
 		setProfiles(profiles)
 		// (B): a shell's bar is shown once the account is in the App's state. The entry gate keeps it hidden until then.
 		if (isShellContext()) setIsInitialLoading(false)
+
+		// SDK chat preheat (non-blocking; sdk-roles-chat-preheat.v1 SDR-08): the history load is requested at account-ready, in parallel
+		// with the wallet start and the offline home. Nothing awaits it here; the UI reads the same in-flight preheat (awaitChatPreheat).
+		// Browser runtime only (shell: no-op). The worker start is the browser chat start, and its history tail is the completion signal.
+		void startChatPreheat({
+			accountKey: profiles[0]?.keyID || '',
+			shell: isShellContext(),
+			mnemonicHandle: () => (typeof temp?.mnemonicPhrase === 'string' ? temp.mnemonicPhrase : null),
+			startWorker: () => initChat(setProfiles, setAllNodes, setGossip, false, handleInitChatLine),
+			awaitHistoryTail: () => awaitWorkerHistoryTail(),
+		})
 
 		
 		//the read is retried on a capped ladder (30 s, 2 min, 10 min). A failed read is not "no account", and after the
@@ -1630,7 +1651,7 @@ function AppShell() {
 		window.addEventListener('cashtreesandroid', onNativeHangupCancelsLateAccept)
 		window.addEventListener('cashtreesios', onNativeHangupCancelsLateAccept)
 		window.addEventListener('cashtreesandroid', onIncomingCallOutcome)
-		// A ring revoked by a late tag lookup: recorded as declined, the same store as the other call rows.
+		// A ring revoked by a late tag lookup (v45 §50): recorded as declined, the same store as the other call rows.
 		const onRingRevoked = (event: Event) => {
 			const detail = (event as CustomEvent<{ callId?: string; sessionId?: string }>).detail
 			const ids = { callId: String(detail?.callId || ''), sessionId: String(detail?.sessionId || '') }
@@ -2091,7 +2112,7 @@ function AppShell() {
 				})
 			}
 			// Voice signals (offer, ringing, end, reject, timeout, accept) are admitted only inside a verified chat envelope
-			//the outer signer must equal envelope.from and the inner from. A voice text that fails this is
+			// (draft-v55 §62, v54 §61): the outer signer must equal envelope.from and the inner from. A voice text that fails this is
 			// dropped here, before any ring, page layer, row or ack, and the stored text is never a voice signal the page did not verify.
 			// Detected on the unwrapped content (nested and escaped voice texts too), not by a text pattern.
 			const looksLikeVoiceSignal = typeof displayText === 'string' && Boolean(parseVoiceCallSignal(displayText))
@@ -2255,7 +2276,7 @@ function AppShell() {
 							}
 							const tag = formatLookedUpBeamioTag(username)
 							// Lookup finished after ringing and the looked-up tag differs from the declared one: revoke the ring
-							// fail closed). No ring, no answer, no signature; handled as a decline and cannot ring again.
+							// fail closed). No ring, no answer, no signature; handled as a decline (v45 §50) and cannot ring again.
 							const revoked = revokeRingForLateTag(signal, tag, {
 								dismissNative: (callId, sessionId) => dismissRevokedIncomingCall(callId, sessionId),
 								forget: (callId, sessionId) => forgetIncomingVoiceOffer(callId, sessionId),
@@ -2394,11 +2415,11 @@ function AppShell() {
 					signal?.type === 'voice_end_v1' &&
 					signal.sessionId
 				) {
-					// The peer ended the call: a later native hang-up for these handles is a no-op.
+					// The peer ended the call: a later native hang-up for these handles is a no-op (v66 §73).
 					clearConnectedCallIfMatches(signal.callId, signal.sessionId)
 					markVoiceCallTerminal(signal.callId, signal.sessionId)
 					// Inbound end. An unanswered ring is dismissed locally (dismissIncomingSystemCall, no uplink). A connected call keeps its
-					// existing hang-up path, so only the unanswered branch below changes.
+					// existing hang-up path (2026-11-20: unchanged), so only the unanswered branch below changes.
 					const endedRow = findPhoneCallByIds(Array.isArray(profile.phoneCalls) ? profile.phoneCalls : [], {
 						callId: signal.callId,
 						sessionId: signal.sessionId,

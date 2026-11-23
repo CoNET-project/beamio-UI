@@ -8,8 +8,8 @@
  * Pure: the environment and the hello probe answer are passed in. The native reply is read by the caller.
  */
 
-/** The capability the shell declares in its hello ack when it has the 0.53.42 call ability. */
-// Named by the interface seat; declared by both SDKs in capabilities.
+/** The capability the shell declares in its hello ack when it has the 0.53.42 call ability (v105 §112.2). */
+// Named by the interface maintainers (v139 §159); declared by both SDKs in capabilities.
 export const VOICE_CALL_V4_CAPABILITY = 'voiceCallV4'
 
 export type CallCapabilityState =
@@ -20,7 +20,7 @@ export type CallCapabilityState =
 	/** A shell whose latest hello is valid and declares voiceCallV4. Calls allowed. Never cached: each probe decides. */
 	| 'compatible'
 	/** Every other shell result: no valid hello with voiceCallV4 (missing, refused, unanswered, timed out, malformed or unreadable).
-	 * Treated as an old version: the update prompt, calls refused. */
+	 * Treated as an old version (the decision): the update prompt, calls refused. */
 	| 'old_shell'
 
 export type HelloProbe = 'pending' | 'failed' | { answered: boolean; capabilities: readonly string[] | null | undefined; nativeApp?: unknown }
@@ -50,7 +50,7 @@ export async function settleHello(
 
 /**
  * A malformed hello (not an object, `answered` not a boolean, or `capabilities` present but not an array) settles as `failed`
- * A missing `capabilities` is read as none.
+ * (2026-11-21 / v141 §161). A missing `capabilities` is read as none.
  */
 export function shapeOfHello(raw: unknown): HelloProbe {
 	if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'failed'
@@ -66,7 +66,7 @@ export function normalizeCapabilities(raw: readonly unknown[] | null | undefined
 	return raw.filter((c): c is string => typeof c === 'string' && c.length > 0)
 }
 
-/** The version format the native shell must report. */
+/** The version format the native shell must report (v156 §176). */
 export const NATIVE_APP_VERSION_RE = /^\d+(\.\d+){1,3}$/
 export const NATIVE_APP_BUILD_RE = /^\d+$/
 
@@ -84,7 +84,7 @@ export function validNativeApp(raw: unknown): { platform: 'ios' | 'android'; ver
 }
 
 /**
- * The state from the environment and the latest hello probe:
+ * The state from the environment and the latest hello probe (the decision; v154 §174, v156 §176):
  * - not a shell: browser (its own flow, no prompt);
  * - shell, probe pending: loading (no prompt, no call);
  * - shell, compatible only when the hello is valid AND carries a valid nativeApp AND declares voiceCallV4;

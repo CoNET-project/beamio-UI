@@ -41,8 +41,8 @@ describe('account reset (ST-01 to ST-08)', () => {
 	})
 })
 
-describe('IndexedDB side', () => {
-	it('a key is has; a successful read with no mnemonic (empty store, or an account record without a key) is confirmed none; the rest is unknown', () => {
+describe('IndexedDB side (Y.85 input idb)', () => {
+	it('Y.107: a key is has; a successful read with no mnemonic (empty store, or an account record without a key) is confirmed none; the rest is unknown', () => {
 		expect(idbPresenceOf('valid_mnemonic')).toBe('has')
 		expect(idbPresenceOf('absent')).toBe('confirmed_none')
 		expect(idbPresenceOf('account_without_key')).toBe('confirmed_none')

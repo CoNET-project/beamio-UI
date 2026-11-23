@@ -1,5 +1,5 @@
 /**
- * (key-only entry): a record with no valid mnemonic is not an entry, with or without a private key. The App does not hold the loading flag for it and binds no push; the entry gate decides (onboarding when both
+ * (key-only entry): a record with no valid mnemonic is not an entry, with or without a private key (decision 2026-11-17: with no mnemonic the start goes to onboarding). The App does not hold the loading flag for it and binds no push; the entry gate decides (onboarding when both
  * sides confirm none; retry on unknown). Browser build only: a shell build decides elsewhere.
  */
 import { hasLocalPlaintextMnemonic } from '@/utils/consumerWalletGate'

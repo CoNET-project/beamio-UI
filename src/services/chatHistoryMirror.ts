@@ -16,7 +16,7 @@ import type { HistoryEntry } from '@conet.project/chat-sdk'
 import { appendWorkerHistory } from './chatWorkerBridge'
 
 /**
- * `voiceVerified` is a local marker written only by the chat ingestion gate. It never travels in history: a history
+ * `voiceVerified` is a local marker written only by the chat ingestion gate (v70 §77). It never travels in history: a history
  * copy, a merge or a backfill strips it, so a row can only be marked by the gate.
  */
 export const withoutLocalVoiceMarker = <T extends object>(msg: T): T => {
@@ -108,7 +108,7 @@ export const mergeHistoryEntriesIntoMessages = (
 			parsed = null
 		}
 		if (!parsed || typeof parsed !== 'object') continue
-		// The local voice marker never comes from history.
+		// The local voice marker never comes from history (v70 §77).
 		parsed = withoutLocalVoiceMarker(parsed)
 
 		// Backfill direction/timestamp from the history envelope when the body omits them.

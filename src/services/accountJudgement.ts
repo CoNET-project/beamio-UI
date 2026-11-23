@@ -25,7 +25,7 @@ export type JudgedAction = 'enter' | 'onboard' | 'retry' | 'unlock'
 export interface Judgement {
 	account: JudgedAccount
 	action: JudgedAction
-	/** The rule that decided a no_account in a shell: the native walletStatus no_key with an empty page store. */
+	/** The rule that decided a no_account in a shell (R96): the native walletStatus no_key with an empty page store. */
 	via?: 'native_no_key'
 }
 
@@ -49,7 +49,7 @@ export const judgeBrowser = (idb: IdbSignal): Judgement => {
  * anything else is undetermined.
  */
 export const judgeShell = (idb: IdbSignal, native: NativeWalletState): Judgement => {
-	// 0.53.39: a valid PWA mnemonic enters /home whatever the native lock or readiness is. The native lock
+	// 0.53.39 (project rule 2026-11-20): a valid PWA mnemonic enters /home whatever the native lock or readiness is. The native lock
 	// only locks the native reads, writes and sync; it does not hold the PWA.
 	if (idb === 'valid_mnemonic') return { account: 'has_account', action: 'enter' }
 	if (native === 'locked') return { account: 'undetermined', action: 'unlock' }
@@ -63,7 +63,7 @@ export const judgeShell = (idb: IdbSignal, native: NativeWalletState): Judgement
 }
 
 /** The fields the `passcodeStatus` answer may carry. Anything else, and any material, refuses the answer. */
-export const PASSCODE_STATUS_FIELDS: ReadonlySet<string> = new Set(['set', 'locked', 'hasKey', 'walletState'])
+export const PASSCODE_STATUS_FIELDS: ReadonlySet<string> = new Set(['set', 'locked', 'hasKey', 'walletState', 'nativeLocked'])
 
 const WALLET_STATES: ReadonlySet<string> = new Set(['present', 'absent', 'not_ready', 'locked', 'unavailable', 'corrupt'])
 
@@ -76,6 +76,9 @@ export const parsePasscodeStatus = (result: unknown): NativeWalletState | 'not_r
 	if (!result || typeof result !== 'object' || Array.isArray(result)) return 'unknown'
 	const keys = Object.keys(result as Record<string, unknown>)
 	if (keys.some((k) => !PASSCODE_STATUS_FIELDS.has(k))) return 'unknown'
+	// nativeLocked: a boolean when present; any other value refuses the answer
+	const nativeLocked = (result as { nativeLocked?: unknown }).nativeLocked
+	if (nativeLocked !== undefined && typeof nativeLocked !== 'boolean') return 'unknown'
 	const state = (result as { walletState?: unknown }).walletState
 	if (state === undefined) return 'not_reported'
 	if (typeof state !== 'string' || !WALLET_STATES.has(state)) return 'unknown'
@@ -125,14 +128,14 @@ export const judgeShellFromNative = (input: {
 	idb: IdbSignal
 	walletState: NativeWalletState | 'not_reported'
 	walletStatus: NativeWalletStatus
-	/** The page store read is a confirmed empty: no mnemonic and no account on the page. */
+	/** The page store read is a confirmed empty (R96): no mnemonic and no account on the page. */
 	storeEmpty?: boolean
 	/** The `passcodeStatus.hasKey` marker (0.53.39). `true` or `unknown` blocks the no_key onboarding; `not_reported` (older shell) does not. */
 	hasKey?: boolean | 'not_reported' | 'unknown'
 }): Judgement => {
-	// 0.53.39: a valid PWA mnemonic enters /home regardless of the native state.
+	// 0.53.39 (rule 2026-11-20): a valid PWA mnemonic enters /home regardless of the native state.
 	if (input.idb === 'valid_mnemonic') return { account: 'has_account', action: 'enter' }
-	//both sides confirm no account: the native side answers an explicit no_key (walletStatus), and the page
+	// R96: both sides confirm no account: the native side answers an explicit no_key (walletStatus), and the page
 	// store is a confirmed empty read. Only the explicit no_key counts: G1 (not_ready), unknown and any other status never reach this rule.
 	// 0.53.39: a key marker that is present, or unreadable, is not a confirmed absence: unknown, retry.
 	if ((input.hasKey === true || input.hasKey === 'unknown') && input.walletStatus === 'no_key') {
@@ -148,10 +151,10 @@ export const judgeShellFromNative = (input: {
 	}
 	if (input.walletState !== 'not_reported') return judgeShell(input.idb, input.walletState)
 	// the old native walletStatus reports an unlocked or locked wallet that carries an EOA.
-	// LK-P6: a locked G2 is the passcode lock, not an entry: the unlock branch. Only unlocked enters on the native account.
+	// LK-P6 (r11, Y.117): a locked G2 is the passcode lock, not an entry: the unlock branch. Only unlocked enters on the native account.
 	if (input.walletStatus === 'locked') return { account: 'undetermined', action: 'unlock' }
 	if (input.walletStatus === 'unlocked') return { account: 'has_account', action: 'enter' }
-	// (/): nothing valid on either side: undetermined, never absent.
+	// ( /): nothing valid on either side: undetermined, never absent.
 	return UNDETERMINED
 }
 
@@ -163,7 +166,7 @@ export const judgeShellFromNative = (input: {
 export type LocalOnlyDecision = 'enter_local' | 'keep_gate'
 export const judgeLocalOnly = (input: {
 	walletStatus: NativeWalletStatus
-	notReadyReason?: 'g1_uninitialized' | 'key_only' | 'unreadable'
+	notReadyReason?: 'g1_uninitialized' | 'key_only' | 'unreadable' | 'passcode_not_provided'
 	walletState: NativeWalletState | 'not_reported'
 }): LocalOnlyDecision => {
 	if (input.walletStatus !== 'not_ready' || input.notReadyReason !== 'g1_uninitialized') return 'keep_gate'
@@ -231,14 +234,34 @@ export const nativeStartRoute = (input: {
 	walletState: NativeWalletState | 'not_reported' | 'unknown' | 'timeout'
 	hasKey: boolean | 'not_reported' | 'unknown'
 	walletStatus: string
+	/** Unit g (rev 2): walletStatus not_ready with passcode_not_provided: a pending sync, not a hold. Key and record guards above still apply. */
+	passcodePending?: boolean
 }): NativeStartOutcome => {
 	if (input.pre.kind === 'valid') return { route: 'restore', reason: 'pre_valid' }
-	// 0.53.39: a native lock with no PWA mnemonic is a retry state with an unlock entry; never onboarding.
+	// 0.53.39 (rule 2026-11-20): a native lock with no PWA mnemonic is a retry state with an unlock entry; never onboarding.
 	if (input.pre.kind === 'locked' || input.walletState === 'locked') return { route: 'native_locked', reason: 'native_locked' }
+	// Unit g (the decision, 316.4 / 316.5): a ciphertext current record is the 'has' answer: it goes to the unlock page at once, and no other
+	// source's passcode state (walletStatus and others) holds it back. Nothing is decrypted or written here.
+	if (input.pre.kind === 'cipher') return { route: 'native_locked', reason: 'native_locked' }
 	// an old shell that does not know the pre-read command: the legacy judgement (its hasKey and walletStatus rules still apply there)
 	if (input.pre.kind === 'unknown' && input.pre.reason === 'unsupported') return { route: 'legacy', reason: 'pre_read_unsupported' }
+	// 规则：IDB 确认为空且 preread confirmed_missing 时，即使 kPresent 或 key_only 也进入 onboarding；读取未知或出错仍后台重读。
+	const readUnknown = input.walletState === 'unknown' || input.walletState === 'timeout' || input.hasKey === 'unknown' || input.walletStatus === 'unknown' || input.walletStatus === 'timeout' || input.walletStatus === 'unavailable'
+	// Three classes of evidence (project rule 2026-11-22): (i) every source says there is no valid mnemonic: onboarding, data kept. A key or an address
+	// alone is not a mnemonic: hasKey true, key_only and walletStatus not_ready do not block it. The key-only shapes the shells report (measured): Android hasKey true with
+	// no walletState field (not_reported), iOS walletState absent with hasKey false; walletStatus no_key and pre-read absent on both. Both are class (i): the
+	// pre-read already says no mnemonic. (ii) a real ciphertext
+	// record on any side is the unlock page (above, and passcodePending below). (iii) a read failure, or two evidences that contradict each other, keeps
+	// the data and waits. Contradiction needs concrete evidence of a mnemonic or a ciphertext (a cipher or locked pre-read, a passcode already set, a valid
+	// page mnemonic: all decided earlier). Here the only such evidence the answers can carry is a record that is present while hasKey is not true (PRR-06):
+	// a present record that reports no key marker cannot be the key-only shape, and the pre-read cannot read it. Never a confirmed absence.
+	const recordPresentWithoutKey = input.walletState === 'present' && input.hasKey !== true
+	if (input.pre.kind === 'absent' && input.passcodePending !== true && !readUnknown && !recordPresentWithoutKey) return { route: 'onboard', reason: 'confirmed_absent' }
 	if (input.hasKey === true) return { route: 'retry', reason: 'key_marker' }
 	if (input.pre.kind === 'unknown') return { route: 'retry', reason: 'pre_unknown' }
+	// Unit g: a passcode account exists when any source reports passcode_not_provided. It is never a confirmed absence,
+	// so an absent pre-read does not reach onboarding. The data is kept and the start waits in the background.
+	if (input.passcodePending === true) return { route: 'retry', reason: 'passcode_not_provided' }
 	// the pre-read is absent from here on
 	if (input.walletState === 'present') return { route: 'retry', reason: 'record_without_mnemonic' }
 	if (input.walletState === 'unknown' || input.walletState === 'timeout' || input.hasKey === 'unknown') {
@@ -252,7 +275,7 @@ export const nativeStartRoute = (input: {
 }
 
 /**
- * 0.53.39: the bridge trust state while the native identity is not declared. A declared identity is trusted at any
+ * 0.53.39 (3): the bridge trust state while the native identity is not declared. A declared identity is trusted at any
  * time (a slow hello, for example 9.9 s on S25, is a wait that completes). Without it after the deadline the state is unknown, with the reason
  * `bridge_trust_timeout`: a retry state, never onboarding, never a new wallet.
  */
@@ -264,16 +287,16 @@ export const bridgeTrustState = (input: { identity: string; elapsedMs: number })
 }
 
 /**
- * 0.53.39: the pre-read valid path and the page copy. A page copy that exists (loaded, locked or unavailable) is
+ * 0.53.39 (A): the pre-read valid path and the page copy. A page copy that exists (loaded, locked or unavailable) is
  * checked by prepareShellEntry before the entry. An empty page is not checked: the native restore is written to the page by the restore write.
  */
 export const prereadPageRoute = (pageStatus: 'loaded' | 'empty' | 'locked' | 'unavailable'): 'check_record' | 'restore_write' | 'wait_retry' => {
 	if (pageStatus === 'empty') return 'restore_write'
-	// 0.53.39: an unreadable page is unknown: wait and retry. The page may still hold the user's wallet.
+	// 0.53.39 (2): an unreadable page is unknown: wait and retry. The page may still hold the user's wallet.
 	if (pageStatus === 'unavailable') return 'wait_retry'
 	return 'check_record'
 }
 
-/** The reason code for the bridge-trust wait (0.53.39 review of be1b9c3): an unknown after the deadline is bridge_trust_timeout, otherwise waiting. */
+/** The reason code for the bridge-trust wait (0.53.39 review): an unknown after the deadline is bridge_trust_timeout, otherwise waiting. */
 export const bridgeTrustReasonCode = (state: 'declared' | 'waiting' | 'unknown'): 'bridge_trust_waiting' | 'bridge_trust_timeout' =>
 	state === 'unknown' ? 'bridge_trust_timeout' : 'bridge_trust_waiting'

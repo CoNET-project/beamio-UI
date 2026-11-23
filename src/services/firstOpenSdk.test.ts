@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- * The first open in the SDK (vendor/conet-chat-sdk/src/firstOpen.ts): one flow under one lock per wallet, the status enum for the page,
+ * The first open in the SDK (vendor/conet-chat-sdk/src/firstOpen.ts): one flow under one lock per wallet (R80 M1), the status enum for the page,
  * the 4xx refusal, the backoff, the restart reuse, the second tab. openpgp is mocked: the key generation is checked for its parameters only.
  * SYNTHETIC values only.
  */
@@ -131,7 +131,7 @@ describe('the decision and the readings (SDK)', () => {
 	})
 })
 
-describe('the whole flow under one lock', () => {
+describe('the whole flow under one lock (R80 M1)', () => {
 	it('positive: generate, save, read the pending copy from the store, read the chain again, register once, clear; the status is registering', async () => {
 		const { deps, calls } = world()
 		const r = await runFirstOpen(EOA, deps, sharedLock())

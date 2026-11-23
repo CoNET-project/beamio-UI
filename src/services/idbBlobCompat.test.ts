@@ -105,7 +105,7 @@ describe('the probe decides in a separate one-off database (no change when Blob 
 		expect(d.install).toHaveBeenCalledTimes(1)
 	})
 
-	it('Blob write hangs past the limit: probe_inconclusive, shim NOT installed, never storage_unavailable', async () => {
+	it('Blob write hangs past the limit: probe_inconclusive, shim NOT installed, never storage_unavailable (2026-11-18 rule)', async () => {
 		// the put never answers (the fake returns an inert request for "hang": no callback fires)
 		const d = deps({ open: 'ok', put: 'hang' })
 		const out = await runIdbBlobProbe(d.deps)

@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- *a shell record that carries only the EOA private-key copy (no mnemonic), with the native side answering
+ * R94: a shell record that carries only the EOA private-key copy (no mnemonic), with the native side answering
  * no_key on both sides confirmed, is no account: the storage read is empty (onboarding route). A read failure, another native answer, a
  * record with a mnemonic keeps the unavailable state. A completed Beamio account with no mnemonic follows the same rule (decision 2026-11-17):
  * the shell's explicit no_key is onboarding (kept); the shell's unknown is unavailable, retryable. Read-only. SYNTHETIC keys and records only.
@@ -36,7 +36,13 @@ jest.mock('./walletEoaAddress', () => ({
 	},
 }))
 jest.mock('pouchdb', () => ({ __esModule: true, default: () => ({ get: async () => ({}) }) }))
-jest.mock('@/services/argon2WorkerBridge', () => ({ argon2idAsync: jest.fn() }))
+// argon2idAsync must not run in these tests (the PBKDF2 stand-in is removed). The bridge module cannot load in jest (import.meta),
+// so it stays mocked, but a call fails closed. A test that needs the v3 KDF injects it with setMnemonicKdfForTest.
+jest.mock('@/services/argon2WorkerBridge', () => ({
+	argon2idAsync: () => {
+		throw new Error('argon2idAsync must not run in this test: inject the v3 KDF with setMnemonicKdfForTest')
+	},
+}))
 jest.mock('@/services/beamioTagWorkerBridge', () => ({ searchBeamioTagRemote: jest.fn() }))
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -53,7 +59,7 @@ beforeEach(() => {
 	mockState.readThrows = false
 })
 
-describe('a key-only shell copy with no mnemonic', () => {
+describe('a key-only shell copy with no mnemonic (R94)', () => {
 	it('both sides confirm: the native side answers no_key and the copy has no mnemonic: the read is empty (onboarding route)', async () => {
 		const r = await beamio.checkStorageWithStatus({ probe: true })
 		expect(r.status).toBe('empty')
@@ -103,7 +109,7 @@ describe('a key-only shell copy with no mnemonic', () => {
 	})
 })
 
-describe('a no_key shell with no mnemonic and no privateKeyArmor (Android SDK after the fix)', () => {
+describe('R95: a no_key shell with no mnemonic and no privateKeyArmor (Android SDK after the fix)', () => {
 	const noKeyRecord = () => ({ profiles: [{ keyID: EOA, isPrimary: true, referrer: null, isNode: false, type: 'ethereum', webFilter: true, tokens: [], chats: [] }] })
 
 	it('(b) the native side answers no_key, the record has no mnemonic and no privateKeyArmor: the read is empty (onboarding route)', async () => {

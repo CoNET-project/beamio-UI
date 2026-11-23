@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- * item 2: the standalone signing pages (receive-wallet-send*.html) run the same refusal and probe at page start, and their own
+ * R84 item 2: the standalone signing pages (receive-wallet-send*.html) run the same refusal and probe at page start, and their own
  * scripts open no WebSocket. The head script is run in a fresh VM context (no network, no browser).
  */
 import fs from 'fs'
@@ -25,7 +25,7 @@ function runHead(name: string, sandbox: Record<string, unknown>): void {
 	vm.runInContext(headScript(readPage(name)), sandbox)
 }
 
-describe('standalone signing pages: WebSocket refusal and probe', () => {
+describe('standalone signing pages: WebSocket refusal and probe (R84 item 2)', () => {
 	it.each(PAGES)('%s: the head installs the refusal and the probe reports refused', (name) => {
 		const sandbox: Record<string, unknown> = { console: { error: jest.fn() } }
 		runHead(name, sandbox)

@@ -3,7 +3,7 @@
  *
  * Source: interface/protocol/inbound-ack-vectors.v1.json, eighth version (sha256 c7382cdd, 37 cases). The frames below are
  * copies of the vectors' values; this test does not read the file. The vectors' records carry the field `serverAcked`. to
- * and to have no records, so the field is not used here. The seventh (971f582f), sixth (311618c9) and fifth (b8ff247c)
+ * and to have no records, so the field is not used here. The seventh (), sixth () and fifth ()
  * versions are superseded.
  *
  * Not asserted, as the vector file says: the browser armor retention rule (not defined; `armorRetainedLocally` is null).

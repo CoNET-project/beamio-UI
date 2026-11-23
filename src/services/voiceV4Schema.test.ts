@@ -6,7 +6,7 @@ const OFFER = { type: 'voice_call_offer_v1', proto: 4, callId: 'call-1', session
 const PAY = { role: 'cv', temp: '0x' + '22'.repeat(20), notAfter: 1800003600, maxBytes: 0, maxSeconds: 0, sig: '0x' + 'ef'.repeat(65) }
 const ACCEPT = { type: 'voice_call_accept_v1', proto: 4, callId: 'call-1', sessionId: 'sess-1', from: '0x' + '33'.repeat(20), to: '0x' + '11'.repeat(20), createdAt: 1, expiresAt: 2, ev: CH, eV: CH, cv_pay: PAY, cV_pay: { ...PAY, role: 'cV' }, ev_pay: { ...PAY, role: 'ev' }, eV_pay: { ...PAY, role: 'eV' }, sig: '0x' + 'cd'.repeat(65) }
 
-describe('v4 key schema', () => {
+describe('v4 key schema (v122 §141)', () => {
 	test('a well-formed offer v4 and accept v4 pass', () => {
 		expect(offerV4SchemaOk(OFFER)).toBe(true)
 		expect(acceptV4SchemaOk(ACCEPT)).toBe(true)

@@ -1,16 +1,16 @@
 /**
  * Incoming voice offer dedup and late window (三端通用：iOS、Android、PWA 同口径).
  *
- * Source: draft- 第四十节（去重容量按主叫配额）与 draft- 第四十一节（迟到 offer 窗口）。
+ * Source: draft-v36 第四十节（去重容量按主叫配额）与 draft-v37 第四十一节（迟到 offer 窗口）。
  *
  * - Dedup key: `JSON.stringify([callId, sessionId])`. Never `|` or `:`.
  * - Records are kept `VOICE_OFFER_DEDUP_RETAIN_MS` (1200 s) from registration and persisted.
  * - Per signed caller R (recovered EOA): at most `VOICE_OFFER_DEDUP_PER_CALLER_CAP` unexpired records.
- * Over that cap only that R's new offer is refused, with a warning.
+ *   Over that cap only that R's new offer is refused, with a warning.
  * - Global cap `VOICE_OFFER_DEDUP_GLOBAL_CAP`. Only expired records are evicted. Still full: refuse the new
- * offer and warn (accepted residual risk). Unexpired records are never evicted.
+ *   offer and warn (accepted residual risk). Unexpired records are never evicted.
  * - Late window: an offer is accepted only while `now <= expiresAt` taken from the signed offer; the
- * processing window is never longer than `expiresAt + 300 s`. `ringExpiresAt` never takes part.
+ *   processing window is never longer than `expiresAt + 300 s`. `ringExpiresAt` never takes part.
  */
 
 export const VOICE_OFFER_DEDUP_RETAIN_MS = 1_200_000
@@ -39,7 +39,7 @@ function toMs(value: unknown): number {
 }
 
 /**
- * Late window. `expiresAt` is the signed value. Refused when `now > expiresAt`, and never past
+ * Late window (§41). `expiresAt` is the signed value. Refused when `now > expiresAt`, and never past
  * `expiresAt + 300 s`. Missing `expiresAt` is refused.
  */
 export function voiceOfferWithinLateWindow(
@@ -49,15 +49,15 @@ export function voiceOfferWithinLateWindow(
 	const expiresAtMs = toMs(signal?.expiresAt)
 	if (!expiresAtMs) return false
 	if (now > expiresAtMs) return false
-	// the 300 s deviation only bounds issuedAt in the future (issuedAt > now + 300 s is refused). It never extends expiresAt.
-	// a missing issue time is refused; an issue time more than 300 s ahead is refused.
+	// v39 §43: the 300 s deviation only bounds issuedAt in the future (issuedAt > now + 300 s is refused). It never extends expiresAt.
+	// v20 §22: a missing issue time is refused; an issue time more than 300 s ahead is refused.
 	const issuedAtMs = toMs(signal?.createdAt)
 	if (!issuedAtMs || issuedAtMs > now + VOICE_OFFER_LATE_GRACE_MS) return false
 	return true
 }
 
 /**
- *the signed `from` must equal the recovered signer R; a missing or different `from` is refused,
+ * §41.4 (draft-v37): the signed `from` must equal the recovered signer R; a missing or different `from` is refused,
  * and so is a missing `createdAt`. Returns the refusal reason, or null when the offer is admissible on these checks.
  */
 export function voiceOfferAdmissibilityRefusal(
@@ -68,7 +68,7 @@ export function voiceOfferAdmissibilityRefusal(
 	const from = typeof signal?.from === 'string' ? signal.from.trim().toLowerCase() : ''
 	if (!from) return 'from_missing'
 	if (from !== signer.toLowerCase()) return 'from_mismatch'
-	// / only createdAt is read; timestamp is never an issue time for verification.
+	// v20 §22 / v21 §23: only createdAt is read; timestamp is never an issue time for verification.
 	const createdMs = toMs(signal?.createdAt)
 	if (!createdMs) return 'no_created_at'
 	return null

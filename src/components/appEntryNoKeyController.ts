@@ -2,7 +2,7 @@
  * (items 2 and 3): the entry gate's native no-key decision as a small state machine. The gate component
  * only forwards its events here, so the timing (ok answer, ready event, late no_key) can be tested without rendering.
  *
- *   decide()            the gate has made its decision
+ * decide() the gate has made its decision
  *   storageRead(empty)  the page store was read: true only for a successful read that holds no account
  *   established()       a wallet exists now (ok answer of a creation or restore, a native wallet, or a page account)
  *   beginNativeFlow()   a native create or recovery page opened: the import route must not cover it

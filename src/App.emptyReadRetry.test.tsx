@@ -127,7 +127,7 @@ function renderApp() {
 describe('an empty shell read is read again, bounded', () => {
 	it('the first two reads are empty; the third returns the account and the chat starts, with no wake-up', async () => {
 		renderApp()
-		// step 5: the re-reads back off 2 s, then 4 s (the third read at about 6 s)
+		// r92 step 5: the re-reads back off 2 s, then 4 s (the third read at about 6 s)
 		await waitFor(() => expect(mockChatStarts.length).toBe(1), { timeout: 12000 })
 		expect(mockStorageReads).toBeGreaterThanOrEqual(3)
 		// the bar is rendered on the render after the chat starts: wait for it, rather than assert it on the same tick.

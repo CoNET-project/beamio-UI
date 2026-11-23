@@ -1,7 +1,7 @@
 /**
  * addUser with recover from RegenerateUser and RegenerateRecover. Kind (4), a backup update of a registered account (the user's explicit
  * regeneration of the recovery code), sends the chain's current PGP identity, unchanged. An empty, unreadable, or absent (no_account) chain
- * identity refuses it: a backup update never makes a first registration (3ff76d0; review 2026-11-17). First registration runs only in the
+ * identity refuses it: a backup update never makes a first registration (review 2026-11-17). First registration runs only in the
  * save path (profileSyncChainPgp.test.ts). SYNTHETIC values only.
  */
 // beamio.ts reads TextEncoder at module load (jsdom does not provide it): set the globals before the module is required.
@@ -16,7 +16,7 @@ jest.mock('./chatMediaWorkerBridge', () => new Proxy({}, { get: () => () => unde
 jest.mock('./chatWorkerBridge', () => new Proxy({}, { get: () => () => undefined }))
 jest.mock('../workers/beamioTag/client', () => new Proxy({}, { get: () => () => undefined }))
 jest.mock('../workers/appDaemon/client', () => new Proxy({}, { get: () => () => undefined }))
-// openpgp does not load under jest here: the self-consistency check reads the keyID of a SYNTHETIC armor through this stub.
+// openpgp does not load under jest here: the self-consistency check reads the keyID of a SYNTHETIC armor ("SYNTH-PGP:<keyID>") through this stub.
 jest.mock('openpgp', () => ({ readKey: async ({ armoredKey }: { armoredKey: string }) => ({ getKeyIDs: () => [{ toHex: () => 'x' }, { toHex: () => armoredKey.replace(/^SYNTH-PGP:/, '') }] }) }))
 const { RegenerateUser, RegenerateRecover, chainIdentityRead } = require('./beamio') as typeof import('./beamio')
 const { markLocallyCreatedAccount } = require('./localAccountCreation') as typeof import('./localAccountCreation')
@@ -120,7 +120,7 @@ describe('kind (4) backup update: the first registration rule (the chain has no 
 	const OWN_KEY = 'SYNTH-PGP:ABCDEF0123456789'
 	const setOwn = (keyID: string, publicKey: string) => setCoNET_Data({ profiles: [{ keyID: SIGNER.toLowerCase(), privateKeyArmor: PK, chatManager: { pgpKey: { keyID, publicKey } } }] } as never)
 
-	it('negative (2.1 (c)): a backup update never makes the first registration, even on a locally created account with a self-consistent own key: refused, nothing sent', async () => {
+	it('negative (R78 2.1 (c)): a backup update never makes the first registration, even on a locally created account with a self-consistent own key: refused, nothing sent', async () => {
 		chainIdentityRead.read = async () => ({ status: 'ok', info: { exists: true, pgpPublicKeyID: '', pgpPublicKeyArmor: '' } as never })
 		setOwn(OWN_KEY_ID, OWN_KEY)
 		markLocallyCreatedAccount(SIGNER)

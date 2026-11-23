@@ -2,9 +2,9 @@
  * Native wallet key state and the import route.
  *
  * - A shell with no key for the account answers a wallet or chat command with ack `{type: "ack", reqId, ok: false, error: "no_key"}`.
- * `installNativeNoKeyWatcher` reports that, and the gate shows the locked page with the import route. Nothing is asked for or
- * received here: no key, mnemonic or PGP armor is read by the page.
- * - The native import screen is retired: no command opens a native key import, and the page never takes a typed key.
+ *   `installNativeNoKeyWatcher` reports that, and the gate shows the locked page with the import route. Nothing is asked for or
+ *   received here: no key, mnemonic or PGP armor is read by the page.
+ * - The native import screen is retired (spec r2.3 item 41): no command opens a native key import, and the page never takes a typed key.
  *
  * Wire format: the same chat-module channel the native chat transports use. iOS: `CashTreesIOS.chatModuleCommand({action,
  * command})`. Android: `CashTreesAndroid.chatModuleCommand(JSON)`. Events come back on `cashtreesios` / `cashtreesandroid` as

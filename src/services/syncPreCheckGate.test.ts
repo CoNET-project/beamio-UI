@@ -1,5 +1,5 @@
 /**
- * The pre-check before the native mnemonic sync (2026-11-20, independent review 09c734b6, item 1 (2)). Covered here at the decision
+ * The pre-check before the native mnemonic sync (review, item 1 (2)). Covered here at the decision
  * level: a locked, unknown, unavailable or timed-out native answer is "pending", so the sync is not sent, and the first native write (held
  * by the store gate) cannot be opened by it. The entry gate's own call site is not rendered in this suite (see the response).
  */

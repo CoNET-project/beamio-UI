@@ -24,11 +24,26 @@ const mockRecord = {
 }
 
 /** The App's first storage read is held until the test releases it (empty); later reads return the record. */
-/** The pre-read answer for each case; the tests set it before the render. */
-const mockPreread: { answer: () => Promise<unknown> } = { answer: async () => ({ kind: 'unknown' }) }
+/** The native pre-read reply (the window host's answer body) for each case; the tests set it before the render. The pre-read itself is real. */
+const mockPreread: { payload: Record<string, unknown>; asked: number } = { payload: { ok: false, error: 'envelope_fail' }, asked: 0 }
+/** the window host the App's pre-read transport talks to (the App.nativeLateReply shape): every nativeMnemonicPreread is answered by the host */
+let hostOnMessage: ((ev: unknown) => void) | null = null
+function installNativeHost(): void {
+	const host = {
+		postMessage: (text: string) => {
+			const cmd = JSON.parse(text) as { type: string; reqId: number }
+			if (cmd.type !== 'nativeMnemonicPreread') return
+			mockPreread.asked += 1
+			setTimeout(() => hostOnMessage?.({ data: JSON.stringify({ type: 'ack', reqId: cmd.reqId, ...mockPreread.payload }) }), 0)
+		},
+		get onmessage() { return hostOnMessage },
+		set onmessage(fn: ((ev: unknown) => void) | null) { hostOnMessage = fn },
+	}
+	;(window as unknown as { BeamioShellRecord: unknown }).BeamioShellRecord = host
+}
 const mockPage: { empty: boolean } = { empty: true }
 /** The native walletStatus and walletState answers (the shell side); the default is an explicit no_key with walletState absent. */
-const mockNative: { answer: (...a: unknown[]) => Promise<unknown>; walletState: string } = { answer: async () => ({ status: 'no_key' }), walletState: 'absent' }
+const mockNative: { answer: (...a: unknown[]) => Promise<unknown>; walletState: string; walletStatus: unknown } = { answer: async () => ({ status: 'no_key' }), walletState: 'absent', walletStatus: { status: 'no_key' } }
 const mockRace: { storageCalls: number; releaseFirstRead?: (v: unknown) => void } = { storageCalls: 0 }
 
 jest.mock('@/services/shellContext', () => ({ isShellContext: () => true }))
@@ -106,10 +121,11 @@ jest.mock('@/services/nativeRecovery', () => ({
 	recoveryOpenErrorKey: () => '',
 	nativeRecoveryCopyKey: () => null,
 	queryNativeWalletState: async () => mockNative.walletState,
-	queryNativeWalletStatus: async () => ({ status: 'no_key' }), // 0.53.39 stub: the start route reads walletStatus
+	queryNativeWalletStatus: async () => mockNative.walletStatus, // the start route reads walletStatus (set per test)
 	queryNativePasscodeStatus: async () => ({ walletState: await (async () => mockNative.walletState)(), hasKey: 'not_reported' as const }),
 	queryNativeWalletStateSafe: async () => mockNative.walletState,
-	queryNativeMnemonicPreread: (...a: unknown[]) => (mockPreread.answer as (...x: unknown[]) => Promise<unknown>)(...a),
+	// the real pre-read (its transport, its inner timeouts); the native answer comes from the window host (mockPreread.payload)
+	queryNativeMnemonicPreread: (...a: unknown[]) => (jest.requireActual('@/services/nativeRecovery') as { queryNativeMnemonicPreread: (...x: unknown[]) => unknown }).queryNativeMnemonicPreread(...a),
 }))
 jest.mock('@/services/shellChatCapability', () => ({ ...jest.requireActual('@/services/shellChatCapability'), ensureShellChatState: async () => 'native_chat', shellChatBlockedNow: () => false }))
 jest.mock('@/services/nativeChatRouteRegister', () => ({ ...jest.requireActual('@/services/nativeChatRouteRegister'), probeNativeCapabilities: async () => ({ answered: true, capabilities: ['identity.native-keys.v1'] }) }))
@@ -135,6 +151,7 @@ jest.mock('@/components/EmbeddedPwaUpdateBanner', () => ({ EmbeddedPwaUpdateBann
 jest.mock('@/pages/Home/LoadingPage', () => () => null)
 
 function renderApp() {
+	installNativeHost()
 	return render(
 		<DaemonProvider>
 			<MemoryRouter initialEntries={['/home']}>
@@ -147,11 +164,10 @@ function renderApp() {
 describe('the start with the native pre-read (startup capability, 2026-11-16)', () => {
 	it('the page has a valid mnemonic: the home opens on it and the native side is not asked', async () => {
 		mockPage.empty = false
-		let asked = 0
-		mockPreread.answer = async () => (asked++, { kind: 'absent' })
+		mockPreread.payload = { ok: true, result: { code: 'confirmed_missing' } }
 		renderApp()
 		await waitFor(() => expect(mockLogs.some((m) => m.includes('page mnemonic is valid'))).toBe(true))
-		expect(asked).toBe(0)
+		expect(mockPreread.asked).toBe(0)
 		expect(mockLogs.some((m) => m.includes('pre-read absent, page confirmed empty: onboarding'))).toBe(false)
 	})
 
@@ -159,45 +175,48 @@ describe('the start with the native pre-read (startup capability, 2026-11-16)', 
 		mockPage.empty = true
 		mockNative.answer = async () => ({ status: 'no_key' })
 		mockNative.walletState = 'absent'
+		mockNative.walletStatus = { status: 'no_key' }
 		mockLogs.length = 0
 		mockRace.storageCalls = 0
+		mockPreread.asked = 0
 	})
 
 	it('a bridge unknown (timeout or error) is a retryable wait: no onboarding, no home from the native side', async () => {
-		mockPreread.answer = async () => ({ kind: 'unknown' })
+		mockPreread.payload = { ok: false, error: 'envelope_fail' } // an envelope refusal: unknown (a retryable wait)
 		renderApp()
-		await waitFor(() => expect(mockLogs.some((m) => m.includes('native mnemonic pre-read unknown'))).toBe(true))
+		await waitFor(() => expect(mockLogs.some((m) => m.includes('preread=unknown'))).toBe(true))
 		expect(mockLogs.some((m) => m.includes('pre-read absent, page confirmed empty: onboarding'))).toBe(false)
 		expect(mockLogs.some((m) => m.includes('not supported by this shell'))).toBe(false)
 	})
 
 	it('a shell without the pre-read command (unknown_command) does not stall: the walletStatus route decides', async () => {
-		mockPreread.answer = async () => ({ kind: 'unknown', reason: 'unsupported' })
+		mockPreread.payload = { ok: false, error: 'unknown_command' } // the shell has no pre-read command
 		renderApp()
 		await waitFor(() => expect(mockLogs.some((m) => m.includes('not supported by this shell'))).toBe(true))
-		expect(mockLogs.some((m) => m.includes('native mnemonic pre-read unknown'))).toBe(false)
+		// the unsupported answer is not a retryable wait: no 'retry, no verdict' round
+		expect(mockLogs.some((m) => m.includes('retry, no verdict'))).toBe(false)
 		expect(mockLogs.some((m) => m.includes('pre-read absent, page confirmed empty: onboarding'))).toBe(false)
 	})
 
-	it('an unknown start offers the visible retry button from the first round on (no fallback screen), re-reads at 2 s, 4 s', async () => {
+	it('0.53.44: an unknown start shows no startup button (no fallback screen), re-reads at 2 s, 4 s', async () => {
 		jest.useFakeTimers()
 		try {
-			mockPreread.answer = async () => ({ kind: 'unknown' })
+			mockPreread.payload = { ok: false, error: 'envelope_fail' }
 			renderApp()
-			const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve() }
+			const flush = async () => { for (let i = 0; i < 20; i++) { await Promise.resolve(); jest.advanceTimersByTime(0) } }
 			await act(async () => { await flush() })
 			const retryShown = () => screen.queryByText('native_not_ready_retry_title') !== null
 			const retryButtons = () => screen.queryAllByRole('button', { name: 'native_not_ready_retry_action' }).length
-			const roundsLogged = () => mockLogs.filter((m) => m.includes('native mnemonic pre-read unknown')).length
+			const roundsLogged = () => mockLogs.filter((m) => m.includes('preread=unknown')).length
 			expect(roundsLogged()).toBe(1)
-			// step 5: the generic retry screen is not shown; the visible retry button is offered at once
+			// 0.53.44 (two-landing rule): the generic retry screen and the visible retry button are not shown at startup
 			expect(retryShown()).toBe(false)
-			expect(retryButtons()).toBe(1)
+			expect(retryButtons()).toBe(0) // 0.53.44: no startup button; the re-reads are background only
 			for (const [round, ms] of [[2, 2_000], [3, 4_000]] as const) {
 				await act(async () => { jest.advanceTimersByTime(ms); await flush() })
 				expect(roundsLogged()).toBe(round)
 				expect(retryShown()).toBe(false)
-				expect(retryButtons()).toBe(1)
+				expect(retryButtons()).toBe(0) // 0.53.44: no startup button; the re-reads are background only
 			}
 			// the identity prompt (the same retry, with its own copy) must not stack on the retry button: one retry button only
 			await act(async () => {
@@ -205,7 +224,7 @@ describe('the start with the native pre-read (startup capability, 2026-11-16)', 
 				jest.advanceTimersByTime(1)
 				await flush()
 			})
-			expect(retryButtons()).toBe(1)
+			expect(retryButtons()).toBe(0) // 0.53.44: no startup button; the re-reads are background only
 			expect(mockLogs.some((m) => m.includes('pre-read absent, page confirmed empty: onboarding'))).toBe(false)
 		} finally {
 			jest.useRealTimers()
@@ -213,13 +232,14 @@ describe('the start with the native pre-read (startup capability, 2026-11-16)', 
 	})
 
 	it('both sides confirmed empty (the native pre-read absent with the page confirmed empty) goes to the onboarding', async () => {
-		mockPreread.answer = async () => ({ kind: 'absent' })
+		mockPreread.payload = { ok: true, result: { code: 'confirmed_missing' } }  // the legacy state shape is not a confirmed absence
 		renderApp()
 		await waitFor(() => expect(mockLogs.some((m) => m.includes('pre-read absent, page confirmed empty: onboarding'))).toBe(true))
+		expect(mockPreread.asked).toBeGreaterThanOrEqual(1)
 	})
 })
 
-describe('the start with a native no_key, the page empty and the pre-read', () => {
+describe('R96: the start with a native no_key, the page empty and the pre-read', () => {
 	beforeEach(() => {
 		mockPage.empty = true
 		mockLogs.length = 0
@@ -227,18 +247,27 @@ describe('the start with a native no_key, the page empty and the pre-read', () =
 		mockNative.walletState = 'not_reported'
 	})
 
-	it('G1 with a confirmed empty page: the pre-read is asked, absent goes to onboarding (the pre-read decides, the native rule does not preempt it)', async () => {
-		let asked = 0
-		mockPreread.answer = async () => (asked++, { kind: 'absent' })
-		mockNative.answer = async () => ({ status: 'not_ready', notReadyReason: 'g1_uninitialized' })
+	it('G1 (g1_uninitialized) with the pre-read confirmed_missing and the page empty: onboarding (8ca9299e: walletStatus not_ready does not block)', async () => {
+		mockPreread.payload = { ok: true, result: { code: 'confirmed_missing' } }
+		mockNative.walletStatus = { status: 'not_ready', notReadyReason: 'g1_uninitialized' }
 		renderApp()
-		await waitFor(() => expect(mockLogs.some((m) => m.includes('pre-read absent, page confirmed empty: onboarding'))).toBe(true))
-		expect(asked).toBeGreaterThanOrEqual(1)
+		await waitFor(() => expect(mockPreread.asked).toBeGreaterThanOrEqual(1))
+		await waitFor(() => expect(mockLogs.some((m) => m.includes('pre-read absent, page confirmed empty: onboarding'))).toBe(true), { timeout: 10_000 })
 		expect(mockLogs.some((m) => m.includes('shell no-key judgement'))).toBe(false)
-	})
+	}, 20_000)
+
+	it('G1 (g1_uninitialized) with the pre-read unknown (no definite answer): the start re-reads in the background, never onboarding (3417d3d6 item 2)', async () => {
+		mockPreread.payload = { ok: false, error: 'not_ready' }
+		mockNative.walletStatus = { status: 'not_ready', notReadyReason: 'g1_uninitialized' }
+		renderApp()
+		await waitFor(() => expect(mockPreread.asked).toBeGreaterThanOrEqual(1))
+		await new Promise((r) => setTimeout(r, 3000))
+		expect(mockLogs.some((m) => m.includes('pre-read absent, page confirmed empty: onboarding'))).toBe(false)
+		expect(mockLogs.some((m) => m.includes('startup retry: attempt') || m.includes('startup wait'))).toBe(true)
+	}, 20_000)
 
 	it('the pre-read is unsupported by the shell: the native rule does not onboard; the start waits (unknown), no generic storage screen', async () => {
-		mockPreread.answer = async () => ({ kind: 'unknown', reason: 'unsupported' })
+		mockPreread.payload = { ok: false, error: 'unknown_command' }
 		renderApp()
 		// 0.53.39: the legacy route (old shell, no pre-read) takes the shell judgement; with the sealed copy not checkable the no_key onboarding is not taken,
 		// and the start waits (undetermined). Log wording revised (stale: 'sealed-copy check unknown' is the no_key branch, not this route).
@@ -248,9 +277,9 @@ describe('the start with a native no_key, the page empty and the pre-read', () =
 	})
 
 	it('a bridge unknown on the pre-read never onboards (startup wait), even with walletStatus no_key', async () => {
-		mockPreread.answer = async () => ({ kind: 'unknown' })
+		mockPreread.payload = { ok: false, error: 'envelope_fail' }
 		renderApp()
-		await waitFor(() => expect(mockLogs.some((m) => m.includes('native mnemonic pre-read unknown'))).toBe(true))
+		await waitFor(() => expect(mockLogs.some((m) => m.includes('preread=unknown'))).toBe(true))
 		expect(mockLogs.some((m) => m.includes('pre-read absent, page confirmed empty: onboarding'))).toBe(false)
 		expect(mockLogs.some((m) => m.includes('shell no-key judgement'))).toBe(false)
 	})

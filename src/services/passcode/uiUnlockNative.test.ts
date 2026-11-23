@@ -1,9 +1,9 @@
 import { PASSCODE_CAPABILITY } from './passcodeCommands'
 import { afterUiUnlock, nativeUnlockedFromStatusReply, normalizeNativeReply, type UiUnlockNativeDeps } from './uiUnlockNative'
 
-// Vectors: native-unlock-judgement-vectors.v1.json. Copied as data.
+// Vectors: native-unlock-judgement-vectors.v1.json (interface, sha256 57f245cd…, v43 §47 / v44 §48–49). Copied as data.
 const EOA = '0x1111111111111111111111111111111111111111'
-const P = '12345678'
+const P = '395784'
 
 /** Replies by command type: the status reply and the identity-check reply; a passcodeUnlock reply defaults to ok. */
 const deps = (over: { probe?: UiUnlockNativeDeps['probe']; status?: unknown; identity?: unknown; unlock?: unknown } = {}) => {
@@ -31,7 +31,7 @@ describe('afterUiUnlock gates', () => {
 		expect(await afterUiUnlock({ shell: true, eoa: EOA, passcode: P }, d)).toBe('hold')
 		expect(sent).toEqual([])
 	})
-	test('shell without the capability: continue, nothing sent', async () => {
+	test('shell without the capability: continue, nothing sent (pending confirmation)', async () => {
 		const { d, sent } = deps({ probe: async () => ({ answered: true, capabilities: ['identity.native-keys.v1'] }) })
 		expect(await afterUiUnlock({ shell: true, eoa: EOA, passcode: P }, d)).toBe('continue')
 		expect(sent).toEqual([])

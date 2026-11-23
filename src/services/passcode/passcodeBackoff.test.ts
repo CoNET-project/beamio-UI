@@ -1,5 +1,5 @@
 /**
- * The UI unlock backoff (project rule 4bc1a2ac; FROZEN protocol 5.1 and 5.2). Synthetic times only.
+ * The UI unlock backoff (project rule; FROZEN protocol 5.1 and 5.2). Synthetic times only.
  */
 import { afterFailure, attemptUnlock, gateAt, LOCK_MS, memoryAttemptStore, ZERO_ATTEMPTS, type AttemptStore } from './passcodeBackoff'
 

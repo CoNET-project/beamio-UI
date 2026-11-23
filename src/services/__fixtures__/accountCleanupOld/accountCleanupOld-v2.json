@@ -2,21 +2,90 @@
   "vectorSet": "accountCleanupOld",
   "version": "v2",
   "supersedes": "the earlier pgp-migration vector set: the CU-04 answer code（not_available 改为 not_ready）及未点选类用例；原件不改",
-  "rulings": ["CU-04: unreadable own account is not_ready and retryable", "CU-05: a silent cleanup runs only after the confirmation command; restore success and matching read-back alone are not a confirmation", "CU-06: gate locked gives not_ready"],
+  "rulings": [
+    "CU-04: unreadable own account is not_ready and retryable",
+    "CU-05: a silent cleanup runs only after the confirmation command; restore success and matching read-back alone are not a confirmation",
+    "CU-06: gate locked gives not_ready"
+  ],
   "status": "新文件（v2）；shared 原件不改；BR2-05/06 shape pending the Android actual values（未经核验，标记 pending）",
   "cases": [
-    { "id": "CU-04-v2-own-account-unreadable", "state": { "newAccountStorage": "unreadable", "osStatus": -25308 }, "command": "accountCleanupOld",
-      "expect": { "code": "not_ready", "retryable": true, "noDelete": true }, "note": "The earlier answer was not_available; now not_ready, retryable by reason." },
-    { "id": "CU-04-v2-own-account-unreadable-entitlement", "state": { "newAccountStorage": "unreadable", "osStatus": -34018 }, "command": "accountCleanupOld",
-      "expect": { "code": "not_ready", "retryable": false, "noDelete": true } },
-    { "id": "CU-05-v2-not-confirmed-no-command", "state": { "confirmationCommandReceived": false, "restoreSuccess": true, "readbackMatch": true }, "command": "accountCleanupOld",
-      "expect": { "code": "not_confirmed" }, "noDelete": true, "note": "No confirmation command received means no confirmation, no delete. Restore success and matching read-back alone are not a confirmation (the page sends the command)." },
-    { "id": "CU-06-v2-gate-locked", "state": { "gate": "locked", "cleanupPending": true }, "command": "accountCleanupOld",
-      "expect": { "code": "not_ready" }, "noDelete": true, "note": "Gate locked: not_ready, no delete, no clear_incomplete answer." },
-    { "id": "CU-06-v2-item-failure-after-gate", "state": { "gate": "passed", "readbackMatch": true, "deletionItemRead": "failed" }, "command": "accountCleanupOld",
-      "expect": { "code": "clear_incomplete", "cleanupPending": true } },
-    { "id": "BR2-05-pending-android-1d967ad6", "expect": "pending", "note": "形状以 Android 1d967ad6 实际为准；未核验前不作为通过依据。" },
-    { "id": "BR2-06-pending-android-1d967ad6", "expect": "pending", "note": "同上。" }
+    {
+      "id": "CU-04-v2-own-account-unreadable",
+      "state": {
+        "newAccountStorage": "unreadable",
+        "osStatus": -25308
+      },
+      "command": "accountCleanupOld",
+      "expect": {
+        "code": "not_ready",
+        "retryable": true,
+        "noDelete": true
+      },
+      "note": "The earlier answer was not_available; now not_ready, retryable by reason."
+    },
+    {
+      "id": "CU-04-v2-own-account-unreadable-entitlement",
+      "state": {
+        "newAccountStorage": "unreadable",
+        "osStatus": -34018
+      },
+      "command": "accountCleanupOld",
+      "expect": {
+        "code": "not_ready",
+        "retryable": false,
+        "noDelete": true
+      }
+    },
+    {
+      "id": "CU-05-v2-not-confirmed-no-command",
+      "state": {
+        "confirmationCommandReceived": false,
+        "restoreSuccess": true,
+        "readbackMatch": true
+      },
+      "command": "accountCleanupOld",
+      "expect": {
+        "code": "not_confirmed"
+      },
+      "noDelete": true,
+      "note": "No confirmation command received means no confirmation, no delete. Restore success and matching read-back alone are not a confirmation (the page sends the command)."
+    },
+    {
+      "id": "CU-06-v2-gate-locked",
+      "state": {
+        "gate": "locked",
+        "cleanupPending": true
+      },
+      "command": "accountCleanupOld",
+      "expect": {
+        "code": "not_ready"
+      },
+      "noDelete": true,
+      "note": "Gate locked: not_ready, no delete, no clear_incomplete answer."
+    },
+    {
+      "id": "CU-06-v2-item-failure-after-gate",
+      "state": {
+        "gate": "passed",
+        "readbackMatch": true,
+        "deletionItemRead": "failed"
+      },
+      "command": "accountCleanupOld",
+      "expect": {
+        "code": "clear_incomplete",
+        "cleanupPending": true
+      }
+    },
+    {
+      "id": "BR2-05-pending-android-1d967ad6",
+      "expect": "pending",
+      "note": "形状以 Android 实际为准；未核验前不作为通过依据。"
+    },
+    {
+      "id": "BR2-06-pending-android-1d967ad6",
+      "expect": "pending",
+      "note": "同上。"
+    }
   ],
   "acceptance": [
     "1 成功静默清旧保新：恢复成功、两端读回一致、无点选，清可明确归属的旧账户数据；新账户钱包与聊天保留",
@@ -28,5 +97,10 @@
     "7 新账户数据（钱包、聊天、名册、页面记录）不删",
     "8 CU-06 门级：锁定或未就绪 not_ready 且不删"
   ],
-  "forbidden": ["CU-04 答 not_available（v2 已改）", "未收到确认命令时删除", "门级锁定答 clear_incomplete", "confirmation_not_native 作为答复码"]
+  "forbidden": [
+    "CU-04 答 not_available（v2 已改）",
+    "未收到确认命令时删除",
+    "门级锁定答 clear_incomplete",
+    "confirmation_not_native 作为答复码"
+  ]
 }

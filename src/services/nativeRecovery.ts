@@ -8,7 +8,9 @@
  */
 import { ethers } from 'ethers'
 import { eventPayloadOf, NATIVE_EVENT_NAMES, withoutGlobalNoKeyLock } from './nativeKeyState'
+import { beginPrereadRound } from './prereadRound'
 import { nextReqId, probeNativeCapabilities, requestNativeAck } from './nativeChatRouteRegister'
+import { PASSCODE_CAPABILITY } from './passcode/passcodeCommands'
 import { sendShellWalletSyncCommand, shellRecordTransportKind } from './shellRecordTransport'
 import { getCashTreesNativeNfcHost } from '@/utils/cashTreesNativeNfc'
 import { parsePasscodeStatus, type NativeWalletState as NativeWalletStateReport } from './accountJudgement'
@@ -21,6 +23,8 @@ import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
 export const NATIVE_RECOVERY_OPEN_COMMAND = 'nativeRecoveryOpen'
 export const NATIVE_RECOVERY_RESULT_EVENT = 'nativeRecoveryResult'
 const OPEN_TIMEOUT_MS = 10_000
+/** ②: the pre-read request stays open for the 30 s reply window; a late reply matched by reqId is taken while undecided. */
+const PREREAD_REPLY_WINDOW_MS = 30_000
 /**no result in this time, and visible again, means a local `cancelled`. */
 export const NATIVE_RECOVERY_LOCAL_CANCEL_MS = 10 * 60 * 1000
 
@@ -212,9 +216,9 @@ export const NATIVE_ACCOUNT_CREATE_OPEN_COMMAND = 'nativeAccountCreateOpen'
 let openedCreateReqId: number | null = null
 
 /**
- * the open carries the account (BeamioTag or EOA address, a public identifier). Actual shapes:
+ * the open carries the account (BeamioTag or EOA address, a public identifier). Actual shapes (SDK read-only check, 2026-11-18):
  * - an already bound account: ack ok:true page:"none", then the nested result event with code already_bound (Android NativeOpenRules.kt:168–172,
- * 188–193; iOS BeamioConetChatModule.swift:3016–3020, 3164–3166). The result event opens the native recovery; no new EOA;
+ *   188–193; iOS BeamioConetChatModule.swift:3016–3020, 3164–3166). The result event opens the native recovery; no new EOA;
  * - lookup unavailable: ack ok:true page:"none", then the nested result event with code lookup_unavailable (retry later; nothing is created).
  * The open ack with ok:false reason already_bound is NOT sent by the new SDKs (f6b477b4, 5ffda0f); it is kept as a compatibility
  * branch for an unverified old shell (旧壳未核). Do not rely on it for the new shells.
@@ -243,7 +247,7 @@ export function parseAccountCreateOpenAck(
 	}
 	const walletStatus: NativeWalletStatus | undefined =
 		p.walletStatus === 'G0' || p.walletStatus === 'G1' || p.walletStatus === 'G2' ? p.walletStatus : undefined
-	// the cause is read from `error`; `reason` is accepted as well.
+	// the cause is read from `error` (spec v3.12 §1: ack ok:false error:not_ready, Android error:not_available); `reason` is accepted as well.
 	const cause = typeof p.error === 'string' && p.error ? p.error : typeof p.reason === 'string' && p.reason ? p.reason : 'bad_ack'
 	return { ok: false, reason: cause, walletStatus }
 }
@@ -283,7 +287,7 @@ export function openedNativeCreateReqId(): number | null {
  * lower-case 0x address. Anything else is discarded (null). The log names the reason only, never a value.
  */
 /**
- * (OB-2…OB-4),: the write_failed reason vocabulary. A reason outside it, or none, is undefined (the conservative case:
+ * v10 §九 (OB-2…OB-4), rule: the write_failed reason vocabulary. A reason outside it, or none, is undefined (the conservative case:
  * no completion, no retry button, an explanation, and a reread before any further action). The native shells do not send it yet.
  */
 export const WRITE_FAILED_REASON_VOCABULARY = ['internal_state', 'storage_write', 'rollback_pending', 'old_copy_unverified'] as const
@@ -293,19 +297,19 @@ export type NativeCreateAccepted =
 	| { code: NativeAccountCreateResultCode; eoa?: string; reason?: WriteFailedReason }
 	| { code: 'shape_violation'; reason: 'ok_code_mismatch' }
 
-/** Fields allowed at the top level of a nested create result. */
+/** Fields allowed at the top level of a nested create result (r11 §12.1). */
 const CREATE_RESULT_TOP_KEYS: ReadonlySet<string> = new Set(['type', 'reqId', 'ok', 'result'])
-/** Fields allowed inside `result`. The three W fields are accepted on ok only and stripped at once. */
+/** Fields allowed inside `result`. The three W fields are accepted on ok only and stripped at once (r11 §10). */
 const CREATE_RESULT_KEYS: ReadonlySet<string> = new Set(['code', 'eoa', 'cleanupPending', 'reason'])
 const CREATE_RESULT_W_KEYS: ReadonlySet<string> = new Set(['privateKeyArmor', 'mnemonicPhrase', 'recoveryWords'])
 
 /**
- * Accepts a nested `nativeAccountCreateResult` payload. Shape: `{type, reqId, ok, result:{code, eoa?, cleanupPending?, W?}}`.
+ * Accepts a nested `nativeAccountCreateResult` payload (r11). Shape: `{type, reqId, ok, result:{code, eoa?, cleanupPending?, W?}}`.
  * - the reqId must be the opened one; top-level keys are limited to type, reqId, ok, result;
  * - inside result: code, eoa, cleanupPending; the W fields only when ok, and they are dropped here (never kept or logged);
  * - `ok` must equal (code === 'ok'); a mismatch is a shape violation (the caller ends the wait and offers a retry);
  * - ok needs a lower-case 0x eoa; already_exists and not_ready may carry an eoa, which is dropped (never a success basis);
- * other non-ok codes must not carry an eoa.
+ *   other non-ok codes must not carry an eoa.
  * Anything else is discarded (null). The log names the reason only, never a value.
  */
 export function acceptNativeCreateResult(p: unknown, opened: number | null): NativeCreateAccepted | null {
@@ -345,12 +349,12 @@ export function acceptNativeCreateResult(p: unknown, opened: number | null): Nat
 export const NATIVE_WALLET_STATUS_COMMAND = 'walletStatus'
 export type NativeWalletState =
 	| { status: 'no_key' | 'unknown' }
-	| { status: 'not_ready'; notReadyReason?: 'g1_uninitialized' | 'key_only' | 'unreadable' }
+	| { status: 'not_ready'; notReadyReason?: 'g1_uninitialized' | 'key_only' | 'unreadable' | 'passcode_not_provided' }
 	| { status: 'locked' | 'unlocked'; eoa: string }
 	| { status: 'phrase_only'; eoa: string }
 
 /**
- * Why a walletStatus answer is unknown, as a category: field names and codes only. Null for a usable answer.
+ * Why a walletStatus answer is unknown, as a category (2026-11-21): field names and codes only. Null for a usable answer.
  */
 export function walletStatusUnknownReason(payload: { type?: unknown; ok?: unknown; result?: unknown } | null, answered: boolean): string | null {
 	if (!answered) return 'not_answered'
@@ -392,7 +396,7 @@ export async function queryNativeWalletStatus(): Promise<NativeWalletState> {
  * refused or unreadable answer is `unknown` (undetermined). The answer carries the state only, never material.
  */
 /**
- * The start-up pre-read (spec, items 42(2) and 46(4)): the PWA asks the native side what it read in advance, once the PWA has
+ * The start-up pre-read (spec r2.5.1, items 42(2) and 46(4)): the PWA asks the native side what it read in advance, once the PWA has
  * confirmed that it holds no valid mnemonic. Replies: valid (a valid mnemonic whose derived address is eoa), absent (the native side read
  * and confirmed there is none), unknown (an error, a timeout, a pre-read not finished, or anything else). Only absent is "confirmed empty".
  */
@@ -402,10 +406,20 @@ export const NATIVE_MNEMONIC_PREREAD_COMMAND = 'nativeMnemonicPreread'
  * back to the walletStatus route instead of waiting. Every other unknown is a retryable startup wait.
  */
 /** `locked` (HC-LOCK L-PRE): the native lock answered; not absent, not unknown-by-timeout. The caller takes the unlock branch. */
-export type MnemonicPreread = { kind: 'valid'; eoa: string; phrase: string } | { kind: 'absent' } | { kind: 'locked' } | { kind: 'unknown'; reason?: 'unsupported' }
+/**
+ * Unit (b): `reason` on an unknown. `unsupported` (unknown_command), `not_ready` (the store answers not_ready, in either shape: iOS
+ * result.code, Android envelope ok:false error), `envelope_error` (any other refusal of the envelope, with its closed code in `code`).
+ */
+export type MnemonicPreread =
+	| { kind: 'valid'; eoa: string; phrase: string }
+	/** the spec（preread 原样返回 current）：the current record is passcode-protected; the envelope is returned as stored, never decrypted here. */
+	| { kind: 'cipher'; cipher: unknown }
+	| { kind: 'absent' }
+	| { kind: 'locked' }
+	| { kind: 'unknown'; reason?: 'unsupported' | 'not_ready' | 'envelope_error' | 'read_error' | 'read_timeout' | 'verify_failed'; code?: string }
 
 /**
- * The pre-read request (spec item 60(1)): it carries `seq`, the page's shared persistent transaction number (the same sequence as
+ * The pre-read request (spec r2.5.19 item 60(1)): it carries `seq`, the page's shared persistent transaction number (the same sequence as
  * pwaWalletSync and pwaEmptySignal). The pre-read compares the number and never records it (item 60(4)).
  */
 export function buildNativeMnemonicPrereadCommand(seq: number): { type: string; seq: number } {
@@ -422,18 +436,56 @@ export function prereadFromAnswer(answer: { kind: string; payload?: unknown }): 
 	const p = (answer.payload ?? null) as { type?: unknown; ok?: unknown; result?: unknown; error?: unknown } | null
 	// an unknown_command is the one refusal that means "this shell has no pre-read" (the caller falls back); every other refusal stays bare unknown
 	if (p && p.type === 'ack' && p.ok !== true && p.error === 'locked') return { kind: 'locked' }
-	if (!p || p.type !== 'ack' || p.ok !== true) return p?.error === 'unknown_command' ? { kind: 'unknown', reason: 'unsupported' } : { kind: 'unknown' }
-	const r = (p.result ?? null) as { state?: unknown; eoa?: unknown; phrase?: unknown } | null
-	const state = typeof p.result === 'string' ? p.result : typeof r?.state === 'string' ? r.state : ''
-	if (state === 'absent' || state === 'explicit_empty') return { kind: 'absent' }
-	if (state !== 'valid' || !r) return { kind: 'unknown' }
-	if (typeof r.eoa !== 'string' || !isMnemonicPhrase(r.phrase)) return { kind: 'unknown' }
-	try {
-		const derived = ethers.Wallet.fromPhrase(r.phrase).address.toLowerCase()
-		return derived === r.eoa.toLowerCase() ? { kind: 'valid', eoa: derived, phrase: r.phrase.trim() } : { kind: 'unknown' }
-	} catch {
-		return { kind: 'unknown' }
+	// Unit (b): Android answers not_ready in the envelope (ok:false, error:'not_ready'); the closed envelope codes are kept as a code only.
+	if (p && p.type === 'ack' && p.ok !== true && p.error === 'not_ready') return { kind: 'unknown', reason: 'not_ready' }
+	if (!p || p.type !== 'ack' || p.ok !== true) {
+		if (p?.error === 'unknown_command') return { kind: 'unknown', reason: 'unsupported' }
+		const code = typeof p?.error === 'string' && /^[a-z_]{1,40}$/.test(p.error) ? p.error : undefined
+		return code ? { kind: 'unknown', reason: 'envelope_error', code } : { kind: 'unknown' }
 	}
+	const r = (p.result ?? null) as { state?: unknown; eoa?: unknown; phrase?: unknown; code?: unknown; mnemonic?: unknown; cipher?: unknown } | null
+	// Unit g (the decision, 316.1–316.3): the current record as saved. A plaintext mnemonic is validated and derived; a ciphertext is the
+	// 'has' answer (not decrypted here, no passcode asked); confirmed_missing is the only absent; read_error is unknown (kept, never absent).
+	if (r && typeof r === 'object' && r.code === 'confirmed_missing') return { kind: 'absent' }
+	if (r && typeof r === 'object' && r.code === 'read_error') return { kind: 'unknown', reason: 'read_error' }
+	// iOS answers not_ready as ok:true with result.code (unit (b)); the same class as the envelope form.
+	if (r && typeof r === 'object' && r.code === 'not_ready') return { kind: 'unknown', reason: 'not_ready' }
+	// spec item 1: the answer carries `code` (ok with mnemonic or cipher, confirmed_missing, read_error). Only the closed codes
+	// are read; anything else is unknown. The legacy `state` shape below is still read for shells that have not moved yet.
+	if (r && typeof r === 'object' && typeof r.code === 'string') return prereadFromCode(p.result as Record<string, unknown>)
+	// 2026-11-22 (the decision item 3): only the closed result.code answers are read. The legacy `state` shape was
+	// never shipped (published iOS 104/105 and Android 1.0.163/165 have no pre-read: their answer is unknown_command, handled above as unsupported).
+	return { kind: 'unknown' }
+}
+
+/**
+ * spec §316.1–316.3: the closed `code` answers of nativeMnemonicPreread.
+ * - ok + mnemonic: the plaintext current mnemonic, returned as stored; the EOA is derived here and must be a valid phrase.
+ * - ok + cipher: the current v3 envelope as stored; the PWA decides it is encrypted and asks for the passcode. Presence counts as "has".
+ * - confirmed_missing: the only confirmed absence. read_error: a read failure (data kept, never confirmed missing). Others: unknown.
+ */
+function prereadFromCode(r: Record<string, unknown>): MnemonicPreread {
+	if (r.code === 'confirmed_missing') return { kind: 'absent' }
+	if (r.code === 'read_error') return { kind: 'unknown', reason: 'read_error' }
+	if (r.code !== 'ok') return { kind: 'unknown' }
+	if (typeof r.mnemonic === 'string') {
+		if (!isMnemonicPhrase(r.mnemonic)) return { kind: 'unknown' }
+		let derived: string
+		try {
+			derived = ethers.Wallet.fromPhrase(r.mnemonic.trim()).address.toLowerCase()
+		} catch {
+			return { kind: 'unknown' }
+		}
+		const phrase = r.mnemonic.trim()
+		// Per B: an ok plaintext answer carries the eoa. Derived address D must equal it; a mismatch is verify_failed (nothing
+		// is written, nothing is onboarded). The answer without an eoa is the capability-missing path (unsupported: the legacy judgement).
+		// The interface spec wrote "ok without eoa": that reading is kept only as this capability-missing branch.
+		if (typeof r.eoa !== 'string') return { kind: 'unknown', reason: 'unsupported' }
+		if (r.eoa.trim().toLowerCase() !== derived) return { kind: 'unknown', reason: 'verify_failed' }
+		return { kind: 'valid', eoa: derived, phrase }
+	}
+	if (r.cipher !== null && typeof r.cipher === 'object' && !Array.isArray(r.cipher)) return { kind: 'cipher', cipher: r.cipher }
+	return { kind: 'unknown' }
 }
 
 /**
@@ -458,10 +510,22 @@ export async function queryNativeMnemonicPreread(
 	nextSeq: () => number = nextShellTxSeq,
 	send: (cmd: { type: string; seq: number }, timeoutMs: number) => Promise<{ kind: string; payload?: unknown }> = prereadSend,
 ): Promise<MnemonicPreread> {
+	const conclude = beginPrereadRound()
+	try {
+		return await queryNativeMnemonicPrereadRound(nextSeq, send)
+	} finally {
+		conclude()
+	}
+}
+
+async function queryNativeMnemonicPrereadRound(
+	nextSeq: () => number,
+	send: (cmd: { type: string; seq: number }, timeoutMs: number) => Promise<{ kind: string; payload?: unknown }>,
+): Promise<MnemonicPreread> {
 	const cmd = buildNativeMnemonicPrereadCommand(nextSeq())
 	publishNativePwaLog('info', `[preread] sent cmd=${cmd.type} seq=${cmd.seq}`)
-	const answer = await send(cmd, OPEN_TIMEOUT_MS)
-	// A pre-read the shell cannot answer (not_supported) is a definite old shell: the legacy judgement, not a retry.
+	const answer = await send(cmd, PREREAD_REPLY_WINDOW_MS)
+	// 2026-11-21: a pre-read the shell cannot answer (not_supported) is a definite old shell: the legacy judgement, not a retry.
 	const out = answer.kind === 'not_supported' ? { kind: 'unknown' as const, reason: 'unsupported' as const } : prereadFromAnswer(answer)
 	// the result state only: never the phrase, never an address
 	publishNativePwaLog('info', `[preread] result cmd=${cmd.type} seq=${cmd.seq} state=${out.kind}${out.kind === 'unknown' && out.reason ? ` reason=${out.reason}` : ''}`)
@@ -479,7 +543,7 @@ export interface NativePasscodeReport {
 }
 
 /**
- * Why a passcodeStatus answer is unknown, as a category (an unrecognised shape is a clear diagnostic, never a silent
+ * Why a passcodeStatus answer is unknown, as a category (2026-11-21: an unrecognised shape is a clear diagnostic, never a silent
  * read_failed). Field names and codes only; no value is logged. Returns null for a usable answer.
  */
 export function passcodeUnknownReason(payload: { type?: unknown; ok?: unknown; result?: unknown } | null, answered: boolean): string | null {
@@ -496,9 +560,12 @@ export function passcodeUnknownReason(payload: { type?: unknown; ok?: unknown; r
 	}
 	const hasKey = (result as { hasKey?: unknown }).hasKey
 	if (hasKey !== undefined && typeof hasKey !== 'boolean') return 'has_key_not_boolean'
+	// nativeLocked (the shell reports whether its session is locked): a boolean when present; anything else is an unrecognised answer, unknown.
+	const nativeLocked = (result as { nativeLocked?: unknown }).nativeLocked
+	if (nativeLocked !== undefined && typeof nativeLocked !== 'boolean') return 'native_locked_not_boolean'
 	return null
 }
-const PASSCODE_STATUS_FIELD_NAMES: ReadonlySet<string> = new Set(['set', 'locked', 'hasKey', 'walletState'])
+const PASSCODE_STATUS_FIELD_NAMES: ReadonlySet<string> = new Set(['set', 'locked', 'hasKey', 'walletState', 'nativeLocked'])
 const PASSCODE_WALLET_STATE_NAMES: ReadonlySet<string> = new Set(['present', 'absent', 'not_ready', 'locked', 'unavailable', 'corrupt'])
 
 export async function queryNativePasscodeStatus(): Promise<NativePasscodeReport> {
@@ -507,6 +574,12 @@ export async function queryNativePasscodeStatus(): Promise<NativePasscodeReport>
 	if (!probe.answered) {
 		publishNativePwaLog('warn', `[passcodeStatus] unknown: reason=${passcodeUnknownReason(null, false)}`)
 		return unknown
+	}
+	// Fail closed (passcodeCommands.ts): a shell whose hello does not declare wallet.passcode.v1 receives no passcode command. Its status is not
+	// reported (never unknown: nothing was asked, so nothing failed to read). A declared capability with an error or a timeout stays unknown below.
+	if (!probe.capabilities.includes(PASSCODE_CAPABILITY)) {
+		publishNativePwaLog('info', '[passcodeStatus] not_reported: capability wallet.passcode.v1 not declared, no command sent')
+		return { walletState: 'not_reported', hasKey: 'not_reported' }
 	}
 	const answer = await requestNativeAck({ type: NATIVE_PASSCODE_STATUS_COMMAND }, OPEN_TIMEOUT_MS)
 	if (answer.kind !== 'payload') {

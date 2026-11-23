@@ -1,5 +1,5 @@
 /**
- * (native EOA hint): a pwaWalletSync reply `ok` records the EOA the page sent with the confirmed write; nothing else records it. SYNTHETIC values
+ * r95 (native EOA hint): a pwaWalletSync reply `ok` records the EOA the page sent with the confirmed write; nothing else records it. SYNTHETIC values
  * only (the phrase is the public BIP-39 test vector, the EOA is the address it derives to).
  */
 import { createShellMnemonicSync } from './shellMnemonicSync'
@@ -23,7 +23,7 @@ function harness(send: jest.Mock, opts: { bridge?: boolean; onSynced?: jest.Mock
 
 beforeEach(() => resetShellSyncStatus())
 
-describe('the hint is recorded only after a confirmed ok reply', () => {
+describe('r95: the hint is recorded only after a confirmed ok reply', () => {
 	it('ok: onSynced is called once with the account EOA sent in the request', async () => {
 		const onSynced = jest.fn()
 		const sync = harness(jest.fn(async () => 'ok' as const), { onSynced })
@@ -57,7 +57,7 @@ describe('the hint is recorded only after a confirmed ok reply', () => {
 	})
 })
 
-describe('rememberNativeEoa keeps its existing semantics (format check, last value wins)', () => {
+describe('r95: rememberNativeEoa keeps its existing semantics (format check, last value wins)', () => {
 	const persist = jest.fn()
 	beforeEach(() => {
 		jest.resetModules()
@@ -98,7 +98,7 @@ describe('rememberNativeEoa keeps its existing semantics (format check, last val
 	})
 })
 
-describe('production wiring (static)', () => {
+describe('r95: production wiring (static)', () => {
 	it('the production sync records the hint through the lazy nativeWallet import, only in the onSynced hook', () => {
 		const src = require('fs').readFileSync(require('path').join(__dirname, 'shellMnemonicSync.ts'), 'utf8') as string
 		expect(src).toContain("void import('./nativeWallet').then((m) => m.rememberNativeEoa(eoa)).catch(() => undefined)")
@@ -106,7 +106,7 @@ describe('production wiring (static)', () => {
 	})
 })
 
-describe('the production instance (runtime, not static)', () => {
+describe('r95: the production instance (runtime, not static)', () => {
 	const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 	it('(a) without a trusted bridge the production instance does not record the hint', async () => {
 		jest.resetModules()

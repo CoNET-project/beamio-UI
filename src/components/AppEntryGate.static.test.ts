@@ -12,7 +12,7 @@ const src = fs.readFileSync(path.join(__dirname, 'AppEntryGate.tsx'), 'utf8')
 describe('AppEntryGate decides shell entry from walletStatus', () => {
 	it('a no_key native wallet is not turned into the import route; the page wallet decides (boundary)', () => {
 		expect(src).not.toMatch(/readNativeWalletStatus/)
-		// 0.53.39: the walletStatus route (`if (native.status !== 'no_key') { iosSilentOnboarding(...) }`) was removed on purpose by cebd7e0;
+		// 0.53.39: the walletStatus route (`if (native.status !== 'no_key') { iosSilentOnboarding(...) }`) was removed on purpose;
 		// the start is decided by the native pre-read, so that regex pin is deleted.
 		expect(src).toMatch(/const startupWait = \(reason: string, code\?: StartReasonCode\) => \{/)
 	})
@@ -23,8 +23,8 @@ describe('AppEntryGate decides shell entry from walletStatus', () => {
 
 	it('reads no PGP or private key at the gate; identityPublic only as the kPresent boolean of a no_key answer', () => {
 		expect(src).not.toMatch(/privateKeyArmor|pgpPrivateKeyArmored/)
-		// superseded (spec item 42(2)): the start-up no-record entry no longer reads kPresent; the pre-read answer decides
+		// superseded (spec r2.4 item 42(2)): the start-up no-record entry no longer reads kPresent; the pre-read answer decides
 		expect(src).not.toMatch(/readNativeIdentityPublic\(\)\.then\(\(r\) => \(r\.kind === 'no_key' \? r\.kPresent : undefined\)\)/)
-		expect(src).toContain('const pre = await queryNativeMnemonicPreread()')
+		expect(src).toContain('const lateAnswer = lateReadRef.current.lateAnswer')
 	})
 })

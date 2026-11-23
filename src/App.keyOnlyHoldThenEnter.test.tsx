@@ -144,7 +144,7 @@ describe('a hold, then a key-only entry in the same session', () => {
 		})
 		expect(screen.queryByRole('button', { name: 'search' })).toBeNull()
 		expect(publishNativePwaLog().mock.calls.some((c: unknown[]) => String(c[1]).includes('key-only account (no local mnemonic) — app entered'))).toBe(false)
-		// rule: not an account, so no push is bound for it and no chat starts
+		// not an account, so no push is bound for it and no chat starts
 		expect(mockPushBinds).toHaveLength(0)
 		expect(mockChatStarts).toHaveLength(0)
 	})

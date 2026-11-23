@@ -24,7 +24,7 @@ export const PGP_BLOB_V2_WRITES_ENABLED = false
 /**
  * Fixed message layout the registration endpoint verifies (x402sdk `chatRouteAuth.ts`). Do not change without the server.
  * The text fields are trimmed exactly as the endpoint trims them (`str`): a PGP armor with a trailing newline is hashed
- * without it on both sides, so the signature matches the request the endpoint accepts.
+ * without it on both sides, so the signature matches the request the endpoint accepts (R76 section 8, C1).
  */
 export const buildRegiestChatRouteMessage = (p: {
 	wallet: string

@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * draft- a chat line carries the offer only inside a signed envelope; the outer signer equals envelope.from and the
+ * draft-v55 §62: a chat line carries the offer only inside a signed envelope; the outer signer equals envelope.from and the
  * inner from. Real EIP-191 signatures; no key is stored.
  */
 jest.mock('@/services/beamioTagWorkerBridge', () => ({}), { virtual: true })
@@ -27,14 +27,14 @@ async function envelope(signer: { address: string; signMessage: (m: string) => P
 	return JSON.stringify({ timestamp: Date.now(), text, signMessage, ...(from !== undefined ? { from } : { from: signer.address }) })
 }
 
-describe('verifiedVoiceOfferFromLine', () => {
+describe('verifiedVoiceOfferFromLine (v55 §62)', () => {
 	test('a signed envelope whose outer signer equals envelope.from and inner from is accepted', async () => {
 		const w = Wallet.createRandom()
 		const text = await innerOffer(w)
 		const out = verifiedVoiceOfferFromLine(await envelope(w, text))
 		expect(out?.callId).toBe('env-call-1')
 	})
-	test('an envelope without from is refused', async () => {
+	test('an envelope without from is refused (envelope.from is required, v54 §61.2)', async () => {
 		const w = Wallet.createRandom()
 		const text = await innerOffer(w)
 		const signMessage = await w.signMessage(text)
@@ -87,7 +87,7 @@ describe('verifiedVoiceOfferFromLine', () => {
 	})
 })
 
-describe('verifiedVoiceSignalFromLine: non-offer signals need the same outer envelope', () => {
+describe('verifiedVoiceSignalFromLine: non-offer signals need the same outer envelope (v54 §61)', () => {
 	const endText = (w: { address: string }, callId = 'end-call-1', sessionId = 'end-session-1', from?: string) =>
 		JSON.stringify(makeVoiceCallSignal({
 			type: 'voice_end_v1', callId, sessionId, from: from ?? w.address, to: TO,
@@ -131,7 +131,7 @@ describe('stored rows: only the voiceVerified marker makes a voice text a call s
 		const end = JSON.stringify(makeVoiceCallSignal({ type: 'voice_end_v1', callId: 'h-2', sessionId: 'h-s2', from: '0x1111111111111111111111111111111111111111', to: TO }))
 		expect(storedVoiceSignal({ text: end, voiceVerified: true })?.type).toBe('voice_end_v1')
 	})
-	test('a non-offer signal without an inner from is refused silently', async () => {
+	test('a non-offer signal without an inner from is refused silently (v68 §75)', async () => {
 		const w = Wallet.createRandom()
 		const noFrom = JSON.stringify({ type: 'voice_end_v1', callId: 'f-1', sessionId: 'f-s', to: TO, timestamp: Date.now() })
 		expect(verifiedVoiceSignalFromLine(await envelope(w, noFrom))).toBeNull()

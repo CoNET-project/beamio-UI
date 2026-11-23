@@ -17,7 +17,7 @@ function bodyOf(name: string): string {
 	return chatSource.slice(start, end)
 }
 
-describe('chat page trust path', () => {
+describe('chat page trust path (BCHAT 36)', () => {
 	it('applyPeerRoute builds the new chatData, compares with the object before the write, and writes the rows', () => {
 		const body = bodyOf('applyPeerRoute')
 		const order = ['nextPeerChatData(before', 'routeFieldsDiffer(before, next)', 'applyPeerRouteToRows(']

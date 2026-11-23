@@ -1,5 +1,5 @@
 /**
- * write_failed reasons. The four SDK reasons are kept; an unknown reason is
+ * r11 write_failed reasons (plan §七, §八; W-WF-RP, W-WF-OCU, W-REASON-UNK). The four SDK reasons are kept; an unknown reason is
  * internal_state (manual only). The notice gives old_copy_unverified no retry button. Synthetic only.
  */
 import { readFileSync } from 'fs'

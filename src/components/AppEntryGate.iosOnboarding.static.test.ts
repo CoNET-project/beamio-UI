@@ -1,5 +1,5 @@
 /**
- * / 1428 / item 2: an unreadable native answer is the startup wait on every shell, never a direct onboarding.
+ * Y.163 / 1428 / R62 item 2: an unreadable native answer is the startup wait on every shell, never a direct onboarding.
  * The function this file used to read (iosNotReadyOnboardingEntry) was removed by that rule; the behaviour is pinned through the start
  * route itself (nativeStartRoute, behaviour) and through the gate's retry branch (static).
  */
@@ -9,7 +9,7 @@ import { nativeStartRoute } from '../services/accountJudgement'
 
 const gate = readFileSync(join(__dirname, 'AppEntryGate.tsx'), 'utf8')
 
-describe('an unreadable or unknown native answer is never a direct onboarding', () => {
+describe('an unreadable or unknown native answer is never a direct onboarding (Y.163, 1428)', () => {
 	it('unknown wallet state and an unreadable key marker: retry (the startup wait), not onboard', () => {
 		const out = nativeStartRoute({ pre: { kind: 'unknown', reason: 'x' }, walletState: 'unknown', hasKey: 'unknown', walletStatus: 'unknown' })
 		expect(out.route).toBe('retry')

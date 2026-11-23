@@ -2,7 +2,7 @@ import type { CSSProperties } from 'react'
 
 /**
  * 固定顶栏胶囊与滚动区顶占位 — 与 Home.tsx 内联样式同源。
- * 全项目守则：beamio-fixed-top-capsule-protocol.mdc
+ * 全项目守则
  */
 export const BEAMIO_FIXED_CAPSULE_TOP = 'max(1rem, env(safe-area-inset-top, 0px))'
 

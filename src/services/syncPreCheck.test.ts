@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * C1. The pre-sync decision: walletState locked, corrupt, unknown or timeout, or walletStatus locked, unknown or timeout, is pending.
+ * C1 (v10 §五). The pre-sync decision: walletState locked, corrupt, unknown or timeout, or walletStatus locked, unknown or timeout, is pending.
  * Test IDs C1-1 to C1-3 cover the decision; C1-4 to C1-6 cover the pending store and the gate wiring (see the static test).
  */
 import { syncPreCheckDecision } from './syncPreCheck'
@@ -9,7 +9,7 @@ import { markPendingSync, takePendingSync, hasPendingSync } from './pendingSync'
 import * as fs from 'fs'
 import * as path from 'path'
 
-describe('C1: pre-sync decision', () => {
+describe('C1: pre-sync decision (v10 §五)', () => {
 	it('C1-1: walletState locked, corrupt, unknown or timeout is pending', () => {
 		for (const walletState of ['locked', 'corrupt', 'unknown', 'timeout'] as const) {
 			expect(syncPreCheckDecision({ walletState, walletStatus: 'unlocked' })).toBe('pending')

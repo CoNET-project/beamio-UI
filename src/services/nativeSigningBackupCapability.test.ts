@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * (MERGE-EDITS A23): walletBackupView is gated by wallet.backup-view.v1. Four combinations (BC-1…BC-4, my own naming):
+ * Per MERGE-EDITS A23: walletBackupView is gated by wallet.backup-view.v1. Four combinations (BC-1…BC-4, my own naming):
  * BC-1 native-keys declared, backup-view not declared: no command is sent, the neutral copy.
  * BC-2 both declared, the command is acknowledged ok: ok.
  * BC-3 both declared, the command answers unknown_command: the neutral copy (not the raw reason).

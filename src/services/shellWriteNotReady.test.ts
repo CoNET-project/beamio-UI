@@ -1,5 +1,5 @@
 /**
- * v4 write path: shellRecordWrite answers not_ready only (no persistent form). A retryable
+ * v4 write path (v169 §189, §179.3; 2026-11-21 approval): shellRecordWrite answers not_ready only (no persistent form). A retryable
  * not_ready is re-written at most five times on the ladder 0.5, 1, 2, 4, 8 s, then the explicit error (the intent is kept; the user retries).
  * A non-retryable not_ready is the explicit error at once. Nothing is cleared, replaced, re-keyed or created by this path.
  */
@@ -8,7 +8,7 @@ import { join } from 'path'
 import { isWriteRefusalCode, legacyRetryable, nextNotReadyState, parseShellRecordWrite, notReadyWriteStep, writeFailureDisposition, writeNotReadyReason } from './shellRecordStore'
 import { NOT_READY_BOUNDED_DELAYS_MS } from './shellStoreWait'
 
-describe('the write path: parse of the not_ready answer', () => {
+describe('the write path: parse of the not_ready answer (v169 §189)', () => {
 	it('ok:true result.code not_ready with retryable true carries the class fields', () => {
 		const p = { type: 'ack', ok: true, result: { code: 'not_ready', notReadyReason: 'g1_uninitialized', retryable: true } }
 		expect(parseShellRecordWrite(p)).toMatchObject({ status: 'error', reason: 'not_ready', notReady: { retryable: true, notReadyReason: 'g1_uninitialized' } })
@@ -18,7 +18,7 @@ describe('the write path: parse of the not_ready answer', () => {
 		const p = { type: 'ack', ok: true, result: { code: 'not_ready', notReadyReason: 'storage_locked', retryable: false } }
 		expect(writeNotReadyReason(parseShellRecordWrite(p) as never)).toBe('shell_record_not_ready_zero')
 	})
-	it('the superseded envelope not_ready follows (the reason decides; without fields it is bounded)', () => {
+	it('the superseded envelope not_ready follows v168 §188.2 (the reason decides; without fields it is bounded)', () => {
 		expect(writeNotReadyReason(parseShellRecordWrite({ type: 'ack', ok: false, error: 'not_ready', retryable: false }) as never)).toBe('shell_record_not_ready_zero')
 		expect(writeNotReadyReason(parseShellRecordWrite({ type: 'ack', ok: false, error: 'not_ready', notReadyReason: 'storage_locked' }) as never)).toBe('shell_record_not_ready_zero')
 		expect(writeNotReadyReason(parseShellRecordWrite({ type: 'ack', ok: false, error: 'not_ready' }) as never)).toBe('shell_record_not_ready_bounded')
@@ -36,7 +36,7 @@ describe('the write path: parse of the not_ready answer', () => {
 	})
 })
 
-describe('the write ceiling', () => {
+describe('the write ceiling (v169 §189 / §179.3)', () => {
 	it('the f-th consecutive not_ready failure re-writes after 0.5, 1, 2, 4, 8 s (five re-writes)', () => {
 		const delays: number[] = []
 		for (let f = 1; f <= 5; f++) {
@@ -70,7 +70,7 @@ describe('the superseded envelope helper is shared with the read path', () => {
 	})
 })
 
-describe('(b): ten consecutive not_ready writes are not converted to persistent', () => {
+describe('v169 §189.4 (b): ten consecutive not_ready writes are not converted to persistent', () => {
 	it('the ten consecutive failures: five re-writes, then the explicit error; never a persistent class', () => {
 		const steps = []
 		for (let f = 1; f <= 10; f++) steps.push(notReadyWriteStep(f, 'bounded').kind)
@@ -87,7 +87,7 @@ describe('(b): ten consecutive not_ready writes are not converted to persistent'
 	})
 })
 
-describe('(c): a bounded write not_ready is re-written on the ladder; non-retryable is explicit at once', () => {
+describe('v169 §189.4 (c): a bounded write not_ready is re-written on the ladder; non-retryable is explicit at once', () => {
 	it('the first re-write is 0.5 s and the fifth is 8 s', () => {
 		expect(notReadyWriteStep(1, 'bounded')).toEqual({ kind: 'retry', delayMs: 500 })
 		expect(notReadyWriteStep(5, 'bounded')).toEqual({ kind: 'retry', delayMs: 8000 })
@@ -99,7 +99,7 @@ describe('(c): a bounded write not_ready is re-written on the ladder; non-retrya
 	})
 })
 
-describe('the envelope refusals are never retried', () => {
+describe('the envelope refusals are never retried (v171 §191.2, v166 §186, v164 §184)', () => {
 	it('bad_request (including an over-size request), pgp_private_in_payload and origin_refused are refusals', () => {
 		expect(isWriteRefusalCode('bad_request')).toBe(true)
 		expect(isWriteRefusalCode('pgp_private_in_payload')).toBe(true)
@@ -110,7 +110,7 @@ describe('the envelope refusals are never retried', () => {
 	})
 })
 
-describe('parse level: an envelope refusal keeps its code and is never retried', () => {
+describe('parse level: an envelope refusal keeps its code and is never retried (v171 §191.2, v166 §186, v164 §184; finding #2)', () => {
 	it('ok:false bad_request returns the reason bad_request (not native_unavailable)', () => {
 		expect(parseShellRecordWrite({ type: 'ack', ok: false, error: 'bad_request' })).toEqual({ status: 'error', reason: 'bad_request' })
 	})
@@ -143,7 +143,7 @@ describe('the disposition of a failed write (one classifier, used by the deferre
 	})
 })
 
-describe('behaviour: a run of consecutive write not_ready answers', () => {
+describe('behaviour (v169 §189.4 b, c): a run of consecutive write not_ready answers', () => {
 	const answer = { type: 'ack', ok: true, result: { code: 'not_ready', notReadyReason: 'g1_uninitialized', retryable: true } }
 	it('ten consecutive retryable not_ready writes: five re-writes on the ladder, then the explicit error; never a persistent reason', () => {
 		let count = 0

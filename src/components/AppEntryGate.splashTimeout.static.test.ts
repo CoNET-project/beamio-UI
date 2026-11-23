@@ -10,8 +10,10 @@ const src = readFileSync(join(__dirname, 'AppEntryGate.tsx'), 'utf8')
 describe('splash deadline in a shell', () => {
 	it('shows the native retry state for an undecided shell start, not the storage-unavailable reason', () => {
 		const block = src.slice(src.indexOf('const splashTimer = window.setTimeout'), src.indexOf('}, SPLASH_FORCE_DISMISS_MS)'))
-		expect(block).toContain('showStorageUnavailable(NATIVE_RETRY_SCREEN)')
-		expect(block.indexOf('showStorageUnavailable(NATIVE_RETRY_SCREEN)')).toBeLessThan(block.indexOf("handleStorageUnavailable('timeout')"))
+		// 2026-11-22: in the shell the undecided deadline is a background wait (no screen, no button), not the retired screen.
+		expect(block).not.toContain('NATIVE_RETRY_SCREEN')
+		expect(block).toContain("startupWait('splash deadline: start undecided (shell background, no screen)', 'native_retry_deadline')")
+		expect(block.indexOf("startupWait('splash deadline")).toBeLessThan(block.indexOf("handleStorageUnavailable('timeout')"))
 	})
 
 	it('does not create or overwrite an account in the timer branch', () => {

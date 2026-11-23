@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * HC-LOCK pwaWalletSync: a locked reply is `locked`, not no_answer, so it is not retried by itself.
+ * HC-LOCK pwaWalletSync (v10 §3.2, L-SYNC): a locked reply is `locked`, not no_answer, so it is not retried by itself.
  */
 import { mapSyncReply } from './pwaWalletSyncTransport'
 

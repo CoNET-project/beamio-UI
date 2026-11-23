@@ -1,10 +1,10 @@
 /**
- * and: the cleanup of the previous local storage after the user completes a recovery. The confirmation happens only on the
+ * Y.91 and Y.100: the cleanup of the previous local storage after the user completes a recovery. The confirmation happens only on the
  * native shell screen; the PWA sends the request and records the pending state only after the native layer answers ok (AppEntryGate).
- * A page-side restore never starts it. The pending marker keeps the new account (never deleted,
+ * A page-side restore never starts it (2026-11-17 rule: a page submit is not a confirmation). The pending marker keeps the new account (never deleted,
  * never treated as "no account") until the native layer answers ok. A `clear_incomplete` answer is resumed with the same idempotencyKey.
  *
- * Recovery-event identity: one idempotencyKey per recovery. A repeat callback of the
+ * Recovery-event identity (after the review of): one idempotencyKey per recovery. A repeat callback of the
  * same recovery (a duplicate, or a restart while pending) reuses that key and is never a second deletion; a new recovery, even one that
  * returns to an earlier account (B→A→B), gets a new key. The done record keeps the latest completed recovery (accountKey and key).
  */
@@ -109,7 +109,7 @@ export async function startCleanupAfterRecovery(
 }
 
 /**
- * The silent cleanup after a completed native recovery: reads the page's IDB-derived address once (read-only,
+ * The silent cleanup after a completed native recovery (owner decision 2026-11-21): reads the page's IDB-derived address once (read-only,
  * through readPageAddress), and starts the cleanup only when the recovery is ok and the two addresses agree (silentCleanupDecision). Any
  * other case (failed, incomplete, unreadable, mismatch, repeat) does nothing and deletes nothing. Returns null when it did not start.
  */

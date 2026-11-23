@@ -20,7 +20,7 @@ const meta = (username: string, address: string) => ({
 	follower_count: '0',
 })
 
-describe('BeamioTag basic metadata cache: the tag index is case-sensitive', () => {
+describe('BeamioTag basic metadata cache: the tag index is case-sensitive (#1)', () => {
 	it('Alice and alice at two addresses do not overwrite each other', () => {
 		rememberBeamioTagBasicMetadata(meta('CaseA1', A))
 		rememberBeamioTagBasicMetadata(meta('casea1', B))

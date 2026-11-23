@@ -276,7 +276,7 @@ describe('the evaluate result is in the ack: result.code, no result event (-4)',
 		await expect(evaluateNativePgpRestore(ACCOUNT)).resolves.toEqual({ kind: 'unavailable' })
 	})
 
-	// not_ready is unknown and retryable, never a refusal and never a missing key.
+	// the decision: not_ready is unknown and retryable, never a refusal and never a missing key.
 	it('not_ready as the ack error is the temporary source state (retried, no new PGP)', async () => {
 		installShell([NATIVE_KEYS_CAPABILITY])
 		replyFor = (cmd) => (cmd.type === NATIVE_PGP_EVALUATE_COMMAND ? { ack: { type: 'ack', ok: false, error: 'not_ready' } } : null)

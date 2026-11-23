@@ -3,7 +3,7 @@
  */
 import { fingerprintOfPublicArmor, forgetTemporaryPgpKey, newTemporaryPgpKey, tempPgpArmorMatchesFingerprint } from '../../vendor/conet-chat-sdk/dist/voice-temp-pgp.js'
 
-describe('per-call temporary PGP key', () => {
+describe('per-call temporary PGP key (v89 §96)', () => {
 	test('a new key has a 40-hex lower-case fingerprint that matches its public armor', async () => {
 		const k = await newTemporaryPgpKey()
 		expect(k.fingerprint).toMatch(/^[0-9a-f]{40}$/)

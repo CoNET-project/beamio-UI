@@ -2,14 +2,14 @@
  * @jest-environment node
  */
 /**
- *two valid wallets with different addresses, end to end.
+ * r94 (review decision for case B): two valid wallets with different addresses, end to end.
  *
- * B. The native wallet is valid at address A, the PWA wallet (the old PWA store, read first) is valid at address B, A ≠ B.
- * The start enters the PWA home on B WITHOUT asking the native side, then sends pwaWalletSync once with B over the REAL transport.
- * The shell seals the old native wallet, reads it back and verifies it, and only then writes B. If the shell answers unknown or
- * fails (write_failed, stale_seq, no answer), the PWA home and all data stay, and the failure is shown as retryable. Nothing is
- * re-derived and nothing is deleted.
- * A. A native-validated copy whose EOA contradicts the native walletEoaAddress: unknown, the data is kept, nothing is written or sent.
+ *  B. The native wallet is valid at address A, the PWA wallet (the old PWA store, read first) is valid at address B, A ≠ B.
+ *     The start enters the PWA home on B WITHOUT asking the native side, then sends pwaWalletSync once with B over the REAL transport.
+ *     The shell seals the old native wallet, reads it back and verifies it, and only then writes B. If the shell answers unknown or
+ *     fails (write_failed, stale_seq, no answer), the PWA home and all data stay, and the failure is shown as retryable. Nothing is
+ *     re-derived and nothing is deleted.
+ *  A. A native-validated copy whose EOA contradicts the native walletEoaAddress: unknown, the data is kept, nothing is written or sent.
  *
  * The page's storage is the real beamio.ts read; the store, the native account answers and the PouchDB document are stubs. The bridge is
  * a fake shell on window.BeamioShellRecord (the node environment has a minimal window). SYNTHETIC values only: the phrases are the
@@ -24,7 +24,13 @@ import { ethers } from 'ethers'
 
 jest.mock('@/utils/cashTreesNativePwaLog', () => ({ publishNativePwaLog: jest.fn() }))
 jest.mock('./shellContext', () => ({ isShellContext: () => true }))
-jest.mock('@/services/argon2WorkerBridge', () => ({ argon2idAsync: jest.fn() }))
+// argon2idAsync must not run in these tests (the PBKDF2 stand-in is removed). The bridge module cannot load in jest (import.meta),
+// so it stays mocked, but a call fails closed. A test that needs the v3 KDF injects it with setMnemonicKdfForTest.
+jest.mock('@/services/argon2WorkerBridge', () => ({
+	argon2idAsync: () => {
+		throw new Error('argon2idAsync must not run in this test: inject the v3 KDF with setMnemonicKdfForTest')
+	},
+}))
 jest.mock('@/services/beamioTagWorkerBridge', () => ({ searchBeamioTagRemote: jest.fn() }))
 
 // The old PWA store (`init`). Writes are recorded; the real store is never touched.
@@ -66,7 +72,7 @@ import * as beamio from './beamio'
 
 const srs = shellRecordStore as unknown as { shellRecordRead: jest.Mock; shellRecordWrite: jest.Mock; prepareShellFreshWrite: jest.Mock }
 const wea = walletEoaAddress as unknown as { readWalletEoaAddress: jest.Mock }
-const bx = beamio as unknown as { checkStorageWithStatus: () => Promise<{ status: string; reason?: string; data?: unknown }> }
+const bx = beamio as unknown as { checkStorageWithStatus: (options?: { probe?: boolean }) => Promise<{ status: string; reason?: string; data?: unknown }> }
 
 // Account B is the PWA wallet; account A is the native wallet (a different valid address).
 const PHRASE_B = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
@@ -129,19 +135,20 @@ const sync = () =>
 	})
 
 describe('B: two valid wallets at different addresses (A native, B PWA): enter the PWA, then one sync over the real bridge', () => {
-	// 2026-11-20: the native answer is read first. For this run it is confirmed absent (no native record here); the
+	// the native answer is read first. For this run it is confirmed absent (no native record here); the
 	// native-valid-other-account entry is covered in persistRegression.test.ts.
 	beforeEach(() => {
 		srs.shellRecordRead.mockResolvedValue({ status: 'absent' })
 	})
-	it('B1 success: the start enters the PWA home on B (native answer first, absent); pwaWalletSync is sent once with B; the state is synced', async () => {
+	it('B1 success: the start enters the PWA home on B (page IDB valid first, native not read at start); pwaWalletSync is sent once with B; the state is synced', async () => {
 		mockLegacyTitle = legacyTitleB()
 		installShell(() => ({ ok: true, result: { sync: 'updated' } }))
 		const start = await bx.checkStorageWithStatus()
 		expect(start.status).toBe('loaded') // not unknown, not held
 		expect(validMnemonicEoa(start.data as never)).toBe(EOA_B) // the home is on B
 		expect(wea.readWalletEoaAddress).not.toHaveBeenCalled() // absent: no account to check
-		expect(srs.shellRecordRead).toHaveBeenCalled() // the native answer is read first
+		// 改写（IDB 先读，the decision）：页面 IDB 有效即进入，启动不查原生记录（原生侧仅作后台同步目标）
+		expect(srs.shellRecordRead).not.toHaveBeenCalled()
 		expect(await sync().sync(PHRASE_B, EOA_B)).toEqual({ kind: 'synced', tx: 1 })
 		expect(sent.length).toBe(1)
 		expect(sent[0].type).toBe('pwaWalletSync')
@@ -213,7 +220,11 @@ describe('A: a native-validated copy whose EOA contradicts the native walletEoaA
 		})
 		wea.readWalletEoaAddress.mockResolvedValue({ kind: 'address', eoa: EOA_A.toLowerCase() })
 		installShell(() => ({ ok: true, result: { sync: 'updated' } }))
-		const start = await bx.checkStorageWithStatus()
+		// 改写（IDB 先读）：页面副本为空时普通启动返回 empty，且不查原生（由网关预读决定）
+		expect(await bx.checkStorageWithStatus()).toEqual({ status: 'empty' })
+		expect(srs.shellRecordRead).not.toHaveBeenCalled()
+		// 原生已验证副本与原生地址不符的判定在原生先读路径（probe）上验证
+		const start = await bx.checkStorageWithStatus({ probe: true })
 		expect(start).toEqual({ status: 'unavailable', reason: 'eoa_mismatch' })
 		expect(sent.length).toBe(0)
 		expect(srs.shellRecordWrite).not.toHaveBeenCalled()

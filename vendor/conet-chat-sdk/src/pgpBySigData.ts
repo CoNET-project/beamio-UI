@@ -6,8 +6,8 @@
  * The struct holds keccak256 hashes of the texts, the route hash (0 when no route is preset), the on-chain nonce pgpNonces[to] and the deadline.
  * The texts hashed here are the texts submitted: the armors are trimmed first (no trailing whitespace is ever hashed or submitted).
  *
- * Reserved: a PGP possession signature (double verification). It is carried as `pgpPossessionSignature`
- * and is never part of the on-chain struct. The wire format is provisional until interface v4 is fixed; this module is the only place
+ * Reserved (not in the contract): a PGP possession signature (double verification). It is carried as `pgpPossessionSignature`
+ * and is never part of the on-chain struct. The wire format is provisional until interface r2.5.20 v4 is fixed; this module is the only place
  * that builds the registration data, so an alignment changes this file only.
  */
 import { ethers } from 'ethers'

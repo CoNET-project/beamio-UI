@@ -4,7 +4,7 @@
 /**
  * Isolation checks for the sealing CryptoKey (pgpBlobSealKey.ts). Synthetic accounts only.
  * Covered: the legacy format stays readable by the existing open path; a key of one account does not open another's blob; the key
- * cannot be exported or used to decrypt; a closed session cannot seal. The real Web Worker clone is checked on Node.
+ * cannot be exported or used to decrypt; a closed session cannot seal. The real Web Worker clone is checked on Node v22.
  */
 // the jest node environment has no global WebCrypto; the browser has it. Use the Node webcrypto, the same API surface.
 if (!(globalThis as { crypto?: unknown }).crypto) Object.defineProperty(globalThis, 'crypto', { value: require('crypto').webcrypto, configurable: true })

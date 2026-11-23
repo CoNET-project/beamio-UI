@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * Alternative A: temporary channel wallets are CSPRNG-generated per channel and per call; the message carries
+ * Alternative A (v78 §85, v80 §87): temporary channel wallets are CSPRNG-generated per channel and per call; the message carries
  * only the address and the user EOA's authorization. Real EIP-191 signatures with throwaway wallets (nothing stored).
  */
 import { Wallet } from 'ethers'
@@ -38,7 +38,7 @@ describe('temporary channel wallets (CSPRNG, per channel)', () => {
 	})
 })
 
-describe('auth canonical', () => {
+describe('auth canonical (v77 §84.3, lower-case, byte for byte)', () => {
 	test('the text has the fixed prefix and lower-case addresses', () => {
 		const text = voiceAuthText({ callId: 'C', sessionId: 'S', channel: 'ev', temp: '0xABCDEF0000000000000000000000000000000001', tempPgpFpr: '', from: '0xAbC0000000000000000000000000000000000002', validUntil: 99 })
 		expect(text).toBe('CoNET voice_pgp_auth_v1\ncallId:C\nsessionId:S\nchannel:ev\ntemp:0xabcdef0000000000000000000000000000000001\ntempPgpFpr:\nfrom:0xabc0000000000000000000000000000000000002\nvalidUntil:99')
@@ -46,7 +46,7 @@ describe('auth canonical', () => {
 })
 
 describe('auth sign and verify', () => {
-	test('an auth with a field beyond {from, validUntil, sig} is refused', async () => {
+	test('an auth with a field beyond {from, validUntil, sig} is refused (v111 §128)', async () => {
 		const user = Wallet.createRandom()
 		const fields = f()
 		const auth = await signVoiceAuth(user, fields)

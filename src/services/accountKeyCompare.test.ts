@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * CT-14: the accountKey EOA is compared with the expected EOA, both lower-cased. CT-14a/b/c are the three cases of the plan.
+ * CT-14 (v10.2 r5 §三): the accountKey EOA is compared with the expected EOA, both lower-cased. CT-14a/b/c are the three cases of the plan.
  */
 import { accountKeyMatch } from './accountKeyCompare'
 
@@ -30,7 +30,7 @@ describe('CT-14: accountKey EOA comparison (both sides lower-cased)', () => {
 
 import { classifyPageDerived } from './accountKeyCompare'
 
-describe('PD-A/B/C', () => {
+describe('PD-A/B/C (v10.2 r3 §二, page-derived path)', () => {
 	const EXPECTED = '0xAbC1234567890ABCDEF1234567890abcdef12345'
 	const SAME = '0xabc1234567890abcdef1234567890abcdef12345:workspace'
 	const OTHER = '0x1111111111111111111111111111111111111111:workspace'

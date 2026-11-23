@@ -13,7 +13,7 @@ import { releaseShellSessionSignerHold } from './shellSessionSigner'
 
 export async function signOutLocalWallet(): Promise<void> {
 	// the page-session key leaves memory first: a sign-out holds no account key.
-	// hold-only release: the profile in memory is not blanked (the sign-out deletes no wallet; see the review of 5dbad42)
+	// hold-only release: the profile in memory is not blanked (the sign-out deletes no wallet; see the review)
 	releaseShellSessionSignerHold()
 	// the App forgets the entered account, so a later wake-up for it runs the init again.
 	if (typeof window !== 'undefined') window.dispatchEvent(new Event(SHELL_ENTRY_RESET_EVENT))

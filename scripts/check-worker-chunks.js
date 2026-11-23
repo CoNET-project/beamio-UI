@@ -1,15 +1,15 @@
 /**
- * Build-level regression check. The production worker chunk of the gossip worker must contain its message listener and the protocol
+ * Build-level regression check (R82). The production worker chunk of the gossip worker must contain its message listener and the protocol
  * replies. A chunk without them (a side-effect import dropped by tree shaking, see vendor/conet-chat-sdk/package.json) fails the build.
  *
- * Usage: node scripts/check-worker-chunks.js <buildDir> (exit 0 = ok, 1 = failed; prints one JSON line)
+ * Usage: node scripts/check-worker-chunks.js <buildDir>   (exit 0 = ok, 1 = failed; prints one JSON line)
  */
 const fs = require('fs')
 const path = require('path')
 
-/** The gossip worker (SDK entry): the listener, the protocol replies and the WebSocket refusal. */
+/** The gossip worker (SDK entry): the listener, the protocol replies and the WebSocket refusal (R82). */
 const REQUIRED = ['addEventListener', 'unknown_command', 'signResponse', '"ready"', '"hello"', '"init"', 'websocket_disabled_by_project_rule']
-/** The project workers: each chunk must carry a message listener and a reply. Each worker is named in its constructor. */
+/** The project workers (R82 extension): each chunk must carry a message listener and a reply. Each worker is named in its constructor. */
 const LISTENER = ['onmessage', 'postMessage']
 const WORKERS = [
 	{ name: 'beamio-chat-gossip-relay', markers: REQUIRED },

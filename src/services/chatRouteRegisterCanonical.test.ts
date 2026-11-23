@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- * section 8, C1: the registration message the wallet signs is the layout the endpoint verifies (x402sdk chatRouteAuth.ts,
+ * R76 section 8, C1: the registration message the wallet signs is the layout the endpoint verifies (x402sdk chatRouteAuth.ts,
  * candidate 07823354). The shared PWA vectors (PV-1..PV-4) carry the expected message and the recovered address for each positive case.
  * SYNTHETIC values only; the vector file is a copy of the public request fields.
  */
@@ -38,7 +38,7 @@ const build = (b: Positive['body']) =>
 		keccak,
 	})
 
-describe('regiestChatRoute signed message', () => {
+describe('regiestChatRoute signed message (R76 section 8, C1)', () => {
 	it('the vector file is the pinned copy (sha256 d5a1b237...7cffe) with four positive cases', () => {
 		expect(createHash('sha256').update(raw).digest('hex')).toBe(VECTOR_SHA256)
 		expect(doc.positives.map((p) => p.id)).toEqual(['PV-1', 'PV-2', 'PV-3', 'PV-4'])

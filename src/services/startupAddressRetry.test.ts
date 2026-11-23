@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- *the four start-up cases with the page-to-shell sync (pwaWalletSync) state. The start enters the PWA on the legacy account (PWA first,
+ * r94: the four start-up cases with the page-to-shell sync (pwaWalletSync) state. The start enters the PWA on the legacy account (PWA first,
  * as ruled); the sync reply codes drive the home's state (synced, or failed and retryable); nothing is cleared. SYNTHETIC wallets only.
  * The bridge is a fake: the native reply set is the closed codes of the spec. The restart is an in-memory restart of the page state.
  */
@@ -11,12 +11,18 @@ import { encodeInitRaw } from './initRecordCodec'
 
 jest.mock('@/utils/cashTreesNativePwaLog', () => ({ publishNativePwaLog: jest.fn() }))
 jest.mock('./shellContext', () => ({ isShellContext: () => true }))
-jest.mock('@/services/argon2WorkerBridge', () => ({ argon2idAsync: jest.fn() }))
+// argon2idAsync must not run in these tests (the PBKDF2 stand-in is removed). The bridge module cannot load in jest (import.meta),
+// so it stays mocked, but a call fails closed. A test that needs the v3 KDF injects it with setMnemonicKdfForTest.
+jest.mock('@/services/argon2WorkerBridge', () => ({
+	argon2idAsync: () => {
+		throw new Error('argon2idAsync must not run in this test: inject the v3 KDF with setMnemonicKdfForTest')
+	},
+}))
 jest.mock('@/services/beamioTagWorkerBridge', () => ({ searchBeamioTagRemote: jest.fn() }))
 
 // The legacy `init` document. A removal or a write would call a method this fake does not have, so it would fail the test.
 let mockLegacyTitle: string | null = null
-// Every write method records its call here; the R-PWA- cases require none.
+// Every write method records its call here; the R-PWA-R94-01 cases require none.
 let mockDbWrites: string[] = []
 jest.mock('pouchdb', () => {
 	const writer = (name: string) => async () => {
@@ -122,7 +128,7 @@ async function enterAndSync(legacy: ethers.HDNodeWallet | ethers.Wallet | null, 
 	return { start, outcome, state: getShellSyncState(), sends: send.mock.calls.length, writes }
 }
 
-describe('four start-up cases with the sync state (PWA first, nothing cleared)', () => {
+describe('r94: four start-up cases with the sync state (PWA first, nothing cleared)', () => {
 	it('case 1 same address: enters the PWA; sync ok; a second sync of the same account is idempotent (synced, nothing cleared)', async () => {
 		const r = await enterAndSync(W1, { ok: W1 }, ['ok'])
 		expect(r.start.status).toBe('loaded')
@@ -143,20 +149,26 @@ describe('four start-up cases with the sync state (PWA first, nothing cleared)',
 		expect(r.writes).toBe(0)
 	})
 
-	it('case 3 native read unknown: a hold, never the PWA home; the old store is not entered; nothing is written or sent', async () => {
+	// (IDB first): the page store is read first. A valid page account is entered without any native read, so a native
+	// unknown is not a hold here (the earlier native-first hold of 2026-11-20 is superseded). Nothing is written or sent by the start.
+	it('case 3 native read unknown with a valid page account (IDB first): entered on the page account without a native read; nothing is written or sent', async () => {
 		mockLegacyTitle = legacyTitleFor(W1)
 		setNative('unknown')
 		const start = await bx.checkStorageWithStatus()
-		expect(start.status).toBe('unavailable')
+		expect(start.status).toBe('loaded')
+		expect(srs.shellRecordRead).not.toHaveBeenCalled()
 		expect(srs.shellRecordWrite).not.toHaveBeenCalled()
 		expect(mockDbWrites).toEqual([])
 	})
 
-	it('case 3b native read unknown with no legacy document: held (unavailable, retryable), no sync and nothing written', async () => {
+	// IDB first: a page store that is confirmed absent is 'empty' here; the native pre-read decides in the gate (not this read). A native
+	// unknown therefore holds the start there, and nothing is written or synced from this read.
+	it('case 3b native read unknown with no page account: the page is confirmed empty (native pre-read decides in the gate); no sync, nothing written', async () => {
 		mockLegacyTitle = null
 		setNative('unknown')
 		const start = await bx.checkStorageWithStatus()
-		expect(start.status).toBe('unavailable')
+		expect(start.status).toBe('empty')
+		expect(srs.shellRecordRead).not.toHaveBeenCalled()
 		expect(srs.shellRecordWrite).not.toHaveBeenCalled()
 		expect(getShellSyncState()).toEqual({ kind: 'idle' })
 	})
@@ -195,10 +207,10 @@ describe('four start-up cases with the sync state (PWA first, nothing cleared)',
 })
 
 /**
- * R-PWA- (independent pre-read): explicit assertions for the four cases. The sync is the page's pwaWalletSync (one transaction per
+ * R-PWA-R94-01 (independent pre-read): explicit assertions for the four cases. The sync is the page's pwaWalletSync (one transaction per
  * sync, the send count is the bridge call count). A failure is retryable and shown on the home; the old data is kept; a retry does not stack.
  */
-describe('R-PWA-: explicit assertions for the sync outcome, the home state and the kept data', () => {
+describe('R-PWA-R94-01: explicit assertions for the sync outcome, the home state and the kept data', () => {
 	const phraseOf = (w: ethers.HDNodeWallet | ethers.Wallet) => (w as ethers.HDNodeWallet).mnemonic?.phrase ?? ''
 
 	it('case A (SDK seal/readback failure): the start enters the PWA home on the legacy account; the sync fails with write_failed (retryable); the old data is kept and nothing is written', async () => {
@@ -218,12 +230,12 @@ describe('R-PWA-: explicit assertions for the sync outcome, the home state and t
 		expect(srs.prepareShellFreshWrite).not.toHaveBeenCalled()
 	})
 
-	it('case B: a hold; nothing is deleted or rewritten in the old store; nothing is written', async () => {
+	it('case B (native unknown, IDB first): the valid page account is entered without a native read; nothing is deleted or rewritten in the old store; nothing is written', async () => {
 		mockLegacyTitle = legacyTitleFor(W1)
 		const titleBefore = mockLegacyTitle
 		setNative('unknown')
 		const start = await bx.checkStorageWithStatus()
-		expect(start.status).toBe('unavailable')
+		expect(start.status).toBe('loaded')
 		expect(mockLegacyTitle).toBe(titleBefore)
 		expect(mockDbWrites).toEqual([])
 		expect(srs.shellRecordWrite).not.toHaveBeenCalled()
@@ -276,12 +288,12 @@ describe('R-PWA-: explicit assertions for the sync outcome, the home state and t
 		expect(await first).toEqual({ kind: 'synced', tx: 1 })
 	})
 
-	it('case D (native absent with a valid legacy account): the native answer is read first (absent), then the PWA is entered; the sync is sent once', async () => {
+	it('case D (native absent with a valid legacy account): the page account is entered first (IDB first, no native read at start); the sync is sent once', async () => {
 		mockLegacyTitle = legacyTitleFor(W1)
 		setNative('absent')
 		const start = await bx.checkStorageWithStatus()
 		expect(start.status).toBe('loaded')
-		expect(srs.shellRecordRead).toHaveBeenCalled()
+		expect(srs.shellRecordRead).not.toHaveBeenCalled()
 		const { sync, send } = syncWith(['ok'])
 		expect(await sync.sync(phraseOf(W1), W1.address.toLowerCase())).toEqual({ kind: 'synced', tx: 1 })
 		expect(send.mock.calls.length).toBe(1)

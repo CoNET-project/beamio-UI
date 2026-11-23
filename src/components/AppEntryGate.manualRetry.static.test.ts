@@ -1,14 +1,14 @@
 /**
  * @jest-environment node
  *
- * (manual retry), gate wiring. Static order checks. MR-6 to MR-8 are my own naming.
+ * v10 §六 (manual retry), gate wiring. Static order checks. MR-6 to MR-8 are my own naming (the r11 IDs were not found in the plan files).
  */
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
 const gate = readFileSync(join(__dirname, 'AppEntryGate.tsx'), 'utf8')
 
-describe('manual retry wiring', () => {
+describe('manual retry wiring (v10 §六)', () => {
 	it('MR-6: a held write is recorded only on the failed branch with rollback_pending', () => {
 		const at = gate.indexOf("if (outcome?.kind === 'failed') {")
 		expect(at).toBeGreaterThan(0)
@@ -40,7 +40,7 @@ describe('manual retry wiring', () => {
 
 const notice = readFileSync(join(__dirname, 'Home', 'ShellSyncNotice.tsx'), 'utf8')
 
-describe('manual retry visibility and account change', () => {
+describe('manual retry visibility and account change (v10 §六.1, §六.2)', () => {
 	it('MR-11: the sync entry clears a held record of another account before it sends', () => {
 		const at = gate.indexOf('const syncPageMnemonicToShell = () => {')
 		const clear = gate.indexOf('if (held && !recordMatchesAccount(held, payload.eoa)) clearFailureRecord(failureStore())', at)
@@ -59,7 +59,7 @@ describe('manual retry visibility and account change', () => {
 	})
 })
 
-describe('PWA-RETRY-03 wiring', () => {
+describe('PWA-RETRY-03 wiring (v10.2 R-22)', () => {
 	it('RR-6: the reread-first retry calls walletEoaAddress before any send and refuses an in-flight pair', () => {
 		const at = gate.indexOf('const rereadThenSync = () => {')
 		const reread = gate.indexOf('readWalletEoaAddress()', at)

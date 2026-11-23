@@ -114,7 +114,7 @@ const isPending = (v: unknown): v is PendingCopy => {
 
 /**
  * The hold state of a wallet (backoff after a failure, and the hold after an accepted registration) is kept in the worker store, per wallet.
- * A worker instance is short-lived (the page ends it after each answer), so the state cannot live in the module.
+ * A worker instance is short-lived (the page ends it after each answer), so the state cannot live in the module (R93).
  */
 type Hold = { failures: number; nextAt: number }
 const HOLD_KEY = (eoa: string) => `firstOpen.hold.v1:${eoa.toLowerCase()}`
@@ -144,7 +144,7 @@ async function readInputsFor(eoa: string, env: FirstOpenEnv, localOldIdentity: b
 
 /**
  * Runs the first open for one wallet and returns the status (and the key ID) for the page. The whole command runs under the wallet's lock
- * (tabs included), and reads and writes the persisted hold, so a new worker instance sees the same hold.
+ * (tabs included), and reads and writes the persisted hold, so a new worker instance sees the same hold (R93).
  */
 export async function runFirstOpenCommand(request: FirstOpenRequest, env: FirstOpenEnv): Promise<FirstOpenResult> {
 	const eoa = ethers.getAddress(request.eoa.trim().toLowerCase())
@@ -176,7 +176,7 @@ export async function runFirstOpenCommand(request: FirstOpenRequest, env: FirstO
 		const signature = await env.signMessage(message)
 		const res = await env.post({ ...fields, signature })
 		if (res.status !== null && res.status >= 200 && res.status < 300 && res.ok) {
-			// /: no second send of this copy inside the hold window (the record may show later); the hold is persisted per wallet
+			// R92/R93: no second send of this copy inside the hold window (the record may show later); the hold is persisted per wallet
 			hold = { failures: 0, nextAt: env.now() + REGISTERED_HOLD_MS }
 			await saveHold()
 			return 'registered'

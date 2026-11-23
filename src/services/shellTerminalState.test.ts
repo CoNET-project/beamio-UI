@@ -1,5 +1,5 @@
 /**
- * Terminal state of a fallback shell start: once decided, no re-read is scheduled; only one probe
+ * Terminal state of a fallback shell start (2026-11-21 review on S25 t168): once decided, no re-read is scheduled; only one probe
  * after the user's Retry runs, and a still-empty answer returns to the terminal.
  */
 import {
@@ -102,7 +102,7 @@ describe('shell terminal state', () => {
 	})
 })
 
-describe('the terminal is set before its diagnostic (the line came 1 ms before the state)', () => {
+describe('the terminal is set before its diagnostic (S25 4023c85: the line came 1 ms before the state)', () => {
 	beforeEach(() => resetShellTerminalState())
 
 	it('inside the diagnostic, the terminal is already decided and an empty read returns skip_terminal', () => {

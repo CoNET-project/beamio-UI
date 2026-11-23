@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * HC-LOCK for init: an init answered locked is held; no init is sent during the lock; one more after the unlock.
+ * HC-LOCK for init (v10 §12.3; INIT-3, INIT-4): an init answered locked is held; no init is sent during the lock; one more after the unlock.
  */
 jest.mock('./nativeRecovery', () => ({ queryNativeWalletStatus: jest.fn() }))
 jest.mock('./chatWorkerBridge', () => ({ initShellIdentityOnly: jest.fn(), forgetInitRefusal: jest.fn() }))

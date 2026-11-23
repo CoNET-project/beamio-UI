@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- * BCHAT section 40: the held "Verify and send" sequence and the stored-trust gate. Real key fixtures (openpgp) and the real
+ * BCHAT section 40 (R87): the held "Verify and send" sequence and the stored-trust gate. Real key fixtures (openpgp) and the real
  * resolveTrustedRoute / sendWithFreshRoute; the page wiring is checked by a static test. SYNTHETIC keys only.
  */
 import { generateKey } from 'openpgp'
@@ -46,7 +46,7 @@ async function sendAttempt(chat: ReturnType<typeof memoryChat>, storedVerified: 
 	return { panel: false as const, sent: send.mock.calls.length > 0 }
 }
 
-describe('the held "Verify and send" after a reload', () => {
+describe('the held "Verify and send" after a reload (BCHAT 40)', () => {
 	it('the reproduced sequence: memory has a verified fingerprint, storage has none: no send, the verify panel opens', async () => {
 		const r = await sendAttempt(memoryChat(FP_A), null, 'verify', false)
 		expect(r).toEqual({ panel: true, sent: false })
@@ -83,7 +83,7 @@ describe('the held "Verify and send" after a reload', () => {
 	})
 })
 
-describe('the held bubble follows the stored trust', () => {
+describe('the held bubble follows the stored trust (BCHAT 43)', () => {
 	const { heldBubble } = require('./verifiedTrustGate')
 	const fp = 'ABCDEF0123456789ABCDEF0123456789ABCDEF01'
 	const stored = (x: string) => storedKeyFingerprint(x)
@@ -101,7 +101,7 @@ describe('the held bubble follows the stored trust', () => {
 	})
 })
 
-describe('the gate copy helper', () => {
+describe('the gate copy helper (R90)', () => {
 	const { gateCopyWithStore } = require('./verifiedTrustGate')
 	it('a memory-only fingerprint is not trust: the gate copy has none, the trace says memory only', () => {
 		const { gate, trace } = gateCopyWithStore(memoryChat(FP_A), null, 'trust')

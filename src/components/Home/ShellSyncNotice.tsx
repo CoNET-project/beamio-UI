@@ -1,5 +1,5 @@
 /**
- *a visible, retryable note on the home when the page-to-shell sync did not finish. It never clears local data and never blocks the
+ * r94: a visible, retryable note on the home when the page-to-shell sync did not finish. It never clears local data and never blocks the
  * home. The retry re-reads the page's valid mnemonic and syncs again (registered by the gate).
  */
 import React, { useEffect, useState } from 'react'
@@ -9,7 +9,7 @@ import { retryPersist, usePersistNoticeFailed } from '@/services/persistNoticeSt
 
 function ShellSyncBody() {
 	const state = useShellSyncState()
-	// a held write (rollback_pending) shows its button only after the live check (read before rendering).
+	// v10 §六.2: a held write (rollback_pending) shows its button only after the live check (read before rendering).
 	const heldWrite = state.kind === 'failed' && state.code === 'write_failed' && state.reason === 'rollback_pending'
 	const [manualAllowed, setManualAllowed] = useState(false)
 	useEffect(() => {
@@ -23,7 +23,7 @@ function ShellSyncBody() {
 		}
 	}, [heldWrite, state])
 	if (state.kind !== 'failed') return null
-	// old_copy_unverified: the old copy could not be verified; nothing is overwritten. Explanation only, no retry button.
+	// old_copy_unverified (r11): the old copy could not be verified; nothing is overwritten. Explanation only, no retry button.
 	const oldCopy = state.code === 'write_failed' && state.reason === 'old_copy_unverified'
 	if (oldCopy) {
 		return (
@@ -70,7 +70,7 @@ function ShellSyncBody() {
 }
 
 /**
- * 0.53.39: a save that did not complete shows here (the same position as the sync notice). The data on disk is
+ * 0.53.39 (item 3): a save that did not complete shows here (the same position as the sync notice). The data on disk is
  * unchanged; the button runs the save again. No new page.
  */
 export default function ShellSyncNotice() {

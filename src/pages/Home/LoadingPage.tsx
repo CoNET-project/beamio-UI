@@ -433,7 +433,7 @@ type Props = {
 		onRestoreWriteStart?: () => void
 		/** 0.53.44: the restore write ended (ok = the init completed). AppEntryGate closes the window and opens the gate only on a consistent read-back. */
 		onRestoreWriteEnd?: (ok: boolean, temp: encrypt_keys_object | null | undefined) => void | Promise<void>
-	/** The hold page's restore button. Opens the existing restore screen at once (no onboarding entry, no create). */
+	/** 2026-11-21: the hold page's restore button. Opens the existing restore screen at once (no onboarding entry, no create). */
 	openRestoreFromHold?: boolean
 }
 
@@ -839,7 +839,7 @@ export default function BeamioOnboardingModal({ home, onInitComplete, requireWal
 		// the URL and keeps them in memory for this one restore attempt.
 		const legacyRestore = takeLegacyRestoreLink()
 		const run = async () => {
-			// From the hold page the existing restore screen opens directly (same state as the recover route below).
+			// 2026-11-21: from the hold page the existing restore screen opens directly (same state as the recover route below).
 			if (openRestoreFromHold) {
 				setIsInitialEntry(false)
 				setSettingsOpen('RestoreWalletScreen')

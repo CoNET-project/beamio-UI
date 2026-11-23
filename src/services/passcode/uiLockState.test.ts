@@ -1,7 +1,7 @@
 import { PASSCODE_CAPABILITY } from './passcodeCommands'
 import { reportUiLocked, uiUnlockStep, UI_LOCKED_COMMAND } from './uiLockState'
 
-describe('uiLockState report', () => {
+describe('uiLockState report (rev2 §3.2)', () => {
 	test('sends only {type, locked:true}', () => {
 		expect(UI_LOCKED_COMMAND).toEqual({ type: 'uiLockState', locked: true })
 	})
@@ -30,7 +30,7 @@ describe('uiLockState report', () => {
 	})
 })
 
-describe('step after a UI unlock', () => {
+describe('step after a UI unlock (rev2 §3.1, §4)', () => {
 	test('native already unlocked: nativeIdentityCheck, never passcodeUnlock', () => {
 		expect(uiUnlockStep(true)).toBe('native_identity_check')
 	})

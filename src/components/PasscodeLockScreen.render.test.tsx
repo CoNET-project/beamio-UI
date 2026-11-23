@@ -1,5 +1,5 @@
 /**
- * render check: a native-side lock hides "Forgot passcode?"; the page lock shows it.
+ * R-16 render check: a native-side lock hides "Forgot passcode?"; the page lock shows it.
  */
 import { render, screen } from '@testing-library/react'
 import PasscodeLockScreen from './PasscodeLockScreen'
@@ -9,7 +9,7 @@ jest.mock('../services/beamio', () => ({
 	wipeLocalWalletForRestore: jest.fn(),
 }))
 
-describe('render: forgot-passcode by lock kind', () => {
+describe('R-16 render: forgot-passcode by lock kind', () => {
 	it('shows "Forgot passcode?" for the page lock (default)', () => {
 		render(<PasscodeLockScreen onUnlocked={() => {}} />)
 		expect(screen.getByText('Forgot passcode?')).toBeTruthy()

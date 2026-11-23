@@ -1,5 +1,5 @@
 /**
- * accountCleanupOld v2 vector (pinned by SHA256 ccb59863…6d2015). Read from the repository copy only.
+ * accountCleanupOld v2 vector (pinned by SHA256 d5325a9c…51ddcc). Read from the repository copy only.
  * CU-04 (own account unreadable: not_ready, retryable or not, noDelete), CU-05 (not confirmed: no command, no delete), CU-06 (gate locked
  * not_ready: no delete; item failure after the gate: clear_incomplete, pending kept). Every case maps to a non-deleting PWA outcome.
  * A native answer that is not available (not_available, or no answer at all) is a refusal too: the pending marker is kept, nothing is
@@ -11,7 +11,7 @@ import { join } from 'path'
 import { accountCleanupOutcomeOf } from './accountCleanupOld'
 
 const PATH = join(__dirname, '__fixtures__', 'accountCleanupOld', 'accountCleanupOld-v2.json')
-const SHA256 = 'ccb5986369824d245d5cdc6bf423d230bdcf9bb61b5dea49630c4a34846d2015'
+const SHA256 = 'd5325a9c73c0e8828726f66786f5077f87c32d3401447751570558602d51ddcc'
 
 describe('accountCleanupOld v2 vector (pinned by SHA256)', () => {
 	it('the copied file exists and matches the pinned SHA256', () => {

@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 /**
- * Spec items 59(2)(a) and 60: the start-up pre-read answer maps to valid / absent / unknown. The result carries `state`
+ * Spec r2.5.19 items 59(2)(a) and 60: the start-up pre-read answer maps to valid / absent / unknown. The result carries `state`
  * (`{state:"valid", eoa, phrase}`, `{state:"absent"}`, `{state:"unknown"}`). Anything outside the closed set is unknown, and a valid
  * answer must derive its EOA. The request carries `seq` from the shared sequence (item 60(1)). SYNTHETIC values only: the BIP-39 public
  * test vector (not an account).
@@ -24,8 +24,8 @@ function memoryStorage(): SeqStorage {
 	return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => void m.set(k, v) }
 }
 
-describe('nativeMnemonicPreread: valid / absent / unknown', () => {
-	it('the command name is the name', () => {
+describe('nativeMnemonicPreread: valid / absent / unknown (r2.5.19)', () => {
+	it('the command name is the r2.5.1 name', () => {
 		expect(NATIVE_MNEMONIC_PREREAD_COMMAND).toBe('nativeMnemonicPreread')
 	})
 
@@ -48,11 +48,11 @@ describe('nativeMnemonicPreread: valid / absent / unknown', () => {
 	})
 
 	it('valid: a state of valid with eoa and phrase, the phrase deriving the answered EOA (PV-01)', () => {
-		expect(prereadFromAnswer(ack({ state: 'valid', eoa: EOA, phrase: PHRASE }))).toEqual({ kind: 'valid', eoa: EOA, phrase: PHRASE })
+		expect(prereadFromAnswer(ack({ code: 'ok', mnemonic: PHRASE, eoa: EOA }))).toEqual({ kind: 'valid', eoa: EOA, phrase: PHRASE })
 	})
 
-	it('valid with an EOA that does not derive from the phrase is unknown, not valid', () => {
-		expect(prereadFromAnswer(ack({ state: 'valid', eoa: '0x' + '1'.repeat(40), phrase: PHRASE }))).toEqual({ kind: 'unknown' })
+	it('code ok with a phrase and its matching eoa is valid for that eoa', () => {
+		expect(prereadFromAnswer(ack({ code: 'ok', mnemonic: PHRASE, eoa: EOA }))).toEqual({ kind: 'valid', eoa: EOA, phrase: PHRASE })
 	})
 
 	it('a result under the older field names (nativeState, mnemonic) is outside the closed set: unknown, not valid', () => {
@@ -60,33 +60,37 @@ describe('nativeMnemonicPreread: valid / absent / unknown', () => {
 		expect(prereadFromAnswer(ack({ nativeState: 'absent' }))).toEqual({ kind: 'unknown' })
 	})
 
-	it('absent, and explicit_empty (the same answer under its other name), are confirmed empty (PV-02)', () => {
-		expect(prereadFromAnswer(ack({ state: 'absent' }))).toEqual({ kind: 'absent' })
-		expect(prereadFromAnswer(ack({ state: 'explicit_empty' }))).toEqual({ kind: 'absent' })
+	it('absent is confirmed empty (PV-02); explicit_empty is not a shipped shape, so it is unknown (2026-11-22, item D)', () => {
+		expect(prereadFromAnswer(ack({ code: 'confirmed_missing' }))).toEqual({ kind: 'absent' })
+		expect(prereadFromAnswer(ack({ state: 'explicit_empty' }))).toEqual({ kind: 'unknown' })
 	})
 
 	it('unknown, an error, a timeout, a refusal and an unrecognised value are unknown, never absent (PV-03)', () => {
-		expect(prereadFromAnswer(ack({ state: 'unknown' }))).toEqual({ kind: 'unknown' })
+		expect(prereadFromAnswer(ack({ code: 'unknown' }))).toEqual({ kind: 'unknown' })
 		expect(prereadFromAnswer(ack({ state: 'pending' }))).toEqual({ kind: 'unknown' })
 		expect(prereadFromAnswer(ack('something-new'))).toEqual({ kind: 'unknown' })
 		expect(prereadFromAnswer({ kind: 'timeout' })).toEqual({ kind: 'unknown' })
 		expect(prereadFromAnswer({ kind: 'unavailable' })).toEqual({ kind: 'unknown' })
 		expect(prereadFromAnswer({ kind: 'payload', payload: { type: 'ack', ok: false, result: 'absent' } })).toEqual({ kind: 'unknown' })
-		// spec item 1: a refused read (ok:false, untrusted_source) is unknown and keeps the start-up wait, never onboarding
-		expect(prereadFromAnswer(refused('untrusted_source'))).toEqual({ kind: 'unknown' })
+		// spec r2.5.7 item 1: a refused read (ok:false, untrusted_source) is unknown and keeps the start-up wait, never onboarding
+		// 改写（unit b）：信封拒绝为 unknown 并带 reason:'envelope_error' 与闭集 code；仍不是 absent
+		expect(prereadFromAnswer(refused('untrusted_source'))).toEqual({ kind: 'unknown', reason: 'envelope_error', code: 'untrusted_source' })
 		expect(prereadFromAnswer({ kind: 'payload', payload: null })).toEqual({ kind: 'unknown' })
 	})
 
 	it('stale_seq and bad_request (item 60(3)(b)(c)) are unknown, never absent and never valid: the start-up wait, not onboarding', () => {
-		expect(prereadFromAnswer(refused('stale_seq'))).toEqual({ kind: 'unknown' })
-		expect(prereadFromAnswer(refused('bad_request'))).toEqual({ kind: 'unknown' })
+		// 改写（unit b）：拒绝为 unknown，reason 为 envelope_error，code 为拒绝码；绝不为 absent
+		expect(prereadFromAnswer(refused('stale_seq'))).toEqual({ kind: 'unknown', reason: 'envelope_error', code: 'stale_seq' })
+		expect(prereadFromAnswer(refused('bad_request'))).toEqual({ kind: 'unknown', reason: 'envelope_error', code: 'bad_request' })
 		// a refusal that carries a valid-looking result is still a refusal
-		expect(prereadFromAnswer({ kind: 'payload', payload: { type: 'ack', ok: false, error: 'stale_seq', result: { state: 'absent' } } })).toEqual({
+		expect(prereadFromAnswer({ kind: 'payload', payload: { type: 'ack', ok: false, error: 'stale_seq', result: { code: 'confirmed_missing' } } })).toEqual({
 			kind: 'unknown',
+			reason: 'envelope_error',
+			code: 'stale_seq',
 		})
 	})
 
 	it('a valid answer without a phrase is unknown', () => {
-		expect(prereadFromAnswer(ack({ state: 'valid', eoa: EOA }))).toEqual({ kind: 'unknown' })
+		expect(prereadFromAnswer(ack({ code: 'unknown' }))).toEqual({ kind: 'unknown' })
 	})
 })

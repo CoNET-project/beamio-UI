@@ -50,7 +50,7 @@ describe('the command path reads the same switch', () => {
 		expect(FROM_COMMAND_PATH).toBe(PGP_IDENTITY_CREATE_ENABLED)
 	})
 
-	it('without the first-identity eligibility the create call is refused before any command is sent (RULING 617d3dd9)', async () => {
+	it('without the first-identity eligibility the create call is refused before any command is sent (first-identity rule)', async () => {
 		await expect(nativeGenerateNewPgpKey('0x' + '11'.repeat(20))).resolves.toEqual({ ok: false, reason: 'not_eligible' })
 	})
 

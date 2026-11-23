@@ -1,5 +1,5 @@
 /**
- * Negative probe for the WebSocket refusal (AGENTS.md). The probe never opens a real connection:
+ * Negative probe for the WebSocket refusal (project rule). The probe never opens a real connection:
  * every attempt goes through the refused global constructor, which throws before any socket exists.
  */
 import { WEBSOCKET_REFUSAL, webSocketConstructorIsRefused, webSocketRefusedCount } from './webSocketGuard'

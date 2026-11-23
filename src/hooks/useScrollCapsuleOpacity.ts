@@ -27,7 +27,7 @@ function applyOpacityToLayer(layer: HTMLElement, next: number): void {
 
 /**
  * 根据滚动容器的 scrollTop 计算固定顶栏胶囊不透明度。
- * 全项目守则：beamio-fixed-top-capsule-protocol.mdc（THRESHOLD=40，FADE_RANGE=100）
+ * 全项目守则（THRESHOLD=40，FADE_RANGE=100）
  * - onScroll + ref 绑定到 overflow-y-auto 主滚动区
  * - document capture 兜底（部分 WebView 下 React onScroll 不触发）
  * - 绑定 setLayerRef 时滚动只写 DOM opacity，不 setState，避免 /home 整页重绘抖动

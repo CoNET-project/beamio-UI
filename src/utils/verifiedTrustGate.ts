@@ -1,11 +1,11 @@
 /**
- * The trust gate of a held send. Two rules:
+ * The trust gate of a held send (BCHAT section 40, R87). Two rules:
  *
  * 1. The send gate reads the verified fingerprint from the STORED chat row only. A value that exists only in the page's memory copy is not
- * trust (it was observed in the field: the memory copy held a verified fingerprint that the stored copy did not). `gateChatFromStore`
- * gives the gate a copy whose verified fingerprint is the stored one, or none.
+ *    trust (it was observed in the field: the memory copy held a verified fingerprint that the stored copy did not). `gateChatFromStore`
+ *    gives the gate a copy whose verified fingerprint is the stored one, or none.
  * 2. "Verify and send" without the key on screen (after a reload, no pinned key in memory) never sends. It reads the key once and opens the
- * verify panel; only "Verified, continue" writes trust and resends (the resend reads the stored trust).
+ *    verify panel; only "Verified, continue" writes trust and resends (the resend reads the stored trust).
  *
  * Pure: no page state, no storage. The page supplies the stored value.
  */
@@ -53,7 +53,7 @@ export function nextMemoryTrustWriter(prev: MemoryTrustWriter, input: { trusted:
 }
 
 /**
- * The bubble of a held text: a held message whose key is already verified in the stored trust is not "Not verified yet" any more.
+ * The bubble of a held text (BCHAT 43): a held message whose key is already verified in the stored trust is not "Not verified yet" any more.
  * Its key is the verified one: the bubble offers the send again (retry). A stored trust for another key is a changed key.
  */
 export type HeldBubble = 'first_fetch_pending' | 'trusted_resend' | 'fingerprint_changed'

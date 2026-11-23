@@ -1,5 +1,5 @@
 /**
- * -watchdog: the gossip worker start that never reaches `ready` is bounded, and the stall names the page-side step where it stopped.
+ * R79-watchdog: the gossip worker start that never reaches `ready` is bounded, and the stall names the page-side step where it stopped.
  * The ready-phase timers (sign, wrap) run only after `ready`; this bound covers the start before it. SYNTHETIC: no worker is created.
  */
 import { readFileSync } from 'fs'
@@ -8,7 +8,7 @@ import { WORKER_READY_TIMEOUT, WORKER_READY_TIMEOUT_MS, WorkerReadyTimeout, with
 
 const SRC = join(__dirname, '..')
 
-describe('gossip worker ready watchdog', () => {
+describe('gossip worker ready watchdog (R79)', () => {
 	afterEach(() => {
 		jest.useRealTimers()
 	})

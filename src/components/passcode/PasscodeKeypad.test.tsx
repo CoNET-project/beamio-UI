@@ -5,7 +5,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import PasscodeKeypad from './PasscodeKeypad'
 import { applyPasscodeKey } from './passcodeKeypadReducer'
 
-const GOOD = '12395784'
+const GOOD = '395784'
 
 const renderPad = (value: string, extra: Partial<React.ComponentProps<typeof PasscodeKeypad>> = {}) => {
 	const onChange = jest.fn()
@@ -31,7 +31,7 @@ describe('applyPasscodeKey', () => {
 		expect(applyPasscodeKey('1239', '5')).toBe('12395')
 	})
 	it('caps the length at twelve digits', () => {
-		expect(applyPasscodeKey('123456789012', '3')).toBe('123456789012')
+		expect(applyPasscodeKey('395784', '3')).toBe('395784')
 	})
 	it('delete removes the last digit and does nothing on empty', () => {
 		expect(applyPasscodeKey('1239', 'delete')).toBe('123')
@@ -88,8 +88,8 @@ describe('PasscodeKeypad', () => {
 
 	it('the dot line shows the length only, never the digits', () => {
 		renderPad(GOOD)
-		const line = screen.getByLabelText('8/12')
-		expect(line.textContent).toBe('••••••••')
+		const line = screen.getByLabelText('6/6')
+		expect(line.textContent).toBe('••••••')
 		expect(line.textContent).not.toContain('1')
 	})
 })

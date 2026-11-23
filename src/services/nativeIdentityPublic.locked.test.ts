@@ -1,5 +1,5 @@
 /**
- * HC-LOCK for identityPublic: a locked answer is its own kind, not bad_identity and not identity missing.
+ * HC-LOCK for identityPublic (v10 §3.2, L-ID): a locked answer is its own kind, not bad_identity and not identity missing.
  */
 jest.mock('./nativeChatRouteRegister', () => ({ probeNativeCapabilities: jest.fn(), requestNativeAck: jest.fn() }))
 

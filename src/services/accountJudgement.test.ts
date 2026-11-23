@@ -76,7 +76,7 @@ describe('shell: both sides decide', () => {
 	})
 	it('native locked (iOS passcode lock): undetermined, the passcode page, judged again after the unlock', () => {
 		expect(judgeShell('absent', 'locked')).toEqual(UNLOCK)
-		// 0.53.39: a valid PWA mnemonic enters /home whatever the native lock state.
+		// 0.53.39 (rule 2026-11-20): a valid PWA mnemonic enters /home whatever the native lock state.
 		expect(judgeShell('valid_mnemonic', 'locked')).toEqual(HAS)
 	})
 	it('covering upgrade, IndexedDB not read yet, native present: undetermined (retry), not the create or restore page', () => {
@@ -155,9 +155,9 @@ describe('the account creation page never replaces a confirmed local key (overwr
 	})
 })
 
-// 0.53.39: a valid PWA mnemonic in IndexedDB enters /home whatever the native state is. The native
+// 0.53.39 (project rule 2026-11-20, rule 1): a valid PWA mnemonic in IndexedDB enters /home whatever the native state is. The native
 // lock or readiness only gates the native reads, writes and sync. The earlier cases (kept by the gate) are revised to this rule.
-describe('shell: a valid IndexedDB mnemonic enters /home whatever the native state', () => {
+describe('shell: a valid IndexedDB mnemonic enters /home whatever the native state (rule 2026-11-20)', () => {
 	it('native not ready with a key in IndexedDB: enters /home (the native sync waits, the PWA is not held)', () => {
 		expect(judgeShell('valid_mnemonic', 'not_ready')).toEqual(HAS)
 	})

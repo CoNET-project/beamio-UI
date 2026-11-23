@@ -1,7 +1,7 @@
 import { ethers } from 'ethers'
 
 /**
- * 1423 / item 1: a device hint (a public EOA kept on this device) is accepted only when it equals the EOA derived from the valid
+ * 1423 / R65 item 1: a device hint (a public EOA kept on this device) is accepted only when it equals the EOA derived from the valid
  * mnemonic on the page (BIP-39 English, empty passphrase, m/44'/60'/0'/0/0, index 0). A hint alone is never account evidence.
  */
 export function hintMatchesMnemonic(hint: string, mnemonic: string): boolean {

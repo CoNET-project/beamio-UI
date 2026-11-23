@@ -1,5 +1,5 @@
 /**
- * Runtime of the call capability state. One hello probe per start in a shell, settled by
+ * Runtime of the call capability state (the decision, 2026-11-21). One hello probe per start in a shell, settled by
  * callCapabilityStateOf: only a valid hello with voiceCallV4 is compatible; every other shell result is old_shell. A plain browser
  * is never probed and keeps its own flow. A bridge failure is written to the diagnostic log only.
  */
@@ -16,7 +16,7 @@ let started = false
 let inShellFlag = false
 
 /**
- * Probe sequencing (review of 1caaa76): every probe takes an increasing number; only the newest started probe writes the global
+ * Probe sequencing (review): every probe takes an increasing number; only the newest started probe writes the global
  * state, so an older late success can never overwrite a newer failure. A dial or answer decides on its own probe's result.
  */
 export class ProbeSequencer {
@@ -78,7 +78,7 @@ export function retryCallCapabilityProbe(): void {
 }
 
 /**
- * A fresh probe for one dial or one answer: compatible is never kept between calls. It runs the hello now (10 s
+ * A fresh probe for one dial or one answer (the decision): compatible is never kept between calls. It runs the hello now (10 s
  * bound), sets the state, and returns it. A browser returns browser without a probe.
  */
 export async function probeCallCapabilityNow(): Promise<CallCapabilityState> {

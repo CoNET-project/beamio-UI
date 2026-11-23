@@ -1,5 +1,5 @@
 /**
- *the own-chain read uses the three-state lookup. A valid record is the own record; a valid empty answer is "no record"; a network
+ * R76-2: the own-chain read uses the three-state lookup. A valid record is the own record; a valid empty answer is "no record"; a network
  * error is a failed read (status error) and never reaches the register branch. SYNTHETIC values only.
  */
 import { ownChainRecordFromLookup } from './ownChainLookup'
@@ -9,7 +9,7 @@ import { join } from 'path'
 
 const probe = async () => ({ state: 'missing' as const, armored: '' })
 
-describe('own-chain three-state lookup', () => {
+describe('own-chain three-state lookup (R76-2)', () => {
 	it('ok: the record carries the user key, the route, and the armor', () => {
 		expect(
 			ownChainRecordFromLookup({ status: 'ok', publicArmored: 'PUB', routersArmoreds: 'ROUTE', userPgpKeyID: 'UID', routePgpKeyID: 'RID' }),

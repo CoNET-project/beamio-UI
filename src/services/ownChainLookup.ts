@@ -1,5 +1,5 @@
 /**
- * The own-chain read's searchKey mapping. A valid answer with a key and a route is
+ * The own-chain read's searchKey mapping (R76-2, the three-state rule of lookupRecipientRecord). A valid answer with a key and a route is
  * the own record; a valid empty answer is "no record"; a failed, timed-out or incomplete answer is a network error. A network error is never
  * an empty record: it becomes a failed own-chain read (readOwnChainState: status error), which never reaches the register branch.
  */

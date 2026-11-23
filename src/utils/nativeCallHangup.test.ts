@@ -13,7 +13,7 @@ function run(current: ConnectedCall, payload: unknown) {
 	return { out, ends }
 }
 
-describe('nativeCallHangup', () => {
+describe('nativeCallHangup (v66 §73)', () => {
 	test('a matching hangup on the connected call ends it once', () => {
 		const { out, ends } = run({ callId: 'c-1', sessionId: 's-1', connected: true }, hangup())
 		expect(out).toBe('ended')

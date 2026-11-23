@@ -2,24 +2,62 @@
  * PWA wallet storage. Pure orchestration with injected stores; production
  * wiring is in beamio.ts (init document, `meta` document, IndexedDB device key).
  *
- * Layout: the secret fields are replaced in place by wrap records (walletWrap.ts). Passcode mode uses PBKDF2 (600000);
- * device mode uses the non-extractable device key. Failed passcode tries are counted in `meta` with the spec backoff
- * table; data is never erased on failure. Nothing in this module logs a value.
+ * Layout (unit f3, 2026-11-22): the secret fields are replaced in place by passcode wrap records (walletWrap.ts, Argon2id, v=3)
+ * when a passcode is on; otherwise they stay plain (no-passcode state). Device-key mode and PBKDF2 are removed; records of those
+ * formats are refused (verify_failed) and kept byte-for-byte. Failed passcode tries are counted in `meta` with passcodeBackoff
+ * (3 wrong: 5 min; each further wrong: 5 min; success clears). Data is never erased on failure. Nothing here logs a value.
  */
 import { ethers } from 'ethers'
-import { checkPasscodePolicy, backoffSecondsAfter, type PasscodeReason } from './passcodeRules'
+import { checkPasscodePolicy, type PasscodeReason } from './passcodeRules'
+import { type AttemptState, ZERO_ATTEMPTS, afterFailure, afterRollback, gateAt, LOCK_MS } from './passcodeBackoff'
+import type { AttemptRecordStore } from './passcodeWrapStore'
+import { openMnemonicV3, openMnemonicV3WithKey, sealMnemonicV3WithKey } from './mnemonicCipherV3'
+import { disablePasscodeThenSync } from '../passcodeDisableSync'
+import { setPasscodeThenSync } from '../passcodeSetSync'
+import { isShellContext } from '../shellContext'
 import {
-	type DeviceKeyStore,
 	type WrapRecord,
 	VaultError,
 	b64dec,
-	getDeviceKey,
+	b64enc,
+	isLegacyWrapRecord,
 	isWrapRecord,
 	newSalt,
 	passcodeWrapKey,
+	randomBytes,
 	unwrapField,
+	utf8,
+	utf8Decode,
 	wrapField,
 } from './walletWrap'
+
+/** The mnemonic slot. Its record is the f1 mnemonic-cipher-format v3 envelope (decision), not a wallet-wrap record. */
+const MNEMONIC_FIELD = 'mnemonicPhrase'
+
+/**
+ * Seals one slot under the account key. The mnemonic is the f1 mnemonic-cipher-format v3 envelope (sealMnemonicV3WithKey, decision
+ * section 0). The other passcode fields (privateKeyArmor, pgpPrivateKeyArmored) keep the wallet wrap (walletWrap.wrapField),
+ * same key and same salt, AAD bound to the field name and the account (decision). Every seal uses a new random IV.
+ */
+async function sealSlot(key: CryptoKey, salt: Uint8Array, slot: Slot, value: string): Promise<WrapRecord> {
+	if (slot.field === MNEMONIC_FIELD) {
+		const env = await sealMnemonicV3WithKey(key, salt, value, slot.eoa, randomBytes(12))
+		if ('code' in env) throw new VaultError('mnemonic_seal_refused')
+		return env as unknown as WrapRecord
+	}
+	return wrapField(key, value, slot.field, slot.eoa, salt)
+}
+
+/** Opens one record of a slot with the account key. The record must belong to the slot's account (eoa) and field. */
+async function openRecordWithKey(key: CryptoKey, rec: WrapRecord, slot: Slot): Promise<string> {
+	if (slot.field === MNEMONIC_FIELD) {
+		const r = await openMnemonicV3WithKey(key, rec)
+		if (r.code !== 'ok') throw new VaultError(r.code === 'unlock_failed' ? 'decrypt_failed' : 'verify_failed')
+		return r.phrase
+	}
+	if (rec.eoa.toLowerCase() !== slot.eoa) throw new VaultError('decrypt_failed')
+	return unwrapField(key, rec, slot.field, slot.eoa)
+}
 
 export type Loose = Record<string, any>
 
@@ -28,8 +66,10 @@ export interface WalletMeta {
 	walletWrapState?: 'wrapped'
 	/** consecutive wrong passcodes; success resets */
 	failures: number
-	/** epoch ms before which passcode tries are refused (0 = none) */
+	/** epoch ms before which passcode tries are refused (0 = none); the passcodeBackoff lockedUntilMs */
 	nextAt: number
+	/** epoch ms of the last recorded wrong passcode (0 = none); used to detect a clock that ran back */
+	lastFailureMs?: number
 }
 
 export interface WalletStores {
@@ -40,7 +80,8 @@ export interface WalletStores {
 	writeInit(data: Loose): Promise<void>
 	readMeta(): Promise<WalletMeta>
 	writeMeta(m: WalletMeta): Promise<void>
-	deviceKeys: DeviceKeyStore
+	/** The cooldown record of one account (PWA IndexedDB, per EOA). Unit f3: the only counter of wrong passcodes. */
+	attemptsFor(eoa: string): AttemptRecordStore
 }
 
 // ---------------------------------------------------------------------------
@@ -53,7 +94,7 @@ interface PasscodeSession {
 	acct: string
 }
 
-const session: { device: CryptoKey | null; pc: PasscodeSession | null } = { device: null, pc: null }
+const session: { pc: PasscodeSession | null } = { pc: null }
 
 export function lockWalletSession(): void {
 	session.pc = null
@@ -61,17 +102,10 @@ export function lockWalletSession(): void {
 
 export function resetWalletSession(): void {
 	session.pc = null
-	session.device = null
 }
 
 export function passcodeSessionUnlocked(acct: string): boolean {
 	return !!session.pc && session.pc.acct === acct.toLowerCase()
-}
-
-async function deviceKey(stores: WalletStores, create: boolean): Promise<CryptoKey> {
-	if (session.device) return session.device
-	session.device = await getDeviceKey(stores.deviceKeys, create)
-	return session.device
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +130,8 @@ function slotsOf(data: Loose): Slot[] {
 	const profiles = flatProfiles(data.profiles)
 	const primary = String(profiles[0]?.keyID ?? '').toLowerCase()
 	const slots: Slot[] = []
-	for (const field of ['mnemonicPhrase', 'recoveryWords'] as const) {
+	// recoveryWords is not a slot (decision): it is the mnemonic's copy and is never written by this module; stored bytes are kept
+	for (const field of ['mnemonicPhrase'] as const) {
 		slots.push({
 			field,
 			eoa: primary,
@@ -162,10 +197,12 @@ export function hasWrappedSecrets(data: Loose | null | undefined): boolean {
 }
 
 function passcodeRecordsIn(data: Loose): boolean {
-	return slotsOf(data).some((s) => {
-		const v = s.get(data)
-		return isWrapRecord(v) && v.mode === 'passcode'
-	})
+	return slotsOf(data).some((s) => isWrapRecord(s.get(data)))
+}
+
+/** True when a slot holds a record of a removed format (v=1, PBKDF2, or device mode). Such a record is refused, never read. */
+function legacyRecordsIn(data: Loose): boolean {
+	return slotsOf(data).some((s) => isLegacyWrapRecord(s.get(data)))
 }
 
 /** Replaces every non-empty plain secret with a wrap made by `wrap`. Input is not mutated. */
@@ -197,12 +234,8 @@ function removeSiblings(data: Loose): Loose {
 	return out
 }
 
-function deviceWrapper(key: CryptoKey) {
-	return (slot: Slot, value: string) => wrapField(key, value, slot.field, slot.eoa, 'device')
-}
-
 function passcodeWrapper(key: CryptoKey, salt: Uint8Array) {
-	return (slot: Slot, value: string) => wrapField(key, value, slot.field, slot.eoa, 'passcode', salt)
+	return (slot: Slot, value: string): Promise<WrapRecord> => sealSlot(key, salt, slot, value)
 }
 
 // ---------------------------------------------------------------------------
@@ -216,17 +249,14 @@ export type StartupResult =
 
 /** Reads the wallet for start-up. Passcode records report locked until unlockWalletPasscode succeeds. */
 export async function openWalletForStartup(stores: WalletStores, data: Loose): Promise<StartupResult> {
+	void stores
 	try {
+		if (legacyRecordsIn(data)) return { status: 'error', reason: 'verify_failed' }
 		if (hasPlainSecrets(data)) return { status: 'loaded', data }
 		if (hasWrappedSecrets(data)) {
 			const acct = primaryAcct(data)
-			if (passcodeRecordsIn(data) && !passcodeSessionUnlocked(acct)) return { status: 'locked' }
-			let device: CryptoKey | null = null
-			const plain = await unwrapInPlace(data, async (slot, rec) => {
-				if (rec.mode === 'passcode') return unwrapField(session.pc!.key, rec, slot.field)
-				device = device ?? (await deviceKey(stores, false))
-				return unwrapField(device, rec, slot.field)
-			})
+			if (!passcodeSessionUnlocked(acct)) return { status: 'locked' }
+			const plain = await unwrapInPlace(data, async (slot, rec) => openRecordWithKey(session.pc!.key, rec, slot))
 			return { status: 'loaded', data: plain }
 		}
 		return { status: 'loaded', data }
@@ -241,7 +271,7 @@ function probeRead(stores: WalletStores): Promise<Loose | null> {
 	return stores.probeInit ? stores.probeInit() : stores.readInit()
 }
 
-async function verifyWrapped(stores: WalletStores, plain: Loose, mode: 'device' | 'passcode', passKey?: CryptoKey): Promise<void> {
+async function verifyWrapped(stores: WalletStores, plain: Loose, passKey: CryptoKey): Promise<void> {
 	const back = await probeRead(stores)
 	if (!back) throw new VaultError('readback_missing')
 	const expected = slotsOf(plain)
@@ -250,192 +280,225 @@ async function verifyWrapped(stores: WalletStores, plain: Loose, mode: 'device' 
 		const want = expected[i].get(plain)
 		if (!isSecretString(want)) continue
 		const rec = got[i].get(back)
-		if (!isWrapRecord(rec) || rec.mode !== mode) throw new VaultError('readback_mismatch')
-		const key = mode === 'device' ? await deviceKey(stores, false) : passKey!
-		if ((await unwrapField(key, rec, expected[i].field)) !== want) throw new VaultError('readback_mismatch')
+		if (!isWrapRecord(rec)) throw new VaultError('readback_mismatch')
+		if ((await openRecordWithKey(passKey, rec, expected[i])) !== want) throw new VaultError('readback_mismatch')
 	}
 }
 
 // ---------------------------------------------------------------------------
-// plaintext → wrapped (device mode)
-// ---------------------------------------------------------------------------
-
-export type PlainMigration = 'migrated' | 'kept' | 'none'
-
-export async function migratePlainWallet(stores: WalletStores): Promise<PlainMigration> {
-	const original = await probeRead(stores)
-	if (!original || !hasPlainSecrets(original)) return 'none'
-	const restore = async () => {
-		try {
-			await writeInitWithKeep(stores, original)
-		} catch {
-			/* the original text is still the last successful write */
-		}
-	}
-	let key: CryptoKey
-	try {
-		key = await deviceKey(stores, true)
-	} catch {
-		return 'kept'
-	}
-	// wraps written next to the plaintext (coexistence). Plaintext is kept.
-	try {
-		const side = copyData(original)
-		for (const slot of slotsOf(side)) {
-			const v = slot.get(side)
-			if (!isSecretString(v)) continue
-			slot.setSibling(side, await wrapField(key, v, slot.field, slot.eoa, 'device'))
-		}
-		await writeInitWithKeep(stores, side)
-	} catch {
-		await restore()
-		return 'kept'
-	}
-	// read-back check. Decrypted keys equal the plaintext, the EOA key derives the account, and the signature matches.
-	try {
-		const back = await probeRead(stores)
-		if (!back) throw new VaultError('readback_missing')
-		for (const slot of slotsOf(original)) {
-			const want = slot.get(original)
-			if (!isSecretString(want)) continue
-			const rec = slot.getSibling(back)
-			if (!isWrapRecord(rec)) throw new VaultError('readback_missing')
-			const got = await unwrapField(key, rec, slot.field)
-			if (got !== want) throw new VaultError('readback_mismatch')
-			if (slot.field === 'privateKeyArmor') {
-				const pk = (v: string) => (v.startsWith('0x') ? v : `0x${v}`)
-				if (ethers.computeAddress(pk(got)).toLowerCase() !== slot.eoa) throw new VaultError('address_mismatch')
-				const msg = 'beamio wallet wrap check v1'
-				const sigGot = await new ethers.Wallet(pk(got)).signMessage(msg)
-				const sigWant = await new ethers.Wallet(pk(want)).signMessage(msg)
-				if (sigGot !== sigWant) throw new VaultError('signature_mismatch')
-			}
-		}
-	} catch {
-		await restore()
-		return 'kept'
-	}
-	// plaintext fields replaced in place; no plaintext and no sibling left in the stored blob.
-	try {
-		const final = await wrapInPlace(removeSiblings(original), deviceWrapper(key))
-		await writeInitWithKeep(stores, final)
-		const back = await probeRead(stores)
-		if (!back || hasPlainSecrets(back) || JSON.stringify(back).includes('"privateKeyArmorWrap"')) {
-			throw new VaultError('final_check_failed')
-		}
-	} catch {
-		// Both copies exist and the wraps are verified: the next start redoes (idempotent).
-		return 'kept'
-	}
-	//
-	await stores.writeMeta({ ...(await stores.readMeta()), walletWrapState: 'wrapped' })
-	return 'migrated'
-}
-
-// ---------------------------------------------------------------------------
-// Passcode lifecycle
+// Passcode lifecycle (six digits, Argon2id; cooldown by passcodeBackoff)
 // ---------------------------------------------------------------------------
 
 export type UnlockResult =
 	| { ok: true; data: Loose }
 	| { ok: false; reason: 'format' | 'no_passcode' | 'backoff' | 'wrong_passcode' | 'error'; retryAfterMs?: number; attempts?: number }
 
-const PASSCODE_FORMAT = /^[0-9]{8,12}$/
+/** Six ASCII digits. Applied to the input of unlock only as a format check; the policy (checkPasscodePolicy) is for set and change. */
+const PASSCODE_FORMAT = /^[0-9]{6}$/
 
-async function failWrong(stores: WalletStores, now: number): Promise<UnlockResult> {
-	const meta = await stores.readMeta()
-	const failures = meta.failures + 1
-	const waitSec = backoffSecondsAfter(failures)
-	await stores.writeMeta({ ...meta, failures, nextAt: waitSec > 0 ? now + waitSec * 1000 : 0 })
-	return { ok: false, reason: 'wrong_passcode', retryAfterMs: waitSec * 1000, attempts: failures }
-}
-
-async function clearFailures(stores: WalletStores): Promise<void> {
-	const meta = await stores.readMeta()
-	if (meta.failures !== 0 || meta.nextAt !== 0) await stores.writeMeta({ ...meta, failures: 0, nextAt: 0 })
-}
-
-/** Checks the passcode. Failed tries are counted and waited on; nothing is erased. On success the session holds the key. */
+/**
+ * Checks the passcode (unit f3, 2026-11-22). Order: read the wallet (not counted); refuse while the per-account cooldown holds; count this
+ * wrong-input attempt in one atomic update and read it back BEFORE judging it (a failed count or read-back refuses the attempt, the
+ * passcode is not compared); then compare. Wrong: the count is kept and shown. Right: the record is cleared (deleted).
+ * Cooldown: 3rd wrong locks for LOCK_MS; each further wrong locks again for LOCK_MS; a clock that ran back restarts the lock from now.
+ */
 export async function unlockWalletPasscode(stores: WalletStores, passcode: string, now = Date.now()): Promise<UnlockResult> {
-	if (!PASSCODE_FORMAT.test(passcode)) return { ok: false, reason: 'format' }
-	const meta = await stores.readMeta()
-	if (now < meta.nextAt) return { ok: false, reason: 'backoff', retryAfterMs: meta.nextAt - now }
-	//the unlock read is a probe. Its result is not the page copy (unlockWalletVaultWithPasscode returns ok only).
-	const init = await probeRead(stores)
-	if (init && passcodeRecordsIn(init)) {
-		const acct = primaryAcct(init)
-		const first = slotsOf(init).map((s) => s.get(init)).find((v): v is WrapRecord => isWrapRecord(v) && v.mode === 'passcode')!
-		const key = await passcodeWrapKey(passcode, b64dec(first.salt as string))
-		let plain: Loose
-		try {
-			plain = await unwrapInPlace(init, async (slot, rec) => {
-				if (rec.mode === 'passcode') return unwrapField(key, rec, slot.field)
-				return unwrapField(await deviceKey(stores, false), rec, slot.field)
-			})
-		} catch {
-			return failWrong(stores, now)
-		}
-		session.pc = { key, salt: b64dec(first.salt as string), acct }
-		await clearFailures(stores)
-		return { ok: true, data: plain }
-	}
-	return { ok: false, reason: 'no_passcode' }
+	return unlockCore(stores, passcode, now, true)
 }
 
-/** Writes the passcode-mode blob with a new salt, verifies it, and makes the key the session key. */
-async function setPasscodeInternal(stores: WalletStores, passcode: string, plain: Loose): Promise<'error' | null> {
-	const acct = primaryAcct(plain)
-	const salt = newSalt()
+/** `clearOnSuccess` false is used by disable: the cooldown is cleared only after the plaintext write and read-back (decision). */
+async function unlockCore(stores: WalletStores, passcode: string, now: number, clearOnSuccess: boolean): Promise<UnlockResult> {
+	if (!PASSCODE_FORMAT.test(passcode)) return { ok: false, reason: 'format' }
+	const init = await probeRead(stores)
+	if (init && legacyRecordsIn(init)) return { ok: false, reason: 'error' }
+	if (!init || !passcodeRecordsIn(init)) return { ok: false, reason: 'no_passcode' }
+	const acct = primaryAcct(init)
+	const attempts = stores.attemptsFor(acct)
+	const st: { decision: 'locked' | 'rolled_back' | 'counted' } = { decision: 'counted' }
+	let counted: AttemptState | null
+	try {
+		counted = await attempts.update((prev) => {
+			const s = prev ?? ZERO_ATTEMPTS
+			const gate = gateAt(s, now)
+			if (gate.kind === 'locked') {
+				st.decision = gate.rolledBack ? 'rolled_back' : 'locked'
+				return gate.rolledBack ? afterRollback(s, now) : s
+			}
+			st.decision = 'counted'
+			return afterFailure(s, now)
+		})
+	} catch {
+		return { ok: false, reason: 'error' }
+	}
+	if (st.decision !== 'counted') {
+		const until = counted?.lockedUntilMs ?? now + LOCK_MS
+		return { ok: false, reason: 'backoff', retryAfterMs: Math.max(0, until - now) }
+	}
+	// one salt and one key for the whole record: the mnemonic envelope's salt when present (it is sealed first), else the first wrap's
+	const wraps = slotsOf(init).filter((x) => isWrapRecord(x.get(init)))
+	const firstSlot = wraps.find((x) => x.field === MNEMONIC_FIELD) ?? wraps[0]
+	const firstRec = firstSlot.get(init) as WrapRecord
+	const salt = b64dec(firstRec.salt as string)
 	const key = await passcodeWrapKey(passcode, salt)
-	const wrapped = await wrapInPlace(plain, passcodeWrapper(key, salt))
-	await writeInitWithKeep(stores, wrapped)
-	await verifyWrapped(stores, plain, 'passcode', key)
+	let plain: Loose | null = null
+	try {
+		plain = await unwrapInPlace(init, async (slot, rec) => openRecordWithKey(key, rec, slot))
+	} catch {
+		plain = null
+	}
+	if (!plain) {
+		const failures = counted?.failures ?? 0
+		const until = counted?.lockedUntilMs ?? 0
+		return { ok: false, reason: 'wrong_passcode', retryAfterMs: until > now ? until - now : 0, attempts: failures }
+	}
+	if (clearOnSuccess) {
+		try {
+			await attempts.update(() => null)
+		} catch {
+			return { ok: false, reason: 'error' }
+		}
+	}
 	session.pc = { key, salt, acct }
-	return null
+	return { ok: true, data: plain }
 }
 
 export type SetResult =
 	| { ok: true }
 	| { ok: false; reason: 'weak'; problem: PasscodeReason }
 	| { ok: false; reason: 'locked' | 'error' | 'format' | 'no_passcode' | 'backoff' | 'wrong_passcode'; retryAfterMs?: number }
+	/** The record is written and read back, but the shell has not confirmed the first sync: not a completed set (f3 follow-up, item 3). */
+	| { ok: false; reason: 'sync_pending'; cipher: Loose }
 
-/** Turns the passcode layer on (or replaces it when already on and unlocked). Policy is checked first. */
-export async function setWalletPasscode(stores: WalletStores, passcode: string, plain: Loose): Promise<SetResult> {
+/**
+ * The first pwaWalletSync with the passcode (set or change). Injected by the product path (beamio.ts, f2's cipher sender); absent in
+ * store-only use, where the step is skipped. Returns 'ok' only on the shell's confirmed read-back.
+ */
+export type FirstSyncWithPasscode = (envelope: Loose, passcode: string) => Promise<'ok' | 'not_completed'>
+
+/**
+ * Turns the passcode layer on (or replaces it when already on and unlocked). Policy is checked first. Order (passcodeSetSync, f2):
+ * seal the mnemonic under the new passcode (f1 envelope) → open it again in memory with the same passcode and check phrase and account →
+ * write the wallet record and read it back → the first pwaWalletSync with the cipher and the passcode; only a confirmed ok completes.
+ */
+export async function setWalletPasscode(stores: WalletStores, passcode: string, plain: Loose, firstSync?: FirstSyncWithPasscode): Promise<SetResult> {
 	const check = checkPasscodePolicy(passcode)
 	if (!check.ok) return { ok: false, reason: 'weak', problem: check.reason }
 	if (!hasPlainSecrets(plain)) return { ok: false, reason: 'error' }
 	const acct = primaryAcct(plain)
 	const existing = await probeRead(stores)
 	if (existing && passcodeRecordsIn(existing) && !passcodeSessionUnlocked(acct)) return { ok: false, reason: 'locked' }
+	// In the shell, the first sync with the passcode is mandatory: without the injected step nothing is written (never a silent skip)
+	if (!firstSync && isShellContext()) return { ok: false, reason: 'error' }
+	const phrase = typeof plain.mnemonicPhrase === 'string' ? plain.mnemonicPhrase.trim() : ''
+	let sealed: Loose | null = null
+	let key: CryptoKey | null = null
+	let salt: Uint8Array | null = null
+	let wrapped: Loose | null = null
+	let session_: PasscodeSession | null = null
 	try {
-		await setPasscodeInternal(stores, passcode, plain)
-		await clearFailures(stores)
-		return { ok: true }
+		const outcome = await setPasscodeThenSync({ phrase, eoa: acct, passcode }, {
+			seal: async (p, e, pc) => {
+				salt = newSalt()
+				key = await passcodeWrapKey(pc, salt)
+				wrapped = await wrapInPlace(plain, passcodeWrapper(key, salt))
+				const slot = slotsOf(wrapped).find((x) => x.field === MNEMONIC_FIELD)
+				const env = slot ? slot.get(wrapped) : undefined
+				if (!isWrapRecord(env) || p !== phrase || e !== acct) return null
+				sealed = env as unknown as Loose
+				return env as unknown as Record<string, unknown>
+			},
+			openInMemory: async (env, pc) => (await openMnemonicV3(env, pc)) as unknown as { code: string; phrase?: string; eoa?: string },
+			writeRecord: async () => {
+				try {
+					await writeInitWithKeep(stores, wrapped!)
+					await verifyWrapped(stores, plain, key!)
+					session_ = { key: key!, salt: salt!, acct }
+					session.pc = session_
+					return true
+				} catch {
+					return false
+				}
+			},
+			// the passcode is used in this one request only; it is not kept in the result or in any store
+			firstSyncWithPasscode: async (env, pc) => (firstSync ? firstSync(env as unknown as Loose, pc) : 'ok'),
+		})
+		if (outcome === 'complete') return { ok: true }
+		// the record was written and read back before the sync: the set is pending, not complete (the UI must not show it as on)
+		if (outcome === 'sync_not_completed' && sealed) return { ok: false, reason: 'sync_pending', cipher: sealed }
+		return { ok: false, reason: 'error' }
 	} catch {
 		return { ok: false, reason: 'error' }
 	}
 }
 
 /** Change: the old passcode is checked first (counted), then the blob is re-wrapped under the new one. */
-export async function changeWalletPasscode(stores: WalletStores, oldPasscode: string, newPasscode: string, now = Date.now()): Promise<SetResult | UnlockResult> {
+export async function changeWalletPasscode(
+	stores: WalletStores,
+	oldPasscode: string,
+	newPasscode: string,
+	now = Date.now(),
+	firstSync?: FirstSyncWithPasscode,
+): Promise<SetResult | UnlockResult> {
 	const unlocked = await unlockWalletPasscode(stores, oldPasscode, now)
 	if (!unlocked.ok) return unlocked
-	return setWalletPasscode(stores, newPasscode, unlocked.data)
+	return setWalletPasscode(stores, newPasscode, unlocked.data, firstSync)
 }
 
-/** Turn off: the passcode is checked, then the blob goes back to device mode and is verified. */
-export async function disableWalletPasscode(stores: WalletStores, passcode: string, now = Date.now()): Promise<{ ok: true } | UnlockResult | { ok: false; reason: 'error' }> {
-	const unlocked = await unlockWalletPasscode(stores, passcode, now)
-	if (!unlocked.ok) return unlocked
+/** Result of the plaintext wrap migration. Device-key migration is removed (unit f3); kept for the caller's type. */
+export type PlainMigration = 'migrated' | 'kept' | 'none'
+
+/**
+ * Turn the passcode off (commit e442588 order, f2 passcodeDisableSync): verify, write plaintext and read back, replace the cipher, clear
+ * the cooldown, then the background sync via syncPlain.
+ */
+export async function disableWalletPasscode(
+	stores: WalletStores,
+	passcode: string,
+	now = Date.now(),
+	syncPlain?: (phrase: string, eoa: string) => void,
+): Promise<{ ok: true } | UnlockResult | { ok: false; reason: 'error' }> {
+	// Order (decision, f2 passcodeDisableSync): verify the passcode → write the plaintext and read it back → replace the
+	// ciphertext (the plain write replaces it; this step confirms no wrapped secret is left) → clear the cooldown → background pwaWalletSync.
+	// The cooldown is not cleared by the unlock itself (clearOnSuccess false) so that the clear happens after the plaintext read-back.
+	let unlocked: UnlockResult = { ok: false, reason: 'error' }
+	let plain: Loose | null = null
 	try {
-		const wrapped = await wrapInPlace(unlocked.data, deviceWrapper(await deviceKey(stores, true)))
-		await writeInitWithKeep(stores, wrapped)
-		await verifyWrapped(stores, unlocked.data, 'device')
+		const init = await probeRead(stores)
+		const eoa = init ? primaryAcct(init) : ''
+		const outcome = await disablePasscodeThenSync(passcode, eoa, {
+			verifyPasscode: async () => {
+				unlocked = await unlockCore(stores, passcode, now, false)
+				if (!unlocked.ok) return null
+				plain = copyData(unlocked.data)
+				const phrase = typeof plain.mnemonicPhrase === 'string' ? plain.mnemonicPhrase : ''
+				return phrase || null
+			},
+			writePlainAndReadBack: async () => {
+				try {
+					await writeInitWithKeep(stores, plain!)
+					const back = await probeRead(stores)
+					return !!back && hasPlainSecrets(back) && !hasWrappedSecrets(back)
+				} catch {
+					return false
+				}
+			},
+			replaceCipher: async () => {
+				const back = await probeRead(stores)
+				return !!back && !hasWrappedSecrets(back)
+			},
+			clearCooldown: async (eoa: string) => {
+				await stores.attemptsFor(eoa).update(() => null)
+			},
+			syncPlain: (phrase: string, eoa: string) => {
+				syncPlain?.(phrase, eoa)
+			},
+		})
+		if (outcome === 'wrong_passcode') return unlocked.ok ? { ok: false, reason: 'error' } : unlocked
+		if (outcome !== 'disabled') return { ok: false, reason: 'error' }
 	} catch {
 		return { ok: false, reason: 'error' }
 	}
 	lockWalletSession()
-	await clearFailures(stores)
 	return { ok: true }
 }
 
@@ -457,34 +520,34 @@ export async function wrapForPersist(stores: WalletStores, plain: Loose): Promis
 	const acct = primaryAcct(plain)
 	const existing = (stores.probeInit ? await stores.probeInit() : await stores.readInit()) ?? {}
 	const existingRecs = slotsOf(existing).map((s) => s.get(existing)).filter(isWrapRecord)
-	const pcExisting = existingRecs.some((r) => r.mode === 'passcode')
-	const deviceExisting = existingRecs.some((r) => r.mode === 'device')
+	const pcExisting = existingRecs.length > 0
 	if (pcExisting && !passcodeSessionUnlocked(acct)) throw new VaultError('vault_locked')
 	let out: Loose
 	if (passcodeSessionUnlocked(acct)) {
 		out = await wrapInPlace(plain, passcodeWrapper(session.pc!.key, session.pc!.salt))
 	} else {
-		out = await wrapInPlace(plain, deviceWrapper(await deviceKey(stores, !deviceExisting)))
+		// no-passcode state: the secrets are written as they are (no device key in this format)
+		out = copyData(plain)
 	}
-	const merged = keepStoredSecretsForEmptySlots(out, existing)
+	const merged = keepStoredRecoveryWords(keepStoredSecretsForEmptySlots(out, existing), existing)
 	assertStoredSecretsKept(existing, merged)
 	return merged
 }
 
 /**
- * The one write entry of the wallet store (0.53.39, independent review 4fd31f0a, item 2). Every write of the init object goes through here:
+ * The one write entry of the wallet store (0.53.39, independent review item 2). Every write of the init object goes through here:
  * a slot that is empty in the record keeps the stored value (keepStoredSecretsForEmptySlots), and a write that would lose a stored secret
  * is refused before anything is written (the data is kept; the caller gets an error).
  */
 export async function writeInitWithKeep(stores: WalletStores, record: Loose): Promise<void> {
 	const before = ((stores.probeInit ? await stores.probeInit() : await stores.readInit()) ?? {}) as Loose
-	const merged = keepStoredSecretsForEmptySlots(record, before)
+	const merged = keepStoredRecoveryWords(keepStoredSecretsForEmptySlots(record, before), before)
 	assertStoredSecretsKept(before, merged)
 	await stores.writeInit(merged)
 }
 
 /**
- * The refusal (0.53.39, independent review 4fd31f0a, item 1). Every stored secret (a key or a mnemonic, wrapped or plain) must be kept by the
+ * The refusal (0.53.39, independent review item 1). Every stored secret (a key or a mnemonic, wrapped or plain) must be kept by the
  * record about to be written, under its own identity (field and lower-case keyID). The write is refused, before anything is written, when:
  * - the stored record holds two secrets with the same identity (ambiguous: which one to keep is not known);
  * - the record about to be written has no single slot with that identity, or that slot is empty (the stored secret would be lost).
@@ -509,7 +572,18 @@ export function assertStoredSecretsKept(before: Loose, merged: Loose): void {
 }
 
 /**
- * 0.53.39 (independent review of 5dbad42): a slot that is empty in memory keeps the value already stored, whether that stored value is a
+ * recoveryWords is the mnemonic's copy (decision): this module never writes it. A stored value is kept byte for byte; a value
+ * held in memory is not written. Pure: returns a copy.
+ */
+export function keepStoredRecoveryWords(out: Loose, before: Loose): Loose {
+	const copy: Loose = { ...out }
+	delete copy.recoveryWords
+	if (before.recoveryWords !== undefined) copy.recoveryWords = before.recoveryWords
+	return copy
+}
+
+/**
+ * 0.53.39 (independent review): a slot that is empty in memory keeps the value already stored, whether that stored value is a
  * wrap record or a plain non-empty string (an old plaintext key). Before, only a wrap record was kept, so an old plaintext key was dropped
  * by a write made while the in-memory slot was empty. Pure: the caller passes the wrapped record and the stored record.
  */

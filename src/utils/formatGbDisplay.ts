@@ -8,7 +8,7 @@ import {
 /** @deprecated Use DIGITAL_ASSET_DISPLAY_DECIMALS — kept for imports. */
 export const GB_DISPLAY_DECIMALS = DIGITAL_ASSET_DISPLAY_DECIMALS
 
-/** User-visible GB amounts — beamio-digital-asset-display-protocol.mdc */
+/** User-visible GB amounts */
 export function formatGbDisplay(value: string | number): string {
 	return formatDigitalAssetDisplay(value)
 }

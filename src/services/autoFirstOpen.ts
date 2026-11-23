@@ -4,7 +4,7 @@ import type { RecipientLookup } from './recipientRecord'
 /**
  * The chain answers, each in three states. `absent` and `unknown` are never the same: only a read that succeeded and gave a definite empty
  * answer is `absent`. A failed request, a timeout, a partial result, a record whose armor cannot be read, or an unreachable backup is
- * `unknown`, and an unknown never enters the automatic flow (constraint 1; Android constraint: exists=true with an unparseable key is
+ * `unknown`, and an unknown never enters the automatic flow (owner constraint 1; Android constraint: exists=true with an unparseable key is
  * unknown, not absent).
  */
 export type ChainPgpRead = 'record' | 'absent' | 'unknown'
@@ -12,7 +12,7 @@ export type ChainBackupRead = 'present' | 'absent' | 'unknown'
 
 /**
  * The inputs. `restore` is the existing restore judgement (pgpRestore.classifyOwnPgp): the first open enters only on `new_account` (the
- * judgement confirms a first identity). A restore failure or a read error returns before anything else.
+ * judgement confirms a first identity). A restore failure or a read error returns before anything else (owner constraint 2).
  */
 export type AutoFirstOpenInput = {
 	restore: PgpClassification
@@ -57,7 +57,7 @@ export function chainBackupFromRead(blob: string): ChainBackupRead {
 export function autoFirstOpenDecision(i: AutoFirstOpenInput): AutoFirstOpenDecision {
 	if (i.restore.kind === 'failure') return 'keep_protection'
 	if (i.restore.kind === 'read_error') return 'wait_unknown'
-	// a restorable record whose armor cannot be read is unknown: it waits, it is not taken as the original path
+	// a restorable record whose armor cannot be read is unknown (R80 M4): it waits, it is not taken as the original path
 	if (i.restore.kind === 'ok') return i.chain === 'unknown' ? 'wait_unknown' : 'use_record'
 	// new_account: the chain answers must agree
 	if (i.chain === 'unknown') return 'wait_unknown'

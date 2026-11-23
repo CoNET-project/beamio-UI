@@ -43,7 +43,7 @@ describe('shell create: the pending native create follows rule (a)', () => {
 	})
 
 	it('ok and cancel clear pending; a failed result keeps it; unmount clears it', () => {
-		// (CT, NC-AE): ok is the only establishing result. already_exists is handed back to the entry judgement and never announces.
+		// r11 §11 (CT, NC-AE): ok is the only establishing result. already_exists is handed back to the entry judgement and never announces.
 		expect(page).toMatch(/if \(code === 'ok'\) \{[\s\S]{0,600}nativeCreatePendingRef\.current = false/)
 		// the wallet is announced as established synchronously, before any async read.
 		expect(page).toMatch(/if \(code === 'ok'\) \{[\s\S]{0,400}announceNativeWalletEstablished\(\)/)

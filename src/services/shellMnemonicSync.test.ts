@@ -1,6 +1,6 @@
 /**
- * rule 2026-11-16 (1502): page-to-shell mnemonic sync. Stub bridge only; the command name is a placeholder until .
- *the reply is a closed code (ok, stale_seq, write_failed, untrusted_source, bad_request; no_answer for a throw).
+ * Per 1502: page-to-shell mnemonic sync. Stub bridge only; the command name is a placeholder until r2.4.4.
+ * r94: the reply is a closed code (ok, stale_seq, write_failed, untrusted_source, bad_request; no_answer for a throw).
  * SYNTHETIC values only (the phrase is the public BIP-39 test vector, not an account).
  */
 import { createShellMnemonicSync, SHELL_MNEMONIC_SYNC_COMMAND } from './shellMnemonicSync'

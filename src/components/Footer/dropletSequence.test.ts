@@ -1,5 +1,5 @@
 /**
- * Timing regression for the footer droplet. No `start` may run after `isLive()` turns false, and no phase may be
+ * Timing regression for the footer droplet (2026-11-20). No `start` may run after `isLive()` turns false, and no phase may be
  * written after that. Covers the normal run, an unmount during a pending phase, a cancel before the first settle, fake timers, and load.
  */
 import { runDropletSequence, type DropletControls, type DropletPhase } from './dropletSequence'

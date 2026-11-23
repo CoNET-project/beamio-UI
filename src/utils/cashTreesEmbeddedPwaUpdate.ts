@@ -1,7 +1,7 @@
 /**
  * Embedded PWA OTA (iOS WKWebView + Android WebViewAssetLoader).
  *
- * Store builds do not run OTA (ota-pwa-protocol.md, 0.52.935): they inject no
+ * Store builds do not run OTA (0.52.935): they inject no
  * apply bridge and declare no capability. The PWA shows no update prompt and
  * never calls the apply bridge unless BOTH the bridge function exists AND the
  * shell declares `pwa.embedded-ota.v1` (internal test builds only).

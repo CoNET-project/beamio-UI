@@ -51,7 +51,7 @@ export type NativeIdentityPublic =
 			ownRouteArmoredPublicKey?: string
 	  }
 	| { kind: 'no_key'; kPresent?: boolean }
-	/** HC-LOCK: the native lock. Not identity missing and not a bad identity; the caller takes the unlock branch. */
+	/** HC-LOCK (v10 §3.2 identityPublic): the native lock. Not identity missing and not a bad identity; the caller takes the unlock branch. */
 	| { kind: 'locked' }
 	| { kind: 'not_ready' | 'bad_request' | 'key_over_bridge_refused' | 'unavailable' | 'bad_identity' }
 

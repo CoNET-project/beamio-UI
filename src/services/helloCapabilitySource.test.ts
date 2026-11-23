@@ -2,7 +2,7 @@
  * @jest-environment node
  *
  * The capabilities are read from the hello ack only (ack.result.capabilities). The init 'ready' event carries a shorter list that omits
- * identity.native-keys.v1 (iOS BeamioConetChatModule.swift:1246), so a 'ready' payload is never the capability answer.
+ * identity.native-keys.v1 (iOS BeamioConetChatModule.swift:1246), so a 'ready' payload is never the capability answer (2026-11-20).
  * SYNTHETIC values only.
  */
 // a real event target for window (the native channel is a window event), with the iOS bridge object on it

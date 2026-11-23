@@ -1,5 +1,5 @@
 /**
- * The wire of a held text message, rebuilt from the stored message. A text send builds `{sendId, from:'me', text, createdAt,
+ * The wire of a held text message, rebuilt from the stored message (BCHAT 38). A text send builds `{sendId, from:'me', text, createdAt,
  * quote?}`; the stored message carries the same fields, so after a reload the held text is the same wire. Other kinds of message (files,
  * voice, calls, payments, replies) are not rebuilt here and return null.
  */

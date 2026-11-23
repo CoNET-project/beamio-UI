@@ -25,7 +25,7 @@ export async function firstOpenClaimSkipNow(args: { privateKeyArmor: string; pro
 }
 
 /**
- * The automatic claim, behind the first-open gate. The claim function is the only path to POST /api/claimBUnits; on the
+ * The automatic claim, behind the first-open gate (R81 item 3). The claim function is the only path to POST /api/claimBUnits; on the
  * first-open path it is not called (0 POSTs). Other entries call it as before. Injected, so the behaviour is tested without the network.
  */
 export async function autoBUnitClaimGated(args: {

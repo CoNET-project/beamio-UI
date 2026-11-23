@@ -25,9 +25,9 @@ import { installInboundGenerationWatcher } from './services/inboundGeneration'
 import { ensureRangTracking } from './utils/incomingRangTracking'
 import { reportWebSocketProbe } from './utils/webSocketProbeReport'
 import { publishNativePwaLog } from './utils/cashTreesNativePwaLog'
-// pgpUpgradeState: listen from startup so an event that arrives before the chat page mounts is recorded.
+// Y.62 pgpUpgradeState: listen from startup so an event that arrives before the chat page mounts is recorded.
 import { installPgpUpgradeStateListener } from './services/pgpUpgradeState';
-// item 8: the runtime refusal probe runs at boot (it opens no connection).: the result is kept on window.__beamioWsProbe and a failure goes to the native log; console is stripped in production.
+// R81 item 8: the runtime refusal probe runs at boot (it opens no connection). R84: the result is kept on window.__beamioWsProbe and a failure goes to the native log; console is stripped in production.
 reportWebSocketProbe(probeWebSocketRefusal(), (level, message) => publishNativePwaLog(level, message))
 installPgpUpgradeStateListener();
 void loadApiExcludedUserCards()

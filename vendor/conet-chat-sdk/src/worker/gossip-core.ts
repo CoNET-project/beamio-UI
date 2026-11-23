@@ -84,7 +84,7 @@ import type { GroupTombstoneV1 } from '../types.js'
 import { armorToString, buildPostBody, encryptOpaqueVoiceCommand, encryptRouteCommand, encryptVoiceChunkLiteral, wrapArmorToEntryRoute, wrapArmorToMailboxWork } from '../envelope.js'
 
 /**
- * Step timeouts of the SSE start. A step that does not answer in time fails with a named error (`sign_timeout` or
+ * Step timeouts of the SSE start (R76-3, R77). A step that does not answer in time fails with a named error (`sign_timeout` or
  * `wrap_timeout`). The start-up path logs the class and retries with the existing backoff; a wrap timeout relaunches the listen like any
  * other connect failure. Key material is never part of these messages.
  */
@@ -120,7 +120,7 @@ export function listenErrorClass(ex: unknown): 'sign_timeout' | 'wrap_timeout' |
 }
 
 /**
- * A message that may be shown or logged: armor blocks, long hex and long base64 runs are removed, and the text is cut.
+ * A message that may be shown or logged (R79): armor blocks, long hex and long base64 runs are removed, and the text is cut.
  * Used only for the `other` class; the named classes never carry a message.
  */
 export function sanitizeErrorMessage(msg: string): string {
@@ -139,7 +139,7 @@ export function listenErrorLogLine(ex: unknown): string {
 	return `startListen error [other]: ${sanitizeErrorMessage(typeof msg === 'string' ? msg : String(ex))}`
 }
 
-/** The status reason: the class only. The raw message is never a status reason. */
+/** The status reason: the class only. The raw message is never a status reason (R79). */
 export function listenStatusReason(ex: unknown): string {
 	return listenErrorClass(ex)
 }

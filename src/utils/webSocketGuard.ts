@@ -1,5 +1,5 @@
 /**
- * WebSocket refusal (AGENTS.md, project rule: no WebSocket in this project).
+ * WebSocket refusal (project rule: no WebSocket in this project).
  *
  * Installs a refusing global `WebSocket` constructor. It is imported first by the entry (src/index.tsx), by every
  * worker entry under src/workers, and by the standalone pages' <head> script. Modules that capture the global
@@ -65,7 +65,7 @@ export const webSocketConstructorIsRefused = (): boolean => scope.WebSocket === 
 export const shellGuardDeclared = (): boolean => scope[SHELL_WS_GUARD_FLAG] === true
 
 /**
- * Runtime refusal probe. It constructs the global WebSocket without a URL. With the project refusal installed, the
+ * Runtime refusal probe (R81 item 8). It constructs the global WebSocket without a URL. With the project refusal installed, the
  * construction is refused before any network use and the probe answers 'refused'. 'not_guarded' means the global is not the project
  * refusal (a shell guard, or none). 'other' is any other answer. The probe never opens a connection.
  */

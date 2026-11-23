@@ -46,7 +46,7 @@ export default function RecoverQRReveal({ close }: Props) {
     const temp = CoNET_Data
     if (!temp || !beamio || !profiles?.[0]) return false
 
-    const mnemonicPhrase = temp?.mnemonicPhrase
+    const mnemonicPhrase = typeof temp?.mnemonicPhrase === 'string' ? temp.mnemonicPhrase : ''
     if (!mnemonicPhrase) {
       setErrorText('No mnemonic phrase found on device.')
       return false

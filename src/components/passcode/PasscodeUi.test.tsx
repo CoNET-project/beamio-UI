@@ -39,9 +39,9 @@ const storeChanged = (on: boolean) => {
 }
 const nat = nativeNfc as unknown as { isCashTreesNativeWebView: jest.Mock }
 
-const GOOD = '12395784'
-const GOOD2 = '24680246'
-const WRONG = '13572468'
+const GOOD = '395784'
+const GOOD2 = '802461'
+const WRONG = '571936'
 
 beforeEach(() => {
 	m.unlockWalletVaultWithPasscode.mockReset()
@@ -55,11 +55,11 @@ beforeEach(() => {
 })
 
 describe('lock screen (unlock flow)', () => {
-	it('Unlock stays disabled until 8 digits are entered', () => {
+	it('Unlock stays disabled until 6 digits are entered', () => {
 		render(<PasscodeLockScreen onUnlocked={() => undefined} />)
 		const button = screen.getByRole('button', { name: 'Unlock' }) as HTMLButtonElement
 		expect(button.disabled).toBe(true)
-		fireEvent.change(screen.getByLabelText('Passcode'), { target: { value: '1239578' } })
+		fireEvent.change(screen.getByLabelText('Passcode'), { target: { value: '39578' } })
 		expect(button.disabled).toBe(true)
 		fireEvent.change(screen.getByLabelText('Passcode'), { target: { value: GOOD } })
 		expect(button.disabled).toBe(false)
@@ -93,10 +93,10 @@ describe('lock screen (unlock flow)', () => {
 		expect(screen.getByRole('button', { name: /Try again in 00:30/ })).toBeDisabled()
 	})
 
-	it('a 6-digit entry is a format message; unlock is not called', () => {
+	it('a 5-digit entry is not submitted; unlock is not called', () => {
 		render(<PasscodeLockScreen onUnlocked={() => undefined} />)
-		fireEvent.change(screen.getByLabelText('Passcode'), { target: { value: '482915' } })
-		// the button needs 8 digits, so the form cannot be submitted with 6: no call
+		fireEvent.change(screen.getByLabelText('Passcode'), { target: { value: '48291' } })
+		// the button needs 6 digits, so a 5-digit entry cannot be submitted: no call
 		fireEvent.submit(screen.getByLabelText('Passcode').closest('form') as HTMLFormElement)
 		expect(m.unlockWalletVaultWithPasscode).not.toHaveBeenCalled()
 	})
@@ -125,7 +125,7 @@ describe('settings section (enable, change, disable flows)', () => {
 	it('enable: a weak passcode shows the policy message and nothing is written', async () => {
 		render(<PasscodeSettingsSection />)
 		fireEvent.click(await screen.findByRole('button', { name: 'Turn on passcode' }))
-		fireEvent.change(screen.getByLabelText('New passcode (8 to 12 digits)'), { target: { value: '12345678' } })
+		fireEvent.change(screen.getByLabelText('New passcode (6 digits)'), { target: { value: '123456' } })
 		fireEvent.click(screen.getByRole('button', { name: 'Next' }))
 		expect(await screen.findByRole('alert')).toHaveTextContent(POLICY_TEXT.common)
 		expect(m.setWalletVaultPasscode).not.toHaveBeenCalled()
@@ -134,7 +134,7 @@ describe('settings section (enable, change, disable flows)', () => {
 	it('enable: the forget warning must be ticked before the first step', async () => {
 		render(<PasscodeSettingsSection />)
 		fireEvent.click(await screen.findByRole('button', { name: 'Turn on passcode' }))
-		fireEvent.change(screen.getByLabelText('New passcode (8 to 12 digits)'), { target: { value: GOOD } })
+		fireEvent.change(screen.getByLabelText('New passcode (6 digits)'), { target: { value: GOOD } })
 		fireEvent.click(screen.getByRole('button', { name: 'Next' }))
 		expect(await screen.findByRole('alert')).toHaveTextContent(CONFIRM_FORGET_TEXT)
 		fireEvent.click(screen.getByRole('checkbox'))
@@ -145,13 +145,13 @@ describe('settings section (enable, change, disable flows)', () => {
 	it('enable: a mismatch goes back to the new-passcode step with the mismatch message', async () => {
 		render(<PasscodeSettingsSection />)
 		fireEvent.click(await screen.findByRole('button', { name: 'Turn on passcode' }))
-		fireEvent.change(screen.getByLabelText('New passcode (8 to 12 digits)'), { target: { value: GOOD } })
+		fireEvent.change(screen.getByLabelText('New passcode (6 digits)'), { target: { value: GOOD } })
 		fireEvent.click(screen.getByRole('checkbox'))
 		fireEvent.click(screen.getByRole('button', { name: 'Next' }))
 		fireEvent.change(await screen.findByLabelText('Confirm passcode'), { target: { value: GOOD2 } })
 		fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
 		expect(await screen.findByRole('alert')).toHaveTextContent(MISMATCH_TEXT)
-		expect(screen.getByLabelText('New passcode (8 to 12 digits)')).toBeInTheDocument()
+		expect(screen.getByLabelText('New passcode (6 digits)')).toBeInTheDocument()
 		expect(m.setWalletVaultPasscode).not.toHaveBeenCalled()
 	})
 
@@ -162,7 +162,7 @@ describe('settings section (enable, change, disable flows)', () => {
 		})
 		render(<PasscodeSettingsSection />)
 		fireEvent.click(await screen.findByRole('button', { name: 'Turn on passcode' }))
-		fireEvent.change(screen.getByLabelText('New passcode (8 to 12 digits)'), { target: { value: GOOD } })
+		fireEvent.change(screen.getByLabelText('New passcode (6 digits)'), { target: { value: GOOD } })
 		fireEvent.click(screen.getByRole('checkbox'))
 		fireEvent.click(screen.getByRole('button', { name: 'Next' }))
 		fireEvent.change(await screen.findByLabelText('Confirm passcode'), { target: { value: GOOD } })
@@ -171,6 +171,22 @@ describe('settings section (enable, change, disable flows)', () => {
 		expect(m.setWalletVaultPasscode).toHaveBeenCalledTimes(1)
 		expect(m.setWalletVaultPasscode).toHaveBeenCalledWith(GOOD)
 		expect(screen.getByText('On')).toBeInTheDocument()
+	})
+
+	it('enable: a pending sync is shown as pending, never as done; the status does not read On from this result', async () => {
+		m.setWalletVaultPasscode.mockImplementation(async () => {
+			storeChanged(true)
+			return { ok: false, reason: 'sync_pending', cipher: {} }
+		})
+		render(<PasscodeSettingsSection />)
+		fireEvent.click(await screen.findByRole('button', { name: 'Turn on passcode' }))
+		fireEvent.change(screen.getByLabelText('New passcode (6 digits)'), { target: { value: GOOD } })
+		fireEvent.click(screen.getByRole('checkbox'))
+		fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+		fireEvent.change(await screen.findByLabelText('Confirm passcode'), { target: { value: GOOD } })
+		fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+		expect(await screen.findByRole('alert')).toHaveTextContent((require('../../locale/en.json') as { ui: Record<string, string> }).ui.passcode_sync_pending)
+		expect(screen.queryByText(DONE_TEXT.enable)).toBeNull()
 	})
 
 	it('change: a wrong old passcode stays in the verify step; the right one leads to the new passcode', async () => {
@@ -220,7 +236,7 @@ describe('settings section (enable, change, disable flows)', () => {
 	})
 
 	it('the policy texts are the spec drafts (spot check)', () => {
-		expect(POLICY_TEXT.too_short).toBe('Use 8 to 12 digits.')
+		expect(POLICY_TEXT.too_short).toBe('Use 6 digits.')
 		expect(POLICY_TEXT.sequence).toBe('Do not use six digits in a row.')
 	})
 })
@@ -266,7 +282,7 @@ describe('sign-out entry ("Lock"): shown only while a passcode is on', () => {
 		expect(await screen.findByText('Off')).toBeInTheDocument()
 		expect(screen.queryByRole('button', { name: 'Lock' })).toBeNull()
 		fireEvent.click(screen.getByRole('button', { name: 'Turn on passcode' }))
-		fireEvent.change(screen.getByLabelText('New passcode (8 to 12 digits)'), { target: { value: GOOD } })
+		fireEvent.change(screen.getByLabelText('New passcode (6 digits)'), { target: { value: GOOD } })
 		fireEvent.click(screen.getByRole('checkbox'))
 		fireEvent.click(screen.getByRole('button', { name: 'Next' }))
 		fireEvent.change(await screen.findByLabelText('Confirm passcode'), { target: { value: GOOD } })

@@ -1,12 +1,12 @@
 /**
- *a shell is no_account only when both sides confirm: the explicit native walletStatus no_key, and the page
+ * R96: a shell is no_account only when both sides confirm: the explicit native walletStatus no_key, and the page
  * store is a confirmed empty read. G1 (not_ready), unknown and every other status never decide no_account here. SYNTHETIC values only.
  */
 import { judgeShellFromNative } from './accountJudgement'
 
 const base = { idb: 'absent' as const, walletState: 'not_reported' as const, walletStatus: 'no_key' as const, storeEmpty: true }
 
-describe('the native no_key rule in the shell judgement', () => {
+describe('R96: the native no_key rule in the shell judgement', () => {
 	it('explicit no_key and an empty page store: no_account via the native rule (onboarding)', () => {
 		expect(judgeShellFromNative(base)).toEqual({ account: 'no_account', action: 'onboard', via: 'native_no_key' })
 	})

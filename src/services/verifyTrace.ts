@@ -1,5 +1,5 @@
 /**
- * QA trace of the first-contact trust path: which call ran, and what it decided.
+ * QA trace of the first-contact trust path (BCHAT field test, section 36): which call ran, and what it decided.
  *
  * Kept in `window.__beamioVerifyTrace` (a list of short records), only in a build with REACT_APP_BEAMIO_BOOT_TRACE=true. The switch is
  * written inline so a Release build folds the branch away. A record carries an event name, a monotonic time and booleans or counts. It never

@@ -1,5 +1,5 @@
 /**
- *the home's sync state holds a state and a retry only. SYNTHETIC values only.
+ * r94: the home's sync state holds a state and a retry only. SYNTHETIC values only.
  */
 import { getShellSyncState, resetShellSyncStatus, retryShellSync, setShellSyncRetry, setShellSyncState } from './shellSyncStatus'
 

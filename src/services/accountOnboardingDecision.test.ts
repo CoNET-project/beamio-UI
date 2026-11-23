@@ -155,10 +155,12 @@ describe('G2: a native walletStatus locked answer with a readable mnemonic conti
 	it('the passcode page stays keyed to walletState locked only (GY), and the continue branch takes the EOA from a locked or unlocked answer', () => {
 		const gate = readFileSync(join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
 		expect(gate).toContain("if (judged.action === 'unlock' && (shellWalletState === 'locked' || shellWalletStatus === 'locked')) {")
-		// superseded (spec item 42(2)): the continue EOA of a native answer is the pre-read's valid EOA (adoptPrereadMnemonic)
-		expect(gate).toContain('const pre = await queryNativeMnemonicPreread()')
-		//the pre-read valid path is decided by decidePrereadEntry; the phrase is adopted only when no validated copy exists
-		expect(gate).toContain('decidePrereadEntry(pageCopy, pre.eoa')
-		expect(gate).toContain('() => adoptPrereadMnemonic(pre.phrase, pre.eoa)')
+		// superseded (spec r2.4 item 42(2)): the continue EOA of a native answer is the pre-read's valid EOA (adoptPrereadMnemonic)
+		// 改写（产品现状）：no_key 分支下的封存副本检查为 const sealed = await queryNativeMnemonicPreread()；init 的 pre 预读保留
+		expect(gate).toContain('const pre = lateAnswer ? lateAnswer.answer : await readPrereadCapped(reqId)')
+		expect(gate).toContain('const sealed = await queryNativeMnemonicPreread()')
+		// r94 (R-PWA-R94-01): the pre-read valid path is decided by decidePrereadEntry; the phrase is adopted only when no validated copy exists
+		expect(gate).toContain('decidePrereadEntry(sealedCopy, sealed.eoa')
+		expect(gate).toContain('() => adoptPrereadMnemonic(sealed.phrase, sealed.eoa, reqId)')
 	})
 })

@@ -72,11 +72,11 @@ describe('first open in the worker (b)', () => {
 		expect(body.routeKeyID).toBe(NODE.domain)
 		expect(body.signature.startsWith('0x')).toBe(true)
 		expect(await openLegacyPgpBlob(body.encrypKeyArmored, ACCOUNT_KEY)).toBe(PGP_PRIV)
-		//the pending copy is kept after an accepted registration until the chain shows the record
+		// R92: the pending copy is kept after an accepted registration until the chain shows the record
 		expect(w.store.has('firstOpen.pending.v1:' + EOA.toLowerCase())).toBe(true)
 	})
 
-	it('the chain shows the record late: the second open generates no second key and sends nothing; the copy is cleared once the record shows', async () => {
+	it('R92: the chain shows the record late: the second open generates no second key and sends nothing; the copy is cleared once the record shows', async () => {
 		let chainHasRecord = false
 		const RECORD: ChainRecordRead = { lookup: { status: 'ok', publicArmored: '-----BEGIN PGP PUBLIC KEY BLOCK-----\nP\n-----END PGP PUBLIC KEY BLOCK-----', routersArmoreds: '-----BEGIN PGP PUBLIC KEY BLOCK-----\nR\n-----END PGP PUBLIC KEY BLOCK-----', routePgpKeyID: 'r', userPgpKeyID: 'u' }, blob: 'present' }
 		let t = 1_000_000

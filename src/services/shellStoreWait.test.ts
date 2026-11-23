@@ -119,7 +119,7 @@ describe('not_ready: positive and negative cases (0.53.5)', () => {
 		expect(read).toMatchObject({ status: 'error', reason: 'not_ready' })
 		expect(read.status).not.toBe('absent')
 		// shellRecordAsWalletRecord returns null only for absent; an error must throw, so no empty record is ever built.
-		//a superseded envelope not_ready without retryable is bounded (re-reads, then the terminal), never endless
+		// v168: a superseded envelope not_ready without retryable is bounded (re-reads, then the terminal), never endless
 		expect(() => shellRecordAsWalletRecord(read)).toThrow('shell_record_not_ready_bounded')
 	})
 
@@ -148,16 +148,12 @@ describe('not_ready: positive and negative cases (0.53.5)', () => {
 		expect(shellStorageErrorReason('shell_record_record_unreadable')).not.toBe('native_record')
 	})
 
-	it('the gate shows the reading copy with a retry, and never routes it to onboarding', () => {
+	it('Y.99 4: the native_reading screen is removed (5): the read failure is the background startup wait, never onboarding', () => {
 		const gate = readFileSync(join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
-		const at = gate.indexOf("storageUnavailable === 'native_reading'")
-		expect(at).toBeGreaterThan(0)
-		const block = gate.slice(at, at + 700)
-		expect(block).toContain("tu('native_reading_body')")
-		expect(block).toContain('void init()')
-		expect(block).not.toMatch(/onboarding|createWallet|clearIdentity/i)
-		const locale = JSON.parse(readFileSync(join(__dirname, '..', 'locale', 'zh-CN.json'), 'utf8'))
-		expect(locale.ui.native_reading_body).toBe('正在读取，请稍后重试')
+		expect(gate).not.toContain("storageUnavailable === 'native_reading'")
+		expect(gate).toContain('startupWait(')
+		const wait = gate.slice(gate.indexOf('const startupWait = (reason: string'), gate.indexOf('const startupWait = (reason: string') + 1200)
+		expect(wait).not.toMatch(/onboarding|createWallet|clearIdentity/i)
 	})
 })
 
@@ -176,26 +172,25 @@ describe('the retry state runs 30 s, 2 min, 10 min, then the manual retry; used-
 		for (const n of [4, 6, 20, 100]) expect(nativeRetryStep(n)).toEqual({ kind: 'manual' })
 	})
 
-	it('the gate uses the step on its native_retry path: no exponential wait, no six-retry bound, no recovery entry, no onboarding', () => {
+	it('the gate no longer uses the Y.104 step (6a26e7ae): the startup wait re-reads on the 2, 4, 8, 16 s then 30 s schedule; no six-retry bound, no recovery entry, no onboarding', () => {
 		const gate = readFileSync(join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
-		expect(gate).toContain('const step = nativeRetryStep(attempt)')
-		expect(gate).toContain('window.setTimeout(() => void init(), step.delayMs)')
+		expect(gate).not.toContain('const step = nativeRetryStep(attempt)')
+		expect(gate).toContain('const delay = startupRetryDelayMs(attempt)')
 		expect(gate).not.toContain('attempt >= 6')
 		expect(gate).not.toContain('nativeStoreWaitDelayMs(attempt)')
-		const at = gate.indexOf('const step = nativeRetryStep(attempt)')
+		const at = gate.indexOf('const startupWait = (reason: string')
 		const block = gate.slice(at, gate.indexOf('nativeWaitRef.current = true', at))
-		expect(block).toContain("showStorageUnavailable(MIGRATION_RETRY_SCREEN)")
-		expect(block).not.toContain("native_recovery_needed")
+		expect(block).not.toContain('native_recovery_needed')
 		expect(block).not.toMatch(/onboarding|createWallet|clearIdentity/i)
 	})
 })
 
-describe('the unknown retry branch shares the same cadence and never onboards', () => {
-	// superseded (spec item 42(3), rule 2026-11-16 1501): an unknown pre-read is the startup wait, which re-reads on its own
+describe('Y.104 3: the unknown retry branch shares the same cadence and never onboards', () => {
+	// superseded (spec r2.4 item 42(3), the rule 1501): an unknown pre-read is the startup wait, which re-reads on its own
 	// interval (STARTUP_WAIT_MS). The former reset-decision retry branch (nativeRetryStep) no longer decides the shell's start.
 	it('an unknown pre-read is the startup wait on one interval: no onboarding, no creation entry, no own delay', () => {
 		const gate = readFileSync(join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
-		// revised 2026-11-20: the unknown pre-read is nativeStartRoute's retry (reason pre_unknown) on the same startupWait
+		// revised 2026-11-20 (rule, start route): the unknown pre-read is nativeStartRoute's retry (reason pre_unknown) on the same startupWait
 		const at = gate.indexOf('startupWait(`native start: ${outcome.reason}`')
 		expect(at).toBeGreaterThan(0)
 		expect(nativeStartRoute({ pre: { kind: 'unknown' }, walletState: 'absent', hasKey: false, walletStatus: 'no_key' })).toEqual({ route: 'retry', reason: 'pre_unknown' })
@@ -207,7 +202,7 @@ describe('the unknown retry branch shares the same cadence and never onboards', 
 	})
 })
 
-describe('HC-LOCK / HC-STORAGE-LOCK classification', () => {
+describe('HC-LOCK / HC-STORAGE-LOCK classification (v10 §〇, §3.2; R-25 ruled)', () => {
 	it('L-REC: an envelope-level shell_record_locked is native_locked, never native_record', () => {
 		expect(shellStorageErrorReason('shell_record_locked')).toBe('native_locked')
 		expect(shellStorageErrorReason('shell_record_locked')).not.toBe('native_record')

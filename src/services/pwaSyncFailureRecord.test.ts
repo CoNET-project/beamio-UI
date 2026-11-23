@@ -1,8 +1,8 @@
 /**
  * @jest-environment node
  *
- * (manual retry, record): only write_failed with rollback_pending is recorded; the record holds no key material; storage
- * unavailable reads as no record. Test IDs MR-1 to MR-5 are my own naming.
+ * v10 §六.1 (manual retry, record): only write_failed with rollback_pending is recorded; the record holds no key material; storage
+ * unavailable reads as no record. Test IDs MR-1 to MR-5 are my own naming (the r11 IDs were not found in the plan files).
  */
 import {
 	accountMarker,
@@ -22,7 +22,7 @@ function memStore() {
 	return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v), removeItem: (k: string) => void m.delete(k), m }
 }
 
-describe('pwaSyncFailureRecord', () => {
+describe('pwaSyncFailureRecord (v10 §六.1)', () => {
 	it('MR-1: only write_failed with rollback_pending is recorded', () => {
 		expect(recordForFailure({ code: 'write_failed', reason: 'rollback_pending' }, EOA, NOW)).not.toBeNull()
 		expect(recordForFailure({ code: 'write_failed', reason: 'storage_write' }, EOA, NOW)).toBeNull()
@@ -65,7 +65,7 @@ describe('pwaSyncFailureRecord', () => {
 
 import { manualRetryVisible } from './pwaSyncFailureRecord'
 
-describe('manual retry visibility', () => {
+describe('manual retry visibility (v10 §六.2)', () => {
 	const ok = { hasRecord: true, accountMatches: true, lastReplyEnvelopeLocked: false, hasValidPageMnemonic: true, nativeStatus: 'unlocked' }
 
 	it('MR-9: shown only when all four conditions hold', () => {

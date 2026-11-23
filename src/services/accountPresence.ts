@@ -11,7 +11,7 @@ export type NativePresenceInput = {
 	/** walletStatus status, or 'unknown' when the snapshot is not known. */
 	ws: 'unlocked' | 'locked' | 'phrase_only' | 'not_ready' | 'no_key' | 'unknown'
 	/** walletStatus notReadyReason, read only on not_ready. key_only: the record is confirmed to hold no valid mnemonic (CONFIRMED_NONE). */
-	reason?: 'g1_uninitialized' | 'key_only' | 'unreadable'
+	reason?: 'g1_uninitialized' | 'key_only' | 'unreadable' | 'passcode_not_provided'
 	/** identityPublic kPresent: true, false, or absent (undefined). */
 	kPresent?: boolean
 	/** The snapshot is not known (native answered not_ready for an unknown snapshot). */
@@ -21,10 +21,10 @@ export type NativePresenceInput = {
 export function nativePresence(input: NativePresenceInput): NativePresence {
 	// TS-05: an unknown snapshot is never a basis for a decision.
 	if (input.snapshotUnknown) return 'unknown'
-	// / LK-P7: an unlocked wallet (with its account key) is present. A locked wallet is NOT present on this page: the account is
+	// r11 / LK-P7: an unlocked wallet (with its account key) is present. A locked wallet is NOT present on this page: the account is
 	// unknown until it is unlocked (Q5 A; SDK does not change the G2 shape, so the page holds this line).
 	if (input.ws === 'unlocked') return 'has'
-	// a phrase_only answer (the native record holds a mnemonic) with an eoa is present.
+	// a phrase_only answer (the native record holds a mnemonic) with an eoa is present (Y.117).
 	if (input.ws === 'phrase_only') return 'has'
 	if (input.ws === 'not_ready') {
 		// TS-02: an uninitialised record (G1) is present. key_only: the record holds no valid mnemonic (CONFIRMED_NONE).
@@ -76,7 +76,7 @@ export function nativePresenceOfState(native: NativeWalletStatusAnswer, kPresent
 /** The walletStatus answer shape the presence reads (queryNativeWalletStatus). Structural, so no native module is imported. */
 export type NativeWalletStatusAnswer =
 	| { status: 'no_key' | 'unknown' }
-	| { status: 'not_ready'; notReadyReason?: 'g1_uninitialized' | 'key_only' | 'unreadable' }
+	| { status: 'not_ready'; notReadyReason?: 'g1_uninitialized' | 'key_only' | 'unreadable' | 'passcode_not_provided' }
 	| { status: 'locked' | 'unlocked' | 'phrase_only'; eoa: string }
 
 /**
@@ -126,12 +126,12 @@ export function parseWalletStatusResult(result: unknown, isAddress: (value: stri
 	const r = result as { status?: unknown; accountKey?: unknown; notReadyReason?: unknown }
 	const st = r.status
 	if (st === 'no_key') return { status: 'no_key' }
-	// `notReadyReason` is read only on a not_ready answer. An unknown reason, or none, is normalised to unreadable.
+	// `notReadyReason` is read only on a not_ready answer. An unknown reason, or none, is normalised to unreadable (unknown; R-29).
 	if (st === 'not_ready') {
 		const reason = r.notReadyReason
 		return {
 			status: 'not_ready',
-			notReadyReason: reason === 'g1_uninitialized' || reason === 'key_only' || reason === 'unreadable' ? reason : 'unreadable',
+			notReadyReason: reason === 'g1_uninitialized' || reason === 'key_only' || reason === 'unreadable' || reason === 'passcode_not_provided' ? reason : 'unreadable',
 		}
 	}
 	if (st === 'phrase_only') {

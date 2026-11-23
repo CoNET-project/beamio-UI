@@ -8,10 +8,10 @@ import { join } from 'path'
 const gate = readFileSync(join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8')
 
 describe('the page copy is restored only when the native wallet is ready and the page record is empty', () => {
-	// The "ready branch restores the page copy in the background (no await)" pin was deleted on purpose: cebd7e0 removed the init-level
+	// The "ready branch restores the page copy in the background (no await)" pin was deleted on purpose: removed the init-level
 	// call `void restorePageCopy(native.eoa)` with the walletStatus ready route. A valid pre-read now restores through decidePrereadEntry
 	// (copyValidatedEntry.ts), which awaits a bounded page read; that is not the background restore this pin guarded.
-	// Rewritten for rule 2026-11-16 (1c): the restore writes the blob and the restored mnemonic together, through the record's own write
+	// Rewritten for the current rule (1c): the restore writes the blob and the restored mnemonic together, through the record's own write
 	// path (wrapForDisk inside storeSystemDataAndWait), then reads it back. The mnemonic is a plain field only in memory.
 	it('the restore asks for the credential only after an empty page record, writes the blob with the mnemonic, and reads it back', () => {
 		const start = gate.indexOf('const restorePageCopy = async')

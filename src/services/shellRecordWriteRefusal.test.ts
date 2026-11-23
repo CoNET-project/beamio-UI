@@ -27,7 +27,7 @@ describe('a refused shell write raises the update prompt', () => {
 			beamio: { accountName: 'Old', firstName: 'Old', language: 'zh-CN' },
 		}
 		;(sendShellRecordCommand as jest.Mock)
-			.mockResolvedValueOnce({ kind: 'payload', payload: { type: 'ack', reqId: 1, ok: true, result: { code: 'ok', record } } })
+			.mockResolvedValueOnce({ kind: 'payload', payload: { type: 'ack', reqId: 1, ok: true, result: { code: 'ok', rev: (record as { rev?: number }).rev, record } } })
 			.mockResolvedValueOnce({ kind: 'origin_refused' })
 		const listener = jest.fn()
 		const off = onAppUpdateRequired(listener)

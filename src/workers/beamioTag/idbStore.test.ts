@@ -1,5 +1,5 @@
 /**
- *the beamioTag database open never hangs silently. A blocked open fails with a named error; a stalled open fails after
+ * R77: the beamioTag database open never hangs silently. A blocked open fails with a named error; a stalled open fails after
  * OPEN_DB_TIMEOUT_MS; a failed open is not cached (a later call opens again); a late success after a timeout closes the connection.
  * A fake indexedDB; no real database.
  */
@@ -32,7 +32,7 @@ function loadStore(): typeof import('./idbStore') {
 
 const RECORD = { addressLower: '0x' + '1'.repeat(40) } as never
 
-describe('beamioTag database open', () => {
+describe('beamioTag database open (R77)', () => {
 	afterEach(() => {
 		jest.useRealTimers()
 	})

@@ -175,7 +175,7 @@ class BeamioChatClientImpl implements BeamioChatClient {
 		return this.historyBridge
 	}
 
-	/** The last page-side step of init: where a start stalled. Read by the page when the ready watchdog fires. */
+	/** The last page-side step of init (R79-watchdog): where a start stalled. Read by the page when the ready watchdog fires. */
 	private startStepName: 'idle' | 'worker_created' | 'nodes_loaded' | 'init_sent' | 'ready' = 'idle'
 
 	get startStep(): string {

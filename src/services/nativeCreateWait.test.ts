@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  *
- * CT series for the native create wait (event first, 10-minute fallback, retry admission). The CT numbers follow the
+ * v10.2 r4 §2.2, CT series for the native create wait (event first, 10-minute fallback, retry admission). The CT numbers follow the
  * plan's CT-1…CT-16; the cases that need the page are in CreateUsernamePinScreen.ct.static.test.ts.
  */
 import {
@@ -70,20 +70,20 @@ describe('native create wait (CT series)', () => {
 		expect(canStartCreate(terminal.state, VALID)).toBe(true)
 	})
 
-	it('CT-15: the cancel ends the wait display; a retry is unavailable until the terminal result of the same request arrives', () => {
+	it('CT-15 (r7 §一): the cancel ends the wait display; a retry is unavailable until the terminal result of the same request arrives', () => {
 		const cancelled = cancelCreateWait(startCreateWait(0, 1))
 		expect(cancelled.kind).toBe('cancelled')
 		expect(canStartCreate(cancelled, VALID)).toBe(false)
 		expect(canStartCreate(cancelled, HOLD)).toBe(false)
 	})
 
-	it('CT-15a: a retry pressed while cancelled sends nothing; the state stays cancelled', () => {
+	it('CT-15a (r7): a retry pressed while cancelled sends nothing; the state stays cancelled', () => {
 		const cancelled = cancelCreateWait(startCreateWait(0, 1))
 		expect(canStartCreate(cancelled, VALID)).toBe(false)
 		expect(cancelled.kind).toBe('cancelled')
 	})
 
-	it('CT-15b: the native page closed (cancelled event) is a terminal result; the retry becomes available after it, with a valid reread', () => {
+	it('CT-15b (r7): the native page closed (cancelled event) is a terminal result; the retry becomes available after it, with a valid reread', () => {
 		const cancelled = cancelCreateWait(startCreateWait(0, 1))
 		const terminal = onCreateResult(cancelled)
 		expect(terminal.deliver).toBe(true)
@@ -91,7 +91,7 @@ describe('native create wait (CT series)', () => {
 		expect(canStartCreate(terminal.state, HOLD)).toBe(false)
 	})
 
-	it('CT-15c: a late ok after the cancel is delivered once; a second one is dropped', () => {
+	it('CT-15c (r7): a late ok after the cancel is delivered once; a second one is dropped', () => {
 		const cancelled = cancelCreateWait(startCreateWait(0, 1))
 		const first = onCreateResult(cancelled)
 		expect(first.deliver).toBe(true)
@@ -168,7 +168,7 @@ describe('TR-4: the fallback with fake timers, late result, and retry admission'
 	})
 })
 
-describe('CT-16b: a late terminal result after a cancel is delivered once', () => {
+describe('CT-16b: a late terminal result after a cancel is delivered once (r5 §五)', () => {
 	it('after the cancel, a late ok of the same request is delivered once; a second one is dropped', () => {
 		const cancelled = cancelCreateWait(startCreateWait(0, 1))
 		expect(cancelled.kind).toBe('cancelled')

@@ -33,18 +33,18 @@ export const BEAMIO_SHELL_ACTIONS = [
 	'startSystemCall',
 	'reportIncomingSystemCall',
 	'endSystemCall',
-	// Local only: stop the ring, close the card and notification, clear the record. No uplink, no signature.
+	// Local only (2026-11-20): stop the ring, close the card and notification, clear the record. No uplink, no signature.
 	'dismissIncomingSystemCall',
 	'startNativeVoiceMic',
 	'stopNativeVoiceMic',
 	'notifyVoiceMicReady',
 	'queryIncomingCallOutcome',
-	// Local ephemeral keys for a call: the shell generates and holds the temporary PGP key and wallet;
+	// Local ephemeral keys for a call (v105 §112, v106 §114): the shell generates and holds the temporary PGP key and wallet;
 	// only the public channel fields come back. Prepare: {role, sid, needPgp} -> {ok, channel:{sid,key,wk,temp,tempPgpFpr,tempPgpArmor?}}.
 	// Errors not_ready | keygen_failed | bad_request | timeout (10 s, one retry at most). Forget drops the call's keys.
 	'voiceEphemeralPrepare',
 	'voiceEphemeralForget',
-	// Page to shell: sent when the incoming-call unlock entry becomes interactive. Payload {callId}.
+	// Page to shell (decision): sent when the incoming-call unlock entry becomes interactive. Payload {callId}.
 	'incomingCallUnlockShown',
 ] as const
 

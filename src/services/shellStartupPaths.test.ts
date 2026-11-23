@@ -2,10 +2,10 @@
  * @jest-environment node
  */
 /**
- * step 4 (draft 24.2 P1 to P9, 24.3 V-03..V-08, 22.4): the shell startup and write paths, on synthetic records only.
+ * r92 step 4 (draft 24.2 P1 to P9, 24.3 V-03..V-08, 22.4): the shell startup and write paths, on synthetic records only.
  * - the old PWA store (PouchDB "init") is read only: no put, no remove, and no shell write on any route;
  * - the S25 sequence: a shell record read not_ready then ok (the page copy holds only the EOA key), native no_key, store absent: onboarding;
- * the same sequence with the native answer unknown: the startup wait (unavailable), never onboarding;
+ *   the same sequence with the native answer unknown: the startup wait (unavailable), never onboarding;
  * - the decision inputs are logged as status codes only.
  * The document `init` is removed only by the explicit passcode reset (wipeLocalWalletForRestore); no startup or write path removes it.
  */
@@ -61,7 +61,13 @@ jest.mock('pouchdb', () => ({
 		remove: mockDbRemove,
 	}),
 }))
-jest.mock('@/services/argon2WorkerBridge', () => ({ argon2idAsync: jest.fn() }))
+// argon2idAsync must not run in these tests (the PBKDF2 stand-in is removed). The bridge module cannot load in jest (import.meta),
+// so it stays mocked, but a call fails closed. A test that needs the v3 KDF injects it with setMnemonicKdfForTest.
+jest.mock('@/services/argon2WorkerBridge', () => ({
+	argon2idAsync: () => {
+		throw new Error('argon2idAsync must not run in this test: inject the v3 KDF with setMnemonicKdfForTest')
+	},
+}))
 jest.mock('@/services/beamioTagWorkerBridge', () => ({ searchBeamioTagRemote: jest.fn() }))
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires

@@ -1,5 +1,5 @@
 /**
- * The Chat route after a PGP restore failure (plan A). The copy is a draft pending the PWA integration review; the
+ * The Chat route after a PGP restore failure (plan A). The copy is a draft pending the review; the
  * English copy waits for the interface review. The page never generates a key by itself: the button is the only way, and it
  * is the user's click. The rule is the same in a browser and in a shell: a browser generates and registers in the page
  * (the approved exception), a shell calls the native layer. Wallet and asset pages are not affected.
@@ -59,7 +59,7 @@ export default function PgpRestoreFailedNotice({ code: _code }: { code: PgpResto
 		setFailedReason(!result.ok && 'reason' in result ? result.reason : null)
 	}
 
-	// RULING 617d3dd9: in a shell the create action is shown only for a confirmed first identity (same rule in every build)
+	// first-identity rule: in a shell the create action is shown only for a confirmed first identity (same rule in every build)
 	const shellNotEligible = isShellContext() && !pgpCreateEligible(shellAccountKeyOrEmpty())
 	const hideButton = unsupported || !showsReplaceButton(_code) || shellNotEligible
 

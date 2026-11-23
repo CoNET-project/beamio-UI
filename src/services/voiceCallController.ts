@@ -311,7 +311,7 @@ export function createVoiceCallController(options: VoiceCallControllerOptions) {
 	 * the callee creates all four channels when it answers.
 	 */
 	const startOutgoing = async (): Promise<VoiceCallChannel | null> => {
-		// Fail closed: a shell that is old, or not yet answered, does not start a call.
+		// Fail closed: a shell that is old, or not yet answered, does not start a call (the decision).
 		if (!callAllowed(getCallCapabilityState())) return null
 		const ringId = randomMailboxVoiceSessionId()
 		const uiKey = createVoiceSessionKey()

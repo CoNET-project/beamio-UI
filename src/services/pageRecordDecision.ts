@@ -6,6 +6,7 @@
 import type { WalletEoaAddressAnswer } from './walletEoaAddress'
 import { pageRecordAccountMatches } from './walletCredential'
 import { validMnemonicEoa } from '../utils/consumerWalletGate'
+import { isPasscodeNotProvidedAnswer } from './shellStoreWait'
 
 export type PageRecordRead =
 	| { status: 'loaded'; data: { profiles?: unknown; walletCredentialBlob?: unknown; mnemonicPhrase?: unknown } }
@@ -17,7 +18,7 @@ export type PageRecordRead =
  * readable here (hold until it unlocks), or the native side or store is unknown. not_account: readable, but only a private key or an
  * address (no valid mnemonic): not an account credential, so the pre-read route decides (E7, 2026-11-17).
  */
-export type PageRecordDecision = 'use' | 'empty' | 'eoa_mismatch' | 'retry' | 'update_required' | 'record_unavailable' | 'not_account'
+export type PageRecordDecision = 'use' | 'empty' | 'eoa_mismatch' | 'retry' | 'update_required' | 'record_unavailable' | 'not_account' | 'passcode_not_provided'
 
 /**
  * A refused native account read is decided by the shell's code: `not_trusted` asks for an app update; `origin_refused` is an
@@ -26,6 +27,8 @@ export type PageRecordDecision = 'use' | 'empty' | 'eoa_mismatch' | 'retry' | 'u
 function refusalDecision(code: string): PageRecordDecision {
 	if (code === 'not_trusted') return 'update_required'
 	if (code === 'origin_refused') return 'record_unavailable'
+	// Unit g (2026-11-22): passcode_not_provided is a not_ready class: a background wait, never record_unavailable (native_record) and never a copy.
+	if (isPasscodeNotProvidedAnswer(code)) return 'passcode_not_provided'
 	return 'retry'
 }
 
@@ -55,7 +58,7 @@ export function decidePageRecord(read: PageRecordRead, native: WalletEoaAddressA
 export function shellRecordReadState(
 	record: { profiles?: unknown; walletCredentialBlob?: unknown },
 	native: WalletEoaAddressAnswer,
-): { kind: 'use' } | { kind: 'not_account' } | { kind: 'unavailable'; reason: 'eoa_mismatch' | 'native_retry' | 'app_update_required' | 'native_record' } {
+): { kind: 'use' } | { kind: 'not_account' } | { kind: 'unavailable'; reason: 'eoa_mismatch' | 'native_retry' | 'app_update_required' | 'native_record' | 'native_passcode_not_provided' } {
 	const decision = decidePageRecord({ status: 'loaded', data: record }, native, native.kind === 'address' ? native.eoa : '')
 	if (decision === 'use') return { kind: 'use' }
 	// readable, but no valid mnemonic: not an account; the start-up pre-read decides (the caller treats it as no page account)
@@ -63,5 +66,6 @@ export function shellRecordReadState(
 	if (decision === 'eoa_mismatch') return { kind: 'unavailable', reason: 'eoa_mismatch' }
 	if (decision === 'update_required') return { kind: 'unavailable', reason: 'app_update_required' }
 	if (decision === 'record_unavailable') return { kind: 'unavailable', reason: 'native_record' }
+	if (decision === 'passcode_not_provided') return { kind: 'unavailable', reason: 'native_passcode_not_provided' }
 	return { kind: 'unavailable', reason: 'native_retry' }
 }

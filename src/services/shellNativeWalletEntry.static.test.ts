@@ -21,17 +21,19 @@ describe('shell wallet entry on the native wallet', () => {
 
 	it('AppEntryGate reads the page first in a shell, then asks the native pre-read; a valid answer enters the app (boundary: no key falls to the page judgement)', () => {
 		const g = read('components/AppEntryGate.tsx')
-		// rule (a), spec item 42(5): the explicit no_key guard lengthens init; the window is 12000 characters so the browser read stays inside it.
-		const init = g.slice(g.indexOf('const init = async () => {'), g.indexOf('const init = async () => {') + 16000)
+		// rule (a), spec r2.4 item 42(5): the explicit no_key guard lengthens init; the window is 12000 characters so the browser read stays inside it.
+		const init = g.slice(g.indexOf('const init = async () => {'), g.indexOf('const init = async () => {') + 30000)
 		expect(init).toContain('if (nativeShellRef.current) {')
-		// 0.53.39: the shell start asks the native pre-read, not the walletStatus route (reachNativeWallet
+		// 0.53.39 (and): the shell start asks the native pre-read, not the walletStatus route (reachNativeWallet
 		// and its no_key branch were removed from init); the pre-read valid answer enters on the native account.
 		expect(init).toContain('queryNativeMnemonicPreread()')
-		expect(init).toContain('applyNativeWallet(pre.eoa)')
-		expect(init.indexOf('queryNativeMnemonicPreread()')).toBeLessThan(init.indexOf('checkStorageWithTransientRetry()'))
-		// Rewritten for rule 2026-11-16 (PWA first, spec item 42(1)(2)(3)): the page mnemonic is read before the native side, so the
-		// page read is first in the shell. A valid page mnemonic enters without asking the native side (no reachNativeWallet).
-		expect(init.indexOf('withTimeout(readPageMnemonic(), SHELL_PAGE_READ_TIMEOUT_MS')).toBeLessThan(init.indexOf('queryNativeMnemonicPreread()'))
+		// 改写（IDB 先读，0.53.44 产品）：init 中合法预读答复走 adoptPrereadMnemonic（写入页 IDB 后进入首页），不再直接 applyNativeWallet
+		expect(init).toContain('adoptPrereadMnemonic(pre.phrase, pre.eoa, reqId)')
+		// Rewritten for the current rule (PWA first, spec r2.4 item 42(1)(2)(3)): the page mnemonic is read before the native side, so the
+		// page read is first in the shell. 产品现以 takePageMnemonicRead() 取页面 IDB 读取（内层 SHELL_PAGE_READ_TIMEOUT_MS 竞速）。
+		// A valid page mnemonic enters without asking the native side (no reachNativeWallet).
+		expect(init.indexOf('takePageMnemonicRead()')).toBeGreaterThan(-1)
+		expect(init.indexOf('takePageMnemonicRead()')).toBeLessThan(init.indexOf('queryNativeMnemonicPreread()'))
 		// in a shell, an unknown or not_ready native answer is the startup wait (never the storage-unavailable screen, never the page read).
 		expect(init).not.toContain('showStorageUnavailable(`native_wallet_')
 	})

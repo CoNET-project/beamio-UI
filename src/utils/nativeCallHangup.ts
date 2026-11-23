@@ -1,7 +1,7 @@
 import { isTrustedTopFrame } from './androidChatChannel'
 
 /**
- * The native local hangup. The shell reports that its own user hung up a CONNECTED call:
+ * The native local hangup (v66 §73, 2026-11-20). The shell reports that its own user hung up a CONNECTED call:
  * `chatModuleEvent` with the inner event `nativeCallHangup {callId, sessionId, reason:"local_hangup", at}`.
  *
  * The page handles it only when (callId, sessionId) match the connected call it holds. Then it ends the call through the one
