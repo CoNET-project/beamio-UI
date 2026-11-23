@@ -41,6 +41,7 @@ import { queryNativeWalletStateForPreCheck } from '@/services/syncPreCheckReads'
 import { identityCapabilityFrom, identityEntryDisplay, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'
 import { identityProbeDelayMs, onNativeIdentityRetryRequested, requestNativeIdentityRetry, setNativeIdentityCapability } from '@/services/nativeIdentityProbeRetry'
 import { probeNativeCapabilities, requestNativeAck } from '@/services/nativeChatRouteRegister'
+import { validNativeApp } from '@/services/callCapability'
 import { reportUiLocked } from '@/services/passcode/uiLockState'
 import { IDENTITY_CAPABILITY_MISSING } from '@/services/bridgeGuard'
 import { shellNotReadyWaitReason } from '@/services/shellNotReadyWait'
@@ -301,7 +302,7 @@ export default function AppEntryGate() {
 	const shellIdentityState = async () => identityCapabilityFrom(await probeNativeCapabilities())
 	const resolveShellChatCapability = () => {
 		void ensureShellChatState().then((state) => {
-			if (noKeyCtl.capabilityResolved(state === 'native_chat')) goOnboarding(false)
+			if (noKeyCtl.capabilityResolved(state === 'native_chat')) void openOnboardingConfirmed('chat capability resolved')
 		})
 	}
 
@@ -611,7 +612,7 @@ export default function AppEntryGate() {
 		const entry = decideNoKeyEntry(await readNoKeyFacts(), 'empty')
 		publishNativePwaLog('info', `[AppEntryGate] walletEoaAddress no_key with no device copy: ${entry}`)
 		if (entry !== 'onboarding') return false
-		goOnboarding(false)
+		await openOnboardingConfirmed('walletEoaAddress no_key')
 		return true
 	}
 
@@ -1016,6 +1017,96 @@ export default function AppEntryGate() {
 	}, [])
 
 	/**
+	 * R2271: before an account is opened because no account was found (page absent, native no_key), one real native read decides it. A valid mnemonic is
+	 * the home (the page record is written from it, the sync follows in the background); a ciphertext is the unlock page; a lock waits; an unavailable or
+	 * failed read is unknown (wait and retry, no onboarding, nothing written). Only a read that confirms no valid mnemonic returns 'proceed'. An address, a
+	 * pointer or an old private key alone do not block it. An earlier pre-read answer is never reused: it may predate the record or be folded from an
+	 * unavailable read. 'handled' means the start went elsewhere (home, unlock, wait) and the caller must stop.
+	 *
+	 * Platform (declared by the shell in its hello answer, nativeApp.platform): an iOS pre-read covers the current record and the sealed copy, so the
+	 * pre-read alone confirms. Android (and a shell that declares no valid platform: fail closed) must also read walletStatus, which reads the sealed
+	 * copies: no_key confirms; a wallet there (unlocked, phrase_only) is the home on its address; locked waits for the unlock; any other answer waits.
+	 */
+	const confirmNoMnemonicOnNative = async (reqId: string): Promise<'proceed' | 'handled'> => {
+		const real = await queryNativeMnemonicPreread()
+		publishNativePwaLog('info', `[startup] reqId=${reqId} onboarding confirmation read=${real.kind}${real.kind === 'unknown' && real.reason ? ` reason=${real.reason}` : ''}`)
+		if (real.kind === 'cipher') {
+			showPrereadCipher(real.cipher, reqId)
+			return 'handled'
+		}
+		if (real.kind === 'valid') {
+			await adoptValidPreread(real, reqId)
+			return 'handled'
+		}
+		if (real.kind === 'locked') {
+			waitNativeLocked('onboarding confirmation read locked')
+			return 'handled'
+		}
+		if (real.kind !== 'absent') {
+			logStartRoute(reqId, 'none_yet')
+			startupWait(
+				`onboarding confirmation read unknown (${real.reason ?? 'unknown'}): retry, no onboarding`,
+				real.reason === 'read_timeout' ? 'native_read_timeout' : real.reason === 'not_ready' ? 'pre_read_not_ready' : 'record_unreadable',
+			)
+			return 'handled'
+		}
+		const hello = await probeNativeCapabilities().catch(() => null)
+		const platform = validNativeApp(hello && typeof hello === 'object' ? (hello as { nativeApp?: unknown }).nativeApp : undefined)?.platform ?? null
+		if (platform !== 'ios') {
+			const ws = await queryNativeWalletStatus()
+			publishNativePwaLog('info', `[startup] reqId=${reqId} onboarding confirmation platform=${platform ?? 'undeclared'} walletStatus=${ws.status}`)
+			if (ws.status === 'unlocked' || ws.status === 'phrase_only') {
+				publishNativePwaLog('info', '[AppEntryGate] pre-read absent but walletStatus holds a wallet: the home on its address, not onboarding')
+				applyNativeWallet(ws.eoa)
+				logStartRoute(reqId, 'home')
+				resolveShellChatCapability()
+				return 'handled'
+			}
+			if (ws.status === 'locked') {
+				waitNativeLocked('onboarding confirmation walletStatus locked')
+				return 'handled'
+			}
+			if (ws.status !== 'no_key') {
+				logStartRoute(reqId, 'none_yet')
+				startupWait(`onboarding confirmation walletStatus ${ws.status}: retry, no onboarding`, 'status_not_no_key')
+				return 'handled'
+			}
+		}
+		return 'proceed'
+	}
+
+	/** The entries that open the onboarding because no account was found (not the create-tag or the recovery entries): confirmed by the one real read first. */
+	const openOnboardingConfirmed = async (where: string): Promise<void> => {
+		const reqId = newStartReqId()
+		publishNativePwaLog('info', `[startup] reqId=${reqId} onboarding requested by ${where}: confirming with one real native read`)
+		if ((await confirmNoMnemonicOnNative(reqId)) === 'handled') return
+		goOnboarding(false)
+	}
+
+	/** A valid native pre-read answer (the start's, or the one real read before an onboarding): written to the page record, then the home; background sync follows. */
+	const adoptValidPreread = async (pre: { eoa: string; phrase: string }, reqId: string): Promise<void> => {
+		publishNativePwaLog('info', '[AppEntryGate] native mnemonic pre-read valid: writing it to the page IndexedDB, then the home')
+		// ②: the adoption (its checks, write-back and read-back) starts here and is not interrupted by the splash deadline.
+		adoptionInFlightRef.current = true
+		// Per B, item 3: the derived address must also agree with any local account record. A different one is verify_failed:
+		// nothing is written, nothing is onboarded, the data is kept.
+		const localEoa = await readPageDerivedAddress().catch(() => null)
+		if (typeof localEoa === 'string' && localEoa.trim() !== '' && localEoa.trim().toLowerCase() !== pre.eoa.trim().toLowerCase()) {
+			adoptionInFlightRef.current = false
+			startupWait('pre-read address differs from the local account record: verify_failed (nothing written)', 'verify_failed')
+			return
+		}
+		// a held signer for another account is cleared before any entry
+		if (shellSessionEoa() && shellSessionEoa() !== pre.eoa.trim().toLowerCase()) releaseShellSessionSignerHold()
+		try {
+			await adoptPrereadMnemonic(pre.phrase, pre.eoa, reqId)
+		} finally {
+			adoptionInFlightRef.current = false
+		}
+		resolveShellChatCapability()
+	}
+
+	/**
 	 * Spec r2.4 item 42(2) valid, the 1c write-back (): the mnemonic from the native pre-read is written into the page's own record in
 	 * the existing format, then read back. Only a read-back that derives this account opens the home (on its EOA); the post-home sync follows
 	 * (item 44). A failed hold, write or read-back is a startup wait: nothing is deleted, shown or routed.
@@ -1213,25 +1304,7 @@ export default function AppEntryGate() {
 				return
 			}
 			if (pre.kind === 'valid') {
-				publishNativePwaLog('info', '[AppEntryGate] native mnemonic pre-read valid: writing it to the page IndexedDB, then the home')
-				// ②: the adoption (its checks, write-back and read-back) starts here and is not interrupted by the splash deadline.
-				adoptionInFlightRef.current = true
-				// Per B, item 3: the derived address must also agree with any local account record. A different one is verify_failed:
-				// nothing is written, nothing is onboarded, the data is kept.
-				const localEoa = await readPageDerivedAddress().catch(() => null)
-				if (typeof localEoa === 'string' && localEoa.trim() !== '' && localEoa.trim().toLowerCase() !== pre.eoa.trim().toLowerCase()) {
-					adoptionInFlightRef.current = false
-					startupWait('pre-read address differs from the local account record: verify_failed (nothing written)', 'verify_failed')
-					return
-				}
-				// a held signer for another account is cleared before any entry
-				if (shellSessionEoa() && shellSessionEoa() !== pre.eoa.trim().toLowerCase()) releaseShellSessionSignerHold()
-				try {
-					await adoptPrereadMnemonic(pre.phrase, pre.eoa, reqId)
-				} finally {
-					adoptionInFlightRef.current = false
-				}
-				resolveShellChatCapability()
+				await adoptValidPreread(pre, reqId)
 				return
 			}
 			// Unit (b): unknown (not_ready, envelope errors, a read that did not finish) is never a verdict and never an
@@ -1291,10 +1364,13 @@ export default function AppEntryGate() {
 				return
 			}
 			if (outcome.route === 'onboard') {
+				// R2271: one real native read confirms the absence before the onboarding opens (shared with every other onboarding entry)
+				if ((await confirmNoMnemonicOnNative(reqId)) === 'handled') return
 				publishNativePwaLog('info', '[AppEntryGate] native mnemonic pre-read absent, page confirmed empty: onboarding')
 				logStartRoute(reqId, 'onboarding')
 				resolveShellChatCapability()
 				setStorageUnavailable(null)
+				// explicit gate: route === 'onboard' (nativeStartRoute) and the confirmation reads above (native no_key on Android)
 				goOnboarding(false)
 				return
 			}
@@ -1511,7 +1587,7 @@ export default function AppEntryGate() {
 			}
 			// Trusted empty (or empty status): Create Beamio ID / onboarding. The native no-key route only after a confirmed-empty store.
 			noKeyCtl.storageRead(storageResult.status === 'empty')
-			goOnboarding(false)
+			await openOnboardingConfirmed('storage read empty with native no_key')
 		} catch (err) {
 			publishNativePwaLog(
 				'error',
@@ -1636,7 +1712,7 @@ export default function AppEntryGate() {
 			// Race (3.3): the import route only after the gate has decided and found no page account.
 			if (!noKeyCtl.onNativeNoKey()) return
 			// Per spec r2.4 item 42(2): both sides confirmed no mnemonic. The existing onboarding holds the two recovery entries; no import route.
-			goOnboarding(false)
+			void openOnboardingConfirmed('native no_key event')
 		}) : null
 		// G0 (walletStatus no_key) is decided by init below: the onboarding shows "Get started" and the native recovery entry.
 		// The import route is not shown for G0 (round 27; the import page has no recovery entry).

@@ -106,6 +106,7 @@ import {
 	hasLocalSigningMaterial,
 	isKeyOnlyCopyWithoutMnemonic,
 	isTrustedEmptyWalletBlob,
+	hasUnrecognizedSecret,
 } from '@/utils/consumerWalletGate'
 import { validMnemonicEoa } from '@/utils/consumerWalletGate'
 import { recoverAllowed, recoverSourceOf } from '@/services/accountJudgement'
@@ -2012,7 +2013,7 @@ const readStorageWithStatus = async (allowMigration = true, options: { probe?: b
 export type PageIdbState =
   | { status: 'valid'; eoa: string; phrase: string; data: Loose }
   | { status: 'absent' }
-  | { status: 'unknown'; reason: 'timeout' | 'read_failed' | 'corrupt_record' | 'locked' | 'vault_unreadable' | 'no_mnemonic_record' }
+  | { status: 'unknown'; reason: 'timeout' | 'read_failed' | 'corrupt_record' | 'locked' | 'vault_unreadable' | 'no_mnemonic_record' | 'unrecognized_secret' }
 
 /**
  * The wallet stores for the page's IndexedDB record only (unit (b)): the existing record is the one read from IndexedDB, never the shell
@@ -2094,7 +2095,11 @@ export const readPageIdbInit = async (): Promise<PageIdbState> => {
   }
   const phrase = typeof data.mnemonicPhrase === 'string' ? data.mnemonicPhrase.trim() : ''
   if (!phrase) {
-    if (isTrustedEmptyWalletBlob(data as encrypt_keys_object)) return { status: 'absent' }
+    if (isTrustedEmptyWalletBlob(data as encrypt_keys_object)) {
+      // R2271: a record that holds a non-empty secret-class field the reader did not recognise is not empty: unknown, never absent
+      if (hasUnrecognizedSecret(data as encrypt_keys_object)) return { status: 'unknown', reason: 'unrecognized_secret' }
+      return { status: 'absent' }
+    }
     return { status: 'unknown', reason: 'no_mnemonic_record' }
   }
   const eoa = validMnemonicEoa(data as encrypt_keys_object)
@@ -3055,15 +3060,18 @@ export const newUser = async (BeamioName: string, recoverData:IAccountRecover[],
 		})
 
 		if (!resp.ok) {
-			return false
+			// the server answered: keep its status (never folded into false)
+			throw new CreateRemoteError('http', resp.status)
 		}
 
-		const json = await resp.json()
+		await resp.json()
 		return true
 	} catch (err) {
-		console.error("newUser error:", err)
+		if (err instanceof CreateRemoteError) throw err
+		// a fetch that never got an answer (offline, DNS, CORS, TLS): a network failure. Only the error type is logged, never a message or a payload.
+		publishNativePwaLog('warn', `[newUser] network failure errType=${err instanceof Error ? err.name : typeof err}`)
+		throw new CreateRemoteError('network')
 	}
-	return false
 }
 
 const isValidEthersPrivateKey = (pk: unknown): pk is string => {
@@ -3408,6 +3416,17 @@ export function fromBase64(b64: string): string {
 }
 
 
+/**
+ * A failure of the remote registration call while creating an account: `network` (no answer: offline, DNS, CORS, TLS) or `http` (the server answered with a
+ * non-2xx status, kept in `status`). It is thrown, never folded into false or null, so the page can tell the two apart and show a message for each.
+ */
+export class CreateRemoteError extends Error {
+	constructor(readonly kind: 'network' | 'http', readonly status?: number) {
+		super(kind === 'http' ? `http_${status ?? 0}` : 'network')
+		this.name = 'CreateRemoteError'
+	}
+}
+
 /** A local (device-side) failure while creating an account. The message is a step name, never a secret. */
 export class LocalCreateError extends Error {
 	constructor(readonly step: string) {
@@ -3527,7 +3546,7 @@ export const createRecover = async (BeamioName: string, pin: string, options: { 
 
 		return obj
 	} catch (err) {
-		if (err instanceof LocalCreateError) throw err
+		if (err instanceof LocalCreateError || err instanceof CreateRemoteError) throw err
 		logRecoverStep(step, 'fail', err)
 		throw new LocalCreateError(step)
 	}
@@ -3552,11 +3571,18 @@ export const createDetachedRecoverAccount = async (BeamioName: string, pin: stri
 	const hash = ethers.solidityPackedKeccak256(['string'], [BeamioName])
 	const storageEncryptedImg1 = toBase64(JSON.stringify({ stored, img: img1 }))
 	await assertUnregisteredBeforeCreate(acc.address)
-	const registered = await newUser(
-		BeamioName,
-		[{ hash: recoverCode.hash, encrypto: storageEncryptedImg }, { hash, encrypto: storageEncryptedImg1 }],
-		acc.privateKey,
-	)
+	let registered = false
+	try {
+		registered = await newUser(
+			BeamioName,
+			[{ hash: recoverCode.hash, encrypto: storageEncryptedImg }, { hash, encrypto: storageEncryptedImg1 }],
+			acc.privateKey,
+		)
+	} catch (err) {
+		// the detached (agent temp) registration keeps its contract: a remote failure is null
+		if (err instanceof CreateRemoteError) return null
+		throw err
+	}
 	if (!registered) return null
 	const eoa = ethers.getAddress(acc.address)
 	// newUser can return before Master finishes AccountRegistry write — wait until PIN decrypt works.

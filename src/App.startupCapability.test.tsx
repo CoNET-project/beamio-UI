@@ -128,7 +128,7 @@ jest.mock('@/services/nativeRecovery', () => ({
 	queryNativeMnemonicPreread: (...a: unknown[]) => (jest.requireActual('@/services/nativeRecovery') as { queryNativeMnemonicPreread: (...x: unknown[]) => unknown }).queryNativeMnemonicPreread(...a),
 }))
 jest.mock('@/services/shellChatCapability', () => ({ ...jest.requireActual('@/services/shellChatCapability'), ensureShellChatState: async () => 'native_chat', shellChatBlockedNow: () => false }))
-jest.mock('@/services/nativeChatRouteRegister', () => ({ ...jest.requireActual('@/services/nativeChatRouteRegister'), probeNativeCapabilities: async () => ({ answered: true, capabilities: ['identity.native-keys.v1'] }) }))
+jest.mock('@/services/nativeChatRouteRegister', () => ({ ...jest.requireActual('@/services/nativeChatRouteRegister'), probeNativeCapabilities: async () => ({ answered: true, capabilities: ['identity.native-keys.v1'], nativeApp: { platform: 'ios', version: '1.0', build: '1' } }) }))
 // Modules that build a worker from import.meta (not loadable under jest here): every export is an inert stub.
 jest.mock('@/workers/beamioTag/client', () => mockDeepStub())
 jest.mock('@/workers/appDaemon/client', () => mockDeepStub())

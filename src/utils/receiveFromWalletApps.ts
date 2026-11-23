@@ -613,7 +613,7 @@ export async function openReceiveWalletApp(
 		}
 	}
 
-	// Native shell: open the third-party wallet APP (custom scheme / UL), never bare beamio.app.
+	// Native shell: open the third-party wallet APP (custom scheme / UL), never bare beamio.ca.
 	const scheme = receiveWalletNativeSchemeUrl(row, address, amount6)
 	if (scheme && openExternalUrl(scheme)) {
 		return { ok: true }

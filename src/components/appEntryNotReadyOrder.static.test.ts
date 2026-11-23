@@ -30,7 +30,8 @@ describe('goOnboarding call sites in AppEntryGate', () => {
 
 	test('every call site is after the guard, or is in an explicit no_key gate', () => {
 		const sites = callSites()
-		expect(sites.length).toBeGreaterThanOrEqual(6)
+		// (R2271: four of the old direct calls now go through openOnboardingConfirmed, so there are fewer direct sites)
+		expect(sites.length).toBeGreaterThanOrEqual(5)
 		for (const at of sites) {
 			if (at > GUARD) continue
 			const before = SRC.slice(Math.max(0, at - 900), at)

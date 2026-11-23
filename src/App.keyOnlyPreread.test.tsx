@@ -229,7 +229,7 @@ jest.mock('@/services/nativeIdentityPublic', () => ({
 jest.mock('@/services/walletEoaAddress', () => ({ readWalletEoaAddress: async () => (race.eoa ? { kind: 'address', eoa: race.eoa } : { kind: 'refused', code: 'unavailable' }) }))
 jest.mock('@/utils/ephemeralCouponClaimWallet', () => ({ ensureEphemeralWalletForCouponClaim: async () => null }))
 jest.mock('@/services/shellChatCapability', () => ({ ...jest.requireActual('@/services/shellChatCapability'), ensureShellChatState: async () => 'native_chat', shellChatBlockedNow: () => false }))
-jest.mock('@/services/nativeChatRouteRegister', () => ({ ...jest.requireActual('@/services/nativeChatRouteRegister'), probeNativeCapabilities: async () => ({ answered: race.answered, capabilities: race.caps }) }))
+jest.mock('@/services/nativeChatRouteRegister', () => ({ ...jest.requireActual('@/services/nativeChatRouteRegister'), probeNativeCapabilities: async () => ({ answered: race.answered, capabilities: race.caps, nativeApp: { platform: 'ios', version: '1.0', build: '1' } }) }))
 jest.mock('@/workers/beamioTag/client', () => mockDeepStub())
 jest.mock('@/workers/appDaemon/client', () => mockDeepStub())
 jest.mock('@/services/chatWorkerBridge', () => mockDeepStub())

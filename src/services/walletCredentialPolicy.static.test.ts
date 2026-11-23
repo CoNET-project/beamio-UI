@@ -15,7 +15,9 @@ describe('the phrase never reaches a log', () => {
 	})
 	it('the page-copy restore logs only the action, never the answer or the phrase', () => {
 		const start = gate.indexOf('const restorePageCopy = async')
-		const body = gate.slice(start, gate.indexOf('const init = async', start))
+		// the restore function only: up to the next helper that follows it (adoptValidPreread), never beyond into other start code
+		const end = gate.indexOf('const adoptValidPreread = async', start)
+		const body = gate.slice(start, end > start ? end : gate.indexOf('const init = async', start))
 		const logs = body.match(/publishNativePwaLog\([^\n]*\)/g) ?? []
 		expect(logs.length).toBeGreaterThan(0)
 		for (const line of logs) expect(line).not.toMatch(/mnemonic|answer|blob|phrase/i)

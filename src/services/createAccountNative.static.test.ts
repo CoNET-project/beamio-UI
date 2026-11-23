@@ -20,7 +20,7 @@ describe('new account in a shell: native create, typed local errors (S25)', () =
 		expect(beamio).toContain('export class LocalCreateError extends Error')
 		expect(createBody).toContain("throw new LocalCreateError(!temp ? 'wallet_null'")
 		expect(createBody).toContain("throw new LocalCreateError('private_key_missing')")
-		expect(createBody).toContain('if (err instanceof LocalCreateError) throw err')
+		expect(createBody).toContain('if (err instanceof LocalCreateError || err instanceof CreateRemoteError) throw err')
 		expect(createBody).toContain('throw new LocalCreateError(step)')
 		expect(createBody).not.toMatch(/if \(!temp[^\n]*\n\s*return null/)
 	})
@@ -51,7 +51,7 @@ describe('new account in a shell: native create, typed local errors (S25)', () =
 	})
 
 	it('a local failure shows the local copy, not the network copy', () => {
-		expect(screen).toMatch(/catch \(ex\) \{\s*setCreateError\(tu\(ex instanceof LocalCreateError \? createRecoverCopyKey\(ex\.step\) : 'network_error_try_again'\)\)/)  // the step picks the copy key; the default stays the local copy
+		expect(screen).toMatch(/catch \(ex\) \{\s*failureCopy = tu\(\s*ex instanceof LocalCreateError\s*\? createRecoverCopyKey\(ex\.step\)\s*: ex instanceof CreateRemoteError\s*\? createRemoteErrorCopyKey\(ex\.kind\)\s*: 'network_error_try_again',\s*\)\s*setCreateError\(failureCopy\)/)  // the step picks the copy key; the default stays the local copy
 	})
 
 	it('both locales carry the two new copy keys', () => {

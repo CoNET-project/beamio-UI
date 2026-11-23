@@ -155,7 +155,8 @@ jest.mock('@/services/shellChatCapability', () => ({
 	shellChatBlockedNow: () => true,
 }), { virtual: true })
 jest.mock('@/services/nativeChatRouteRegister', () => ({
-	probeNativeCapabilities: async () => ({ answered: true, capabilities: ['identity.native-keys.v1'] }),
+	// nativeApp: the shell's own declaration of its platform (hello ack); a test sets globalThis.__nativeApp
+	probeNativeCapabilities: async () => ({ answered: true, capabilities: ['identity.native-keys.v1'], nativeApp: (globalThis as { __nativeApp?: unknown }).__nativeApp }),
 	requestNativeAck: jest.fn(async () => ({ kind: 'none' })),
 }), { virtual: true })
 jest.mock('@/services/nativeWallet', () => ({
@@ -220,7 +221,8 @@ jest.mock('@/services/shellMnemonicSync', () => {
 jest.mock('@/services/nativeRecovery', () => ({
 	queryNativeWalletStatus: async () => {
 		;(globalThis as { __calls?: { walletStatus: number } }).__calls!.walletStatus += 1
-		return { status: (globalThis as { __walletStatus?: string }).__walletStatus ?? 'no_key' }
+		const eoa = (globalThis as { __walletEoa?: string }).__walletEoa
+		return { status: (globalThis as { __walletStatus?: string }).__walletStatus ?? 'no_key', ...(eoa ? { eoa } : {}) }
 	},
 	nativeRecoveryOpen: jest.fn(),
 	onNativeRecoveryResult: jest.fn(() => () => undefined),
@@ -385,13 +387,144 @@ describe('② ciphertext current without a passcode: the passcode page; decrypte
 	}, 90_000)
 })
 
+describe('R2271: the onboarding is confirmed by one real native read (SR-10 .. SR-16, SR-21 .. SR-23)', () => {
+	const declare = (platform: 'ios' | 'android' | null) => {
+		;(globalThis as { __nativeApp?: unknown }).__nativeApp = platform ? { platform, version: '1.0', build: '1' } : undefined
+	}
+	afterEach(() => {
+		declare(null)
+		;(globalThis as { __walletEoa?: string }).__walletEoa = undefined
+	})
+
+	it('SR-10/11: the page is absent, the start says absent, the confirming read finds a valid mnemonic: the home, the page record written from it, no onboarding', async () => {
+		g.__prereadAnswers = [{ kind: 'absent' }, { kind: 'valid', eoa: EOA_NATIVE, phrase: PHRASE_NATIVE }]
+		renderAt('/home')
+		await waitFor(() => expect(screen.getByText('HOME-PAGE')).toBeTruthy(), { timeout: 8000 })
+		expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
+		expect(g.__calls.preread).toBe(2)
+		expect(g.__persistCalls.n).toBe(1)
+		expect(g.__persistCalls.phrases).toEqual([PHRASE_NATIVE])
+	})
+
+	it('the confirming read finds a ciphertext: the unlock page, no onboarding', async () => {
+		g.__prereadAnswers = [{ kind: 'absent' }, { kind: 'cipher', cipher: CIPHER_ENVELOPE }]
+		renderAt('/home')
+		expect(await screen.findByTestId('preread-passcode-input')).toBeTruthy()
+		expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
+		expect(g.__persistCalls.n).toBe(0)
+	})
+
+	it('SR-14: the confirming read is unavailable (not_ready): wait and retry, no onboarding, nothing written', async () => {
+		g.__prereadAnswers = [{ kind: 'absent' }, { kind: 'unknown', reason: 'not_ready' }]
+		renderAt('/home')
+		await waitFor(() => expect(g.__calls.preread).toBeGreaterThanOrEqual(2), { timeout: 8000 })
+		await settle(1500)
+		expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
+		expect(screen.queryByText('HOME-PAGE')).toBeNull()
+		expect(g.__persistCalls.n).toBe(0)
+		expect(g.__logs.some((l: string) => /onboarding confirmation read=unknown/.test(l))).toBe(true)
+	})
+
+	it('SR-15: the confirming read fails (read_error): wait and retry, no onboarding, nothing written', async () => {
+		g.__prereadAnswers = [{ kind: 'absent' }, { kind: 'unknown', reason: 'read_error' }]
+		renderAt('/home')
+		await waitFor(() => expect(g.__calls.preread).toBeGreaterThanOrEqual(2), { timeout: 8000 })
+		await settle(1500)
+		expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
+		expect(screen.queryByText('HOME-PAGE')).toBeNull()
+		expect(g.__persistCalls.n).toBe(0)
+	})
+
+	it('SR-12/13: both reads say there is no mnemonic (an address or an old key may still exist): the onboarding, as before', async () => {
+		g.__prereadAnswers = [{ kind: 'absent' }, { kind: 'absent' }]
+		g.__walletStatus = 'no_key'
+		renderAt('/home')
+		await waitFor(() => expect(screen.getByText('ONBOARDING-PAGE')).toBeTruthy(), { timeout: 8000 })
+		expect(g.__calls.preread).toBe(2)
+		expect(g.__persistCalls.n).toBe(0)
+	})
+
+	it('a shell that declares iOS does not need walletStatus no_key for the confirmation (its pre-read covers the sealed copy): not_ready with absent still onboards', async () => {
+		declare('ios')
+		g.__prereadAnswers = [{ kind: 'absent' }, { kind: 'absent' }]
+		g.__walletStatus = 'not_ready'
+		renderAt('/home')
+		await waitFor(() => expect(screen.getByText('ONBOARDING-PAGE')).toBeTruthy(), { timeout: 8000 })
+	})
+
+	it('a shell that declares no valid platform is treated like Android (fail closed): walletStatus must also say no_key; not_ready waits', async () => {
+		declare(null)
+		g.__prereadAnswers = [{ kind: 'absent' }, { kind: 'absent' }]
+		g.__walletStatus = 'not_ready'
+		renderAt('/home')
+		await waitFor(() => expect(g.__logs.some((l: string) => /onboarding confirmation platform=undeclared walletStatus=not_ready/.test(l))).toBe(true), { timeout: 8000 })
+		await settle(800)
+		expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
+	})
+
+	it('a shell that declares Android is not helped by an iOS-looking user agent: the declaration decides (walletStatus not_ready waits)', async () => {
+		const originalUa = window.navigator.userAgent
+		Object.defineProperty(window.navigator, 'userAgent', { value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)', configurable: true })
+		declare('android')
+		g.__prereadAnswers = [{ kind: 'absent' }, { kind: 'absent' }]
+		g.__walletStatus = 'not_ready'
+		renderAt('/home')
+		try {
+			await waitFor(() => expect(g.__logs.some((l: string) => /onboarding confirmation platform=android walletStatus=not_ready/.test(l))).toBe(true), { timeout: 8000 })
+			await settle(800)
+			expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
+		} finally {
+			Object.defineProperty(window.navigator, 'userAgent', { value: originalUa, configurable: true })
+		}
+	})
+
+	it('SR-23 (Android): the pre-read says absent and walletStatus says no_key: the onboarding', async () => {
+		declare('android')
+		g.__prereadAnswers = [{ kind: 'absent' }, { kind: 'absent' }]
+		g.__walletStatus = 'no_key'
+		renderAt('/home')
+		await waitFor(() => expect(screen.getByText('ONBOARDING-PAGE')).toBeTruthy(), { timeout: 8000 })
+	})
+
+	it('SR-22 (Android): the pre-read says absent but walletStatus is not no_key (not_ready, unknown): wait and retry, no onboarding', async () => {
+		declare('android')
+		for (const status of ['not_ready', 'unknown']) {
+			g.__prereadAnswers = [{ kind: 'absent' }, { kind: 'absent' }]
+			g.__walletStatus = status
+			const view = renderAt('/home')
+			if (status === 'not_ready') {
+				// the start route reaches the confirmation, which reads walletStatus and refuses it
+				await waitFor(() => expect(g.__logs.some((l: string) => /onboarding confirmation platform=android walletStatus=not_ready/.test(l))).toBe(true), { timeout: 8000 })
+			} else {
+				// an unknown walletStatus never reaches the confirmation: the start route itself is a retry
+				await waitFor(() => expect(g.__calls.walletStatus).toBeGreaterThanOrEqual(1), { timeout: 8000 })
+			}
+			await settle(800)
+			expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
+			view.unmount()
+			g.__logs = []
+		}
+	})
+
+	it('SR-21 (Android): the pre-read says absent but walletStatus holds a wallet (the sealed copy): the home on its address, no onboarding', async () => {
+		declare('android')
+		g.__prereadAnswers = [{ kind: 'absent' }, { kind: 'absent' }]
+		g.__walletStatus = 'unlocked'
+		g.__walletEoa = EOA_NATIVE
+		renderAt('/home')
+		await waitFor(() => expect(screen.getByText('HOME-PAGE')).toBeTruthy(), { timeout: 8000 })
+		expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
+	})
+})
+
 describe('③ empty and read failure: empty is onboarding; a read failure is held with the data kept', () => {
 	it('③a confirmed_missing on every side → onboarding (silent)', async () => {
 		g.__prereadAnswers = [{ kind: 'absent' }]
 		g.__walletStatus = 'no_key'
 		renderAt('/home')
 		await waitFor(() => expect(screen.getByText('ONBOARDING-PAGE')).toBeTruthy(), { timeout: 4000 })
-		expect(g.__calls.preread).toBe(1)
+		// the start's pre-read and the one real read that confirms the absence before the onboarding (R2271)
+		expect(g.__calls.preread).toBe(2)
 		expect(g.__persistCalls.n).toBe(0)
 	})
 

@@ -4,8 +4,8 @@ import { IpfsImg } from '@/components/IpfsImg';
 import { InvitedByIntroducerChip } from '@/components/InvitedByIntroducerChip'
 import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react"
 import { AppButton } from "@/components/button/AppButton"
-import { checkBeamioAccountAPI, createRecover, LocalCreateError } from "@/services/beamio"
-import { createRecoverCopyKey } from '@/services/createRecoverCopy'
+import { checkBeamioAccountAPI, createRecover, CreateRemoteError, LocalCreateError } from "@/services/beamio"
+import { createRecoverCopyKey, createRemoteErrorCopyKey } from '@/services/createRecoverCopy'
 import { nativeAccountCreateOpen, nativeRecoveryOpen, onNativeAccountCreateResult, onNativeRecoveryResult, recoveryOpenErrorKey } from "@/services/nativeRecovery"
 import { announceNativeWalletEstablished } from "@/services/nativeWalletEstablished"
 import { cancelCreateWait, canStartCreate, onCreateResult, scheduleCreateFallback, startCreateWait, tickCreateWait, type CreateWaitState } from "@/services/nativeCreateWait"
@@ -583,16 +583,26 @@ const CreateUsernamePinScreen = forwardRef<
 			return
 		}
 		let kks: Awaited<ReturnType<typeof createRecover>> = null
+		// the failure of THIS call, kept in a local: never read from the state of an earlier render (a stale createError hid the second failure)
+		let failureCopy = ''
 		try {
 			kks = await createRecover(trimmedTag, pwd, { mustReuseKey: reuseExistingKey })
 		} catch (ex) {
-			setCreateError(tu(ex instanceof LocalCreateError ? createRecoverCopyKey(ex.step) : 'network_error_try_again'))
+			failureCopy = tu(
+				ex instanceof LocalCreateError
+					? createRecoverCopyKey(ex.step)
+					: ex instanceof CreateRemoteError
+						? createRemoteErrorCopyKey(ex.kind)
+						: 'network_error_try_again',
+			)
+			setCreateError(failureCopy)
 		} finally {
 			setLoading(false)
 		}
 
 		if (!kks) {
-			if (!createError) setCreateError(tu('network_error_try_again'))
+			// a null result without a thrown reason is still a failure of this call: show the generic network message (never nothing)
+			setCreateError(failureCopy || tu('network_error_try_again'))
 			return
 		}
 

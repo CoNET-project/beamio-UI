@@ -31,6 +31,35 @@ export function hasValidMnemonic(data: encrypt_keys_object | null | undefined): 
 	}
 }
 
+/**
+ * R2271 (page-side unrecognised secret): a record with no mnemonic that still carries a non-empty secret-class field the reader did not recognise is not an
+ * empty record. Checked on the record after the start read has opened every recognised wrap, so what remains is: a secret-named field whose value is an
+ * object or another non-string shape (privateKeyArmor, mnemonicPhrase, ...), or a non-empty `*Wrap` sibling (privateKeyArmorWrap, pgpKey.privateKeyArmorWrap,
+ * a top-level privateKeyArmorWrap). A string key or phrase is handled by the existing rules; an address alone is not a secret. Scans the top level,
+ * profiles[*] and profiles[*].pgpKey only (never the chat containers).
+ */
+export function hasUnrecognizedSecret(data: encrypt_keys_object | null | undefined): boolean {
+	const nonEmpty = (v: unknown): boolean => v !== undefined && v !== null && v !== '' && !(typeof v === 'object' && Object.keys(v as object).length === 0)
+	const SECRET_KEY = /(privatekey|mnemonic|secret|seed)/i
+	const flagged = (o: unknown): boolean => {
+		if (!o || typeof o !== 'object' || Array.isArray(o)) return false
+		for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
+			const wrap = /Wrap$/.test(k)
+			if ((wrap || SECRET_KEY.test(k)) && nonEmpty(v) && (wrap || typeof v !== 'string')) return true
+		}
+		return false
+	}
+	const d = data as unknown as Record<string, unknown> | null | undefined
+	if (!d || typeof d !== 'object') return false
+	if (flagged(d)) return true
+	const profiles = Array.isArray(d.profiles) ? (d.profiles as unknown[]).flat() : []
+	for (const p of profiles) {
+		if (flagged(p)) return true
+		if (p && typeof p === 'object' && flagged((p as Record<string, unknown>).pgpKey)) return true
+	}
+	return false
+}
+
 /** Registered Beamio account in local storage (EOA + @beamioTag), independent of mnemonic presence. */
 export function hasCompletedBeamioAccount(data: encrypt_keys_object | null | undefined): boolean {
 	if (!data) return false

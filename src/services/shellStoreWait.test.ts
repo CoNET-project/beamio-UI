@@ -194,7 +194,9 @@ describe('Y.104 3: the unknown retry branch shares the same cadence and never on
 		const at = gate.indexOf('startupWait(`native start: ${outcome.reason}`')
 		expect(at).toBeGreaterThan(0)
 		expect(nativeStartRoute({ pre: { kind: 'unknown' }, walletState: 'absent', hasKey: false, walletStatus: 'no_key' })).toEqual({ route: 'retry', reason: 'pre_unknown' })
-		const wait = gate.slice(gate.indexOf('const startupWait = '), gate.indexOf('const init = async', 0))
+		// the wait function only: up to the helpers that follow it (the confirmed-onboarding helpers, R2271), never into other start code
+		const confirmAt = gate.indexOf('R2271: before an account is opened')
+		const wait = gate.slice(gate.indexOf('const startupWait = '), confirmAt > 0 ? confirmAt : gate.indexOf('const init = async', 0))
 		expect(wait).toContain('window.setTimeout')
 		expect(wait).toContain('startupRetryDelayMs(attempt)')
 		expect(wait).toContain('void initRef.current?.()')

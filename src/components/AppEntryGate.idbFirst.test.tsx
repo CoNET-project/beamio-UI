@@ -265,7 +265,8 @@ describe('IndexedDB definitively absent: the pre-read decides', () => {
 		renderAt('/settings')
 		await waitFor(() => expect(screen.getByText('ONBOARDING-PAGE')).toBeTruthy(), { timeout: 4000 })
 		expect(screen.queryByText('SETTINGS-PAGE')).toBeNull()
-		expect(g.__calls.preread).toBe(2)
+		// two reads for the start (the first unknown, the second absent) and the one real read that confirms the absence before the onboarding (R2271)
+		expect(g.__calls.preread).toBe(3)
 		expect(g.__persistCalls.n).toBe(0)
 	})
 

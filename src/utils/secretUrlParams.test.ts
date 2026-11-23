@@ -11,7 +11,7 @@ const KEY_C = 'TESTKEY_0003'
 
 describe('stripSecretParamsFromUrl (pure)', () => {
 	it('removes MasterKey, RecoveryCode and recovercode from the query in any case and keeps other params', () => {
-		const href = `https://beamio.app/app/?MasterKey=${KEY_A}&x=1&RecoveryCode=${KEY_B}&recovercode=${KEY_C}#/home`
+		const href = `https://beamio.ca/app/?MasterKey=${KEY_A}&x=1&RecoveryCode=${KEY_B}&recovercode=${KEY_C}#/home`
 		const out = stripSecretParamsFromUrl(href)
 		expect(out).not.toMatch(/masterkey|recoverycode|recovercode/i)
 		expect(out).not.toContain(KEY_A)
@@ -22,7 +22,7 @@ describe('stripSecretParamsFromUrl (pure)', () => {
 	})
 
 	it('removes secret params from the HashRouter query and keeps the route path', () => {
-		const href = `https://beamio.app/app/#/wallet?recoverycode=${KEY_A}&tab=assets`
+		const href = `https://beamio.ca/app/#/wallet?recoverycode=${KEY_A}&tab=assets`
 		const out = stripSecretParamsFromUrl(href)
 		expect(out).not.toMatch(/recoverycode/i)
 		expect(out).not.toContain(KEY_A)
@@ -31,7 +31,7 @@ describe('stripSecretParamsFromUrl (pure)', () => {
 	})
 
 	it('removes beamiotag only when alsoCompanions is set', () => {
-		const href = `https://beamio.app/app/?beamioTag=@testtag&MasterKey=${KEY_A}`
+		const href = `https://beamio.ca/app/?beamioTag=@testtag&MasterKey=${KEY_A}`
 		expect(stripSecretParamsFromUrl(href)).toContain('beamioTag=')
 		expect(stripSecretParamsFromUrl(href, { alsoCompanions: true })).not.toMatch(/beamiotag/i)
 	})
@@ -43,12 +43,12 @@ describe('stripSecretParamsFromUrl (pure)', () => {
 
 describe('urlHasSecretParams and isSecretUrlParamName', () => {
 	it('detects a secret param in the query and in the hash query', () => {
-		expect(urlHasSecretParams(`https://beamio.app/app/?MasterKey=${KEY_A}`)).toBe(true)
-		expect(urlHasSecretParams(`https://beamio.app/app/#/x?recovercode=${KEY_A}`)).toBe(true)
+		expect(urlHasSecretParams(`https://beamio.ca/app/?MasterKey=${KEY_A}`)).toBe(true)
+		expect(urlHasSecretParams(`https://beamio.ca/app/#/x?recovercode=${KEY_A}`)).toBe(true)
 	})
 
 	it('reports false for a clean URL', () => {
-		expect(urlHasSecretParams('https://beamio.app/app/?x=1#/home')).toBe(false)
+		expect(urlHasSecretParams('https://beamio.ca/app/?x=1#/home')).toBe(false)
 	})
 
 	it('matches the three secret names in any case and nothing else', () => {

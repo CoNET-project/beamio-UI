@@ -28,7 +28,9 @@ describe('shell wallet entry on the native wallet', () => {
 		// and its no_key branch were removed from init); the pre-read valid answer enters on the native account.
 		expect(init).toContain('queryNativeMnemonicPreread()')
 		// 改写（IDB 先读，0.53.44 产品）：init 中合法预读答复走 adoptPrereadMnemonic（写入页 IDB 后进入首页），不再直接 applyNativeWallet
-		expect(init).toContain('adoptPrereadMnemonic(pre.phrase, pre.eoa, reqId)')
+		// (R2271: the valid-answer adoption is one helper shared by the start and the one real read before an onboarding)
+		expect(init).toContain('adoptValidPreread(pre, reqId)')
+		expect(g).toContain('await adoptPrereadMnemonic(pre.phrase, pre.eoa, reqId)')
 		// Rewritten for the current rule (PWA first, spec r2.4 item 42(1)(2)(3)): the page mnemonic is read before the native side, so the
 		// page read is first in the shell. 产品现以 takePageMnemonicRead() 取页面 IDB 读取（内层 SHELL_PAGE_READ_TIMEOUT_MS 竞速）。
 		// A valid page mnemonic enters without asking the native side (no reachNativeWallet).

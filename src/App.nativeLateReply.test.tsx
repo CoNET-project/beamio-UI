@@ -356,7 +356,8 @@ describe('native record read: the 30 s request window (0.53.44)', () => {
 			await waitFor(() => expect(mockLogs.some((m) => /reqId/.test(m) && /(after|late|decided|drop)/i.test(m))).toBe(true), { timeout: 20_000 })
 			expect(logged('native mnemonic pre-read valid')).toBe(false)
 			expect(logged('final_route=home')).toBe(false)
-			expect(prereads.n).toBe(1)
+			// the start's request and the one real read that confirms the absence before the onboarding (R2271)
+			expect(prereads.n).toBe(2)
 		}, 90_000)
 
 	it('e (control): a native answer at 4 s (absent) decides the start: the native pre-read decides, no unknown wait', async () => {
@@ -515,7 +516,8 @@ describe('native record read: the 30 s request window (0.53.44)', () => {
 		} finally {
 			clearTimeout(reset)
 		}
-		expect(prereads.n).toBe(1)
+		// the late answer is the start's own request; the onboarding is then confirmed by one more real read (R2271), so at least two in all
+		expect(prereads.n).toBeGreaterThanOrEqual(2)
 		expect(logged('native recovery needed (a definite answer)')).toBe(false)
 	}, 60_000)
 
@@ -526,7 +528,8 @@ describe('native record read: the 30 s request window (0.53.44)', () => {
 		const adoptedAt = mockLogs.findIndex((m) => m.includes('page confirmed empty: onboarding'))
 		expect(mockLogs.slice(adoptedAt + 1).some((m) => m.includes('startup wait'))).toBe(false)
 		expect(logged('native recovery needed (a definite answer)')).toBe(false)
-		expect(prereads.n).toBe(1)
+		// the late answer is the start's own request; the onboarding is then confirmed by one more real read (R2271), so at least two in all
+		expect(prereads.n).toBeGreaterThanOrEqual(2)
 		expect(mockWrites.n).toBe(0)
 	}, 60_000)
 
