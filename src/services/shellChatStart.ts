@@ -3,6 +3,7 @@
  * material with `identityPublic` and starts the native listen with it. It does not read the wallet key, and it does not run any
  * page-key step (own-chain reads, registration, the connection signer). The collaborators are passed in, so the order is testable.
  */
+import { qaLine } from '@/utils/qaLog'
 import type { NativeIdentityPublic } from './nativeIdentityPublic'
 import type { PgpEvaluation, PgpRestoreOutcome } from './nativePgpRestore'
 import type { PgpRestoreFailure } from './pgpRestore'
@@ -73,13 +74,15 @@ export interface ShellChatStartDeps {
 	showPgpFailure: (code: PgpRestoreFailure) => void
 	/** the unified chat-unavailable state (option A), the same screen as a missing identity capability. */
 	showChatUnavailable: () => void
+	/** QA builds: the SDK sets up the first identity on its own; the page shows "setting up" (no button) and waits for firstIdentityStatus or the next identityPublic. */
+	setFirstIdentitySetup?: (value: boolean) => void
 	/** the chat identity is pending (not a first identity, not confirmed): its own notice, not the app-update notice. */
 	showIdentityPending: () => void
 	/**
 	 * Schedules another start. `failure`(the default) counts toward the retry limit; `continue`is a step that
 	 * succeeded and goes on (a restored PGP, a completed G1 init), and it does not count.
 	 */
-	retry: (reason: string, kind?: 'failure' | 'continue' | 'temporary') => void
+	retry: (reason: string, kind?: 'failure' | 'continue' | 'temporary' | 'not_ready') => void
 	/** the closed reason of the listen start (`clear_failed`or `unregister_refused`), read once. Null otherwise. */
 	takeIdentityClosed?: () => 'clear_failed' | 'unregister_refused' | null
 	/** shows the closed notice with its button. No automatic retry follows. */
@@ -100,9 +103,12 @@ export interface ShellChatStartDeps {
 async function readNodesOrUnavailable(deps: ShellChatStartDeps): Promise<nodeInfo[] | null> {
 	try {
 		const nodes = await deps.getNodes()
+		if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', `nodes all=${nodes.length}`)
 		if (nodes.length) return nodes
+		if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', 'nodes failed stage=empty')
 		deps.log('warn', 'shell chat: the node list is empty: unavailable; the start is retried')
 	} catch (err) {
+		if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', 'nodes failed stage=read_failed')
 		deps.log('warn', `shell chat: the node list could not be read (${err instanceof Error ? err.message : String(err)}): unavailable; the start is retried`)
 	}
 	deps.setGossip(false)
@@ -125,12 +131,15 @@ export async function startShellChatFromNativeIdentity(deps: ShellChatStartDeps)
 			//  no identity source. Nothing is guessed; the page says to retry later.
 			deps.setIdentityPending(true)
 			deps.log('warn', 'shell chat: key present, not initialised (G1), and no persisted public EOA; the chat waits')
+			// identityPublic not_ready: the cold-start schedule (1, 2, 4, 8, 16 s, then every 16 s, a 60 s window) re-reads it
+			deps.retry('identityPublic not_ready', 'not_ready')
 			return 'identity_source_missing'
 		}
 		// Held: the chain does not send the G1 init until the rules; the injected initializer is absent
 		// while SHELL_G1_INIT_ENABLED is false, so the start waits here and nothing is sent.
 		if (!deps.initWithPersistedEoa) {
 			deps.log('info', 'shell chat: key present, not initialised (G1); the G1 init is held, the start waits')
+			deps.retry('identityPublic not_ready', 'not_ready')
 			return 'not_ready'
 		}
 		const nodes = await readNodesOrUnavailable(deps)
@@ -138,6 +147,7 @@ export async function startShellChatFromNativeIdentity(deps: ShellChatStartDeps)
 		const init = await deps.initWithPersistedEoa(eoa, nodes)
 		if (!init.ok) {
 			deps.log('warn', `shell chat: init with the persisted EOA did not succeed (${init.reason}); the start waits`)
+			deps.retry('identityPublic not_ready', 'not_ready')
 			return 'not_ready'
 		}
 		deps.log('info', 'shell chat: init with the persisted EOA succeeded (G2); the start is retried')
@@ -147,19 +157,33 @@ export async function startShellChatFromNativeIdentity(deps: ShellChatStartDeps)
 	if (id.kind !== 'ok') {
 		deps.setGossip(false)
 		deps.log('warn', `shell chat: identityPublic answered ${id.kind}; the start is retried`)
-		deps.retry(`identityPublic ${id.kind}`)
+		// an unanswered identityPublic (the hello or the read not answered yet) is a not_ready read: the cold-start schedule, no counted failure
+		deps.retry(`identityPublic ${id.kind}`, id.kind === 'unavailable' ? 'not_ready' : undefined)
 		return 'failed'
 	}
 	deps.setIdentityPending(false)
 	deps.setFirstIdentity(false)
 	if (!id.pgpReady || !id.pgpPublicKeyArmored || !id.ownRouteArmoredPublicKey) {
 		deps.setGossip(false)
+		if (id.pgpReadyKnown === false) {
+			// the native side could not read its PGP vault: pgpReady false is UNKNOWN, not "no key". The temporary state (pgp.temporary.*) is
+			// shown and the start is retried on the usual ladder; no evaluate, no restore, no create.
+			deps.log('info', 'shell chat: pgpReady false with pgpReadyKnown false (unknown): the temporary state is shown; no evaluate; retried with the usual backoff')
+			deps.setPgpTemporary?.(true)
+			deps.retry('pgp ready unknown', 'temporary')
+			return 'failed'
+		}
 		if (confirmedAccounts.has(accountKeyOf(id))) {
 			// items 2 and 4: this account was confirmed to match the backup in this process. No evaluate and no restore. The route
 			// is still missing (the native identityPublic todo): the chat is unavailable, not silent, no replace prompt, no retry.
 			deps.log('warn', 'shell chat: identityPublic still reads pgpReady false after already_exists; the identity is usable, the route is missing (native todo); no evaluate, no restore; the chat is unavailable')
 			deps.showChatUnavailable()
 			return 'chat_unavailable'
+		}
+		if (verifyFailedAccounts.has(accountKeyOf(id))) {
+			deps.log('warn', 'shell chat: pgpRestore already failed the native verification for this account in this process; the failure is shown, no evaluate, no restore, no retry')
+			deps.showPgpFailure('pgp_verify_failed')
+			return 'pgp_failed'
 		}
 		deps.log('warn', 'shell chat: pgpReady false; the state is read by pgpRestoreEvaluate (no create, no restore from this flag)')
 		return evaluateMissingPgp(deps, accountKeyOf(id))
@@ -179,6 +203,7 @@ export async function startShellChatFromNativeIdentity(deps: ShellChatStartDeps)
 	const mailboxDomains = deps.mailboxDomainsFor(nodes, route)
 	const candidates = nodes.filter((n) => !mailboxDomains.has(n.domain))
 	const entryNodes = await deps.pickEntries(candidates.length ? candidates : nodes)
+	if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', `nodes all=${nodes.length} entry=${entryNodes.length}`)
 	if (!entryNodes.length) {
 		deps.setGossip(false)
 		deps.log('warn', 'shell chat: no healthy entry C; the start is retried')
@@ -228,9 +253,15 @@ export async function startShellChatFromNativeIdentity(deps: ShellChatStartDeps)
  * pgpRestoreEvaluate nor pgpRestore. A process restart (a cold start) starts with an empty set, so at most one restore per cold start.
  */
 const confirmedAccounts = new Set<string>()
+/**
+ * Accounts whose pgpRestore failed the native challenge-signature gate (pgp_verify_failed) in this process. For them later starts show the
+ * failure again and send neither pgpRestoreEvaluate nor pgpRestore: no restore loop, no automatic retry. A cold start clears the set.
+ */
+const verifyFailedAccounts = new Set<string>()
 /** For tests: a cold start (an empty confirmation set). */
 export function resetShellChatStartLoopGuard(): void {
 	confirmedAccounts.clear()
+	verifyFailedAccounts.clear()
 }
 function accountKeyOf(id: { accountKey?: string; eoa?: string }): string {
 	return (id.accountKey || id.eoa || '').trim().toLowerCase()
@@ -258,6 +289,13 @@ async function evaluateMissingPgp(deps: ShellChatStartDeps, accountKey: string):
 	if (ev.state === 'first_identity') {
 		// first-identity rule: a first identity needs the legacy report ABSENT and an unregistered chain. Anything else (a field missing, unknown,
 		// PRESENT, UNREADABLE, registered) is not a first identity: no create entry, and the identity waits for a restore.
+		if (firstIdentityConfirmed(ev) && deps.setFirstIdentitySetup) {
+			// QA builds (frozen protocol v1 §4.1): a confirmed first identity shows "setting up", no generate button, no create command from the page.
+			deps.setFirstIdentitySetup(true)
+			deps.setFirstIdentity(false)
+			deps.log('info', 'shell chat: first identity confirmed; the SDK sets it up; the page waits (no create entry)')
+			return 'pgp_first_identity'
+		}
 		if (firstIdentityConfirmed(ev)) {
 			grantPgpCreateEligibility(accountKey)
 			deps.setFirstIdentity(true)
@@ -286,6 +324,9 @@ async function evaluateMissingPgp(deps: ShellChatStartDeps, accountKey: string):
 		return 'pgp_restored'
 	}
 	if (r.failure) {
+		// pgp_verify_failed (evaluate ok, restore refused by the native gate, nothing written): a failure with the user's entry. Remembered for
+		// this process so no later start sends restore again; never an automatic retry.
+		if (r.failure === 'pgp_verify_failed' && accountKey) verifyFailedAccounts.add(accountKey)
 		deps.showPgpFailure(r.failure)
 		return 'pgp_failed'
 	}

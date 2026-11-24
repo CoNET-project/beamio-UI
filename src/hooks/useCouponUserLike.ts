@@ -7,6 +7,7 @@ import { checkStorage } from '@/services/beamio'
 import { tu } from '@/locale/beamioLocale'
 import { resolveSigningPrivateKeyArmor } from '@/utils/resolveSigningPrivateKeyArmor'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { resolveDiscoverShareReferrerEoa } from '@/utils/beamioDeepLinkParams'
 import {
 	DISCOVER_USER_LIKE_TARGET,
@@ -126,7 +127,7 @@ export function useCouponUserLike({
 		if (!enabled || likeLoading || !cardAddress?.trim() || !tokenId?.trim()) return
 		// Option A: a shell without the chat capability sends no like and reads no stored profile.
 		if (shellChatBlockedNow()) {
-			Toast.show({ content: tu('shell_chat_unavailable_body'), position: 'top' })
+			Toast.show({ content: shellChatBlockedText(), position: 'top' })
 			return
 		}
 		let privateKeyArmor = getPrivateKeyArmor?.()?.trim() ?? ''

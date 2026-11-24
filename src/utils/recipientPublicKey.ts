@@ -154,24 +154,49 @@ export type TrustedRoute =
  */
 export async function resolveTrustedRoute(chat: RecipientChat | null | undefined, fetchKeys: FetchRecipientRoute): Promise<TrustedRoute> {
 	const fresh = await refreshRecipient(chat, fetchKeys)
-	if (!fresh.ok) return { ok: false, code: fresh.code === 'network_error' ? 'route_unconfirmed' : fresh.code }
-	const held: HeldKey = {
-		publicArmored: fresh.publicArmored,
-		routersArmoreds: fresh.routersArmoreds,
-		routePgpKeyID: fresh.routePgpKeyID,
-		fingerprint: fresh.fingerprint,
+	return decideTrustedRoute(chat, fresh)
+}
+
+/** Observer of every trust decision made from a fresh read (the shell's native receipt route table follows it). */
+let trustDecisionObserver: ((address: string, decision: TrustedRoute) => void) | null = null
+export function setTrustDecisionObserver(fn: ((address: string, decision: TrustedRoute) => void) | null): void {
+	trustDecisionObserver = fn
+}
+
+/**
+ * The trust decision for a fresh read of a contact's key: the same rule for a send and for the receipt route (verified fingerprint present and equal
+ * to the key just read; otherwise held). The observer, if set, sees every decision.
+ */
+export function decideTrustedRoute(chat: RecipientChat | null | undefined, fresh: RecipientRefresh): TrustedRoute {
+	const decision = ((): TrustedRoute => {
+		if (!fresh.ok) return { ok: false, code: fresh.code === 'network_error' ? 'route_unconfirmed' : fresh.code }
+		const held: HeldKey = {
+			publicArmored: fresh.publicArmored,
+			routersArmoreds: fresh.routersArmoreds,
+			routePgpKeyID: fresh.routePgpKeyID,
+			fingerprint: fresh.fingerprint,
+		}
+		const verified = readStoredKeyFingerprint(chat?.chatData?.verifiedFingerprint)
+		if (!verified) return { ok: false, code: 'first_fetch_pending', held }
+		if (fresh.fingerprint !== verified) return { ok: false, code: 'fingerprint_changed', held }
+		return {
+			ok: true,
+			publicArmored: fresh.publicArmored,
+			routersArmoreds: fresh.routersArmoreds,
+			routePgpKeyID: fresh.routePgpKeyID,
+			fingerprint: fresh.fingerprint,
+			refreshed: fresh,
+		}
+	})()
+	const address = String(chat?.address ?? '').trim()
+	if (address && trustDecisionObserver) {
+		try {
+			trustDecisionObserver(address, decision)
+		} catch {
+			// an observer never changes a decision
+		}
 	}
-	const verified = readStoredKeyFingerprint(chat?.chatData?.verifiedFingerprint)
-	if (!verified) return { ok: false, code: 'first_fetch_pending', held }
-	if (fresh.fingerprint !== verified) return { ok: false, code: 'fingerprint_changed', held }
-	return {
-		ok: true,
-		publicArmored: fresh.publicArmored,
-		routersArmoreds: fresh.routersArmoreds,
-		routePgpKeyID: fresh.routePgpKeyID,
-		fingerprint: fresh.fingerprint,
-		refreshed: fresh,
-	}
+	return decision
 }
 
 /**

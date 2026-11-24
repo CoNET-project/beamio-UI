@@ -43,6 +43,7 @@ import { registerMerchantUnderAgent, registerTempUnderAgent } from '@/utils/agen
 import { tu } from '@/locale/beamioLocale'
 import { useIdentityEntryDisabled } from '@/hooks/useIdentityEntryDisabled'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { merchantOsOpenUrl, openMerchantOsForTemp } from '@/utils/merchantOsOpen'
 import {
 	AgentTempAccountStates,
@@ -980,7 +981,7 @@ export function MerchantsBusinessPanel({
 										</div>
 										<p className="mt-3 text-[11px] text-slate-400">The business chooses and pays in Business OS.</p>
 										{identityEntryDisabled ? (
-												<p role="status" className="mt-3 text-[12px] text-amber-900">{tu('shell_chat_unavailable_body')}</p>
+												<p role="status" className="mt-3 text-[12px] text-amber-900">{shellChatBlockedText()}</p>
 											) : selectedTemp ? (
 											<>
 											<a
@@ -1000,7 +1001,7 @@ export function MerchantsBusinessPanel({
 														unlock: () => unlockDetachedRecoverPrivateKey(temp.beamioTag, temp.accessPassword),
 														open: openExternalUrl,
 													}).then((result) => {
-														if (!result.ok) setMerchantOsError(result.reason === 'blocked' ? tu('shell_chat_unavailable_body') : tu('merchant_os_open_failed'))
+														if (!result.ok) setMerchantOsError(result.reason === 'blocked' ? shellChatBlockedText() : tu('merchant_os_open_failed'))
 													})
 												}}
 												className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-2xl border border-slate-200 px-4 py-2.5 text-[13px] font-semibold text-slate-700 dark:border-slate-600 dark:text-slate-200"

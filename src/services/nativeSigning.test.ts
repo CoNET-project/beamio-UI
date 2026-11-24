@@ -177,8 +177,20 @@ describe('signAccountMessageFor', () => {
 	it('shell: an envelope before any generation announcement is native_unavailable, and nothing is sent ', async () => {
 		resetInboundGenerationForTests()
 		installShell([NATIVE_KEYS_CAPABILITY, INBOUND_GENERATION_CAPABILITY], { type: 'ack', ok: true, result: { signature: SIG } })
-		await expect(signAccountMessageFor({ kind: 'envelope', message: 'x' })).rejects.toThrow('native_unavailable')
-		expect(signCommands()).toEqual([])
+		// declared and no event yet: the page waits for the event (35 s), sends nothing meanwhile, and only then says native_unavailable
+		jest.useFakeTimers()
+		try {
+			const outcome = signAccountMessageFor({ kind: 'envelope', message: 'x' }).then(() => 'ok', (e: Error) => e.message)
+			for (let i = 0; i < 190; i++) {
+				jest.advanceTimersByTime(200)
+				for (let k = 0; k < 10; k++) await Promise.resolve()
+				if (i === 100) expect(signCommands()).toEqual([])
+			}
+			expect(await outcome).toBe('native_unavailable')
+			expect(signCommands()).toEqual([])
+		} finally {
+			jest.useRealTimers()
+		}
 	})
 
 	it('shell: an older shell that does not declare inbound.generation.v1 gets no field and is signed as before', async () => {

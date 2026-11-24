@@ -6,6 +6,7 @@ import { OverlayPortal } from '@/components/OverlayPortal/OverlayPortal'
 import { useDaemonContext } from '@/providers/DaemonProvider'
 import { resolveSigningPrivateKeyArmor } from '@/utils/resolveSigningPrivateKeyArmor'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { tu } from '@/locale/beamioLocale'
 import { CoNET_Data } from '@/utils/globals'
 import {
@@ -232,7 +233,7 @@ export function ValidatorDepositRedeemAdminSheet({ open, onClose, adminEoa, canC
 
 		// Option A: a shell without the chat capability signs nothing and reads no key.
 		if (shellChatBlockedNow()) {
-			setFormError(tu('shell_chat_unavailable_body'))
+			setFormError(shellChatBlockedText())
 			return
 		}
 		const armor = resolveSigningPrivateKeyArmor(profiles?.[0] ?? CoNET_Data?.profiles?.[0])
@@ -400,7 +401,7 @@ export function ValidatorDepositRedeemAdminSheet({ open, onClose, adminEoa, canC
 
 			// Option A: a shell without the chat capability cancels nothing and reads no key.
 			if (shellChatBlockedNow()) {
-				Toast.show({ content: tu('shell_chat_unavailable_body'), position: 'top' })
+				Toast.show({ content: shellChatBlockedText(), position: 'top' })
 				return
 			}
 			const armor = resolveSigningPrivateKeyArmor(profiles?.[0] ?? CoNET_Data?.profiles?.[0])

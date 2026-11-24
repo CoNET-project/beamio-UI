@@ -32,3 +32,19 @@ export const shellPasscodeReqIdFor = (counter: number): number => {
 	if (!Number.isInteger(counter) || counter < 0 || SHELL_PASSCODE_REQ_BASE + counter >= SHELL_PASSCODE_REQ_LIMIT) throw new Error('shell_passcode_reqid_exhausted')
 	return SHELL_PASSCODE_REQ_BASE + counter
 }
+
+/**
+ * The chat transport's own reqId range (0.53.47). The transport used a counter per client instance starting at 1, so a late answer to a request of a
+ * client that was replaced (a new chat start after a wallet-ready or hello event) could be taken as the answer of the new client's request with the same
+ * number. One counter for the whole page, never reset, in a range of its own below every other base, keeps every in-flight request number unique.
+ * Upper bound exclusive: the next range (the page's shell-record / route-register counter) starts at 700,000,000.
+ */
+export const CHAT_TRANSPORT_REQ_BASE = 600_000_000
+export const CHAT_TRANSPORT_REQ_LIMIT = 700_000_000
+let chatTransportSeq = 0
+export const nextChatTransportReqId = (): number => {
+	chatTransportSeq += 1
+	// the range holds 100 million requests per page load; wrap to the start of the range (no live request is that old)
+	if (CHAT_TRANSPORT_REQ_BASE + chatTransportSeq >= CHAT_TRANSPORT_REQ_LIMIT) chatTransportSeq = 1
+	return CHAT_TRANSPORT_REQ_BASE + chatTransportSeq
+}

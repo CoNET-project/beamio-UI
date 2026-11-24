@@ -282,8 +282,8 @@ describe('unit g rev 4 (pure): nativeMnemonicPreread current record as is (PRR-0
 
 	it('PRR-01 plaintext current returned as is (ok, mnemonic): valid, derived EOA, no passcode', () => {
 		expect(prereadFromAnswer(ack({ code: 'ok', mnemonic: PHRASE, eoa: EOA }))).toEqual({ kind: 'valid', eoa: EOA, phrase: PHRASE })
-		// (B.3): an ok plaintext answer without eoa is the capability-missing path, never valid
-		expect(prereadFromAnswer(ack({ code: 'ok', mnemonic: PHRASE }))).toEqual({ kind: 'unknown', reason: 'unsupported' })
+		// 0.53.47: an ok plaintext answer without eoa is valid on the derived address (the same address as with the eoa)
+		expect(prereadFromAnswer(ack({ code: 'ok', mnemonic: PHRASE }))).toEqual({ kind: 'valid', eoa: EOA, phrase: PHRASE })
 	})
 
 	it('PRR-02 ciphertext current returned without a passcode (ok, cipher): the has answer, plaintext not returned', () => {

@@ -103,9 +103,11 @@ describe('the legacy state shape stays readable for shells that have not moved y
 	})
 })
 
-describe('the ok plaintext answer carries no eoa: the address is derived from the mnemonic (BIP-39, m/44 index 0)', () => {
-	it('ok + mnemonic without an eoa is the capability-missing path (unsupported), never valid and never a reference address', () => {
-		expect(prereadFromAnswer(ack({ code: 'ok', mnemonic: PHRASE }))).toEqual({ kind: 'unknown', reason: 'unsupported' })
+describe('the ok plaintext answer may carry no eoa: the address is derived from the mnemonic (BIP-39, m/44 index 0)', () => {
+	it('ok + mnemonic without an eoa is valid on the derived address (trusted recovery bridge; no address required)', () => {
+		const r = prereadFromAnswer(ack({ code: 'ok', mnemonic: PHRASE }))
+		expect(r.kind).toBe('valid')
+		expect(r).toEqual({ kind: 'valid', eoa: EOA, phrase: PHRASE })
 	})
 	it('the cipher answer carries no eoa either and is returned as the stored envelope (not decrypted, no address derived here)', () => {
 		expect(prereadFromAnswer(ack({ code: 'ok', cipher: CIPHER }))).toEqual({ kind: 'cipher', cipher: CIPHER })

@@ -3,6 +3,7 @@
  * 1) Mailbox ACK — encrypt to mailbox B route PGP (`gossip_delivery_ack`)
  * 2) Sender receipt — encrypt to sender user PGP (`beamio_chat_delivery_receipt_v1`)
  */
+import { qaLine } from '@/utils/qaLog'
 import { createMessage, encrypt, enums, readKey } from 'openpgp'
 import { isCashTreesNativeWebView, postNativePgpCiphertext } from '@/utils/cashTreesNativeNfc'
 import { ethers } from 'ethers'
@@ -112,6 +113,8 @@ export function markMessageDeliveredBySendId(
 			const id = m.sendId || m.id
 			if (id !== sendId) return m
 			if (m.status === 'delivered') return m
+			// a message already read is never taken back to delivered
+			if ((m.status as string) === 'read') return m
 			touched = true
 			updated = true
 			return { ...m, status: 'delivered' as const }
@@ -277,6 +280,8 @@ export async function sendDeliveryReceiptToSender(args: SendDeliveryReceiptArgs)
 			{ beamioNoPush: true, mailboxRoutePublicKey: senderMailboxRoutePublicKey },
 		)
 		if (ok) receiptedSendIds.add(sendId)
+		// QA only: this send is the protocol delivery receipt (beamio_chat_delivery_receipt_v1, beamioNoPush), not a user message
+		if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', `kind=receipt ok=${ok ? 1 : 0}`)
 		return ok
 	} catch (e: any) {
 		console.warn('[sendDeliveryReceiptToSender]', e?.message ?? e)

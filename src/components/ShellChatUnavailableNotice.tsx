@@ -16,6 +16,8 @@ import PgpFirstIdentityNotice from './PgpFirstIdentityNotice'
 import { ShellIdentityClosedNotice, ShellRetryExhaustedNotice, useIdentityClosedState, useShellRetryExhausted } from './ShellIdentityClosedNotice'
 import { getShellPgpTemporary, getShellPgpTemporaryStopped, subscribeShellPgpTemporary } from '../services/shellPgpTemporary'
 import { requestShellRetryNow } from '../services/shellChatRetryCap'
+import { getFirstIdentitySetup, subscribeFirstIdentitySetup, type FirstIdentitySetup } from '../services/shellFirstIdentitySetup'
+import { useHelloWindowOpen, useVisibleReadPoll } from '../hooks/useHelloWait'
 import { getNativeIdentityCapability, requestNativeIdentityRetry, subscribeNativeIdentityCapability } from '../services/nativeIdentityProbeRetry'
 
 function usePgpTemporary(): boolean {
@@ -28,6 +30,8 @@ function usePgpTemporary(): boolean {
  */
 export function ShellPgpTemporaryNotice() {
 	const stopped = useSyncExternalStore(subscribeShellPgpTemporary, getShellPgpTemporaryStopped, getShellPgpTemporaryStopped)
+	// the window is used up: a read-only ask every 30 s while this notice is visible and the app is in the foreground
+	useVisibleReadPoll(stopped, undefined, requestShellRetryNow)
 	return (
 		<div role="status" className="flex min-h-0 flex-1 flex-col items-center justify-center bg-[#071126] px-6 text-center text-white">
 			<div className="w-full max-w-md rounded-3xl border border-white/15 bg-white/10 p-6 shadow-2xl backdrop-blur-xl">
@@ -48,12 +52,16 @@ export function ShellPgpTemporaryNotice() {
 export default function ShellChatUnavailableNotice({ onBack }: { onBack?: () => void } = {}) {
 	// While the native hello is unanswered the hint says the native side is not ready yet, with a manual retry.
 	const identity = useSyncExternalStore(subscribeNativeIdentityCapability, getNativeIdentityCapability, getNativeIdentityCapability)
-	const unanswered = identity === 'unanswered'
+	// "not declared" (the update text) needs a valid hello without the capability. No answer yet is waiting, never "please update".
+	const missing = identity === 'missing'
+	const unanswered = !missing
+	const windowOpen = useHelloWindowOpen()
+	useVisibleReadPoll(unanswered && !windowOpen)
 	return (
 		<div role="status" className="flex min-h-0 flex-1 flex-col items-center justify-center bg-[#071126] px-6 text-center text-white">
 			<div className="w-full max-w-md rounded-3xl border border-white/15 bg-white/10 p-6 shadow-2xl backdrop-blur-xl">
-				<h1 className="text-xl font-semibold">{tu('shell_chat_unavailable_title')}</h1>
-				<p className="mt-3 text-sm leading-6 text-white/75">{tu(unanswered ? 'native_not_ready_hint' : 'shell_chat_unavailable_body')}</p>
+				{missing ? <h1 className="text-xl font-semibold">{tu('shell_chat_unavailable_title')}</h1> : null}
+				<p className="mt-3 text-sm leading-6 text-white/75">{tu(missing ? 'shell_chat_unavailable_body' : windowOpen ? 'native_preparing_wallet' : 'native_not_ready_hint')}</p>
 				{unanswered ? (
 					<button
 						type="button"
@@ -95,6 +103,33 @@ export function useShellFirstIdentity(): boolean {
 	return first
 }
 
+export function useFirstIdentitySetup(): FirstIdentitySetup {
+	return useSyncExternalStore(subscribeFirstIdentitySetup, getFirstIdentitySetup, getFirstIdentitySetup)
+}
+
+/** QA builds: the SDK is setting up the first chat identity. No button: nothing is asked of the user. */
+export function FirstIdentitySettingUpNotice() {
+	return (
+		<div role="status" aria-busy="true" data-testid="first-identity-setting-up" className="flex min-h-0 flex-1 flex-col items-center justify-center bg-[#071126] px-6 text-center text-white">
+			<div className="w-full max-w-md rounded-3xl border border-white/15 bg-white/10 p-6 shadow-2xl backdrop-blur-xl">
+				<h1 className="text-xl font-semibold">{tu('chat.identity_setting_up.title')}</h1>
+				<p className="mt-2 text-sm leading-6 text-white/85">{tu('chat.identity_setting_up.body')}</p>
+			</div>
+		</div>
+	)
+}
+
+/** QA builds: the first chat identity could not be set up (a final answer). No button, no retry, nothing is overwritten. */
+export function FirstIdentityFailedNotice() {
+	return (
+		<div role="status" data-testid="first-identity-failed" className="flex min-h-0 flex-1 flex-col items-center justify-center bg-[#071126] px-6 text-center text-white">
+			<div className="w-full max-w-md rounded-3xl border border-white/15 bg-white/10 p-6 shadow-2xl backdrop-blur-xl">
+				<p className="text-sm leading-6 text-white/85">{tu('chat.first_identity_failed.body')}</p>
+			</div>
+		</div>
+	)
+}
+
 export function useShellIdentityPending(): boolean {
 	const [pending, setPending] = useState<boolean>(() => getShellIdentityPending())
 	useEffect(() => subscribeShellIdentityPending(setPending), [])
@@ -134,6 +169,7 @@ export function ShellChatGate({ children }: { children: ReactNode }) {
 	const identityPending = useShellIdentityPending()
 	const pgpTemporary = usePgpTemporary()
 	const firstIdentity = useShellFirstIdentity()
+	const setup = useFirstIdentitySetup()
 	const closed = useIdentityClosedState()
 	const retriesStopped = useShellRetryExhausted()
 	if (closed) return <ShellIdentityClosedNotice />
@@ -143,6 +179,8 @@ export function ShellChatGate({ children }: { children: ReactNode }) {
 	if (identityPending) return <ShellIdentityRetryNotice />
 	if (pgpTemporary) return <ShellPgpTemporaryNotice />
 	if (pgp) return <PgpRestoreFailedNotice code={pgp} />
+	if (setup === 'setting_up') return <FirstIdentitySettingUpNotice />
+	if (setup === 'failed') return <FirstIdentityFailedNotice />
 	if (firstIdentity) return <PgpFirstIdentityNotice />
 	return <>{children}</>
 }

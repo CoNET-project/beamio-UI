@@ -7,6 +7,7 @@
  */
 import { ethers } from 'ethers'
 import { setShellChatUiState } from './shellChatUiState'
+import { setNativeIdentityCapability } from './nativeIdentityProbeRetry'
 import { signAndSubmitBusinessStartKetRedeemCreate } from './businessStartKetRedeem'
 import {
 	signAndSubmitValidatorDepositRedeemCancel,
@@ -38,6 +39,9 @@ const CODE_HASH = '0x' + '11'.repeat(32)
 // Virtual stubs for the `@/` modules the services import. The shell flag is a plain variable (the `mock` prefix lets the
 // factory read it), so resetMocks does not clear it.
 let mockShell = true
+
+// these cases are the hello that lacks the capability (missing): that is the one state that shows the update text
+beforeAll(() => setNativeIdentityCapability('missing'))
 
 jest.mock('@/config/chainAddresses', () => ({
 	CONET_BUSINESS_START_KET_REDEEM: '0x' + '33'.repeat(20),

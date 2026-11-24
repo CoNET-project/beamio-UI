@@ -72,6 +72,10 @@ jest.mock('@/services/shellChatCapability', () => ({
 	shellChatBlockedNow: () => true,
 }), { virtual: true })
 jest.mock('@/services/nativeChatRouteRegister', () => ({
+	helloWithinWindow: () => true,
+	onHelloValid: () => () => undefined,
+	getCachedHello: () => undefined,
+	getCachedHelloRaw: () => undefined,
 	probeNativeCapabilities: async () => ({ answered: true, capabilities: ['identity.native-keys.v1'] }),
 	requestNativeAck: jest.fn(async () => ({ kind: 'none' })),
 }), { virtual: true })

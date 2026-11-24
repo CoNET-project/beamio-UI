@@ -11,6 +11,7 @@
  */
 import { useEffect, useState } from 'react'
 import { tu } from '../locale/beamioLocale'
+import { useVisibleReadPoll } from '../hooks/useHelloWait'
 import { nativeRecoveryOpen } from '../services/nativeRecovery'
 import {
 	clearShellChatIdentity,
@@ -178,10 +179,12 @@ export function ShellIdentityClosedNotice({
 
 /** The start stopped its automatic retries. The button is the manual retry. */
 export function ShellRetryExhaustedNotice() {
+	// the automatic retries are used up (the window, not a count): a read-only ask every 30 s while this is visible and the app is in the foreground
+	useVisibleReadPoll(true, undefined, requestShellRetryNow)
 	return (
 		<div role="status" className="flex min-h-0 flex-1 flex-col items-center justify-center bg-[#071126] px-6 text-center text-white">
 			<div className="w-full max-w-md rounded-3xl border border-white/15 bg-white/10 p-6 shadow-2xl backdrop-blur-xl">
-				<h1 className="text-xl font-semibold">{tu('shell_chat_unavailable_title')}</h1>
+				<h1 className="text-xl font-semibold">{tu('chat.try_later.title')}</h1>
 				<p className="mt-3 text-sm leading-6 text-white/75">{tu('chat.retry_exhausted.body')}</p>
 				<div className="mt-5 flex justify-center">
 					<button

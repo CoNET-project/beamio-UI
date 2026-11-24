@@ -69,6 +69,9 @@ export type MigrationPageState =
 	| 'needs_manual'
 	/** The  route (none, store_missing). Not a failure. */
 	| 'chain_backup'
+	/** The native snapshot is not ready yet: unknown and retryable, never a final state */
+	| 'not_ready'
+	/** no_key: no key for now; not retried by itself, asked again once after the chat identity is ready, a first identity is done or the account switches. */
 	| 'unavailable'
 	| 'locked'
 	| 'busy'
@@ -80,7 +83,8 @@ export function pageStateForAck(ack: Loose | null): MigrationPageState | null {
 	if (ack.type !== 'ack') return 'retryable'
 	if (ack.ok === true) return null
 	const error = typeof ack.error === 'string' ? ack.error : ''
-	if (error === 'no_key' || error === 'not_ready') return 'unavailable'
+	if (error === 'not_ready') return 'not_ready'
+	if (error === 'no_key') return 'unavailable'
 	if (error === 'locked') return 'locked'
 	if (error === 'busy') return 'busy'
 	if (error === 'bad_request' || error === 'key_over_bridge_refused') return 'refused'

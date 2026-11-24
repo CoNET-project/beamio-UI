@@ -58,6 +58,7 @@ import {
 } from '@/utils/topupReward13Plan'
 import { resolveSigningPrivateKeyArmor } from '@/utils/resolveSigningPrivateKeyArmor'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { tu } from '@/locale/beamioLocale'
 import {
 	parseDiscoverTopupAmountInput,
@@ -1329,7 +1330,7 @@ export default function DiscoverMerchantGiftSheet({
 		if (issuedCode) return
 		// Option A: a shell without the chat capability pays nothing and reads no key.
 		if (shellChatBlockedNow()) {
-			setPanelError(tu('shell_chat_unavailable_body'))
+			setPanelError(shellChatBlockedText())
 			return
 		}
 		if (!validateAmountForContinue()) return

@@ -39,13 +39,13 @@ describe('the release and agent registration entries refuse in a shell without t
 		const call = src.indexOf('releaseValidatorDepositRedeemAirdropSelf({', at)
 		expect(at).toBeGreaterThan(0)
 		expect(guard).toBeGreaterThan(at)
-		expect(src.slice(guard, guard + 140)).toContain(`showBeamioToastError(tu('${UNIFIED_KEY}'))`)
+		expect(src.slice(guard, guard + 140)).toContain(`showBeamioToastError(shellChatBlockedText())`)
 		// the English prompt is only reached on the browser path, after the shell guard
 		expect(english).toBeGreaterThan(guard)
 		expect(call).toBeGreaterThan(guard)
 		// the helper line under the button shows the unified copy in a blocked shell
 		expect(src).toContain(`{identityEntryDisabled\n`)
-		expect(src).toContain(`? tu('${UNIFIED_KEY}')`)
+		expect(src).toContain(`? shellChatBlockedText()`)
 	})
 
 	it('AgentBusinessInviteSheet: the status check, the temp and handoff registrations, the refresh and the create refuse in a blocked shell', () => {
@@ -61,7 +61,7 @@ describe('the release and agent registration entries refuse in a shell without t
 		const statusRegister = src.indexOf('await registerAgentOnChain()', statusAt)
 		expect(statusAt).toBeGreaterThan(0)
 		expect(statusGuard).toBeGreaterThan(statusAt)
-		expect(src.slice(statusGuard, statusGuard + 160)).toContain(`setStatusError(tu('${UNIFIED_KEY}'))`)
+		expect(src.slice(statusGuard, statusGuard + 160)).toContain(`setStatusError(shellChatBlockedText())`)
 		expect(statusRegister).toBeGreaterThan(statusGuard)
 
 		// temp registration effect: returns before the temp and merchant registrations
@@ -84,7 +84,7 @@ describe('the release and agent registration entries refuse in a shell without t
 		const addGuard = src.indexOf('if (shellChatBlockedNow()) {', addAt)
 		expect(addAt).toBeGreaterThan(0)
 		expect(addGuard).toBeGreaterThan(addAt)
-		expect(src.slice(addGuard, addGuard + 120)).toContain(`setCreateError(tu('${UNIFIED_KEY}'))`)
+		expect(src.slice(addGuard, addGuard + 120)).toContain(`setCreateError(shellChatBlockedText())`)
 		expect(src.indexOf('setCreating(true)', addAt)).toBeGreaterThan(addGuard)
 		expect(src.indexOf('await createAgentTempAccount(agentEoa)', addAt)).toBeGreaterThan(addGuard)
 
@@ -110,7 +110,7 @@ describe('the release and agent registration entries refuse in a shell without t
 
 		// the link: the unified copy replaces it in a blocked shell; the click handler refuses before it unlocks a temp key
 		expect(src).toContain(`{identityEntryDisabled ? (`)
-		expect(src).toContain(`{tu('${UNIFIED_KEY}')}`)
+		expect(src).toContain(`{shellChatBlockedText()}`)
 		const linkAt = src.indexOf('View Business OS')
 		const clickGuard = src.lastIndexOf('const blocked = shellChatBlockedNow()', linkAt)
 		const helperCall = src.lastIndexOf('void openMerchantOsForTemp({', linkAt)
@@ -134,7 +134,7 @@ describe('the release and agent registration entries refuse in a shell without t
 		const osGuard = src.indexOf('if (shellChatBlockedNow()) {', osAt)
 		expect(osAt).toBeGreaterThan(0)
 		expect(osGuard).toBeGreaterThan(osAt)
-		expect(src.slice(osGuard, osGuard + 120)).toContain(`setClaimError(tu('${UNIFIED_KEY}'))`)
+		expect(src.slice(osGuard, osGuard + 120)).toContain(`setClaimError(shellChatBlockedText())`)
 		expect(src.indexOf('await registerTempUnderAgent(temp.eoa)', osAt)).toBeGreaterThan(osGuard)
 		expect(src.indexOf('unlockDetachedRecoverPrivateKey(temp.beamioTag, temp.accessPassword)', osAt)).toBeGreaterThan(osGuard)
 		// no polling for the temp key, and no passcode in any link
@@ -158,7 +158,7 @@ describe('the release and agent registration entries refuse in a shell without t
 		const createGuard = src.indexOf('if (shellChatBlockedNow()) throw new Error(', createAt)
 		expect(createAt).toBeGreaterThan(0)
 		expect(createGuard).toBeGreaterThan(createAt)
-		expect(src.slice(createGuard, createGuard + 120)).toContain(`tu('${UNIFIED_KEY}')`)
+		expect(src.slice(createGuard, createGuard + 120)).toContain(`shellChatBlockedText()`)
 		// the  shell refusal is kept after the capability guard, so the static  test still sees it
 		expect(src.indexOf('isShellContext()', createAt)).toBeGreaterThan(createGuard)
 		expect(src.indexOf('createDetachedRecoverAccount(beamioTag', createAt)).toBeGreaterThan(createGuard)
@@ -166,10 +166,10 @@ describe('the release and agent registration entries refuse in a shell without t
 		expect(src.indexOf('await registerTempUnderAgent(record.eoa)', createAt)).toBeGreaterThan(createGuard)
 
 		const claimAt = src.indexOf('export async function claimTempCreateMerchantCardNft(')
-		const claimGuard = src.indexOf('if (shellChatBlockedNow()) return { ok: false, error: tu(', claimAt)
+		const claimGuard = src.indexOf('if (shellChatBlockedNow()) return { ok: false, error: shellChatBlockedText(', claimAt)
 		expect(claimAt).toBeGreaterThan(0)
 		expect(claimGuard).toBeGreaterThan(claimAt)
-		expect(src.slice(claimGuard, claimGuard + 140)).toContain(`tu('${UNIFIED_KEY}')`)
+		expect(src.slice(claimGuard, claimGuard + 140)).toContain(`shellChatBlockedText()`)
 		expect(src.indexOf('await unlockDetachedRecoverPrivateKey(temp.beamioTag', claimAt)).toBeGreaterThan(claimGuard)
 		expect(src.indexOf('await fetch(`${beamioApi}/api/businessStartKetRedeemRedeem`', claimAt)).toBeGreaterThan(claimGuard)
 	})
@@ -177,7 +177,7 @@ describe('the release and agent registration entries refuse in a shell without t
 	it('agentReferrerRegistryClient: the four registration functions return the unified copy before any wallet is built', () => {
 		const src = read('utils/agentReferrerRegistryClient.ts')
 		expect(src).toContain("import { tu } from '@/locale/beamioLocale'")
-		const guard = "if (shellChatBlockedNow()) return { success: false, error: tu('shell_chat_unavailable_body') }"
+		const guard = "if (shellChatBlockedNow()) return { success: false, error: shellChatBlockedText() }"
 		expect(src.split(guard).length - 1).toBe(4)
 		for (const name of [
 			'registerReferrerUnderIntroducer(',

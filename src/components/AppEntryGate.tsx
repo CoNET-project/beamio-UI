@@ -14,7 +14,7 @@ import { decidePageRecord, type PageRecordRead } from '@/services/pageRecordDeci
 import { onAppUpdateRequired } from '@/services/appUpdatePrompt'
 import { OLD_SHELL_UPGRADE_REASON, shellRecordFallbackLabel, terminalEvidenceOf } from '@/services/shellRecordFallback'
 import { decideShellTerminal, isShellTerminal, requestShellSingleProbe } from '@/services/shellTerminalState'
-import { NOT_READY_BOUNDED_DELAYS_MS } from '@/services/shellStoreWait'
+import { createColdStartBackoff, type ColdStartKey } from '@/services/coldStartBackoff'
 import { registerPendingSender } from '@/services/pendingServerSync'
 import { allowFirstNativeWrite, resumeDeferredWrite, retryDeferredWriteNow } from '@/services/shellRecordStore'
 import { installNativeNoKeyWatcher, NO_KEY_ERROR } from '@/services/nativeKeyState'
@@ -40,7 +40,7 @@ import { isStartReasonCode, startReasonLine, type StartReasonCode } from '../ser
 import { queryNativeWalletStateForPreCheck } from '@/services/syncPreCheckReads'
 import { identityCapabilityFrom, identityEntryDisplay, shellEntryFor, type IdentityCapabilityState } from '@/services/shellEntryDecision'
 import { identityProbeDelayMs, onNativeIdentityRetryRequested, requestNativeIdentityRetry, setNativeIdentityCapability } from '@/services/nativeIdentityProbeRetry'
-import { probeNativeCapabilities, requestNativeAck } from '@/services/nativeChatRouteRegister'
+import { onHelloValid, probeNativeCapabilities, requestNativeAck } from '@/services/nativeChatRouteRegister'
 import { validNativeApp } from '@/services/callCapability'
 import { reportUiLocked } from '@/services/passcode/uiLockState'
 import { IDENTITY_CAPABILITY_MISSING } from '@/services/bridgeGuard'
@@ -170,12 +170,29 @@ export default function AppEntryGate() {
 	// (items 2 and 3): the native no-key decision lives in one controller; the component forwards events.
 	const [noKeyCtl] = useState(() => new AppEntryNoKeyController())
 	const boundedNotReadyRef = useRef(0)
+	/** the cold-start backoff of a not_ready read (1, 2, 4, 8, 16 s, then every 16 s, a 60 s window; PROTOCOL-cold-start-retry-backoff) */
+	const coldBackoffRef = useRef(createColdStartBackoff())
+	/** after the 180 s window is used up: a read-only ask every 30 s while the page is visible and in the foreground */
+	const visiblePollRef = useRef<number | undefined>(undefined)
+	const stopVisiblePoll = () => {
+		if (visiblePollRef.current !== undefined) window.clearInterval(visiblePollRef.current)
+		visiblePollRef.current = undefined
+	}
+	const startVisiblePoll = () => {
+		if (visiblePollRef.current !== undefined) return
+		visiblePollRef.current = window.setInterval(() => {
+			if (document.visibilityState !== 'visible') return
+			void initRef.current?.()
+		}, 30_000)
+	}
 	/** Unit g (rev): a native passcode_not_provided answer marks a pending sync. It never changes the landing, the splash or the counters. */
 	const passcodePendingSyncRef = useRef(false)
 	/** Unit (b) item 3: the first unknown pre-read of a start sequence was re-requested at once (not a verdict). Once per sequence: cleared only by a decision. */
 	const quickPrereadRetryRef = useRef(false)
 	const markDecided = () => {
 		boundedNotReadyRef.current = 0
+		coldBackoffRef.current.reset()
+		stopVisiblePoll()
 		quickPrereadRetryRef.current = false
 		if (startupRetryRef.current !== undefined) {
 			window.clearTimeout(startupRetryRef.current)
@@ -432,17 +449,17 @@ export default function AppEntryGate() {
 			return
 		}
 		if (reason === 'native_not_ready_bounded') {
-			const attempt = boundedNotReadyRef.current
-			if (attempt < NOT_READY_BOUNDED_DELAYS_MS.length) {
-				boundedNotReadyRef.current = attempt + 1
-				const delay = NOT_READY_BOUNDED_DELAYS_MS[attempt]
-				publishNativePwaLog('info', `[AppEntryGate] not_ready (bounded): re-read ${attempt + 1} of ${NOT_READY_BOUNDED_DELAYS_MS.length} in ${delay} ms; no creation, recovery or import`)
+			// walletStatus not_ready: the cold-start schedule (1, 2, 4, 8, 16 s, then every 16 s) inside a 60 s window; no attempt-count stop.
+			const step = coldBackoffRef.current.next('walletStatus')
+			if (step.kind === 'wait') {
+				publishNativePwaLog('info', `[AppEntryGate] not_ready (backoff): walletStatus re-read attempt ${step.attempt} in ${step.delayMs} ms, ${step.elapsedMs} ms since the first; no creation, recovery or import`)
 				nativeWaitRef.current = true
 				setSplashVisible(true)
-				window.setTimeout(() => void init(), delay)
+				window.setTimeout(() => void init(), step.delayMs)
 				return
 			}
-			publishNativePwaLog('warn', '[AppEntryGate] not_ready (bounded): the re-reads are used up: explicit error, the user retries')
+			publishNativePwaLog('warn', `[AppEntryGate] not_ready (backoff): the 180 s window is used up after ${step.attempt} attempts (${step.elapsedMs} ms): the try-later state, a read-only ask every 30 s while visible, the user may retry`)
+			startVisiblePoll()
 			showStorageUnavailable('native_not_ready_final')
 			return
 		}
@@ -947,7 +964,7 @@ export default function AppEntryGate() {
 		startupWait(`native locked: ${reason}`, 'native_locked')
 	}
 
-	const startupWait = (reason: string, code?: StartReasonCode) => {
+	const startupWait = (reason: string, code?: StartReasonCode, backoffKey?: ColdStartKey) => {
 		setWritePermit(null, `hold: ${reason}`)
 		publishNativePwaLog('warn', `[AppEntryGate] ${reason}: startup wait (unknown: nothing deleted, overwritten or routed)${code ? ` ${startReasonLine(code)}` : ''}`)
 		nativeWaitRef.current = true
@@ -958,8 +975,22 @@ export default function AppEntryGate() {
 		const attempt = startupRoundsRef.current
 		setSplashVisible(true)
 		setStartupRetryOffered(true)
-		const delay = startupRetryDelayMs(attempt)
-		publishNativePwaLog('info', `[AppEntryGate] startup retry: attempt ${attempt}, next in ${delay} ms`)
+		// a not_ready read (preread, walletStatus, identityPublic) follows the cold-start schedule inside its 60 s window; any other unknown
+		// keeps the existing schedule. The window used up stops the automatic re-reads: the retry offer stays, and a return to the foreground
+		// starts the clock again.
+		let delay = startupRetryDelayMs(attempt)
+		if (backoffKey) {
+			const step = coldBackoffRef.current.next(backoffKey)
+			if (step.kind === 'exhausted') {
+				publishNativePwaLog('warn', `[AppEntryGate] not_ready (backoff): ${backoffKey} 180 s window used up after ${step.attempt} attempts (${step.elapsedMs} ms): the visible 30 s poll goes on`)
+				startVisiblePoll()
+				return
+			}
+			delay = step.delayMs
+			publishNativePwaLog('info', `[AppEntryGate] not_ready (backoff): ${backoffKey} attempt ${step.attempt}, next in ${delay} ms, ${step.elapsedMs} ms since the first`)
+		} else {
+			publishNativePwaLog('info', `[AppEntryGate] startup retry: attempt ${attempt}, next in ${delay} ms`)
+		}
 		if (startupRetryRef.current === undefined) {
 			startupRetryRef.current = window.setTimeout(() => {
 				startupRetryRef.current = undefined
@@ -1310,7 +1341,8 @@ export default function AppEntryGate() {
 			// Unit (b): unknown (not_ready, envelope errors, a read that did not finish) is never a verdict and never an
 			// onboarding. The first unknown of a start re-asks at once (Android answers its first call unknown); later ones back off (startupWait).
 			if (pre.kind === 'unknown' && pre.reason !== 'unsupported') {
-				if (!quickPrereadRetryRef.current) {
+				// a not_ready pre-read follows the cold-start schedule from the first answer (no separate quick re-request)
+				if (!quickPrereadRetryRef.current && pre.reason !== 'not_ready') {
 					quickPrereadRetryRef.current = true
 					publishNativePwaLog('info', `[startup] reqId=${reqId} preread first unknown: quick re-request in ${PREREAD_QUICK_RETRY_MS} ms (no verdict)`)
 					nativeWaitRef.current = true
@@ -1330,6 +1362,7 @@ export default function AppEntryGate() {
 				startupWait(
 					`native pre-read unknown (${pre.reason ?? 'unknown'}): retry, no verdict`,
 					pre.reason === 'read_error' ? 'record_unreadable' : pre.reason === 'read_timeout' ? 'native_read_timeout' : pre.reason === 'verify_failed' ? 'verify_failed' : pre.reason === 'not_ready' ? 'pre_read_not_ready' : 'pre_unknown',
+					pre.reason === 'not_ready' ? 'nativeMnemonicPreread' : undefined,
 				)
 				return
 			}
@@ -1729,6 +1762,7 @@ export default function AppEntryGate() {
 			window.removeEventListener(NATIVE_FLOW_PENDING_EVENT, onNativeFlowPending)
 			window.removeEventListener(NATIVE_WALLET_READY_EVENT, onNativeWalletReady)
 			window.removeEventListener(VAULT_LOCKED_EVENT, onVaultLocked)
+			stopVisiblePoll()
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [])
@@ -1738,6 +1772,19 @@ export default function AppEntryGate() {
 
 	// while the wallet is not initialised, the native state is read again every 30 s, so the init retries once
 	// the node list is reachable . Reaching G2 hands the app the native wallet.
+	// 2026-11-24 (late is not dead): a valid hello answer that arrives after the page showed "not answered" is taken. The capability status is
+	// set from it and the start re-runs at once; an earlier "unanswered" or "preparing" state is withdrawn by it (no click needed).
+	useEffect(
+		() =>
+			onHelloValid((r) => {
+				if (!nativeShellRef.current) return
+				setNativeIdentityCapability(identityCapabilityFrom(r))
+				identityUnansweredRef.current = false
+				publishNativePwaLog('info', '[AppEntryGate] a valid hello answer arrived (possibly late): the capability state is updated and the start re-runs')
+				void initRef.current?.()
+			}),
+		[],
+	)
 	// 2026-11-22: on return to the foreground a waiting shell start re-reads at once; the schedule continues afterwards.
 	useEffect(() => {
 		const onVisible = () => {
@@ -1745,6 +1792,7 @@ export default function AppEntryGate() {
 			if (startupRetryRef.current === undefined && !nativeWaitRef.current) return
 			window.clearTimeout(startupRetryRef.current)
 			startupRetryRef.current = undefined
+			coldBackoffRef.current.reset()
 			publishNativePwaLog('info', `[reread] ${startReasonLine('foreground_reread')}`)
 			void initRef.current?.()
 		}

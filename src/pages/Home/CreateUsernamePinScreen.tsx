@@ -20,6 +20,9 @@ import { isShellContext } from "@/services/shellContext"
 import { publishNativePwaLog } from "@/utils/cashTreesNativePwaLog"
 import { notifyNativeWalletReady, reachNativeWallet, rememberNativeEoa } from "@/services/nativeWallet"
 import { warmArgon2Worker } from "@/services/argon2WorkerBridge"
+import { ACCOUNT_CREATE_REGISTER_ENABLED } from '@/utils/accountCreateRegisterFlag'
+import { realRegisterDeps, registerNewAccount } from '@/services/accountCreateRegister'
+import RecoverCodeNotice from '@/components/RecoverCodeNotice'
 import {
 	Eye,
 	EyeOff,
@@ -397,7 +400,9 @@ const CreateUsernamePinScreen = forwardRef<
 	const pwdRulesOk = len8 && mixed && numbers
 	// Shell: the wallet password is not typed in the WebView; the native create page takes it.
 	const shellNative = isShellContext()
-	const canSubmit = tagValid && (shellNative || pwdRulesOk) && termsAccepted && !loading && !tagChecking
+	// QA builds only: the shell create page collects the password too and hands it to the native create (accountCreateRegister).
+	const shellNoPassword = shellNative && !ACCOUNT_CREATE_REGISTER_ENABLED
+	const canSubmit = tagValid && (shellNoPassword || pwdRulesOk) && termsAccepted && !loading && !tagChecking
 	// Four meter segments map 1:1 to length / lowercase / uppercase / digit.
 	// Persist is still the original 3 rules (mixed = both cases); all persist → 4/4 = 100%.
 	const passwordStrengthCount = [len8, hasLower, hasUpper, numbers].filter(Boolean).length
@@ -446,10 +451,67 @@ const CreateUsernamePinScreen = forwardRef<
 		[onRequestClose]
 	)
 
+	/** The wallet of a finished registration, kept until the user has confirmed the recover code. */
+	const registeredWalletRef = useRef('')
+	const [shellRecoverCode, setShellRecoverCode] = useState<string | null>(null)
+	const finishShellRegister = (wallet: string) => {
+		setCreateError('')
+		announceNativeWalletEstablished()
+		rememberNativeEoa(wallet)
+		void reachNativeWallet().then((st) => {
+			if (st.status === 'unlocked') notifyNativeWalletReady(createTagRef.current, wallet)
+			else setCreateError(tu('create_account_try_later'))
+		})
+	}
+	const handleShellRegister = async (tag: string, pwd: string) => {
+		let out
+		try {
+			out = await registerNewAccount({ tag, password: pwd }, await realRegisterDeps())
+		} finally {
+			// the password leaves the page state as soon as the call returns
+			setPassword('')
+			setLoading(false)
+		}
+		if (out.ok) {
+			if (out.recoverCodeBase58) {
+				registeredWalletRef.current = out.wallet
+				setShellRecoverCode(out.recoverCodeBase58)
+				return
+			}
+			finishShellRegister(out.wallet)
+			return
+		}
+		switch (out.code) {
+			case 'tag_taken':
+				// the last native check after the page's own pre-check (a race): the same copy as the pre-check, back to renaming
+				lastCheckedRef.current = ''
+				setTagStatus('invalid')
+				setTagError(tu('tag_is_already_taken', { tag }))
+				return
+			case 'bad_tag':
+				setCreateError(tu('create_account_invalid_name'))
+				return
+			case 'bad_password':
+				setCreateError(tu('create_account_invalid_password'))
+				return
+			case 'post_failed':
+				setCreateError(tu('network_error_try_again'))
+				return
+			case 'not_available':
+			case 'unavailable':
+			case 'bad_request':
+			case 'bad_response':
+				setCreateError(tu('create_account_native_unavailable'))
+				return
+			default:
+				setCreateError(tu('create_account_try_later'))
+		}
+	}
+
 	const handleCreateWallet = async (pwd: string) => {
 		const trimmedTag = normalizeBeamioTagInput(beamioName || "")
 		const { len8: l, mixed: m, numbers: n } = passwordRuleChecks(pwd)
-		if (!trimmedTag || (!shellNative && (!l || !m || !n))) return
+		if (!trimmedTag || (!shellNoPassword && (!l || !m || !n))) return
 
 		setLoading(true)
 		setCreateError("")
@@ -464,6 +526,12 @@ const CreateUsernamePinScreen = forwardRef<
 				publishNativePwaLog('warn', '[createAccount] shell: identity.native-keys.v1 not declared; nothing sent')
 				setLoading(false)
 				setCreateError(tu('create_account_native_unavailable'))
+				return
+			}
+			if (ACCOUNT_CREATE_REGISTER_ENABLED) {
+				// QA builds: the native layer creates and seals the account and returns the addUser payload; the page forwards it unchanged.
+				createTagRef.current = trimmedTag
+				await handleShellRegister(trimmedTag, pwd)
 				return
 			}
 			publishNativePwaLog('info', '[createAccount] shell: native create requested')
@@ -640,9 +708,9 @@ const CreateUsernamePinScreen = forwardRef<
 		setRollbackPending(false)
 		const ok = await validateAndCheckTag()
 		if (!ok) return
-		const p = shellNative ? '' : password.trim()
+		const p = shellNoPassword ? '' : password.trim()
 		const { len8: l, mixed: m, numbers: n } = passwordRuleChecks(p)
-		if (!shellNative && (!l || !m || !n)) return
+		if (!shellNoPassword && (!l || !m || !n)) return
 		await handleCreateWallet(p)
 	}
 
@@ -782,6 +850,17 @@ const CreateUsernamePinScreen = forwardRef<
 	return (
 		<div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[#f9f9ff] font-[Inter,system-ui,sans-serif] text-[#151c27]">
 			<CreateIdentityDecorativeBg />
+			{shellRecoverCode ? (
+				<RecoverCodeNotice
+					code={shellRecoverCode}
+					onDone={() => {
+						const wallet = registeredWalletRef.current
+						registeredWalletRef.current = ''
+						setShellRecoverCode(null)
+						finishShellRegister(wallet)
+					}}
+				/>
+			) : null}
 			<VerraFloatingNavChrome onBack={() => onRequestClose?.()} tone="create" hideBack={reuseExistingKey} />
 			<main
 				lang={getCurrentBeamioUiLocale() === 'zh-CN' ? 'zh-CN' : 'en'}
@@ -882,7 +961,7 @@ const CreateUsernamePinScreen = forwardRef<
 						</div>
 
 						<div className="mt-4 space-y-3.5 [@media(max-height:700px)]:mt-3 [@media(max-height:700px)]:space-y-3 [@media(max-height:640px)]:space-y-2.5 [@media(max-height:560px)]:mt-2 [@media(max-height:560px)]:space-y-2">
-							{!shellNative ? (<>
+							{!shellNoPassword ? (<>
 							<div className="space-y-2 [@media(max-height:640px)]:space-y-1.5 [@media(max-height:560px)]:space-y-1">
 								<label htmlFor="create-wallet-password" className="block text-xs font-semibold uppercase tracking-[0.05em] text-[#424655] [@media(max-height:560px)]:text-[11px]">
 									{tu('secure_password')}

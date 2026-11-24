@@ -10,6 +10,9 @@ import { isShellContext } from './shellContext'
 import { loadOwnPgpPublicMaterial, shellPgpForServerRequest } from './ownPgpPublic'
 import { completePendingServerSync, enqueuePendingServerSync, ensurePendingServerSync, pendingServerSyncGeneration, type FlushOutcome } from './pendingServerSync'
 import { diagnosticCode } from './diagnosticCodes'
+import { qaLine, qaErrorCode, qaErrorName, qaPersistStage, qaPersistStageNow } from '@/utils/qaLog'
+import { isChatBodiesPurgedFor } from './chatLocalPurge'
+import { keepStoredChats, keepMemoryChats, withoutPeerArmorForShell, countPeerArmorRows, CHATS_FLOOR_REFUSED } from './chatsFloor'
 import { fallbackStartOutcome, nativeRecordFallbackOf, noteShellRecordFallback, OLD_SHELL_UPGRADE_REASON, type ShellRecordFallbackReason } from './shellRecordFallback'
 import { buildShellRecordWriteCommand, shellRecordAsWalletRecord, shellRecordRead, shellRecordWrite, prepareShellFreshWrite, validatedCopyAccount } from './shellRecordStore'
 import { isUntrustedSourceAnswer, shellStorageErrorReason } from './shellStoreWait'
@@ -1518,14 +1521,19 @@ export const flushShellNativeSync = async (): Promise<void> => {
  */
 const persistPageIdbCopy = async (written: encrypt_keys_object): Promise<void> => {
   let raw: string | null
+  qaPersistStage('page_idb_read')
   try {
     raw = await readDocTitle('init')
-  } catch {
+  } catch (err) {
+    if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `page_idb read_failed name=${qaErrorName(err)} store=init`)
     throw new Error('page_idb_unknown')
   }
   const existing = raw ? parseInitRaw(raw) : null
+  qaPersistStage('page_idb_wrap')
   const record = (await wrapForDisk(pageIdbWalletStores(existing), written as unknown as Loose)) as Loose
+  qaPersistStage('page_idb_put')
   await putDocDurable('init', encodeInitRaw(record))
+  qaPersistStage('page_idb_readback')
   const phrase = typeof (written as Loose).mnemonicPhrase === 'string' ? ((written as Loose).mnemonicPhrase as string).trim() : ''
   if (phrase) {
     const back = await readPageIdbInit()
@@ -1533,10 +1541,19 @@ const persistPageIdbCopy = async (written: encrypt_keys_object): Promise<void> =
   }
 }
 
+/** The chats floor keeps the stored messages of a row, except while the user's own plaintext purge is in effect for this account (the bodies are removed on purpose). */
+const floorOptionsFor = (record: unknown): { keepMessages: boolean } => {
+  const first = Array.isArray((record as { profiles?: unknown })?.profiles) ? ((record as { profiles: Array<{ keyID?: unknown }> }).profiles[0]) : undefined
+  const eoa = typeof first?.keyID === 'string' ? first.keyID : ''
+  return { keepMessages: !isChatBodiesPurgedFor(eoa) }
+}
+
 export const persistInitRecord = async (temp: encrypt_keys_object): Promise<void> => {
   if (isShellContext()) {
+    qaPersistStage('read_page_idb')
     const pageState = await readPageIdbInit()
     if (pageState.status === 'unknown') throw new Error('page_idb_unknown')
+    qaPersistStage('read_native_probe')
     // the refusal floor holds against both copies: the page IndexedDB (the start copy) and the native copy (a valid account there is never replaced)
     // A native read that fails (any answer other than ok or absent) means the native state is unknown, not that the save failed: the page copy is
     // still written under the page-side refusal rules, and the native copy is synced afterwards by syncShellNativeCopy, which has its own
@@ -1548,11 +1565,24 @@ export const persistInitRecord = async (temp: encrypt_keys_object): Promise<void
       markPendingSync('native_profile_sync')
       publishNativePwaLog('warn', `[persistInitRecord] native state unknown before the page save (${diagnosticCode(err instanceof Error ? err.message : 'failed')}): the page copy is saved first`)
     }
+    qaPersistStage('overwrite_guard')
     const byPage = await assertPageRecordNotOverwritten(temp, pageState.status === 'valid' ? pageState.data : null)
-    const written = await assertPageRecordNotOverwritten(byPage, nativeExisting)
+    const merged = await assertPageRecordNotOverwritten(byPage, nativeExisting)
+    // The shell write whitelist refuses a copy whose chat rows carry the peer's PGP public armor (TR-37), so the persisted copy drops exactly that
+    // field (memory is not touched; verifiedFingerprint and every other field stay). The chats floor: the stored rows (page copy and native copy)
+    // are kept, a copy never makes them fewer (refused with chats_floor when they cannot be merged safely).
+    qaPersistStage('chats_floor')
+    // the floor's source is the page copy only: the native record owns its own chats and is not merged in (it could bring back rows the page removed)
+    // the count is taken on the copy as it came in (before the strip), so it says how many rows carried the key
+    const armorRows = countPeerArmorRows(merged)
+    if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true' && armorRows > 0) qaLine('[persist]', `peer_armor_dropped rows=${armorRows}`)
+    const withFloor = keepStoredChats(withoutPeerArmorForShell(merged), pageState.status === 'valid' ? pageState.data : null, floorOptionsFor(merged))
+    const written = withoutPeerArmorForShell(withFloor)
     // the shell write whitelist (PGP private and public fields, size) is checked here, synchronously, as before the save resolves
+    qaPersistStage('shell_write_check')
     buildShellRecordWriteCommand(0, written as unknown as Loose, 0)
     await persistPageIdbCopy(written)
+    qaRecordCounts('saved', written)
     const sync = syncShellNativeCopy(written)
     shellNativeSyncs.add(sync)
     void sync.finally(() => shellNativeSyncs.delete(sync))
@@ -1580,6 +1610,7 @@ const syncShellNativeCopy = async (written: encrypt_keys_object): Promise<void> 
     }
   } catch (err) {
     markPendingSync('native_profile_sync')
+    if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `native_write deferred code=${qaErrorCode(err)} name=${qaErrorName(err)} store=native_record`)
     publishNativePwaLog('warn', `[persistInitRecord] native copy sync pending (${diagnosticCode(err instanceof Error ? err.message : 'failed')}): the page copy is saved`)
   }
 }
@@ -1587,8 +1618,12 @@ const syncShellNativeCopy = async (written: encrypt_keys_object): Promise<void> 
 const persistInitRecordBrowser = async (temp: encrypt_keys_object): Promise<void> => {
   // 0.53.39 (independent review item 2): the browser write goes through the same guarded writer as the shell (read, refuse a loss or an
   // unknown read, then write). The backup copy is taken only after the write was accepted, so a refused record is never cached.
-  const record = (await wrapForDisk(walletStores(), temp as unknown as Loose)) as Loose
+  // the chats floor on the browser path too: the stored rows are kept; an unreadable stored record leaves the copy as it is (the writer's own guard reads it)
+  const storedPlain = await readPlainForVerify(walletStores()).catch(() => null)
+  const floored = keepStoredChats(temp, storedPlain, floorOptionsFor(temp))
+  const record = (await wrapForDisk(walletStores(), floored as unknown as Loose)) as Loose
   await writeInitObject(record)
+  qaRecordCounts('saved', floored)
   cacheStorageBackup(encodeInitRaw(record))
 }
 
@@ -1753,7 +1788,19 @@ const isPouchMissingDocError = (error: any): boolean => {
 
 /** What a store read does to the page (H2): only a start-up read replaces the copy and applies its language. */
 const storedReadEffects: StoredReadEffects = {
-  setCopy: (data) => setCoNET_Data(data as unknown as encrypt_keys_object | null),
+  setCopy: (data) => {
+    // A shell's start-up read replaces the in-memory copy with the page IndexedDB copy. The chat rows the page already holds in memory (history
+    // restore, a chat opened this session) are kept: rows are merged by peer address for the same account, never dropped by the replacement.
+    if (isShellContext() && data) {
+      try {
+        setCoNET_Data(keepMemoryChats(data as unknown as encrypt_keys_object, CoNET_Data, floorOptionsFor(data)))
+        return
+      } catch {
+        // an unmergeable memory copy: the stored copy is used as it was before
+      }
+    }
+    setCoNET_Data(data as unknown as encrypt_keys_object | null)
+  },
   writeBack: () => void storeSystemData(),
   applyLanguage: async (language) => {
     writeBeamioUiLanguageBootstrap(normalizeBeamioUiLocale(language))
@@ -2213,6 +2260,7 @@ export const checkStorageWithStatus = (options: { probe?: boolean } = {}): Promi
   if (checkStorageInFlight) return checkStorageInFlight
   const read = readStorageWithStatus()
   checkStorageInFlight = read
+  void read.then((r) => { if (r.status === 'loaded') qaRecordCounts('read', r.data); else if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `read status=${String((r as { status?: unknown }).status)} store=init`) }, (e) => { if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `read failed name=${qaErrorName(e)} code=${qaErrorCode(e)} store=init`) })
   read.then(
     () => {
       if (checkStorageInFlight === read) checkStorageInFlight = null
@@ -2438,7 +2486,17 @@ let pageRecordOverwriteRefused = 0
 
 /** AppEntryGate sets the permit (null = closed). */
 export const setPageWritePermit = (permit: PageWritePermit | null): void => {
+  if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true' && pageWritePermit !== permit) qaLine('[persist]', `gate permit=${permit ?? 'none'}`)
   pageWritePermit = permit
+}
+
+/** QA builds only: the number of chat rows and of messages of a record, with the permit kind of the moment. Integers and an enum only. */
+const qaRecordCounts = (tag: string, data: unknown): void => {
+  if (process.env.REACT_APP_QA_BRIDGE_COUNTER !== 'true') return
+  const profiles = (data as { profiles?: unknown } | null)?.profiles
+  const chats = Array.isArray(profiles) && Array.isArray((profiles[0] as { chats?: unknown } | undefined)?.chats) ? ((profiles[0] as { chats: unknown[] }).chats) : []
+  const messages = chats.reduce<number>((n, c) => n + (Array.isArray((c as { messages?: unknown })?.messages) ? (c as { messages: unknown[] }).messages.length : 0), 0)
+  if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `${tag} chats=${chats.length} messages=${messages} permit=${pageWritePermit ?? 'none'}`)
 }
 
 /** Diagnostics: the gate state, the number of discarded saves and the code of the last discard. Never record content. */
@@ -2461,6 +2519,7 @@ export const consultPageWriteGate = (code: string): boolean => {
   if (pageWritePermit !== null || restoreWriteWindow) return true
   pageWriteDiscarded += 1
   pageWriteLastDiscardCode = code
+  if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `not_saved reason=gate_closed code=${code} permit=none`)
   console.warn(`[pageWriteGate] save discarded (${code}): the page write gate is closed`)
   return false
 }
@@ -2522,6 +2581,7 @@ export const storeSystemData = async () => {
       await persistInitRecord(temp)
       stored = true
     } catch (ex) {
+      if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `not_saved reason=${ex instanceof Error && ex.message === CHATS_FLOOR_REFUSED ? 'chats_floor' : 'write_failed'} code=${qaErrorCode(ex)} name=${qaErrorName(ex)} stage=${qaPersistStageNow()}`)
       console.warn(`[storeSystemData] Error:`, ex)
       // 0.53.44: a refused overwrite is final for this save. One attempt, no retry notice (a retry would be refused the same way).
       if (!(ex instanceof Error && ex.message === PAGE_RECORD_OVERWRITE_REFUSED)) {
@@ -2549,6 +2609,12 @@ setPersistRetry(() => {
  */
 export const readStoredProfilesForVerify = async (): Promise<unknown[] | null> => {
   try {
+    if (isShellContext()) {
+      // In a shell the page's chat rows (and the verified fingerprint in them) live in the page IndexedDB copy; the native record does not take
+      // chat rows. The send gate and the read-back therefore read the page copy. A read that does not answer valid is null (the safe side).
+      const page = await readPageIdbInit()
+      return page.status === 'valid' && Array.isArray(page.data.profiles) ? ensureFlatProfiles(page.data.profiles) : null
+    }
     const plain = await readPlainForVerify(walletStores())
     return plain && Array.isArray(plain.profiles) ? ensureFlatProfiles(plain.profiles) : null
   } catch {
@@ -3081,6 +3147,44 @@ export const newUser = async (BeamioName: string, recoverData:IAccountRecover[],
 		publishNativePwaLog('warn', `[newUser] network failure errType=${err instanceof Error ? err.name : typeof err}`)
 		throw new CreateRemoteError('network')
 	}
+}
+
+/**
+ * The new-account registration of a shell (the native layer signs and forms the payload; the page only forwards it). The body is
+ * `{accountName, recover, wallet, signMessage}` exactly as the native layer gave it: no field is changed and nothing is reordered.
+ * Never logs the body.
+ */
+export type AddUserBody = { accountName: string; recover: unknown[]; wallet: string; signMessage: string }
+export type AddUserPostResult = { kind: 'ok' } | { kind: 'http'; status: number } | { kind: 'network' }
+export const postAddUserPayload = async (body: AddUserBody): Promise<AddUserPostResult> => {
+	try {
+		const resp = await fetch(storageNewUser, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+		if (!resp.ok) return { kind: 'http', status: resp.status }
+		return { kind: 'ok' }
+	} catch {
+		return { kind: 'network' }
+	}
+}
+
+/**
+ * Whether the registry already holds this tag for this EOA with its recover record (the restart rule: read first, then decide).
+ * 'unknown' for any read failure: it is never taken as "not registered".
+ */
+export const registryHasAccount = async (tag: string, eoa: string): Promise<'yes' | 'no' | 'unknown'> => {
+	let info: UserInfoLookup
+	try {
+		info = await getUserInfoLookup(eoa)
+	} catch {
+		return 'unknown'
+	}
+	if (info.status === 'network_error') return 'unknown'
+	if (info.status === 'no_account') return 'no'
+	const name = String(info.info?.accountName ?? '').trim().replace(/^@+/, '').toLowerCase()
+	if (name !== tag.trim().replace(/^@+/, '').toLowerCase()) return 'no'
+	const recover = await fetchRecoverPayloadByAccountName(tag, beamioAccountSC)
+	if (recover.status === 'found') return 'yes'
+	if (recover.status === 'none') return 'no'
+	return 'unknown'
 }
 
 const isValidEthersPrivateKey = (pk: unknown): pk is string => {

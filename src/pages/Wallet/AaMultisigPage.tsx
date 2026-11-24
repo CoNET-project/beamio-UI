@@ -38,6 +38,7 @@ import { CAPSULE_BTN_CLASS } from '@/utils/uiCommon'
 import { beamioWalletAccent } from '@/utils/beamioWalletAccent'
 import { resolveSigningPrivateKeyArmor } from '@/utils/resolveSigningPrivateKeyArmor'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { resolveBeamioAaOnConet } from '@/utils/resolveBeamioAaFromCardFactory'
 import { searchUsername } from '@/services/beamio'
 import { openExternalUrl } from '@/utils/cashTreesNativeNfc'
@@ -1643,7 +1644,7 @@ export default function AaMultisigPage() {
 		}
 		if (!privateKeyArmor) {
 			// Option A: in a shell without the chat capability the copy says so.
-			Toast.show({ content: shellChatBlockedNow() ? tu('shell_chat_unavailable_body') : 'Wallet signing key unavailable.' })
+			Toast.show({ content: shellChatBlockedNow() ? shellChatBlockedText() : 'Wallet signing key unavailable.' })
 			return false
 		}
 		return true
@@ -1666,7 +1667,7 @@ export default function AaMultisigPage() {
 		}
 		if (!privateKeyArmor) {
 			// Option A: in a shell without the chat capability the copy says so.
-			setTransferCreateError(shellChatBlockedNow() ? tu('shell_chat_unavailable_body') : 'Wallet signing key unavailable.')
+			setTransferCreateError(shellChatBlockedNow() ? shellChatBlockedText() : 'Wallet signing key unavailable.')
 			return false
 		}
 		return true
@@ -1702,7 +1703,7 @@ export default function AaMultisigPage() {
 			}
 			if (!privateKeyArmor) {
 				// Option A: in a shell without the chat capability the copy says so.
-				fail(shellChatBlockedNow() ? tu('shell_chat_unavailable_body') : 'Wallet signing key unavailable.')
+				fail(shellChatBlockedNow() ? shellChatBlockedText() : 'Wallet signing key unavailable.')
 				return
 			}
 		} else if (!requireWalletReady() || !policy || !signersAaAccount) {

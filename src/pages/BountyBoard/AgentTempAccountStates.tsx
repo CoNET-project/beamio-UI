@@ -36,6 +36,7 @@ import { unlockDetachedRecoverPrivateKey } from '@/services/beamio'
 import { tu } from '@/locale/beamioLocale'
 import { useIdentityEntryDisabled } from '@/hooks/useIdentityEntryDisabled'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 
 const M_PURPLE = '#8b3e91'
 const M_SOFT = '#f6edf9'
@@ -165,7 +166,7 @@ export function AgentTempAccountStates({
 	const openBusinessOs = async (flow?: 'business') => {
 		// (A, B, F): the link carries no passcode and no key, and there is no polling. A failure shows the unified copy.
 		if (shellChatBlockedNow()) {
-			setClaimError(tu('shell_chat_unavailable_body'))
+			setClaimError(shellChatBlockedText())
 			return
 		}
 		try {
@@ -313,7 +314,7 @@ export function AgentTempAccountStates({
 
 			{identityEntryDisabled ? (
 				<p role="status" className="rounded-[16px] border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-					{tu('shell_chat_unavailable_body')}
+					{shellChatBlockedText()}
 				</p>
 			) : null}
 

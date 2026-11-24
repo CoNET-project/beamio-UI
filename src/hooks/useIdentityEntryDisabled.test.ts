@@ -68,7 +68,7 @@ describe('the entry points read the hook or the shared capability check', () => 
 
 	it('App: the coupon claim says the chat is unavailable, not that a password unlock is needed, in a shell without the capability', () => {
 		expect(app).toContain('shellChatBlockedNow()')
-		expect(app).toContain("tu('shell_chat_unavailable_body')")
+		expect(app).toContain("shellChatBlockedText()")
 		expect(app).toContain("tu('unlock_your_wallet_with_your_access_password_to_claim_coupons')")
 	})
 })

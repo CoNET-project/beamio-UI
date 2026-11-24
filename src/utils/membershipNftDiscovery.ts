@@ -5,6 +5,7 @@
  * Mirror of x402sdk `membershipNftDiscovery.ts` (no DB probe — subprojects independent).
  */
 import { ethers } from 'ethers'
+import { multicallAggregate3ConetMain, decodeMulticallUint256, type ConetMulticallCall, type ConetMulticallResult } from '@/utils/conetMulticall3'
 import {
 	DISCOVER_ISSUED_NFT_START_ID,
 	DISCOVER_MEMBERSHIP_NFT_MIN_ID,
@@ -31,6 +32,54 @@ const OWNERSHIP_ABI = [
 
 const MEMBERSHIP_BALANCE_PROBE_SPAN = 64n
 const MEMBERSHIP_BALANCE_PROBE_HARD_CAP = 256n
+
+/**
+ * The orphan probe used to send one balanceOf eth_call per (holder, tokenId): 64 to 256 ids per holder, two holders, every card without a membership,
+ * every My Brands feed run. The CoNET provider does not batch (batchMaxCount:1), so that was hundreds of POSTs a minute per card
+ * (measured on a phone: 128 or 256 balanceOf calls per card per minute, 5 cards). Now: one Multicall3 call per probe, and a probe that found nothing is
+ * not repeated for 10 minutes (an orphan membership is rare, and a purchase refreshes the inventory through the normal path).
+ */
+export const ORPHAN_PROBE_NEGATIVE_TTL_MS = 10 * 60 * 1000
+/** a probe that could not run (no multicall, a failed call) is retried after this, so a broken RPC is not hammered either */
+export const ORPHAN_PROBE_FAILURE_TTL_MS = 60 * 1000
+const orphanProbeSkipUntil = new Map<string, number>()
+export const orphanProbeKey = (cardAddress: string, holders: string[]): string =>
+	`${cardAddress.toLowerCase()}|${holders.map((h) => h.toLowerCase()).sort().join(',')}`
+export const orphanProbeSkipped = (key: string, nowMs: number): boolean => (orphanProbeSkipUntil.get(key) ?? 0) > nowMs
+export function orphanProbeNote(key: string, nowMs: number, outcome: 'none' | 'failed' | 'found'): void {
+	if (outcome === 'found') orphanProbeSkipUntil.delete(key)
+	else orphanProbeSkipUntil.set(key, nowMs + (outcome === 'none' ? ORPHAN_PROBE_NEGATIVE_TTL_MS : ORPHAN_PROBE_FAILURE_TTL_MS))
+	if (orphanProbeSkipUntil.size > 200) orphanProbeSkipUntil.delete(orphanProbeSkipUntil.keys().next().value as string)
+}
+export function resetOrphanProbeForTest(): void {
+	orphanProbeSkipUntil.clear()
+}
+
+/** The (holder, tokenId) pairs with a balance above zero, from ONE multicall. `ok` is false when the probe could not run or any answer failed. */
+export async function probeHeldTokenIds(
+	cardAddress: string,
+	holders: string[],
+	tokenIds: bigint[],
+	multicall: (calls: ConetMulticallCall[]) => Promise<ConetMulticallResult[]> = (c) => multicallAggregate3ConetMain(c),
+): Promise<{ ok: boolean; held: Array<{ holder: string; tokenId: bigint }> }> {
+	const iface = new ethers.Interface(OWNERSHIP_ABI)
+	const pairs = holders.flatMap((holder) => tokenIds.map((tokenId) => ({ holder, tokenId })))
+	if (!pairs.length) return { ok: true, held: [] }
+	const results = await multicall(pairs.map((p) => ({ target: cardAddress, allowFailure: true, callData: iface.encodeFunctionData('balanceOf', [p.holder, p.tokenId]) })))
+	let ok = results.length === pairs.length
+	const held: Array<{ holder: string; tokenId: bigint }> = []
+	pairs.forEach((p, i) => {
+		const r = results[i]
+		if (!r || !r.success) {
+			ok = false
+			return
+		}
+		const v = decodeMulticallUint256(r.returnData)
+		if (v === null) ok = false
+		else if (v > 0n) held.push(p)
+	})
+	return { ok, held }
+}
 
 function nftKey(n: OwnershipNftRow): string {
 	return String(n.tokenId)
@@ -160,21 +209,25 @@ export async function discoverOrphanMembershipNfts(input: {
 	)
 	if (hasMembershipInInventory) return []
 
+	const probeKey = orphanProbeKey(input.cardAddress, holders)
+	// a probe that found nothing (or could not run) a moment ago is not repeated (see ORPHAN_PROBE_NEGATIVE_TTL_MS)
+	if (orphanProbeSkipped(probeKey, Date.now())) return []
 	const card = new ethers.Contract(input.cardAddress, OWNERSHIP_ABI, input.provider)
 	const nowSec = BigInt(Math.floor(Date.now() / 1000))
 	const candidates = await collectMembershipTokenIdCandidates(card, holders)
 	const found = new Map<string, OwnershipNftRow>()
 
+	// one multicall for all balances; only a held (holder, tokenId) gets the detail reads
+	const probe = await probeHeldTokenIds(input.cardAddress, holders, candidates)
 	await Promise.all(
-		holders.flatMap((holder) =>
-			candidates.map(async (tid) => {
-				const row = await readMembershipNftRowIfHeld(card, holder, tid, nowSec)
-				if (!row) return
-				const k = nftKey(row)
-				if (!found.has(k)) found.set(k, row)
-			}),
-		),
+		probe.held.map(async ({ holder, tokenId }) => {
+			const row = await readMembershipNftRowIfHeld(card, holder, tokenId, nowSec)
+			if (!row) return
+			const k = nftKey(row)
+			if (!found.has(k)) found.set(k, row)
+		}),
 	)
+	orphanProbeNote(probeKey, Date.now(), found.size > 0 ? 'found' : probe.ok ? 'none' : 'failed')
 
 	return Array.from(found.values())
 }

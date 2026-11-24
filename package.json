@@ -1,6 +1,6 @@
 {
 	"name": "Beamio",
-	"version": "0.53.46",
+	"version": "0.53.47",
 	"private": true,
 	"homepage": "/app",
 	"dependencies": {
@@ -75,10 +75,10 @@
 		"prebuild:react": "npm --prefix vendor/conet-chat-sdk ci --ignore-scripts && npm --prefix vendor/conet-chat-sdk run build",
 		"build:react": "CI=false env=production node node_modules/.bin/craco build && node scripts/check-worker-chunks.js \"${BUILD_PATH:-build}\" $([ \"$REACT_APP_SHELL_BUILD\" = true ] && echo --shell) && node scripts/check-ws-guard-build.js \"${BUILD_PATH:-build}\"",
 		"build:embedded": "PUBLIC_URL=/ npm run build:react",
-		"build:qa-embedded": "REACT_APP_BEAMIO_BOOT_TRACE=true REACT_APP_PGP_IDENTITY_CREATE_ENABLED=true GENERATE_SOURCEMAP=false npm run build:embedded",
+		"build:qa-embedded": "REACT_APP_BEAMIO_BOOT_TRACE=true REACT_APP_PGP_IDENTITY_CREATE_ENABLED=true REACT_APP_NEW_ACCOUNT_REGISTRATION=true GENERATE_SOURCEMAP=false npm run build:embedded",
 		"build:shell-embedded": "node scripts/check-node-version.js && REACT_APP_SHELL_BUILD=true PUBLIC_URL=/ npm run build:react && node scripts/inject-qa-update-json.js build && node scripts/check-shell-terminal-single-copy.js build",
 		"pack:shell-embedded": "bash scripts/pack-embedded-zip.sh build \"${PACK_OUT:?set PACK_OUT to the output ZIP path, outside the repository}\"",
-		"build:shell-qa-embedded": "GENERATE_SOURCEMAP=false REACT_APP_BEAMIO_BOOT_TRACE=true REACT_APP_SHELL_BUILD=true REACT_APP_PGP_IDENTITY_CREATE_ENABLED=true PUBLIC_URL=/ npm run build:react && node scripts/inject-qa-update-json.js build && node scripts/check-shell-terminal-single-copy.js build",
+		"build:shell-qa-embedded": "GENERATE_SOURCEMAP=false REACT_APP_BEAMIO_BOOT_TRACE=true REACT_APP_SHELL_BUILD=true REACT_APP_PGP_IDENTITY_CREATE_ENABLED=true REACT_APP_NEW_ACCOUNT_REGISTRATION=true PUBLIC_URL=/ npm run build:react && node scripts/inject-qa-update-json.js build && node scripts/check-shell-terminal-single-copy.js build",
 		"test": "craco test",
 		"eject": "react-scripts eject",
 		"build:qa-candidate": "npm --prefix vendor/conet-chat-sdk run build && GENERATE_SOURCEMAP=false PUBLIC_URL=/ npm run build:react",

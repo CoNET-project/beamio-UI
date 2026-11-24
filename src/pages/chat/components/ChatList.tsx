@@ -1,5 +1,5 @@
 import { IpfsImg } from '@/components/IpfsImg';
-import React, { useMemo, useEffect, useRef, useCallback, useState } from "react"
+import React, { useMemo, useEffect, useRef, useCallback, useState, useSyncExternalStore } from "react"
 import { CoNET_Data, setCoNET_Data } from '@/utils/globals'
 import {ethers} from 'ethers'
 import {
@@ -24,6 +24,8 @@ import { chatGenericLinkListPreview } from '@/utils/chatGenericLinkPreview'
 import { findPhoneCallByIds, isVoiceCallOfferActive, isVoiceCallTerminal, storedVoiceSignal } from '@/utils/voiceCallSession'
 import { isCashTreesNativeWebView } from '@/utils/cashTreesNativeNfc'
 import { DeliveryHealthBanner } from '@/components/DeliveryHealthBanner'
+import { getHistoryListStatus, subscribeHistoryListStatus } from '@/services/historyListStatus'
+import { qaLine } from '@/utils/qaLog'
 
 // 注意：不再接受 `list` prop。ChatList 内部直接从 useDaemonContext().profiles[0].chats
 // 读取并通过 useMemo 派生 items，避免与 profile.chats 出现两个数据源不一致的风险
@@ -229,7 +231,16 @@ export default function ChatList({
 	onOpen,
 }: ChatListProps) {
 	const { profiles, setProfiles } = useDaemonContext()
+	// a shell's list is "loading" until its full history read has settled; only a settled read with no rows is the empty state
+	const historyStatus = useSyncExternalStore(subscribeHistoryListStatus, getHistoryListStatus, getHistoryListStatus)
 	const { resolvePeerSearchResult, ensureProfilesForAddresses, searchRemoteAndIngest, profileMap } = useBeamioTagDatabase()
+	// QA only: the rows the list shows against the rows of the stored record (a list row that is not in the stored record is lost on a restart).
+	// Logged when either count changes (the stored count is read at that moment, so a later change is seen too).
+	const listRowCount = Array.isArray(profiles?.[0]?.chats) ? profiles[0].chats.length : 0
+	const storedRowCount = Array.isArray(CoNET_Data?.profiles?.[0]?.chats) ? CoNET_Data!.profiles![0].chats!.length : -1
+	useEffect(() => {
+		if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `list rows=${listRowCount} stored=${storedRowCount}`)
+	}, [listRowCount, storedRowCount])
 	const routeRefreshAtRef = useRef(0)
 	const tagEnrichAtRef = useRef(0)
 	const [browserCallMuted, setBrowserCallMuted] = useState(false)
@@ -826,7 +837,12 @@ export default function ChatList({
             )
           })}
 
-          {!items.length && (
+          {!items.length && historyStatus === 'loading' && (
+            <div data-testid="chat-list-loading" role="status" className="px-5 py-10 text-center text-slate-400 text-[14px]">
+              {tu('chat.list_loading')}
+            </div>
+          )}
+          {!items.length && historyStatus !== 'loading' && (
             <div className="px-5 py-10 text-center text-slate-400 text-[14px]">
               No conversations yet
             </div>

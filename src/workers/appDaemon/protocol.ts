@@ -133,6 +133,7 @@ export type AppDaemonWorkerInbound =
 
 export type AppDaemonWorkerOutbound =
 	| { type: 'ready'; reqId: number }
+	| { type: 'event:qaNet'; line: string }
 	| { type: 'ack'; reqId: number; ok: true; result?: unknown }
 	| { type: 'ack'; reqId: number; ok: false; error: string }
 	| {

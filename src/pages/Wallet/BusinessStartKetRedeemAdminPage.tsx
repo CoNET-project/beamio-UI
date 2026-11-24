@@ -8,6 +8,7 @@ import { useBusinessStartKetRedeemAdmin } from '@/hooks/useBusinessStartKetRedee
 import { BeamioCircularBackButton, BEAMIO_CIRCULAR_BACK_ROW_CLASS } from '@/components/BeamioCircularBackButton'
 import { resolveSigningPrivateKeyArmor } from '@/utils/resolveSigningPrivateKeyArmor'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { tu } from '@/locale/beamioLocale'
 import {
 	formatBuintAmount6ForDisplay,
@@ -73,7 +74,7 @@ export default function BusinessStartKetRedeemAdminPage() {
 		}
 		// Option A: a shell without the chat capability signs nothing and reads no key.
 		if (shellChatBlockedNow()) {
-			setFormError(tu('shell_chat_unavailable_body'))
+			setFormError(shellChatBlockedText())
 			return
 		}
 		const armor = resolveSigningPrivateKeyArmor(profiles?.[0])

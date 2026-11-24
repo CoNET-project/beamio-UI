@@ -4,7 +4,7 @@
  * is never probed and keeps its own flow. A bridge failure is written to the diagnostic log only.
  */
 import { callCapabilityStateOf, settleHello, HELLO_TIMEOUT_MS, type CallCapabilityState, type HelloProbe } from './callCapability'
-import { probeNativeCapabilities } from './nativeChatRouteRegister'
+import { onHelloValid, probeNativeCapabilities } from './nativeChatRouteRegister'
 import { publishNativePwaLog } from '../utils/cashTreesNativePwaLog'
 import { isCashTreesNativeWebView } from '../utils/cashTreesNativeNfc'
 
@@ -61,11 +61,27 @@ function runProbe(): void {
 	})
 }
 
+let lateHelloHooked = false
+/**
+ * A valid hello that arrives late (after the 10 s classification showed old_shell) is taken: the state is recomputed from it, so old_shell
+ * becomes compatible when the shell declares voiceCallV4 and a valid native version. The classification time decides only what is shown.
+ */
+function hookLateHello(): void {
+	if (lateHelloHooked) return
+	lateHelloHooked = true
+	onHelloValid((r) => {
+		if (!inShellFlag) return
+		const probe: HelloProbe = { answered: r.answered, capabilities: r.capabilities, nativeApp: r.nativeApp }
+		setState(callCapabilityStateOf({ inShell: true, probe }))
+	})
+}
+
 /** Starts the probe once. `inShell` comes from the caller (the native webview check). */
 export function startCallCapabilityProbe(inShell: boolean): void {
 	if (started) return
 	started = true
 	inShellFlag = inShell
+	hookLateHello()
 	runProbe()
 }
 

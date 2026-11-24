@@ -111,11 +111,12 @@ describe('shell chat start stops with a state, and never starts without the publ
 		expect(calls.retry).toBeUndefined()
 	})
 
-	it('G1 (key, not initialised): no start, and no retry from here (identityPublic needs G2)', async () => {
+	it('G1 (key, not initialised): no start; the not_ready is re-read on the cold-start schedule (identityPublic needs G2)', async () => {
 		const { deps, calls } = fakeDeps({ kind: 'not_ready' })
 		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('not_ready')
 		expect(calls.startListen).toBeUndefined()
-		expect(calls.retry).toBeUndefined()
+		// identityPublic not_ready is re-read on the cold-start schedule (not a counted failure)
+		expect(calls.retry).toEqual([['identityPublic not_ready']])
 	})
 
 	it('G2 without a PGP record (pgpReady false): no start, no retry', async () => {
@@ -139,6 +140,132 @@ describe('shell chat start stops with a state, and never starts without the publ
 		// an empty list is the explicit unavailable state (visible), then a retry.
 		expect(calls.showChatUnavailable).toBeDefined()
 		expect(calls.retry).toEqual([['node list unavailable']])
+	})
+})
+
+describe('identityPublic not_ready follows the cold-start schedule; hard refusals do not', () => {
+	it('G1 with no persisted EOA, with the init held, and with a refused init: retried as not_ready (the 60 s schedule), never as a counted failure', async () => {
+		resetShellChatStartLoopGuard()
+		const a = fakeDeps({ kind: 'not_ready' }, { readPersistedEoa: () => '' })
+		await expect(startShellChatFromNativeIdentity(a.deps)).resolves.toBe('identity_source_missing')
+		expect(a.calls.retry).toEqual([['identityPublic not_ready']])
+		const b = fakeDeps({ kind: 'not_ready' }, { initWithPersistedEoa: undefined })
+		await expect(startShellChatFromNativeIdentity(b.deps)).resolves.toBe('not_ready')
+		expect(b.calls.retry).toEqual([['identityPublic not_ready']])
+		const c = fakeDeps({ kind: 'not_ready' }, { initWithPersistedEoa: async () => ({ ok: false as const, reason: 'address_mismatch' }) })
+		await expect(startShellChatFromNativeIdentity(c.deps)).resolves.toBe('not_ready')
+		expect(c.calls.retry).toEqual([['identityPublic not_ready']])
+	})
+	it('the retry carries the not_ready kind (so the page uses the cold-start schedule, not the failure cap)', async () => {
+		resetShellChatStartLoopGuard()
+		const kinds: unknown[] = []
+		const { deps } = fakeDeps({ kind: 'not_ready' }, { initWithPersistedEoa: undefined, retry: (_r, kind) => void kinds.push(kind) })
+		await startShellChatFromNativeIdentity(deps)
+		expect(kinds).toEqual(['not_ready'])
+	})
+	it('an unanswered identityPublic (unavailable: the hello or the read not answered yet) is a not_ready read: the cold-start schedule', async () => {
+		const kinds: unknown[] = []
+		const { deps } = fakeDeps({ kind: 'unavailable' }, { retry: (_r, k) => void kinds.push(k) })
+		await startShellChatFromNativeIdentity(deps)
+		expect(kinds).toEqual(['not_ready'])
+	})
+	it('reverse: bad_identity and bad_request are not backed off: the existing counted retry', async () => {
+		for (const kind of ['bad_identity', 'bad_request'] as const) {
+			const kinds: unknown[] = []
+			const { deps } = fakeDeps({ kind }, { retry: (_r, k) => void kinds.push(k) })
+			await startShellChatFromNativeIdentity(deps)
+			expect(kinds).toEqual([undefined])
+		}
+	})
+})
+
+describe('+2.6 s: identityPublic answers not_ready twice, then the snapshot is ready and the next ask is found and advanced', () => {
+	it('each not_ready schedules another ask (not_ready kind); the third answer is ok and the chat starts; nothing stops it by count', async () => {
+		resetShellChatStartLoopGuard()
+		const answers: NativeIdentityPublic[] = [{ kind: 'not_ready' }, { kind: 'not_ready' }, OK]
+		const kinds: unknown[] = []
+		const { deps, calls } = fakeDeps(OK, { readIdentity: async () => answers.shift() as NativeIdentityPublic, readPersistedEoa: () => '', retry: (_r, k) => void kinds.push(k) })
+		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('identity_source_missing')
+		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('identity_source_missing')
+		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('started')
+		expect(kinds).toEqual(['not_ready', 'not_ready'])
+		expect(calls.startListen).toHaveLength(1)
+	})
+})
+
+describe('a store account after init: identityPublic is read again; pgpReady false goes evaluate, restore; the next start has pgpReady true and evaluates nothing', () => {
+	const NO_PGP: NativeIdentityPublic = { kind: 'ok', eoa: EOA, accountKey: `${EOA}:default`, pgpReady: false }
+	const okEval = { kind: 'evaluated' as const, state: 'ok' as const, failureCode: null, offerEntry: false }
+
+	it('start 1 (after init ready): pgpReady false → evaluate ok → restore ok → continue; start 2: pgpReady true → listen, no evaluate, no restore', async () => {
+		resetShellChatStartLoopGuard()
+		const evaluatePgp = jest.fn(async () => okEval)
+		const restorePgp = jest.fn(async (): Promise<PgpRestoreOutcome> => ({ ok: true }))
+		let identity: NativeIdentityPublic = NO_PGP
+		const { deps, calls } = fakeDeps(NO_PGP, { readIdentity: async () => identity, evaluatePgp, restorePgp })
+		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_restored')
+		expect(evaluatePgp).toHaveBeenCalledTimes(1)
+		expect(restorePgp).toHaveBeenCalledTimes(1)
+		expect(calls.retry).toEqual([['pgp restored']])
+		// after the restart (identityPublic now reports the restored key)
+		identity = OK
+		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('started')
+		expect(evaluatePgp).toHaveBeenCalledTimes(1)
+		expect(restorePgp).toHaveBeenCalledTimes(1)
+		expect(calls.startListen).toHaveLength(1)
+	})
+})
+
+describe('pgpReadyKnown false: pgpReady false is unknown, not "no key"', () => {
+	const UNKNOWN: NativeIdentityPublic = { kind: 'ok', eoa: EOA, accountKey: `${EOA}:default`, pgpReady: false, pgpReadyKnown: false }
+
+	it('shows the temporary state, retries on the temporary ladder, and sends no evaluate, no restore and no start', async () => {
+		resetShellChatStartLoopGuard()
+		const evaluatePgp = jest.fn(async () => ({ kind: 'unavailable' as const }))
+		const restorePgp = jest.fn(async (): Promise<PgpRestoreOutcome> => ({ ok: true }))
+		const setPgpTemporary = jest.fn()
+		const { deps, calls } = fakeDeps(UNKNOWN, { evaluatePgp, restorePgp, setPgpTemporary })
+		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('failed')
+		expect(setPgpTemporary).toHaveBeenCalledWith(true)
+		expect(calls.retry).toEqual([['pgp ready unknown']])
+		expect(evaluatePgp).not.toHaveBeenCalled()
+		expect(restorePgp).not.toHaveBeenCalled()
+		expect(calls.startListen).toBeUndefined()
+		expect(calls.showPgpFailure).toBeUndefined()
+	})
+
+	it('reverse: pgpReady false with the field absent (or true) still goes to evaluate as before', async () => {
+		resetShellChatStartLoopGuard()
+		const evaluatePgp = jest.fn(async () => ({ kind: 'unavailable' as const }))
+		const { deps } = fakeDeps({ kind: 'ok', eoa: EOA, accountKey: `${EOA}:default`, pgpReady: false }, { evaluatePgp })
+		await startShellChatFromNativeIdentity(deps)
+		expect(evaluatePgp).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe('a confirmed first identity (QA builds: the SDK sets it up)', () => {
+	const NO_PGP2: NativeIdentityPublic = { kind: 'ok', eoa: EOA, accountKey: `${EOA}:default`, pgpReady: false }
+	const first = { kind: 'evaluated' as const, state: 'first_identity' as const, failureCode: null, offerEntry: true, legacy: 'ABSENT' as const, chain: 'unregistered' as const }
+
+	it('with the setup dependency: "setting up", no create entry, no eligibility, no restore, no retry loop', async () => {
+		resetShellChatStartLoopGuard()
+		const setFirstIdentitySetup = jest.fn()
+		const restorePgp = jest.fn(async (): Promise<PgpRestoreOutcome> => ({ ok: true }))
+		const { deps, calls } = fakeDeps(NO_PGP2, { evaluatePgp: async () => first, restorePgp, setFirstIdentitySetup })
+		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_first_identity')
+		expect(setFirstIdentitySetup).toHaveBeenCalledWith(true)
+		expect((calls.setFirstIdentity ?? []).some((a) => (a as unknown[])[0] === true)).toBe(false)
+		expect(restorePgp).not.toHaveBeenCalled()
+		expect(calls.retry).toBeUndefined()
+		const { pgpCreateEligible } = require('./pgpIdentityEligibility') as typeof import('./pgpIdentityEligibility')
+		expect(pgpCreateEligible(`${EOA}:default`)).toBe(false)
+	})
+
+	it('reverse: without the dependency (production builds) the existing first-identity entry is unchanged', async () => {
+		resetShellChatStartLoopGuard()
+		const { deps, calls } = fakeDeps(NO_PGP2, { evaluatePgp: async () => first })
+		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_first_identity')
+		expect((calls.setFirstIdentity ?? []).some((a) => (a as unknown[])[0] === true)).toBe(true)
 	})
 })
 
@@ -252,7 +379,8 @@ describe('no identity source after a restart', () => {
 		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('identity_source_missing')
 		expect(calls.setIdentityPending).toEqual([[true]])
 		expect(calls.startListen).toBeUndefined()
-		expect(calls.retry).toBeUndefined()
+		// identityPublic not_ready is re-read on the cold-start schedule (not a counted failure)
+		expect(calls.retry).toEqual([['identityPublic not_ready']])
 	})
 
 	it('G1 with a persisted EOA and a refused init: the start waits; no retry state is shown', async () => {
@@ -279,10 +407,11 @@ describe('G1 start: identity-only init with the persisted EOA', () => {
 		expect(calls.startListen).toBeUndefined()
 	})
 
-	it('init refused: no retry from here, the start waits', async () => {
+	it('init refused: the start waits and the not_ready is re-read on the cold-start schedule', async () => {
 		const { deps, calls } = fakeDeps({ kind: 'not_ready' }, { initWithPersistedEoa: async () => ({ ok: false as const, reason: 'address_mismatch' }) })
 		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('not_ready')
-		expect(calls.retry).toBeUndefined()
+		// identityPublic not_ready is re-read on the cold-start schedule (not a counted failure)
+		expect(calls.retry).toEqual([['identityPublic not_ready']])
 	})
 })
 
@@ -294,7 +423,8 @@ describe('G1 init from the chain is on (correction 2026-11-13)', () => {
 	it('with no initializer injected, G1 with a persisted EOA waits: no init, no retry, no retry state', async () => {
 		const { deps, calls } = fakeDeps({ kind: 'not_ready' }, { initWithPersistedEoa: undefined })
 		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('not_ready')
-		expect(calls.retry).toBeUndefined()
+		// identityPublic not_ready is re-read on the cold-start schedule (not a counted failure)
+		expect(calls.retry).toEqual([['identityPublic not_ready']])
 		expect(calls.setIdentityPending).toBeUndefined()
 		expect(calls.startListen).toBeUndefined()
 	})
@@ -329,6 +459,47 @@ describe('a listen refused with address_mismatch is not retried, and shows no im
 		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_failed')
 		expect(calls.showPgpFailure).toEqual([['pgp_restore_not_ready']])
 		expect(calls.retry).toBeUndefined()
+	})
+
+	// pgp_verify_failed (evaluate ok, restore refused by the native challenge-signature gate, nothing written): the failure with the user's
+	// entry; no retry; no restore loop.
+	it('evaluate ok and restore pgp_verify_failed: the failure is shown, one restore, no automatic retry', async () => {
+		resetShellChatStartLoopGuard()
+		const restorePgp = jest.fn(async (): Promise<PgpRestoreOutcome> => ({ ok: false, code: 'pgp_verify_failed', failure: 'pgp_verify_failed' }))
+		const { deps, calls } = fakeDeps(NO_PGP_CASE, { evaluatePgp: async () => okCase, restorePgp })
+		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_failed')
+		expect(calls.showPgpFailure).toEqual([['pgp_verify_failed']])
+		expect(restorePgp).toHaveBeenCalledTimes(1)
+		expect(calls.retry).toBeUndefined()
+		expect(calls.startListen).toBeUndefined()
+	})
+
+	it('a later start for the same account in this process sends neither evaluate nor restore again (no loop); a cold start asks again', async () => {
+		resetShellChatStartLoopGuard()
+		const evaluatePgp = jest.fn(async () => okCase)
+		const restorePgp = jest.fn(async (): Promise<PgpRestoreOutcome> => ({ ok: false, code: 'pgp_verify_failed', failure: 'pgp_verify_failed' }))
+		const { deps, calls } = fakeDeps(NO_PGP_CASE, { evaluatePgp, restorePgp })
+		await startShellChatFromNativeIdentity(deps)
+		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_failed')
+		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_failed')
+		expect(evaluatePgp).toHaveBeenCalledTimes(1)
+		expect(restorePgp).toHaveBeenCalledTimes(1)
+		expect(calls.showPgpFailure).toEqual([['pgp_verify_failed'], ['pgp_verify_failed'], ['pgp_verify_failed']])
+		expect(calls.retry).toBeUndefined()
+		resetShellChatStartLoopGuard()
+		await startShellChatFromNativeIdentity(deps)
+		expect(restorePgp).toHaveBeenCalledTimes(2)
+	})
+
+	it('the other restore codes are unchanged next to it: not_ready still ends with its own notice; an unlisted code is still retried', async () => {
+		resetShellChatStartLoopGuard()
+		const a = fakeDeps(NO_PGP_CASE, { evaluatePgp: async () => okCase, restorePgp: async () => ({ ok: false, code: 'not_ready', failure: null }) })
+		await startShellChatFromNativeIdentity(a.deps)
+		expect(a.calls.showPgpFailure).toEqual([['pgp_restore_not_ready']])
+		const b = fakeDeps(NO_PGP_CASE, { evaluatePgp: async () => okCase, restorePgp: async () => ({ ok: false, code: 'readback_failed', failure: null }) })
+		await expect(startShellChatFromNativeIdentity(b.deps)).resolves.toBe('failed')
+		expect(b.calls.showPgpFailure).toBeUndefined()
+		expect(b.calls.retry).toBeDefined()
 	})
 
 	it('two starts that each read not_ready both stop at not_ready: one restore per start, and no retry is scheduled', async () => {

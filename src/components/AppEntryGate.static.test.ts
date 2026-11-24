@@ -14,7 +14,7 @@ describe('AppEntryGate decides shell entry from walletStatus', () => {
 		expect(src).not.toMatch(/readNativeWalletStatus/)
 		// 0.53.39: the walletStatus route (`if (native.status !== 'no_key') { iosSilentOnboarding(...) }`) was removed on purpose;
 		// the start is decided by the native pre-read, so that regex pin is deleted.
-		expect(src).toMatch(/const startupWait = \(reason: string, code\?: StartReasonCode\) => \{/)
+		expect(src).toMatch(/const startupWait = \(reason: string, code\?: StartReasonCode, backoffKey\?: ColdStartKey\) => \{/)
 	})
 
 	it('keeps the no_key watcher (identityPublic refusals are excluded inside the watcher)', () => {

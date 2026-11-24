@@ -57,6 +57,8 @@ const REFUSAL_CODES: readonly string[] = [
 	'pgp_source_unavailable',
 	//1: the chain write path is not approved; the refusal is at the ack only (no result event).
 	'waiting_registration',
+	// pgpRestore failed the native challenge-signature gate (nothing written). Read as a failure by restoreNativePgp, never retried here.
+	'pgp_verify_failed',
 ]
 
 /** Maps a native failure class to the page's failure code (the Chat route shows it). */
@@ -190,7 +192,14 @@ export async function restoreNativePgp(accountKey: string): Promise<PgpRestoreOu
 	const a = await ackFor({ type: NATIVE_PGP_RESTORE_COMMAND, accountKey }, EVALUATE_TIMEOUT_MS, reqId)
 	if (a.kind !== 'ok') {
 		waiter.cancel()
-		return { ok: false, code: a.kind === 'refused' ? a.code : 'unavailable', failure: null }
+		const code = a.kind === 'refused' ? a.code : 'unavailable'
+		return { ok: false, code, failure: codeToFailure(code) }
+	}
+	// a failure code already in the ack's result (the gate refused before any write): no event follows, so do not wait for one
+	const inAck = a.result && typeof a.result === 'object' ? (a.result as Loose).code : undefined
+	if (typeof inAck === 'string' && codeToFailure(inAck)) {
+		waiter.cancel()
+		return { ok: false, code: inAck, failure: codeToFailure(inAck) }
 	}
 	const code = await waiter.promise
 	if (code === 'ok') return { ok: true }
@@ -209,6 +218,8 @@ function codeToFailure(code: string): PgpRestoreFailure | null {
 			return 'pgp_fingerprint_mismatch'
 		case 'pgp_registration_missing':
 			return 'pgp_registration_missing'
+		case 'pgp_verify_failed':
+			return 'pgp_verify_failed'
 		default:
 			return null
 	}

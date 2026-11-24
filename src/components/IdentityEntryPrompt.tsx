@@ -7,6 +7,7 @@ import { tu } from '../locale/beamioLocale'
 import { IDENTITY_ENTRY_PROMPT_EVENT } from '../services/identityEntryPrompt'
 import { getNativeIdentityCapability, requestNativeIdentityRetry } from '../services/nativeIdentityProbeRetry'
 import { shellChatBlockedNow } from '../services/shellChatCapability'
+import { useHelloWindowOpen, useVisibleReadPoll } from '../hooks/useHelloWait'
 
 /**
  * The copy depends on the hello answer. Unanswered: the native side is not ready yet, so a retry can succeed.
@@ -20,6 +21,9 @@ const DISABLED_TARGET = 'button:disabled, input:disabled, select:disabled, texta
 export default function IdentityEntryPrompt() {
 	const [open, setOpen] = useState(false)
 	const [mode, setMode] = useState<PromptMode>('retry')
+	const windowOpen = useHelloWindowOpen()
+	// the dialog is visible: a read-only poll every 30 s while the window has run out; inside it the shared hello is already waiting
+	useVisibleReadPoll(open && mode === 'retry' && !windowOpen)
 
 	useEffect(() => {
 		// the prompt state is set on the next turn: a blocked check may run during another component's render
@@ -47,7 +51,7 @@ export default function IdentityEntryPrompt() {
 		<div role="dialog" aria-modal="true" className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/50 px-6">
 			<div className="w-full max-w-sm rounded-3xl border border-white/15 bg-[#071126] p-6 text-center text-white shadow-2xl">
 				{unavailable && <h2 className="text-base font-semibold">{tu('shell_chat_unavailable_title')}</h2>}
-				<p className="mt-2 text-sm leading-6 text-white/85">{tu(unavailable ? 'shell_chat_unavailable_body' : 'native_not_ready_hint')}</p>
+				<p className="mt-2 text-sm leading-6 text-white/85">{tu(unavailable ? 'shell_chat_unavailable_body' : windowOpen ? 'native_preparing_wallet' : 'native_not_ready_hint')}</p>
 				<div className="mt-5 flex justify-center gap-3">
 					{!unavailable && (
 						<button

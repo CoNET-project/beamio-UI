@@ -28,7 +28,7 @@ describe('the entries read the hook or the shared capability check', () => {
 		const key = src.indexOf('resolveSigningPrivateKeyArmor(profile)', at)
 		expect(at).toBeGreaterThan(0)
 		expect(guard).toBeGreaterThan(at)
-		expect(src.slice(guard, guard + 120)).toContain("setSubmitError(tu('shell_chat_unavailable_body'))")
+		expect(src.slice(guard, guard + 120)).toContain("setSubmitError(shellChatBlockedText())")
 		expect(key).toBeGreaterThan(guard)
 	})
 
@@ -39,7 +39,7 @@ describe('the entries read the hook or the shared capability check', () => {
 		const key = src.indexOf('resolveSigningPrivateKeyArmor(profile)', at)
 		expect(at).toBeGreaterThan(0)
 		expect(guard).toBeGreaterThan(at)
-		expect(src.slice(guard, guard + 120)).toContain("setPanelError(tu('shell_chat_unavailable_body'))")
+		expect(src.slice(guard, guard + 120)).toContain("setPanelError(shellChatBlockedText())")
 		expect(key).toBeGreaterThan(guard)
 	})
 
@@ -50,14 +50,14 @@ describe('the entries read the hook or the shared capability check', () => {
 		const stored = src.indexOf('await checkStorage({ probe: true })', at)
 		expect(at).toBeGreaterThan(0)
 		expect(guard).toBeGreaterThan(at)
-		expect(src.slice(guard, guard + 160)).toContain("Toast.show({ content: tu('shell_chat_unavailable_body'), position: 'top' })")
+		expect(src.slice(guard, guard + 160)).toContain("Toast.show({ content: shellChatBlockedText(), position: 'top' })")
 		expect(stored).toBeGreaterThan(guard)
 	})
 
 	it('MerchantCardTopUpFlow: the membership claim, the membership pay and the legs pay refuse in a blocked shell', () => {
 		const src = read('pages/Vouchers/MerchantCardTopUpFlow.tsx')
 		// claimZeroFeeMembership: the no-key branch shows the unified copy
-		expect(src).toMatch(/if \(!key \|\| !wallet\) \{[\s\S]{0,200}setPayError\(shellChatBlockedNow\(\) \? tu\('shell_chat_unavailable_body'\) : 'Sign in to claim membership\.'\)/)
+		expect(src).toMatch(/if \(!key \|\| !wallet\) \{[\s\S]{0,200}setPayError\(shellChatBlockedNow\(\) \? shellChatBlockedText\(\) : 'Sign in to claim membership\.'\)/)
 		// goPay (membership branch): the guard comes before the key is read
 		const goPay = src.indexOf('const goPay = () => {')
 		const goGuard = src.indexOf('if (shellChatBlockedNow()) {', goPay)
@@ -83,7 +83,7 @@ describe('the entries read the hook or the shared capability check', () => {
 		const key = src.indexOf('const pk = resolveSigningPrivateKeyArmor(profile)', at)
 		expect(at).toBeGreaterThan(0)
 		expect(guard).toBeGreaterThan(at)
-		expect(src.slice(guard, guard + 120)).toContain("setPanelError(tu('shell_chat_unavailable_body'))")
+		expect(src.slice(guard, guard + 120)).toContain("setPanelError(shellChatBlockedText())")
 		expect(key).toBeGreaterThan(guard)
 	})
 
@@ -106,7 +106,7 @@ describe('the entries read the hook or the shared capability check', () => {
 		const likeStored = src.indexOf('await checkStorage({ probe: true })', like)
 		expect(like).toBeGreaterThan(0)
 		expect(likeGuard).toBeGreaterThan(like)
-		expect(src.slice(likeGuard, likeGuard + 120)).toContain("setLikeError(tu('shell_chat_unavailable_body'))")
+		expect(src.slice(likeGuard, likeGuard + 120)).toContain("setLikeError(shellChatBlockedText())")
 		expect(likeStored).toBeGreaterThan(likeGuard)
 
 		const topup = src.indexOf('const handleUsdcTopupContinue = useCallback(async () => {')
@@ -129,7 +129,7 @@ describe('the entries read the hook or the shared capability check', () => {
 		expect(claim).toBeGreaterThan(0)
 		expect(claimGuard).toBeGreaterThan(claim)
 		expect(src.slice(claimGuard, claimGuard + 160)).toContain(
-			"setCouponClaimErrorById((s) => ({ ...s, [row.id]: tu('shell_chat_unavailable_body') }))",
+			"setCouponClaimErrorById((s) => ({ ...s, [row.id]: shellChatBlockedText() }))",
 		)
 		expect(claimStored).toBeGreaterThan(claimGuard)
 	})

@@ -2,6 +2,7 @@
  * Main-thread thin client for App Daemon Worker.
  */
 
+import { qaLine } from '@/utils/qaLog'
 import type {
 	AppDaemonWorkerInbound,
 	AppDaemonWorkerInitPayload,
@@ -119,6 +120,10 @@ export class AppDaemonWorkerClient {
 				else p.reject(new Error(msg.error || 'ack_error'))
 				break
 			}
+			case 'event:qaNet':
+				// QA builds only: the worker's own chain-read count, shown through the page's QA log
+				if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true' && typeof msg.line === 'string') qaLine('[net]', msg.line.slice(0, 140))
+				break
 			case 'event:walletBalances':
 				this.handlers.onWalletBalances?.(msg)
 				break

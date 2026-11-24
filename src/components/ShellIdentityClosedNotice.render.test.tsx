@@ -9,7 +9,7 @@ import { requestShellRetryNow, setShellRetryExhausted } from '../services/shellC
 import { nativeRecoveryOpen } from '../services/nativeRecovery'
 
 jest.mock('../locale/beamioLocale', () => ({ tu: (key: string) => key }))
-jest.mock('../services/nativeChatRouteRegister', () => ({ requestNativeAck: jest.fn(), nextReqId: () => 1, probeNativeCapabilities: jest.fn() }))
+jest.mock('../services/nativeChatRouteRegister', () => ({ requestNativeAck: jest.fn(), nextReqId: () => 1, probeNativeCapabilities: jest.fn(), helloWithinWindow: () => true, onHelloValid: () => () => undefined, getCachedHello: () => undefined, getCachedHelloRaw: () => undefined }))
 jest.mock('../services/nativeRecovery', () => ({ nativeRecoveryOpen: jest.fn(async () => ({ ok: true })) }))
 // the local page record decides the refused copy (the decision): mocked per case here
 const mockLocalPage: { next: 'valid' | 'no_mnemonic' | 'address_only' | 'throws' } = { next: 'valid' }
@@ -150,7 +150,7 @@ describe('the closed notice from an import switch', () => {
 describe('the stopped-retries notice', () => {
 	it('shows the unavailable title and the copy, and the button is the manual retry', () => {
 		render(<ShellRetryExhaustedNotice />)
-		expect(screen.getByText('shell_chat_unavailable_title')).toBeTruthy()
+		expect(screen.getByText('chat.try_later.title')).toBeTruthy()
 		expect(screen.getByText('chat.retry_exhausted.body')).toBeTruthy()
 		fireEvent.click(screen.getByRole('button', { name: 'retry' }))
 		expect(retryMock).toHaveBeenCalledTimes(1)

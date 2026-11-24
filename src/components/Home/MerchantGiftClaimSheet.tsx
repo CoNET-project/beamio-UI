@@ -20,6 +20,7 @@ import { postCardRedeem } from '@/services/BeamioCard'
 import { mapServerError } from '@/locale/mapServerError'
 import { resolveSigningPrivateKeyArmor } from '@/utils/resolveSigningPrivateKeyArmor'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { tu } from '@/locale/beamioLocale'
 import { BecomeMemberSheet } from '@/components/Home/BecomeMemberSheet'
 import { loadMembershipKycPolicy, membershipIssueNeedsKyc, type MembershipKycFormPolicy } from '@/utils/membershipKyc'
@@ -111,7 +112,7 @@ export default function MerchantGiftClaimSheet({
 		setPanelError(null)
 		// Option A: a shell without the chat capability claims nothing and reads no key.
 		if (shellChatBlockedNow()) {
-			setPanelError(tu('shell_chat_unavailable_body'))
+			setPanelError(shellChatBlockedText())
 			return
 		}
 		if (!card) {

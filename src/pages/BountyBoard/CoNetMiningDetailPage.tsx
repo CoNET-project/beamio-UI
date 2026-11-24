@@ -29,6 +29,7 @@ import { useDepinNodeCountryLabelsByIp } from '@/hooks/useDepinNodeCountryLabels
 import { resolveSessionEoa } from '@/utils/resolveSessionEoa'
 import { resolveSigningPrivateKeyArmor } from '@/utils/resolveSigningPrivateKeyArmor'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { tu } from '@/locale/beamioLocale'
 import {
 	previewValidatorDepositRedeemClaim,
@@ -271,7 +272,7 @@ export default function CoNetMiningDetailPage() {
 		// Option A: a shell without the chat capability claims nothing and reads no key.
 		if (shellChatBlockedNow()) {
 			setInlineStatus('error')
-			setInlineError(tu('shell_chat_unavailable_body'))
+			setInlineError(shellChatBlockedText())
 			return
 		}
 		const armor = resolveSigningPrivateKeyArmor(profiles?.[0])

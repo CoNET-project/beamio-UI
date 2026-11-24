@@ -1,6 +1,6 @@
 /**
  * where the unavailable notice replaces a full-screen page, the user must be able to leave.
- * With `onBack` the notice shows one button that calls it; without it (the route-level gate) nothing changes.
+ * With `onBack` the notice shows a back button that calls it; without it (the route-level gate) nothing changes.
  */
 import { fireEvent, render, screen } from '@testing-library/react'
 import ShellChatUnavailableNotice from './ShellChatUnavailableNotice'
@@ -25,14 +25,13 @@ describe('ShellChatUnavailableNotice: back control', () => {
 	it('with onBack: one button, and a click calls onBack', () => {
 		const onBack = jest.fn()
 		render(<ShellChatUnavailableNotice onBack={onBack} />)
-		const buttons = screen.getAllByRole('button')
-		expect(buttons).toHaveLength(1)
-		fireEvent.click(buttons[0])
+		// while the hello is unanswered the notice also offers the retry; the back button is the one named "back"
+		fireEvent.click(screen.getByRole('button', { name: 'back' }))
 		expect(onBack).toHaveBeenCalledTimes(1)
 	})
 
-	it('without onBack (the route-level gate): no button', () => {
+	it('without onBack (the route-level gate): no back button', () => {
 		render(<ShellChatUnavailableNotice />)
-		expect(screen.queryAllByRole('button')).toHaveLength(0)
+		expect(screen.queryByRole('button', { name: 'back' })).toBeNull()
 	})
 })

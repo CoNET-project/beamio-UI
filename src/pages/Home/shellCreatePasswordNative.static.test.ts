@@ -12,15 +12,16 @@ const read = (rel: string) => readFileSync(join(__dirname, '..', '..', '..', 'sr
 describe('shell create: no wallet password is typed in the WebView', () => {
 	const page = read('pages/Home/CreateUsernamePinScreen.tsx')
 
-	it('the password block is not rendered in a shell', () => {
+	it('the password block is not rendered in a shell (production); only a QA build with the new-account registration switch shows it', () => {
 		expect(page).toMatch(/const shellNative = isShellContext\(\)/)
-		expect(page).toMatch(/\{!shellNative \? \(<>[\s\S]*?<\/>\) : null\}/)
+		expect(page).toMatch(/const shellNoPassword = shellNative && !ACCOUNT_CREATE_REGISTER_ENABLED/)
+		expect(page).toMatch(/\{!shellNoPassword \? \(<>[\s\S]*?<\/>\) : null\}/)
 	})
 
 	it('the shell submit does not require a page-side password and passes an empty one', () => {
-		expect(page).toMatch(/const canSubmit = tagValid && \(shellNative \|\| pwdRulesOk\)/)
-		expect(page).toMatch(/const p = shellNative \? '' : password\.trim\(\)/)
-		expect(page).toMatch(/if \(!shellNative && \(!l \|\| !m \|\| !n\)\) return/)
+		expect(page).toMatch(/const canSubmit = tagValid && \(shellNoPassword \|\| pwdRulesOk\)/)
+		expect(page).toMatch(/const p = shellNoPassword \? '' : password\.trim\(\)/)
+		expect(page).toMatch(/if \(!shellNoPassword && \(!l \|\| !m \|\| !n\)\) return/)
 	})
 
 	it('the shell branch opens the native create before any page-side account creation', () => {

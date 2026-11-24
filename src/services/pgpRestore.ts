@@ -10,7 +10,7 @@
  */
 import type { OwnChainRead } from './chatOwnRoutePlan'
 
-export type PgpRestoreFailure = 'pgp_backup_missing' | 'pgp_backup_undecryptable' | 'pgp_fingerprint_mismatch' | 'pgp_registration_missing' | 'pgp_restore_not_ready'
+export type PgpRestoreFailure = 'pgp_backup_missing' | 'pgp_backup_undecryptable' | 'pgp_fingerprint_mismatch' | 'pgp_registration_missing' | 'pgp_restore_not_ready' | 'pgp_verify_failed'
 
 export const PGP_RESTORE_FAILURES: readonly PgpRestoreFailure[] = [
 	'pgp_backup_missing',
@@ -19,6 +19,8 @@ export const PGP_RESTORE_FAILURES: readonly PgpRestoreFailure[] = [
 	'pgp_registration_missing',
 	// the native layer answered not_ready (an inconsistent record, or a locked store). Nothing was written; the user may replace explicitly.
 	'pgp_restore_not_ready',
+	// pgpRestore failed the native challenge-signature gate: nothing was written. A failure with the user's entry; never an automatic retry.
+	'pgp_verify_failed',
 ]
 
 export function isPgpRestoreFailure(value: unknown): value is PgpRestoreFailure {

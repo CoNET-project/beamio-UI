@@ -24,7 +24,7 @@ export const NATIVE_RECOVERY_OPEN_COMMAND = 'nativeRecoveryOpen'
 export const NATIVE_RECOVERY_RESULT_EVENT = 'nativeRecoveryResult'
 const OPEN_TIMEOUT_MS = 10_000
 /** ②: the pre-read request stays open for the 30 s reply window; a late reply matched by reqId is taken while undecided. */
-const PREREAD_REPLY_WINDOW_MS = 30_000
+const PREREAD_REPLY_WINDOW_MS = 45_000
 /**no result in this time, and visible again, means a local `cancelled`. */
 export const NATIVE_RECOVERY_LOCAL_CANCEL_MS = 10 * 60 * 1000
 
@@ -477,11 +477,14 @@ function prereadFromCode(r: Record<string, unknown>): MnemonicPreread {
 			return { kind: 'unknown' }
 		}
 		const phrase = r.mnemonic.trim()
-		// Per B: an ok plaintext answer carries the eoa. Derived address D must equal it; a mismatch is verify_failed (nothing
-		// is written, nothing is onboarded). The answer without an eoa is the capability-missing path (unsupported: the legacy judgement).
-		// The interface spec wrote "ok without eoa": that reading is kept only as this capability-missing branch.
-		if (typeof r.eoa !== 'string') return { kind: 'unknown', reason: 'unsupported' }
-		if (r.eoa.trim().toLowerCase() !== derived) return { kind: 'unknown', reason: 'verify_failed' }
+		// Plaintext from the trusted recovery bridge (no app passcode): the phrase is the input and the page derives the address from it.
+		// The reply's `eoa` is an optional field and never a gate: missing, or different from the derived address, the derived address is
+		// used. A different one is ignored with one diagnostic that carries no address and no secret, and it is written to no record.
+		// (This rule is for this one trusted recovery reply. The request/account binding, the cross-account write guard, the trusted-source
+		// decision and the chat identity and fingerprint checks are elsewhere and unchanged.)
+		if (typeof r.eoa === 'string' && r.eoa.trim() !== '' && r.eoa.trim().toLowerCase() !== derived) {
+			publishNativePwaLog('warn', '[preread] eoa field ignored (mismatch)')
+		}
 		return { kind: 'valid', eoa: derived, phrase }
 	}
 	if (r.cipher !== null && typeof r.cipher === 'object' && !Array.isArray(r.cipher)) return { kind: 'cipher', cipher: r.cipher }

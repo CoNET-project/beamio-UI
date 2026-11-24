@@ -79,7 +79,9 @@ describe('the page reads the full corpus through the scheduler, not after a load
 		expect(app).toContain('boundAccount: () => boundAccountOfActiveClient(),')
 		expect(app).toContain('onReset: () => restoredHistoryKeysRef.current.clear(),')
 		expect(app).toContain('corpusReadRef.current?.sync({')
-		expect(app).toContain('account: historyAccountOf(profiles?.[0]),')
+		expect(app).toContain('corpusReadRef.current?.sync({')
+		expect(app).toContain('const account = corpusAccountOf(profiles?.[0])')
+		expect(app).toContain('account,')
 		expect(app).toContain('useEffect(() => onWorkerReady(() => setWorkerEpoch((n) => n + 1)), [])')
 	})
 

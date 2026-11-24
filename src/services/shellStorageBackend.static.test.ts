@@ -39,8 +39,8 @@ describe('shell wallet record path (plan N)', () => {
 		const at = beamio.indexOf('const persistInitRecord = async')
 		// r92 step 3: the shell branch carries the fresh-write guard before its return; the browser write moved to persistInitRecordBrowser
 		// (改写：产品现将 Cache API 备份放在 persistInitRecordBrowser 中，写入被接受之后才缓存；shell 分支仍先 return)
-		const block = beamio.slice(at, at + 2400)
-		expect(block).toMatch(/if \(isShellContext\(\)\) \{[\s\S]{0,2000}return\s*\}/)
+		const block = beamio.slice(at, at + 3600)
+		expect(block).toMatch(/if \(isShellContext\(\)\) \{[\s\S]{0,3000}return\s*\}/)
 		expect(block.indexOf('await persistInitRecordBrowser(temp)')).toBeGreaterThan(block.indexOf('return'))
 		const br = beamio.slice(beamio.indexOf('const persistInitRecordBrowser = async'), beamio.indexOf('const walletStores'))
 		const cacheAt = br.indexOf('cacheStorageBackup(encodeInitRaw(record))')

@@ -11,7 +11,10 @@
 import { isShellBuildKind } from '../utils/shellBuildFlag'
 import { isCashTreesNativeWebView } from '../utils/cashTreesNativeNfc'
 import { isShellContext } from './shellContext'
-import { probeNativeCapabilities } from './nativeChatRouteRegister'
+import { onHelloValid, probeNativeCapabilities } from './nativeChatRouteRegister'
+import { identityCapabilityFrom } from './shellEntryDecision'
+import { setNativeIdentityCapability, getNativeIdentityCapability } from './nativeIdentityProbeRetry'
+import { tu } from '@/locale/beamioLocale'
 import { notifyIdentityEntryBlocked } from './identityEntryPrompt'
 import { decideShellState, type UiState } from './shellChatState'
 import { getShellChatUiState, setShellChatUiState } from './shellChatUiState'
@@ -31,12 +34,56 @@ export function shellChatBlockedNow(): boolean {
 	return blocked
 }
 
+/**
+ * The text a blocked feature entry shows. "Please update" is only for a valid hello that lacks the capability (missing); while there is no valid
+ * answer yet (unanswered, unknown) the native side is still getting ready, so the entry says that and a retry later is fine
+ * (a late answer is not a failure).
+ */
+export function shellChatBlockedText(): string {
+	return tu(getNativeIdentityCapability() === 'missing' ? 'shell_chat_unavailable_body' : 'native_preparing_wallet')
+}
+
 /** Pure resolution from the build flag, the bridge and the hello capabilities. */
 export function resolveShellChatState(input: { buildKind: 'web' | 'shell'; bridge: boolean; caps: readonly string[] }): UiState {
 	return decideShellState(input).uiState
 }
 
 let pending: Promise<UiState> | null = null
+
+/** Called when a VALID hello answer settles the chat state (a late answer included). chat.ts starts the chat from it. */
+const resolvedListeners = new Set<(state: UiState) => void>()
+export function onShellChatCapabilityResolved(cb: (state: UiState) => void): () => void {
+	resolvedListeners.add(cb)
+	return () => {
+		resolvedListeners.delete(cb)
+	}
+}
+let lateHelloHooked = false
+/** Test-only: forgets the resolved state so a case starts from the first ask. */
+export function resetShellChatCapabilityForTest(): void {
+	pending = null
+	resolvedListeners.clear()
+	lateHelloHooked = false
+}
+/**
+ * A valid hello at any time (on time or late) settles the state: the capability status, the chat state, and whoever waits (the chat start).
+ * "Not answered" never produced a missing capability; only a valid answer without it does. A shown "unavailable" is withdrawn by a valid
+ * answer that has the capability (no click needed).
+ */
+function hookLateHello(): void {
+	if (lateHelloHooked) return
+	lateHelloHooked = true
+	onHelloValid((r) => {
+		const shellBuild = isShellBuildKind()
+		const bridge = isCashTreesNativeWebView()
+		if (!shellBuild && !bridge) return
+		const state = resolveShellChatState({ buildKind: shellBuild ? 'shell' : 'web', bridge, caps: r.capabilities })
+		setNativeIdentityCapability(identityCapabilityFrom(r))
+		setShellChatUiState(state)
+		pending = Promise.resolve(state)
+		for (const cb of [...resolvedListeners]) cb(state)
+	})
+}
 
 /**
  * Resolves the shell chat state once per page load when the shell has answered; otherwise the next call asks again, so a
@@ -50,6 +97,7 @@ export function ensureShellChatState(): Promise<UiState> {
 		setShellChatUiState('browser_chat')
 		return Promise.resolve('browser_chat')
 	}
+	hookLateHello()
 	setShellChatUiState('chat_unavailable')
 	const attempt = (async (): Promise<UiState> => {
 		const probe = bridge ? await probeNativeCapabilities() : { answered: false, capabilities: [] as string[] }

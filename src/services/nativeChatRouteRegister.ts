@@ -15,7 +15,19 @@ import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
 export const CHAT_ROUTE_REGISTER_COMMAND = 'chatRouteRegister'
 /** Same protocol version the chat transports send in `hello`. */
 const HELLO_PROTOCOL_VERSION = 1
-const HELLO_TIMEOUT_MS = 5_000
+/**
+ * hello, the page's one shared probe (hello single flight, late is not dead).
+ * - The one timeout the callers see (HELLO_TIMEOUT_MS, 10 s: the old 5 s and 10 s are one value now) only CLASSIFIES: a caller that gets no answer in that time is told
+ *   `answered: false` ("not answered yet"), and nothing is cancelled or sent again because of it.
+ * - The request itself waits HELLO_WINDOW_MS (180 s, the cold-start window). A valid answer at any time before that is taken, kept for the
+ *   page load (the capability list of one shell is static), and announced to onHelloValid listeners (late answers included).
+ * - One hello in flight; at most ONE more is sent, no earlier than HELLO_RESEND_AFTER_MS after the first, while no valid answer is there;
+ *   never more than two in flight.
+ * - No answer is not a missing capability: only a valid answer without the capability is "missing".
+ */
+const HELLO_TIMEOUT_MS = 10_000
+export const HELLO_WINDOW_MS = 180_000
+export const HELLO_RESEND_AFTER_MS = 60_000
 const REGISTER_TIMEOUT_MS = 20_000
 /** Own reqId range: never matches a chat transport request, an import request or a wallet request. */
 const REQ_BASE = 700_000_000
@@ -154,23 +166,142 @@ export function nextReqId(): number {
 /**
  * The shell's `hello` answer. `answered` is false when there is no channel or no answer (a shell before the capability).
  */
-export async function probeNativeCapabilities(
-	timeoutMs: number = HELLO_TIMEOUT_MS,
-): Promise<{ answered: boolean; capabilities: string[]; nativeApp?: unknown }> {
-	const answer = await request({ type: 'hello', reqId: nextReqId(), protocolVersion: HELLO_PROTOCOL_VERSION }, timeoutMs)
-	if (answer.kind !== 'payload') return { answered: false, capabilities: [] }
-	const p = answer.payload
-	// Only the hello ack declares the capabilities (ack.result.capabilities). The init 'ready' event carries a shorter list that omits
-	// identity.native-keys.v1 (iOS BeamioConetChatModule.swift:1246), so a 'ready' payload is never read as the hello answer.
+/** `raw` is the hello ack's result as the shell sent it (the chat transport reads its protocol fields from it). */
+export type HelloResult = { answered: boolean; capabilities: string[]; nativeApp?: unknown; raw?: unknown }
+
+type HelloShared = {
+	bridge: unknown[]
+	valid: HelloResult | null
+	inFlight: number
+	startedAt: number
+	resentAt: number
+	resendTimer: ReturnType<typeof setTimeout> | undefined
+	waiters: Array<(r: HelloResult) => void>
+}
+let shared: HelloShared | null = null
+const helloListeners = new Set<(r: HelloResult) => void>()
+
+/** The shell objects the page talks to. A different set (a new page, a test double) is a different shell: the shared state starts over. */
+const bridgeIdentity = (): unknown[] => {
+	if (typeof window === 'undefined') return []
+	const w = window as unknown as Record<string, unknown>
+	return [w.CashTreesIOS, w.CashTreesAndroid, w.BeamioChat, w.BeamioShell]
+}
+const sameBridge = (a: unknown[], b: unknown[]): boolean => a.length === b.length && a.every((x, i) => x === b[i])
+
+/** The valid hello answer kept for this page load (the capability list is static), or null. */
+export function getCachedHello(): HelloResult | null {
+	return shared && sameBridge(shared.bridge, bridgeIdentity()) ? shared.valid : null
+}
+/** The raw hello result of the kept valid answer, or undefined. The chat transport uses it instead of asking again. */
+export function getCachedHelloRaw(): unknown {
+	return getCachedHello()?.raw
+}
+/** True while no valid answer is there and the 180 s window (from the first hello of the cycle) has not run out. */
+export function helloWithinWindow(now: number = Date.now()): boolean {
+	if (!shared || !sameBridge(shared.bridge, bridgeIdentity())) return true
+	if (shared.valid) return false
+	return now - shared.startedAt < HELLO_WINDOW_MS
+}
+/** Listens to every valid hello answer (late ones too). */
+export function onHelloValid(cb: (r: HelloResult) => void): () => void {
+	helloListeners.add(cb)
+	return () => {
+		helloListeners.delete(cb)
+	}
+}
+export function resetSharedHelloForTest(): void {
+	if (shared?.resendTimer !== undefined) clearTimeout(shared.resendTimer)
+	shared = null
+	helloListeners.clear()
+}
+
+function judgeHello(p: Loose): HelloResult {
 	const ok = p.type === 'ack' && p.ok === true
-	// only ack.result carries the capabilities; a missing result means none are declared (the top level is never read)
 	const result = p.result as Loose | undefined
 	const caps = isPlainObject(result) && Array.isArray(result.capabilities) ? result.capabilities : []
-	// A refusal (ok false) declares nothing: its capability list is not read, so a refused hello counts as unanswered.
-	// nativeApp (decision 2026-11-21): the native version of the shell, read from the same ack result; never a PWA or SDK version.
 	const nativeApp = ok && isPlainObject(result) ? result.nativeApp : undefined
-	return { answered: ok, capabilities: ok ? caps.filter((c): c is string => typeof c === 'string') : [], nativeApp }
+	return { answered: ok, capabilities: ok ? caps.filter((c): c is string => typeof c === 'string') : [], nativeApp, raw: ok ? result : undefined }
 }
+
+function sendOneHello(s: HelloShared): void {
+	s.inFlight += 1
+	// a request waits for what is left of the window, so no hello outlives it
+	const left = Math.max(1_000, HELLO_WINDOW_MS - (Date.now() - s.startedAt))
+	void request({ type: 'hello', reqId: nextReqId(), protocolVersion: HELLO_PROTOCOL_VERSION }, left).then((answer) => {
+		s.inFlight -= 1
+		if (shared !== s) return
+		// no channel or no answer inside the window: nothing is learned (and nothing is declared missing); the callers still waiting hear
+		// "not answered"
+		if (answer.kind !== 'payload') {
+			for (const w of s.waiters.splice(0)) w({ answered: false, capabilities: [] })
+			return
+		}
+		const r = judgeHello(answer.payload)
+		// a refusal is not a valid answer
+		if (!r.answered) {
+			for (const w of s.waiters.splice(0)) w(r)
+			return
+		}
+		const first = s.valid === null
+		s.valid = r
+		if (s.resendTimer !== undefined) {
+			clearTimeout(s.resendTimer)
+			s.resendTimer = undefined
+		}
+		const waiters = s.waiters.splice(0)
+		for (const w of waiters) w(r)
+		if (first) for (const cb of [...helloListeners]) cb(r)
+	})
+}
+
+function ensureSharedHello(): HelloShared {
+	const now = Date.now()
+	const bridge = bridgeIdentity()
+	if (!shared || !sameBridge(shared.bridge, bridge)) {
+		if (shared?.resendTimer !== undefined) clearTimeout(shared.resendTimer)
+		shared = { bridge, valid: null, inFlight: 0, startedAt: now, resentAt: 0, resendTimer: undefined, waiters: [] }
+	}
+	const s = shared
+	if (s.valid) return s
+	// the window ran out with nothing in flight: a new cycle may begin (first hello again)
+	if (s.inFlight === 0) {
+		s.startedAt = now
+		s.resentAt = 0
+		sendOneHello(s)
+	}
+	// one more hello, once, no earlier than 60 s after the first, while there is still no valid answer; never more than two in flight
+	if (s.resendTimer === undefined && s.resentAt === 0) {
+		s.resendTimer = setTimeout(() => {
+			s.resendTimer = undefined
+			if (shared !== s || s.valid || s.inFlight >= 2 || s.resentAt !== 0) return
+			s.resentAt = Date.now()
+			sendOneHello(s)
+		}, HELLO_RESEND_AFTER_MS)
+	}
+	return s
+}
+
+export async function probeNativeCapabilities(timeoutMs: number = HELLO_TIMEOUT_MS): Promise<HelloResult> {
+	if (typeof window === 'undefined') return { answered: false, capabilities: [] }
+	const cached = getCachedHello()
+	if (cached) return cached
+	const s = ensureSharedHello()
+	if (s.valid) return s.valid
+	// wait for a valid answer or for the classification time; the request itself keeps going either way
+	return new Promise<HelloResult>((resolve) => {
+		let done = false
+		const finish = (r: HelloResult) => {
+			if (done) return
+			done = true
+			clearTimeout(timer)
+			resolve(r)
+		}
+		const timer = setTimeout(() => finish({ answered: false, capabilities: [] }), timeoutMs)
+		s.waiters.push(finish)
+	})
+}
+
 
 /**
  * Judges one ack against the envelope rule (decision vector). Returns the result on success and a code on

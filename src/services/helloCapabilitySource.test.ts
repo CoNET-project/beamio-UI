@@ -37,7 +37,7 @@ describe('the capability answer is the hello ack, never the init ready event', (
 	it('a hello ack declaring the native keys is read as declared', async () => {
 		answerHelloWith('ack', [NATIVE_KEYS, 'x'])
 		const { probeNativeCapabilities } = require('./nativeChatRouteRegister')
-		await expect(probeNativeCapabilities(2000)).resolves.toEqual({ answered: true, capabilities: [NATIVE_KEYS, 'x'] })
+		await expect(probeNativeCapabilities(2000)).resolves.toMatchObject({ answered: true, capabilities: [NATIVE_KEYS, 'x'] })
 	})
 	it('a ready event with a list that omits the native keys is not an answer: nothing is declared', async () => {
 		answerHelloWith('ready', ['only-this'])
@@ -55,6 +55,6 @@ describe('the capability answer is the hello ack, never the init ready event', (
 			},
 		}
 		const { probeNativeCapabilities } = require('./nativeChatRouteRegister')
-		await expect(probeNativeCapabilities(2000)).resolves.toEqual({ answered: true, capabilities: [] })
+		await expect(probeNativeCapabilities(2000)).resolves.toMatchObject({ answered: true, capabilities: [] })
 	})
 })

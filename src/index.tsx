@@ -27,9 +27,13 @@ import { reportWebSocketProbe } from './utils/webSocketProbeReport'
 import { publishNativePwaLog } from './utils/cashTreesNativePwaLog'
 // Y.62 pgpUpgradeState: listen from startup so an event that arrives before the chat page mounts is recorded.
 import { installPgpUpgradeStateListener } from './services/pgpUpgradeState';
+import { installFirstIdentityStatusListener } from './services/firstIdentityStatus';
+import { installQaChainReadCounter } from './utils/qaChainReadCounter';
+installQaChainReadCounter();
 // R81 item 8: the runtime refusal probe runs at boot (it opens no connection). R84: the result is kept on window.__beamioWsProbe and a failure goes to the native log; console is stripped in production.
 reportWebSocketProbe(probeWebSocketRefusal(), (level, message) => publishNativePwaLog(level, message))
 installPgpUpgradeStateListener();
+installFirstIdentityStatusListener();
 void loadApiExcludedUserCards()
 // the Android shell's new chat channel (window.BeamioChat); top frame only, a no-op in a child frame or without it.
 installBeamioChatReceiver()

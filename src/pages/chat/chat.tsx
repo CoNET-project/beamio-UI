@@ -1,9 +1,10 @@
-import { resolveRecipientForSend, isHeldRouteCode, resolveTrustedRoute, refreshRecipient, sendWithFreshRoute, sendViaCachedRoute, sendWithPinnedRoute, type HeldKey, RECIPIENT_REFRESH_PERIOD_MS, RECIPIENT_ROUTE_RETRY_DELAYS_MS } from "@/utils/recipientPublicKey"
+import { resolveRecipientForSend, isHeldRouteCode, resolveTrustedRoute, decideTrustedRoute, refreshRecipient, sendWithFreshRoute, sendViaCachedRoute, sendWithPinnedRoute, type HeldKey, RECIPIENT_REFRESH_PERIOD_MS, RECIPIENT_ROUTE_RETRY_DELAYS_MS } from "@/utils/recipientPublicKey"
 import { chatHeldBannerText, chatHeldLabelText, callHeldText, sendFailedDetailText } from "@/services/recipientCopy"
 import { formatFingerprintForCompare, readStoredKeyFingerprint, storedKeyFingerprint } from "@/utils/pgpFingerprint"
 import { oneTimeVerifyPromptDue } from "@/services/verifyPrompt"
 import React, { useEffect, useMemo, useRef, useState, useLayoutEffect, useCallback, startTransition, useSyncExternalStore } from "react"
 import { isShellContext } from '@/services/shellContext'
+import { qaLine, qaTakeSendStage } from '@/utils/qaLog'
 import { probeHasSigner } from '@/services/mailboxProbeSigning'
 import { CHAT_WINDOW_INITIAL, anchoredScrollTop, hiddenCount, nextWindowCount, shouldExpandWindow, viewportForScroller, windowTail } from "@/utils/chatWindow"
 import { shortAddressLabel } from "@/utils/accountNameGuard"
@@ -82,6 +83,8 @@ import {
 	refreshPeerNativeWakeable,
 	alignLiveGossipRouteToChain,
 	mailboxAlignErrorMessage,
+	askShellChatStartForSend,
+	offerContactRoute,
 } from '@/services/chat'
 import { nativeDialerCancelOutcome } from '@/utils/dialerCancelHandoff'
 import {
@@ -103,7 +106,7 @@ import {
 import { ChatAccessBoundary } from '@/services/passcode/chatAccessBoundary'
 import { PlusActionMenu } from "./components/PlusActionMenu"
 import { useDaemonContext } from "@/providers/DaemonProvider"
-import { storeSystemData, storeSystemDataAndWait, readStoredProfilesForVerify, AuthorizationSign } from '@/services/beamio'
+import { storeSystemData, storeSystemDataAndWait, readStoredProfilesForVerify, AuthorizationSign, pageWriteGateStatus } from '@/services/beamio'
 import { heldWireFromMessage } from '@/services/heldWire'
 import { gateCopyWithStore, heldBubble, nextMemoryTrustWriter, verifyModeDecision, type HeldBubble, type MemoryTrustWriter } from '@/utils/verifiedTrustGate'
 import { useBeamioTagDatabase } from '@/providers/BeamioTagDatabaseProvider'
@@ -144,8 +147,10 @@ import {
 import type { AaMultisigChatPreview } from '@/utils/aaMultisigChatPreview'
 import { tu } from '@/locale/beamioLocale'
 import { getCallCapabilityState, probeCallCapabilityNow, subscribeCallCapabilityState } from '@/services/callCapabilityRuntime'
+import { dialTapAction } from '@/services/callUpgradePrompt'
+import CallUpgradeDialog from '@/components/CallUpgradeDialog'
 import { callAllowed } from '@/services/callCapability'
-import { getPgpMigrationState, subscribePgpMigrationState } from '@/services/pgpMigrationRunner'
+import { getPgpMigrationState, notifyPgpMigrateEvent, PGP_MIGRATE_POLL_MS, subscribePgpMigrationState } from '@/services/pgpMigrationRunner'
 import { installPgpUpgradeStateListener, pgpUpgradeRetryVisible, subscribePgpUpgradeState } from '@/services/pgpUpgradeState'
 import { chatCryptoDecryptGate, cryptoActionsEnabled, cryptoInputOf, cryptoNoticeOf, historyReadOf, historySignalOf, nextCryptoRetry, type LocalHistoryRead } from '@/services/chatCryptoPage'
 import { chatCryptoAvailabilityOf } from '@/services/chatCryptoRetry'
@@ -268,6 +273,12 @@ const REACTIONS = [
 ] as const
 
 type ReactionKey = typeof REACTIONS[number]["key"]
+
+/** A shell send that found no entry nodes waits this long for the chat start (180 s), and asks again every 5 s. */
+const SEND_NODE_WAIT_WINDOW_MS = 180_000
+const SEND_NODE_WAIT_REASK_MS = 5_000
+/** reactions, cancel and file sends wait this long (the read-page limit) for the chat start, then show a try-again state */
+const SEND_ACTION_WAIT_MS = 45_000
 
 /** The message status of a send that was not made: the three held states, otherwise failed. */
 const statusOfUnsentCode = (code?: string): ChatMessage["status"] =>
@@ -2360,6 +2371,8 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 	const [voiceCallConnecting, setVoiceCallConnecting] = useState(false)
 	/** Browser: a dial failed before ringing; the call window shows why until End. */
 	const [voiceDialFailed, setVoiceDialFailed] = useState(false)
+	/** the update prompt of an old shell, opened only by a tap on the call button */
+	const [showCallUpgrade, setShowCallUpgrade] = useState(false)
 	/** Browser call window ringback / busy tone (the native shells play their own). */
 	const callTonesRef = useRef<CallTonePlayer | null>(null)
 	const ensureCallTones = useCallback((): CallTonePlayer => {
@@ -2518,6 +2531,15 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		setPgpMigrationRetry(st === 'retryable')
 		if (st === 'retryable') setPgpMigrationRetryDismissed(false)
 	}), [])
+	// the migration is asked again every 30 s, read-only, while this page is visible and in the foreground and the state is still not_ready or
+	// retryable (the cold-start backoff window is over); a decisive result or a request in flight makes it a no-op
+	useEffect(() => {
+		const id = window.setInterval(() => {
+			if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+			notifyPgpMigrateEvent('poll')
+		}, PGP_MIGRATE_POLL_MS)
+		return () => window.clearInterval(id)
+	}, [])
 
 	const upsertPhoneCallRecord = useCallback((patch: PhoneCallRecord) => {
 		// Also remember the answer in memory: an older copy of the profile can still be
@@ -3097,6 +3119,13 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 
 	const startVoiceCall = useCallback(async (event?: { timeStamp?: number }) => {
 		if (voiceCallStartingRef.current || voiceCallState !== 'idle') return
+		// An old shell (no valid hello with voiceCallV4 and a valid native version) gets the update prompt on this tap and nothing else: the
+		// tap returns before any dial step, so no prepare request, no dial bridge request and no signalling is sent. A browser, a compatible
+		// shell and a shell still checking go on as before (the later capability gate still refuses a call while the state is not settled).
+		if (dialTapAction(getCallCapabilityState()) === 'prompt_upgrade') {
+			setShowCallUpgrade(true)
+			return
+		}
 		const timing = beginCallTiming(event?.timeStamp)
 		// The call screen covers the chat: close the keyboard. In the iOS shell an
 		// open keyboard during a lock hung the app snapshot and got the dial killed.
@@ -6132,6 +6161,8 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 	async function refreshPeerRoute(): Promise<{ ok: true; fingerprintChanged: boolean } | { ok: false; code: 'recipient_no_record' | 'network_error' | 'recipient_key_unavailable' | 'recipient_key_invalid' }> {
 		const current = chatDataRef.current
 		const r = await refreshRecipient(current, lookupRecipientRecord)
+		// the trust rule also decides whether the contact's route stays offered to the native receipt path (the observer sees this decision)
+		decideTrustedRoute(current, r)
 		if (!r.ok) return { ok: false, code: r.code }
 		// A changed fingerprint is not written here: the held send asks the user to accept the new key.
 		if (r.fingerprintChanged) return { ok: true, fingerprintChanged: true }
@@ -6162,9 +6193,23 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		})
 		let persisted: Promise<boolean> = Promise.resolve(true)
 		const stored = CoNET_Data
+		if (trusted) {
+			// QA only: whether the stored record holds a row for this contact (a trust write with no row used to write nothing and say saved)
+			const rowsNow = Array.isArray(stored?.profiles?.[0]?.chats) ? stored!.profiles![0].chats! : []
+			const hasRow = rowsNow.some((c) => String((c as { address?: string })?.address || '').toLowerCase() === addr.toLowerCase())
+			if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `trust_write row=${hasRow ? 1 : 0} chats=${rowsNow.length} gate=${pageWriteGateStatus().open ? 1 : 0}`)
+		}
 		if (stored?.profiles?.length) {
 			const cur = stored.profiles[0]
-			const { rows, changed } = applyPeerRouteToRows(Array.isArray(cur?.chats) ? cur.chats : [], addr, next, moved || trusted)
+			const curRows = Array.isArray(cur?.chats) ? cur.chats : []
+			let { rows, changed } = applyPeerRouteToRows(curRows, addr, next, moved || trusted)
+			if (!changed && trusted && addr) {
+				// The stored record has no row for this contact (the page shows the chat from memory only). A trust write must land, so the row is created
+				// in this account's own first profile (never another account's) with the trusted route; it is saved below, and the result is the real one.
+				const created = { ...(current as object), address: addr, chatData: next } as unknown as (typeof curRows)[number]
+				rows = [...curRows, created]
+				changed = true
+			}
 			if (changed) {
 				const nextProfiles = [...stored.profiles]
 				nextProfiles[0] = { ...cur, chats: rows }
@@ -6174,11 +6219,16 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 				if (trusted) persisted = storeSystemDataAndWait()
 				else void storeSystemData()
 			}
+		} else if (trusted) {
+			// no stored profile at all: nothing can be written, and that is never reported as saved
+			persisted = Promise.resolve(false)
 		}
 		if (trusted) {
 			void persisted.then(async (saved) => {
 				recordVerifyTrace('trust-persist', { trusted, verified: !!next.verifiedFingerprint, saved })
 				if (!saved) setChatError('The verified key could not be saved on this device. Verify again.')
+				// the user verified this contact: its route is offered to the native receipt path now (the trust rule is checked again with a fresh read)
+				else void offerContactRoute(addr, { force: true })
 				if (process.env.REACT_APP_BEAMIO_BOOT_TRACE === 'true') {
 					// QA only: read the stored profile back and record whether the row holds the verified fingerprint (no content is recorded)
 					const profiles = await readStoredProfilesForVerify()
@@ -6212,6 +6262,23 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		return gate
 	}
 
+	const allNodesRef = useRef(allNodes)
+	allNodesRef.current = allNodes
+	/**
+	 * Waits for the entry nodes of a shell whose chat start has not finished (identityPublic was not ready when it ran); asks for one start,
+	 * single flight, and gives up after maxMs. True when the nodes are there. Outside a shell it does not wait.
+	 */
+	async function waitNodesForAction(maxMs: number): Promise<boolean> {
+		if (allNodesRef.current?.length) return true
+		if (!isShellContext()) return false
+		const t0 = Date.now()
+		while (Date.now() - t0 < maxMs) {
+			askShellChatStartForSend()
+			await new Promise<void>(r => window.setTimeout(r, 500))
+			if (allNodesRef.current?.length) return true
+		}
+		return false
+	}
 	async function sendChatToRecipient(text: string, opts?: { viaCachedRoute?: boolean; pinned?: HeldKey }): Promise<boolean> {
 		const current = chatDataRef.current
 		const send = (pgp: string, body: string, pk: string, nodes: typeof allNodes) => sendMessage(pgp, body, pk, nodes ?? [])
@@ -6219,14 +6286,14 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		// (first_fetch_pending), or another key is held (fingerprint_changed). The user's verification or acceptance sends the key on screen (pinned,
 		// no fetch).
 		const result = opts?.pinned
-			? await sendWithPinnedRoute(text, privateKey, allNodes ?? [], {
+			? await sendWithPinnedRoute(text, privateKey, allNodesRef.current ?? [], {
 				pinned: opts.pinned,
 				send,
 				onAccepted: (pinned) => applyPeerRoute(current, pinned, true),
 			})
 			: opts?.viaCachedRoute
-				? await sendViaCachedRoute(await trustGateCopy(current), text, privateKey, allNodes ?? [], { send })
-				: await sendWithFreshRoute(await trustGateCopy(current), text, privateKey, allNodes ?? [], {
+				? await sendViaCachedRoute(await trustGateCopy(current), text, privateKey, allNodesRef.current ?? [], { send })
+				: await sendWithFreshRoute(await trustGateCopy(current), text, privateKey, allNodesRef.current ?? [], {
 					fetchKeys: lookupRecipientRecord,
 					send,
 					onRefreshed: (r) => applyPeerRoute(current, r),
@@ -7411,9 +7478,9 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			messagesRef.current = next
 			setMessages(next)
 		}
-		if (!allNodes?.length) {
+		if (!(await waitNodesForAction(SEND_ACTION_WAIT_MS))) {
 			const next = (messagesRef.current || []).map(m =>
-				m.id === tempId ? { ...m, status: 'failed' as const } : m
+				m.id === tempId ? { ...m, status: 'failed' as const, sendError: 'identity_not_ready' } : m
 			)
 			messagesRef.current = next
 			setMessages(next)
@@ -7450,7 +7517,9 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			reply: { messageId: targetSendId, replyType: 'paymentRequestCancel' },
 		}
 		try {
-			if (!allNodes?.length) {
+			// not queued (the user may have left, or the other side may have accepted meanwhile): wait for the start, then ask to try again
+			if (!(await waitNodesForAction(SEND_ACTION_WAIT_MS))) {
+				setChatError('Not sent yet. Please try again shortly.')
 				return
 			}
 			// a held cancel stays on the chat as a message with the held status and its retry, not a banner only.
@@ -7754,7 +7823,12 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 	const sendFileDrafts = useCallback(async () => {
 		if (!chatActionsRef.current) return // encryption actions disabled while the chat crypto is not available
 		const ready = fileJobs.filter(job => job.status === 'ready' && job.manifest)
-		if (!ready.length || (!privateKey && !isShellContext()) || !allNodes?.length) return
+		if (!ready.length || (!privateKey && !isShellContext())) return
+		// a shell without entry nodes waits for the chat start; the drafts stay ready (nothing is dropped) and the user can tap again
+		if (!(await waitNodesForAction(SEND_ACTION_WAIT_MS))) {
+			setFileError('Not sent yet. Please try again shortly.')
+			return
+		}
 		for (const job of ready) {
 			const now = Date.now()
 			const sendId = crypto.randomUUID()
@@ -7846,8 +7920,18 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			setMessages(next)
 		}
 
+		// ✅ 3) 发送：统一发 JSON 包，带 sendId，对方据此可 reply
+		const payload = { sendId, from: 'me' as const, text: t, createdAt: now, ...(quoteForSend ? { quote: quoteForSend } : {}) }
 		// ✅ 2) entry pool（sendMessage 内部挑选健康节点并重试）
 		if (!allNodes?.length) {
+			if (isShellContext()) {
+				setReplyTo(null) // the send is accepted (it waits for the chat start): the quote draft is cleared
+				// send re-check: no nodes means the shell chat start has not finished (identityPublic was not ready when it ran).
+				// Never a local refusal: the message stays "sending", one start is asked for (single flight), and it goes out by itself once the nodes
+				// arrive (effect on allNodes). Only after the 180 s window is it shown as not sent with a tap to retry; the text is kept.
+				waitSendForNodes(tempId, JSON.stringify(payload), now)
+				return
+			}
 			const next: ChatMessage[] = (messagesRef.current || []).map(m =>
 			m.id === tempId ? { ...m, status: "failed" as const, sendError: lastSendCodeRef.current } : m
 			)
@@ -7858,14 +7942,57 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			await storageData()
 			return
 		}
-
-		// ✅ 3) 发送：统一发 JSON 包，带 sendId，对方据此可 reply
-		const payload = { sendId, from: 'me' as const, text: t, createdAt: now, ...(quoteForSend ? { quote: quoteForSend } : {}) }
-		// 发送后清除引用草稿
+		// 发送后清除引用草稿（只在发送真正开始之后，和原来一样）
 		setReplyTo(null)
+		await deliverText(tempId, JSON.stringify(payload), now)
+	}
+
+	/** Messages waiting for the entry nodes (shell, the chat start not finished): id → wire text and the 180 s timer. */
+	const nodeWaitSendsRef = useRef(new Map<string, { wire: string; timer: number; t0: number }>())
+	function waitSendForNodes(tempId: string, wire: string, t0: number) {
+		if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', 'waiting stage=no_nodes')
+		const timer = window.setTimeout(() => {
+			const w = nodeWaitSendsRef.current.get(tempId)
+			if (!w) return
+			nodeWaitSendsRef.current.delete(tempId)
+			if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', `failed stage=no_nodes ms=${Date.now() - w.t0}`)
+			// the window is used up: not sent, tap to retry, the content stays (a retryable state, not a final failure)
+			const next: ChatMessage[] = (messagesRef.current || []).map(m =>
+				m.id === tempId ? { ...m, status: 'failed' as const, sendError: 'identity_not_ready' } : m)
+			messagesRef.current = next
+			setMessages(next)
+			chatData.messages = next
+			void storageData()
+		}, SEND_NODE_WAIT_WINDOW_MS)
+		nodeWaitSendsRef.current.set(tempId, { wire, timer, t0 })
+		askShellChatStartForSend()
+	}
+	useEffect(() => () => {
+		nodeWaitSendsRef.current.forEach((w) => window.clearTimeout(w.timer))
+	}, [])
+	// the nodes arrived (the chat start finished): the waiting sends go out, no second tap
+	const deliverTextRef = useRef<(tempId: string, wire: string, t0: number) => Promise<void>>(async () => {})
+	useEffect(() => {
+		if (!allNodes?.length || nodeWaitSendsRef.current.size === 0) return
+		const waiting = Array.from(nodeWaitSendsRef.current.entries())
+		nodeWaitSendsRef.current.clear()
+		for (const [id, w] of waiting) {
+			window.clearTimeout(w.timer)
+			void deliverTextRef.current(id, w.wire, w.t0)
+		}
+	}, [allNodes])
+	// while a send waits, the start is asked again on the shell's own cadence (a start that ended not_ready is re-asked here too, 1 s debounce)
+	useEffect(() => {
+		const id = window.setInterval(() => {
+			if (nodeWaitSendsRef.current.size > 0 && !allNodesRef.current?.length) askShellChatStartForSend()
+		}, SEND_NODE_WAIT_REASK_MS)
+		return () => window.clearInterval(id)
+	}, [])
+
+	async function deliverText(tempId: string, wire: string, t0: number) {
 		let ok = false
 		try {
-			ok = await sendChatToRecipient(JSON.stringify(payload))
+			ok = await sendChatToRecipient(wire)
 		} catch {
 			ok = false
 		}
@@ -7873,7 +8000,11 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		if (!ok) {
 			const failCode = lastSendCodeRef.current
 			const held = failCode === 'route_unconfirmed' || failCode === 'fingerprint_changed' || failCode === 'first_fetch_pending'
-			if (held) heldSendsRef.current.set(tempId, { text: JSON.stringify(payload), attempt: 0, pinned: lastSendHeldRef.current })
+			{
+				const early = qaTakeSendStage()
+				if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', `failed stage=${held ? `held:${failCode}` : early || `send_failed${failCode ? `:${failCode}` : ''}`} ms=${Date.now() - t0}`)
+			}
+			if (held) heldSendsRef.current.set(tempId, { text: wire, attempt: 0, pinned: lastSendHeldRef.current })
 			const next: ChatMessage[] = (messagesRef.current || []).map(m =>
 			m.id === tempId ? { ...m, status: statusOfUnsentCode(failCode), sendError: lastSendCodeRef.current, sendFingerprint: lastSendHeldRef.current?.fingerprint } : m
 			)
@@ -7903,6 +8034,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			mirrorChatMessageToHistory(chatData.address, sentMsg, 'out')
 		}
 	}
+	deliverTextRef.current = deliverText
 
 	const sendAll = useCallback(async () => {
 		if (!chatActionsRef.current) return // encryption actions disabled while the chat crypto is not available
@@ -8256,11 +8388,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 					{tu('call.checking')}
 				</div>
 			) : null}
-			{voiceCallState === 'idle' && !voiceCallConnecting && callCapState === 'old_shell' ? (
-				<div role="status" className="absolute inset-x-0 top-0 z-[70] bg-amber-100 px-4 pb-2 pt-[max(0.5rem,env(safe-area-inset-top,0px))] text-center text-sm font-semibold text-amber-900">
-					<span>{tu('call.upgrade.chat')}</span>
-									</div>
-			) : null}
+			{showCallUpgrade ? <CallUpgradeDialog onClose={() => setShowCallUpgrade(false)} /> : null}
 			<ChatHeaderIOS
 				layerRef={setHeaderLayerRef}
 				beamioer={peerProfile}
@@ -8274,6 +8402,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 				onCall={voiceCallState === 'outgoing' ? endOrDismissVoiceCall : startVoiceCall}
 				onPhoneHistory={() => navigate('/phone')}
 				// While the capability probe runs the call button is disabled (decision 2026-11-21).
+				oldShell={callCapState === 'old_shell'}
 				callBusy={voiceCallState === 'outgoing' || callCapState === 'loading'}
 				callLoading={(voiceCallConnecting && voiceCallState === 'outgoing') || callCapState === 'loading'}
 			/>

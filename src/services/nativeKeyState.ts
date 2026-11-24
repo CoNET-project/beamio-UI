@@ -11,6 +11,7 @@
  * `chatModuleEvent` details. The transfer channel is retired and is not used here.
  */
 import { postAndroidChatCommand } from '../utils/androidChatChannel'
+import { noteBridgeCommand } from '@/utils/qaBridgeCounter'
 import { IMPORT_REQ_BASE } from './reqIdSpaces'
 
 export const NO_KEY_ERROR = 'no_key'
@@ -26,7 +27,8 @@ export const NATIVE_QUERY_REQ_BASE = 950_000_000
 export const NATIVE_QUERY_REQ_END = 1_000_000_000
 export const isNativeQueryReqId = (reqId: unknown): boolean =>
 	typeof reqId === 'number' && reqId >= NATIVE_QUERY_REQ_BASE && reqId < NATIVE_QUERY_REQ_END
-const IMPORT_TIMEOUT_MS = 10_000
+/** a request waits at least 45 s before it is called slow; slow never resends */
+const IMPORT_TIMEOUT_MS = 45_000
 let importSeq = 0
 
 type Loose = Record<string, unknown>
@@ -77,6 +79,7 @@ export function installNativeNoKeyWatcher(onNoKey: () => void): (() => void) | n
 export function postChatModuleCommand(cmd: Loose): boolean {
 	const ios = (window as unknown as { CashTreesIOS?: { chatModuleCommand?: unknown } }).CashTreesIOS
 	if (ios && typeof ios === 'object' && typeof ios.chatModuleCommand === 'function') {
+		noteBridgeCommand('chatModule', cmd.type)
 		// Same wire format as the iOS chat transport.
 		;(ios as { chatModuleCommand: (p: Loose) => void }).chatModuleCommand({ action: 'chatModuleCommand', command: cmd })
 		return true

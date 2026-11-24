@@ -101,6 +101,8 @@ describe('to: the native layer announces the generation ', () => {
 	it('before any announcement, envelope and group signing is unavailable and nothing is sent', async () => {
 		const s = script([ACK_OK])
 		s.setGeneration(null)
+		// the wait for the first event is a timer; a test passes a no-wait sleep (the wait itself is tested in inboundGenerationRequest.test.ts)
+		s.deps.sleep = async () => undefined
 		await expect(nativeSignWithGeneration('envelope', () => 'text', s.deps)).resolves.toEqual({ ok: false, reason: 'native_unavailable' })
 		expect(s.sent).toEqual([])
 	})

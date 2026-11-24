@@ -10,6 +10,7 @@ import { conetDepinProvider } from '@/utils/constants'
 import { resolveSigningPrivateKeyArmor } from '@/utils/resolveSigningPrivateKeyArmor'
 import { CoNET_Data } from '@/utils/globals'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { tu } from '@/locale/beamioLocale'
 
 const BEAMIO_API = 'https://beamio.ca/api'
@@ -220,7 +221,7 @@ export async function registerReferrerUnderIntroducer(
 	refereeEoa?: string,
 ): Promise<RegisterResult> {
 	// Option A: a shell without the chat capability registers nothing and reads no key.
-	if (shellChatBlockedNow()) return { success: false, error: tu('shell_chat_unavailable_body') }
+	if (shellChatBlockedNow()) return { success: false, error: shellChatBlockedText() }
 	const wallet = walletFromConsumerKey(privateKeyArmor)
 	if (!wallet) return { success: false, error: 'Wallet signing key is not available' }
 	if (!ethers.isAddress(introducerEoa)) {
@@ -295,7 +296,7 @@ export async function fetchAgentOfMerchant(merchantEoa: string): Promise<string 
 
 export async function registerAgentOnChain(): Promise<RegisterResult> {
 	// Option A: a shell without the chat capability registers nothing and reads no key.
-	if (shellChatBlockedNow()) return { success: false, error: tu('shell_chat_unavailable_body') }
+	if (shellChatBlockedNow()) return { success: false, error: shellChatBlockedText() }
 	const wallet = walletFromConsumerKey()
 	if (!wallet) return { success: false, error: 'Wallet signing key is not available' }
 	const already = await fetchIsAgent(wallet.address)
@@ -321,7 +322,7 @@ export async function registerAgentOnChain(): Promise<RegisterResult> {
 
 export async function registerTempUnderAgent(tempEoa: string): Promise<RegisterResult> {
 	// Option A: a shell without the chat capability registers nothing and reads no key.
-	if (shellChatBlockedNow()) return { success: false, error: tu('shell_chat_unavailable_body') }
+	if (shellChatBlockedNow()) return { success: false, error: shellChatBlockedText() }
 	const wallet = walletFromConsumerKey()
 	if (!wallet) return { success: false, error: 'Wallet signing key is not available' }
 	if (!ethers.isAddress(tempEoa)) return { success: false, error: 'Invalid temp account' }
@@ -365,7 +366,7 @@ export async function registerMerchantUnderAgent(
 	tempEoa?: string,
 ): Promise<RegisterResult> {
 	// Option A: a shell without the chat capability registers nothing and reads no key.
-	if (shellChatBlockedNow()) return { success: false, error: tu('shell_chat_unavailable_body') }
+	if (shellChatBlockedNow()) return { success: false, error: shellChatBlockedText() }
 	const wallet = walletFromConsumerKey()
 	if (!wallet) return { success: false, error: 'Wallet signing key is not available' }
 	if (!ethers.isAddress(merchantEoa)) return { success: false, error: 'Invalid merchant account' }

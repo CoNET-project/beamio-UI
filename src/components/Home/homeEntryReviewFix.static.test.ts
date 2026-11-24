@@ -21,7 +21,7 @@ describe('Home pay QR: no signing without the chat capability', () => {
 	})
 
 	it('the pay panel shows the unified copy, not the unlock copy, when disabled', () => {
-		expect(home).toContain("identityEntryDisabled ? tu('shell_chat_unavailable_body')")
+		expect(home).toContain("identityEntryDisabled ? shellChatBlockedText()")
 	})
 })
 

@@ -4,6 +4,7 @@ import { ethers } from "ethers"
 import { motion } from "framer-motion"
 import { ChevronLeft, ChevronRight, Loader2, Phone, PhoneCall } from "lucide-react"
 import { tu } from '@/locale/beamioLocale'
+import { callButtonView } from '@/services/callUpgradePrompt'
 
 export type searchResult = {
   address: string
@@ -32,6 +33,7 @@ export function ChatHeaderIOS({
   onPhoneHistory,
   callBusy,
   callLoading,
+  oldShell,
 }: {
   beamioer?: searchResult
   onBack?: () => void
@@ -42,12 +44,15 @@ export function ChatHeaderIOS({
   callBusy?: boolean
   /** A dial is being prepared (routes, offer); show a spinner on the call button. */
   callLoading?: boolean
+  /** An old shell: the call button stays enabled and a tap shows the update prompt (the dial flow is not started). */
+  oldShell?: boolean
   online: boolean
   /** Mailbox says a native shell can be woken, including while the listen session is offline. */
   nativeWakeable?: boolean
   avatarSrc: string
 }) {
-  const canPlaceCall = online || !!nativeWakeable
+  const view = callButtonView({ oldShell: !!oldShell, online, nativeWakeable, callBusy })
+  const canPlaceCall = view.canPlaceCall
   const tagText = useMemo(() => {
     if (!beamioer) return ""
     const u = (beamioer.username || "").trim()
@@ -91,20 +96,22 @@ export function ChatHeaderIOS({
             <button
               type="button"
               onClick={onCall}
-              disabled={!canPlaceCall || callBusy}
+              disabled={view.disabled}
               className={[
                 "pointer-events-auto grid h-11 w-11 place-items-center rounded-full bg-white/50 text-slate-900 shadow-[0_18px_38px_rgba(15,23,42,0.14)] ring-1 ring-white/60 backdrop-blur-xl transition active:scale-[0.98]",
                 callLoading
                   ? "cursor-wait"
-                  : !canPlaceCall || callBusy ? "cursor-not-allowed opacity-40" : "",
+                  : view.disabled ? "cursor-not-allowed opacity-40" : "",
               ].join(" ")}
-              aria-label={!canPlaceCall ? "Voice call unavailable" : callBusy ? "Calling" : "Start voice call"}
+              aria-label={view.label === 'update_app' ? tu('call.upgrade.chat') : view.label === 'unavailable' ? "Voice call unavailable" : view.label === 'calling' ? "Calling" : "Start voice call"}
               title={
-                !canPlaceCall
-                  ? "Voice call unavailable (peer offline and not native-wakeable)"
-                  : callBusy
-                    ? "Calling"
-                    : "Start voice call"
+                view.label === 'update_app'
+                  ? tu('call.upgrade.chat')
+                  : view.label === 'unavailable'
+                    ? "Voice call unavailable (peer offline and not native-wakeable)"
+                    : view.label === 'calling'
+                      ? "Calling"
+                      : "Start voice call"
               }
               aria-busy={callBusy || callLoading}
             >

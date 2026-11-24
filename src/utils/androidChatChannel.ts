@@ -10,6 +10,7 @@
  * - `origin_refused` (the shell's origin check) is a failure. Only the code is logged.
  */
 import { publishNativePwaLog } from './cashTreesNativePwaLog'
+import { noteBridgeCommand } from './qaBridgeCounter'
 import { getAndroidChatHost } from './cashTreesAndroidConetChat'
 
 /** The answer code of the shell's origin check on the new channel (a failure). */
@@ -61,6 +62,7 @@ export function androidChatModulePresent(): boolean {
 
 /** Sends one chat-module command. False when the channel cannot take it. */
 export function postAndroidChatCommand(cmd: Record<string, unknown>): boolean {
+	noteBridgeCommand('chatModule', cmd.type)
 	const host = beamioChatHost()
 	if (host) {
 		if (typeof host.postMessage !== 'function') return false

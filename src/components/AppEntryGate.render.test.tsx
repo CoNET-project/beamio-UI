@@ -47,6 +47,10 @@ jest.mock('@/services/nativeFlowPending', () => ({ NATIVE_FLOW_PENDING_EVENT: 'b
 jest.mock('@/services/pgpMigrationRunner', () => ({ startPgpMigrationOnce: jest.fn() }), { virtual: true })
 jest.mock('@/services/shellChatCapability', () => ({ ensureShellChatState: async () => 'chat_unavailable', shellChatBlockedNow: () => true }), { virtual: true })
 jest.mock('@/services/nativeChatRouteRegister', () => ({
+	helloWithinWindow: () => true,
+	onHelloValid: () => () => undefined,
+	getCachedHello: () => undefined,
+	getCachedHelloRaw: () => undefined,
 	probeNativeCapabilities: jest.fn(async () => ({ answered: true, capabilities: [] })),
 }), { virtual: true })
 // a holder read by the mock (CRA resets jest.fn implementations between tests; a plain function is not reset)

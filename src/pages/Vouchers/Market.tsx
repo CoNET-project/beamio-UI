@@ -213,6 +213,7 @@ import { DiscoverReferrerDownlinePage } from '@/pages/Vouchers/DiscoverReferrerD
 import { tu } from '@/locale/beamioLocale'
 import { useIdentityEntryDisabled } from '@/hooks/useIdentityEntryDisabled'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { mapServerError } from '@/locale/mapServerError'
 import { consumePendingDiscoverMerchantIntent, parseDiscoverMerchantFromParams, peekPendingDiscoverMerchantIntent, buildDiscoverMerchantShareUrl, shareDiscoverMerchantUrl, stripDiscoverMerchantDeepLinkParams } from '@/utils/discoverMerchantShare'
 import { recordDiscoverShareClickIfNeeded } from '@/utils/discoverShareClickEvent'
@@ -6904,7 +6905,7 @@ function DiscoverMerchantDetailFullScreen({
 			if (genesisSeatLockInFlightRef.current) return
 			// Option A: a shell without the chat capability locks no seat and reads no key.
 			if (shellChatBlockedNow()) {
-				setGenesisSeatPurchase({ kind: 'error', message: tu('shell_chat_unavailable_body') })
+				setGenesisSeatPurchase({ kind: 'error', message: shellChatBlockedText() })
 				return
 			}
 			const privateKeyArmor = resolveSigningPrivateKeyArmor(profile)
@@ -7169,7 +7170,7 @@ function DiscoverMerchantDetailFullScreen({
 		if (!card || likeLoading || userLiked) return
 		// Option A: a shell without the chat capability sends no like and reads no stored profile.
 		if (shellChatBlockedNow()) {
-			setLikeError(tu('shell_chat_unavailable_body'))
+			setLikeError(shellChatBlockedText())
 			return
 		}
 		let privateKeyArmor = resolveSigningPrivateKeyArmor(profile)
@@ -7706,7 +7707,7 @@ function DiscoverMerchantDetailFullScreen({
 	const handleUsdcTopupContinue = useCallback(async () => {
 		// Option A: a shell without the chat capability pays nothing and reads no key.
 		if (shellChatBlockedNow()) {
-			setDiscoverPayPanelError(tu('shell_chat_unavailable_body'))
+			setDiscoverPayPanelError(shellChatBlockedText())
 			return
 		}
 		const cardAddress = item.cardAddress?.trim() ?? ''
@@ -7944,7 +7945,7 @@ function DiscoverMerchantDetailFullScreen({
 	const runDiscoverEoaTopupNow = useCallback(async () => {
 		// Option A: a shell without the chat capability pays nothing and reads no key.
 		if (shellChatBlockedNow()) {
-			setDiscoverPayPanelError(tu('shell_chat_unavailable_body'))
+			setDiscoverPayPanelError(shellChatBlockedText())
 			return
 		}
 		const cardAddress = item.cardAddress?.trim() ?? ''
@@ -8150,7 +8151,7 @@ function DiscoverMerchantDetailFullScreen({
 			if (currentStatus !== 'idle') return
 			// Option A: a shell without the chat capability claims nothing and reads no stored profile.
 			if (shellChatBlockedNow()) {
-				setCouponClaimErrorById((s) => ({ ...s, [row.id]: tu('shell_chat_unavailable_body') }))
+				setCouponClaimErrorById((s) => ({ ...s, [row.id]: shellChatBlockedText() }))
 				return
 			}
 			let privateKeyArmor = resolveSigningPrivateKeyArmor(profile)

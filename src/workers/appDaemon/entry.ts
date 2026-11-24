@@ -7,6 +7,7 @@
  * 15s aa pending / 5min oracle
  */
 import '../../utils/webSocketGuard'  // WebSocket refusal (project rule): first, before any module that may use it
+import { installQaChainReadCounter } from '../../utils/qaChainReadCounter'
 
 import type {
 	AppDaemonMainTickKind,
@@ -46,6 +47,9 @@ const ctx = self as unknown as {
 	postMessage: (msg: AppDaemonWorkerOutbound) => void
 	onmessage: ((ev: MessageEvent<AppDaemonWorkerInbound>) => void) | null
 }
+
+// QA builds only: count this worker's own chain-read requests per minute and hand the line to the page (the page cannot see them)
+installQaChainReadCounter(globalThis as unknown as { fetch: typeof fetch; setInterval: typeof setInterval }, (line) => post({ type: 'event:qaNet', line }), 'worker')
 
 function post(msg: AppDaemonWorkerOutbound): void {
 	ctx.postMessage(msg)

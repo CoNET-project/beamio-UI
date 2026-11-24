@@ -19,7 +19,8 @@ describe('the identity hint while the native hello is unanswered', () => {
 		const retry = jest.fn()
 		const off = onNativeIdentityRetryRequested(retry)
 		render(<ShellChatUnavailableNotice />)
-		expect(screen.getByText(tu('native_not_ready_hint'))).toBeTruthy()
+		// inside the hello window the text says the wallet is getting ready; the retry action is there from the start
+		expect(screen.getByText(tu('native_preparing_wallet'))).toBeTruthy()
 		fireEvent.click(screen.getByRole('button', { name: tu('native_not_ready_retry_action') }))
 		expect(retry).toHaveBeenCalledTimes(1)
 		off()

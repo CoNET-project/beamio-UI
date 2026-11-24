@@ -20,6 +20,7 @@ import {
 import { beamioApi, conetDepinProvider } from '@/utils/constants'
 import { isShellContext } from '@/services/shellContext'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { tu } from '@/locale/beamioLocale'
 
 export type AgentTempAccount = {
@@ -81,7 +82,7 @@ async function generateAvailableTempTag(): Promise<string> {
 
 export async function createAgentTempAccount(agentEoa: string): Promise<AgentTempAccount> {
 	// Option A: a blocked shell creates no local temp account and binds nothing; the unified copy reaches the caller.
-	if (shellChatBlockedNow()) throw new Error(tu('shell_chat_unavailable_body'))
+	if (shellChatBlockedNow()) throw new Error(shellChatBlockedText())
 	// Shell: the page creates no random account key here; agent temp accounts are not available in a shell yet.
 	if (isShellContext()) throw new Error('Creating a temp account is not available in this app version.')
 	if (!ethers.isAddress(agentEoa)) throw new Error('Sign in before creating a temp account')
@@ -171,7 +172,7 @@ export async function claimTempCreateMerchantCardNft(
 	code: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
 	// Option A: a blocked shell unlocks no temp key and sends no claim.
-	if (shellChatBlockedNow()) return { ok: false, error: tu('shell_chat_unavailable_body') }
+	if (shellChatBlockedNow()) return { ok: false, error: shellChatBlockedText() }
 	const trimmed = code.trim()
 	if (!trimmed) return { ok: false, error: 'Enter a redeem code.' }
 	if (!ethers.isAddress(temp.eoa)) return { ok: false, error: 'Invalid temp account.' }

@@ -101,7 +101,7 @@ describe('ackInbound and the server ACK', () => {
 		expect(app).toContain('recordRejectedLine(inboundLists, raw)')
 		expect(app).not.toContain('discardedLines')
 		expect(app).toContain('if (isInboundLineMarked(raw) || !key || processedIdsRef.current.has(key)) {')
-		expect(app).toContain('if (!inboundAckIsBrowser() && armorHashRaw && ackCtx?.routerArmoredPublicKey && pk) {')
+		expect(app).toContain('if (!nativeReceiptPath() && !inboundAckIsBrowser() && armorHashRaw && ackCtx?.routerArmoredPublicKey && pk) {')
 		expect(app).toContain('skipMailboxAck: inboundAckIsBrowser(),')
 		const settle = app.indexOf('settleInboundBatch(settleInputOf(inboundLists)')
 		expect(settle).toBeGreaterThan(app.indexOf('setCoNET_Data(temp)'))
@@ -110,7 +110,7 @@ describe('ackInbound and the server ACK', () => {
 	})
 
 	it('nativeConetChatTransport: the page declares support (deferAck: true) in init and ackInbound is documented as the display step', () => {
-		expect(transport).toContain('deferAck: true,')
+		expect(transport).toContain("...(this.helloOffered.includes('inbound.deferAck') ? { deferAck: true } : {})")
 		expect(transport).not.toContain("deferAck: this.allows('inbound.deferAck')")
 		expect(transport).toContain('The page calls this after it has stored or shown the inbound messages')
 	})

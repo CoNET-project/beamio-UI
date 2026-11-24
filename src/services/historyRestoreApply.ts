@@ -207,6 +207,11 @@ export interface HistoryApplierDeps {
 	keyNow: () => string
 	/** The account a signing key belongs to (accountEoaFor). */
 	accountOfKey: (privateKeyArmor: string) => string
+	/**
+	 * Shell: the page holds no signing key, so the account of a batch is checked against the public EOA of the native identity (identityPublic).
+	 * A batch whose account is not that EOA is dropped. When given, keyNow and accountOfKey are not used (no key exists on the page).
+	 */
+	shellAccountCheck?: (account: string) => boolean
 	/** The seen set of merged entries (historyRestoreSeen.ts). */
 	seen: Set<string>
 	/** True once the page is gone (unmounted). */
@@ -256,14 +261,23 @@ export function createHistoryApplier(deps: HistoryApplierDeps): {
 					log('[historyRestore] batch dropped: the account changed before it ran')
 					return
 				}
-				const pk = deps.keyNow()
-				if (!pk) {
-					log('[historyRestore] skip: no signing key yet')
-					return
-				}
-				if ((deps.accountOfKey(pk) || '').toLowerCase() !== account) {
-					log('[historyRestore] batch dropped: the signing key is not the key of the queued account')
-					return
+				let pk = ''
+				if (deps.shellAccountCheck) {
+					// shell: no page key; the account must be the native identity's EOA
+					if (!deps.shellAccountCheck(account)) {
+						log('[historyRestore] batch dropped: the account is not the native identity of this shell')
+						return
+					}
+				} else {
+					pk = deps.keyNow()
+					if (!pk) {
+						log('[historyRestore] skip: no signing key yet')
+						return
+					}
+					if ((deps.accountOfKey(pk) || '').toLowerCase() !== account) {
+						log('[historyRestore] batch dropped: the signing key is not the key of the queued account')
+						return
+					}
 				}
 				const plan = await planRestoreBatch({
 					entries,

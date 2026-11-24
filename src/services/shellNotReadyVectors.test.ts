@@ -119,9 +119,10 @@ describe('the ceiling rules', () => {
 
 describe('static: the gate uses the ceiling ladder and the explicit final screen', () => {
 	const gate = require('fs').readFileSync(require('path').join(__dirname, '..', 'components', 'AppEntryGate.tsx'), 'utf8') as string
-	it('the bounded reason re-reads through NOT_READY_BOUNDED_DELAYS_MS, then shows the final reason; the final reason shows at once', () => {
+	it('the bounded reason re-reads on the cold-start schedule (coldStartBackoff, a 60 s window; the old 0.5-8 s ladder is no longer used by the gate), then shows the final reason; the final reason shows at once', () => {
 		expect(gate).toContain("if (reason === 'native_not_ready_bounded') {")
-		expect(gate).toContain('NOT_READY_BOUNDED_DELAYS_MS[attempt]')
+		expect(gate).toContain("coldBackoffRef.current.next('walletStatus')")
+		expect(gate).not.toContain('NOT_READY_BOUNDED_DELAYS_MS')
 		expect(gate).toContain("showStorageUnavailable('native_not_ready_final')")
 		expect(gate).toContain("if (reason === 'native_not_ready_final') {")
 	})

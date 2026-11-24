@@ -17,7 +17,8 @@ describe('the shared identity prompt on screen', () => {
 			window.dispatchEvent(new Event(IDENTITY_ENTRY_PROMPT_EVENT))
 		})
 		expect(await screen.findByRole('dialog')).toBeTruthy()
-		expect(screen.getByText(tu('native_not_ready_hint'))).toBeTruthy()
+		// no valid hello yet and the window is open: the wallet is getting ready (the hint text comes after the window)
+		expect(screen.getByText(tu('native_preparing_wallet'))).toBeTruthy()
 		expect(screen.getByRole('button', { name: tu('close') })).toBeTruthy()
 	})
 

@@ -40,6 +40,10 @@ export type GenerationRequestDeps = {
 	declared?: () => Promise<boolean>
 	/** The single wait of an older shell; default `GENERATION_WAIT_MS`. */
 	legacyTimeoutMs?: number
+	/** Waits for the generation event (ms); injectable for tests. Default: a timer. */
+	sleep?: (ms: number) => Promise<void>
+	/** Step of the wait for the first generation event; default 200 ms. */
+	pollMs?: number
 }
 
 /** Thrown by `build` to refuse the command before anything is sent (for example a message that is too long). */
@@ -84,6 +88,12 @@ export async function requestWithInboundGeneration(
 		const only = await attempt(undefined, deps.legacyTimeoutMs ?? GENERATION_WAIT_MS)
 		return finish(only)
 	}
+	// Declared and no generation event yet: wait for it (a command without the field is never sent, and the wait is not a failure). Only after the
+	// whole wait with no event is the answer native_unavailable.
+	const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+	const pollMs = deps.pollMs ?? 200
+	const limitMs = deps.timeoutMs ?? GENERATION_WAIT_MS
+	for (let waited = 0; (deps.generation() === null || deps.generation() === undefined) && waited < limitMs; waited += pollMs) await sleep(pollMs)
 	const at = deps.generation()
 	if (at === null || at === undefined) return { ok: false, reason: 'native_unavailable' }
 	if (!isInboundGeneration(at)) return { ok: false, reason: 'bad_request' }

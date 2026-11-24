@@ -32,7 +32,7 @@ export type ShellRecordAnswer =
 	| { kind: 'unavailable' }
 
 /**4: a single request times out after this long. */
-export const SHELL_RECORD_REPLY_TIMEOUT_MS = 10_000
+export const SHELL_RECORD_REPLY_TIMEOUT_MS = 45_000
 /**4: the Android origin of the shell's assets. */
 const ANDROID_ORIGIN = 'https://appassets.androidplatform.net'
 

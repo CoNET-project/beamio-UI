@@ -9,7 +9,8 @@ import { probeNativeCapabilities, requestNativeAck } from './nativeChatRouteRegi
 import { NATIVE_QUERY_REQ_BASE } from './nativeKeyState'
 
 export const NATIVE_IDENTITY_PUBLIC_COMMAND = 'identityPublic'
-const TIMEOUT_MS = 10_000
+/** a request waits at least 45 s before it is called slow (the slowest observed read was 17 s); slow never resends */
+const TIMEOUT_MS = 45_000
 
 /** Field names that must never appear in a result. */
 const FORBIDDEN_RESULT_KEYS = [
@@ -45,6 +46,8 @@ export type NativeIdentityPublic =
 			eoa: string
 			accountKey: string
 			pgpReady: boolean
+			/** false: the native side could not read its PGP vault, so pgpReady:false is unknown (not "no key"). Present only when false. */
+			pgpReadyKnown?: false
 			/** Present only when pgpReady is true. */
 			pgpKeyID?: string
 			pgpPublicKeyArmored?: string
@@ -67,6 +70,14 @@ let identityPublicSeq = 0
 
 /** The account's public EOA after a successful read, for code that must not read the profile. Not a key. */
 let shellPublicEoa = ''
+/** Listeners told when the native public EOA becomes known or changes (the history read of a shell depends on it). */
+const publicEoaListeners = new Set<() => void>()
+export function onShellPublicEoaChange(cb: () => void): () => void {
+	publicEoaListeners.add(cb)
+	return () => {
+		publicEoaListeners.delete(cb)
+	}
+}
 let shellAccountKey = ''
 /** The account's own chat PGP public material from the last successful read (public only). */
 let shellPgpKeyID = ''
@@ -101,7 +112,7 @@ export function parseIdentityPublicResult(result: unknown): NativeIdentityPublic
 	if (typeof r.accountKey !== 'string' || !r.accountKey) return { kind: 'bad_identity' }
 	if (typeof r.pgpReady !== 'boolean') return { kind: 'bad_identity' }
 	// pgpReady false is not an error and not "no identity": the old layout reads as false, with no PGP fields.
-	if (!r.pgpReady) return { kind: 'ok', eoa, accountKey: r.accountKey, pgpReady: false }
+	if (!r.pgpReady) return r.pgpReadyKnown === false ? { kind: 'ok', eoa, accountKey: r.accountKey, pgpReady: false, pgpReadyKnown: false } : { kind: 'ok', eoa, accountKey: r.accountKey, pgpReady: false }
 	const pgpKeyID = typeof r.pgpKeyID === 'string' ? r.pgpKeyID : ''
 	const pgp = typeof r.pgpPublicKeyArmored === 'string' ? r.pgpPublicKeyArmored : ''
 	const route = typeof r.ownRouteArmoredPublicKey === 'string' ? r.ownRouteArmoredPublicKey : ''
@@ -136,10 +147,18 @@ export async function readNativeIdentityPublic(timeoutMs: number = TIMEOUT_MS): 
 	if (p.ok === true) {
 		const parsed = parseIdentityPublicResult(p.result)
 		if (parsed.kind === 'ok') {
+			const eoaChanged = shellPublicEoa !== parsed.eoa
 			shellPublicEoa = parsed.eoa
 			shellAccountKey = parsed.accountKey
 			shellPgpKeyID = parsed.pgpReady ? (parsed.pgpKeyID ?? '') : ''
 			shellPgpPublicArmor = parsed.pgpReady ? (parsed.pgpPublicKeyArmored ?? '') : ''
+			if (eoaChanged) for (const cb of [...publicEoaListeners]) {
+				try {
+					cb()
+				} catch {
+					// a listener must not break the read
+				}
+			}
 		}
 		return parsed
 	}

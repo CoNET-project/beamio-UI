@@ -1,7 +1,7 @@
 /**
  * (transport choice to) and (replies to, origin to). The page
  * sends through one transport; an injected window.BeamioShellRecord is used alone (no fallback, even when it cannot be used);
- * replies come on the injected object's onmessage and are matched by reqId; a request times out after 10 seconds.
+ * replies come on the injected object's onmessage and are matched by reqId; a request times out after 45 seconds.
  */
 import { sendShellRecordCommand, sendWindowOnlyCommand, setPageOriginForTest, shellRecordTransportKind, SHELL_RECORD_REPLY_TIMEOUT_MS } from './shellRecordTransport'
 
@@ -167,11 +167,11 @@ describe('RP: replies on the injected object (4)', () => {
 		expect(await p).toEqual({ kind: 'payload', payload: ok(77, { code: 'absent' }) })
 	})
 
-	it('no reply within 10 seconds is timeout; a late reply is ignored', async () => {
-		expect(SHELL_RECORD_REPLY_TIMEOUT_MS).toBe(10_000)
+	it('no reply within 45 seconds is timeout; a late reply is ignored', async () => {
+		expect(SHELL_RECORD_REPLY_TIMEOUT_MS).toBe(45_000)
 		const host = injectedHost()
 		const p = sendShellRecordCommand(CMD)
-		jest.advanceTimersByTime(10_000)
+		jest.advanceTimersByTime(45_000)
 		expect(await p).toEqual({ kind: 'timeout' })
 		expect(() => host.onmessage?.({ data: JSON.stringify(ok(77)) })).not.toThrow()
 	})
@@ -205,7 +205,7 @@ describe('RP: replies on the injected object (4)', () => {
 		injectedHost()
 		const first = sendShellRecordCommand(CMD)
 		expect(await sendShellRecordCommand(CMD)).toEqual({ kind: 'unavailable' })
-		jest.advanceTimersByTime(10_000)
+		jest.advanceTimersByTime(45_000)
 		expect(await first).toEqual({ kind: 'timeout' })
 	})
 })
@@ -234,7 +234,7 @@ describe('OR: the origin is checked page-side before sending; a reply is not che
 			const host = injectedHost()
 			const p = sendShellRecordCommand(CMD)
 			host.onmessage?.({ data: JSON.stringify({ type: 'ack', reqId: null, ok: false, error: 'bad_request' }) })
-			jest.advanceTimersByTime(10_000)
+			jest.advanceTimersByTime(45_000)
 			expect(await p).toEqual({ kind: 'timeout' })
 		} finally {
 			jest.useRealTimers()

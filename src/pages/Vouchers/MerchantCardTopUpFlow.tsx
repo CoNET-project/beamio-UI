@@ -18,6 +18,7 @@ import { isGenericMerchantCardDisplayName } from '@/utils/isGenericMerchantCardD
 import { pickNonFactoryMerchantAssetUrl } from '@/utils/isFactoryDefaultMerchantAssetUrl'
 import { resolveSigningPrivateKeyArmor } from '@/utils/resolveSigningPrivateKeyArmor'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { tu } from '@/locale/beamioLocale'
 import { displayFiatPrefixFromCode } from '@/services/currency'
 import { BecomeMemberSheet } from '@/components/Home/BecomeMemberSheet'
@@ -1436,7 +1437,7 @@ export default function MerchantCardTopUpFlow({
 		setStep('claiming')
 		if (!key || !wallet) {
 			// Option A: in a shell without the chat capability the claim says so, not "sign in".
-			setPayError(shellChatBlockedNow() ? tu('shell_chat_unavailable_body') : 'Sign in to claim membership.')
+			setPayError(shellChatBlockedNow() ? shellChatBlockedText() : 'Sign in to claim membership.')
 			setClaimFailed(true)
 			return
 		}
@@ -1504,7 +1505,7 @@ export default function MerchantCardTopUpFlow({
 		}
 		// Option A: a shell without the chat capability starts no membership claim and reads no key.
 		if (shellChatBlockedNow()) {
-			setPayError(tu('shell_chat_unavailable_body'))
+			setPayError(shellChatBlockedText())
 			return
 		}
 		const key = resolveSigningPrivateKeyArmor(profile)
@@ -1630,7 +1631,7 @@ export default function MerchantCardTopUpFlow({
 		if (confirmDisabled) return
 		// Option A: a shell without the chat capability pays nothing and reads no key.
 		if (shellChatBlockedNow()) {
-			setPayError(tu('shell_chat_unavailable_body'))
+			setPayError(shellChatBlockedText())
 			return
 		}
 

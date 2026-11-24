@@ -1,5 +1,6 @@
 // Home.tsx
 
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { bunitBalanceView, type BUnitBalanceView } from '@/services/bunitBalanceRead'
 import { profileSyncPending } from '@/services/pendingServerSync'
 import { useEffect, useRef, useState, useMemo, useCallback, type SyntheticEvent, type TouchEvent } from "react"
@@ -4035,7 +4036,7 @@ const Home = (_props: HomeProps) => {
 												)}
 												{!payRelayQRLoading && !payRelayQRPayload && (
 													<p className="max-w-sm px-4 text-center text-sm text-amber-600 dark:text-amber-400">
-														{identityEntryDisabled ? tu('shell_chat_unavailable_body') : !profiles?.[0]?.privateKeyArmor
+														{identityEntryDisabled ? shellChatBlockedText() : !profiles?.[0]?.privateKeyArmor
 															? 'Unlock your wallet to show pay QR.'
 															: 'Could not generate pay code. Close and try again.'}
 													</p>

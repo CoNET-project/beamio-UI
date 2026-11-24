@@ -47,6 +47,25 @@ describe('class 4 (not_ready) shows its body only', () => {
 	})
 })
 
+describe('pgp_verify_failed (native challenge-signature gate): "restore failed" with the user-click entry, nothing automatic', () => {
+	it('shows chat.restore_failed.body and the generate entry (chat.restore_generate.entry) when eligible; the click is the only generate', async () => {
+		isShell.mockReturnValue(true)
+		grantPgpCreateEligibility('synthetic-account-key')
+		render(<PgpRestoreFailedNotice code="pgp_verify_failed" />)
+		expect(screen.getByText('chat.restore_failed.body')).toBeTruthy()
+		expect(screen.queryByText('chat.restore_not_ready.body')).toBeNull()
+		const btn = screen.getByRole('button')
+		expect(btn.textContent).toBe('chat.restore_generate.entry')
+		expect(nativeGen).not.toHaveBeenCalled()
+		nativeGen.mockResolvedValue({ ok: false, reason: 'native_unavailable' })
+		fireEvent.click(btn)
+		await waitFor(() => expect(nativeGen).toHaveBeenCalledTimes(1))
+	})
+	it('the pure rule: the entry rule is the same as for the other failure classes', () => {
+		expect(showsReplaceButton('pgp_verify_failed')).toBe(true)
+	})
+})
+
 describe('the not_supported defence stays, for the other classes that have a button', () => {
 	it('shell: a not_supported answer shows the placeholder copy, hides the button, and does not retry', async () => {
 		isShell.mockReturnValue(true)

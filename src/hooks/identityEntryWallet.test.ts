@@ -23,11 +23,11 @@ describe('the entries read the hook or the shared capability check', () => {
 		// create (first occurrence): guard before the key read, unified copy in the form error
 		const createGuard = src.lastIndexOf('if (shellChatBlockedNow()) {', first)
 		expect(createGuard).toBeGreaterThan(src.indexOf('const handleCreate = useCallback(', 0))
-		expect(src.slice(createGuard, first)).toContain("setFormError(tu('shell_chat_unavailable_body'))")
+		expect(src.slice(createGuard, first)).toContain("setFormError(shellChatBlockedText())")
 		// cancel (second occurrence): guard before the key read, unified copy in the toast
 		const cancelGuard = src.lastIndexOf('if (shellChatBlockedNow()) {', second)
 		expect(cancelGuard).toBeGreaterThan(first)
-		expect(src.slice(cancelGuard, second)).toContain("Toast.show({ content: tu('shell_chat_unavailable_body'), position: 'top' })")
+		expect(src.slice(cancelGuard, second)).toContain("Toast.show({ content: shellChatBlockedText(), position: 'top' })")
 	})
 
 	it('ValidatorDepositRedeemClaimSheet: claim refuses before the key is read', () => {
@@ -37,7 +37,7 @@ describe('the entries read the hook or the shared capability check', () => {
 		const key = src.indexOf('resolveSigningPrivateKeyArmor(profiles?.[0])', at)
 		expect(at).toBeGreaterThan(0)
 		expect(guard).toBeGreaterThan(at)
-		expect(src.slice(guard, guard + 120)).toContain("setFormError(tu('shell_chat_unavailable_body'))")
+		expect(src.slice(guard, guard + 120)).toContain("setFormError(shellChatBlockedText())")
 		expect(key).toBeGreaterThan(guard)
 	})
 
@@ -48,7 +48,7 @@ describe('the entries read the hook or the shared capability check', () => {
 		const key = src.indexOf('resolveSigningPrivateKeyArmor(profiles?.[0])', at)
 		expect(at).toBeGreaterThan(0)
 		expect(guard).toBeGreaterThan(at)
-		expect(src.slice(guard, guard + 120)).toContain("setFormError(tu('shell_chat_unavailable_body'))")
+		expect(src.slice(guard, guard + 120)).toContain("setFormError(shellChatBlockedText())")
 		expect(key).toBeGreaterThan(guard)
 	})
 
@@ -59,16 +59,16 @@ describe('the entries read the hook or the shared capability check', () => {
 		const key = src.indexOf('resolveSigningPrivateKeyArmor(profiles?.[0])', at)
 		expect(at).toBeGreaterThan(0)
 		expect(guard).toBeGreaterThan(at)
-		expect(src.slice(guard, guard + 160)).toContain("setInlineError(tu('shell_chat_unavailable_body'))")
+		expect(src.slice(guard, guard + 160)).toContain("setInlineError(shellChatBlockedText())")
 		expect(key).toBeGreaterThan(guard)
 	})
 
 	it('AaMultisigPage: the signing-key gates show the unified copy in a blocked shell', () => {
 		const src = read('pages/Wallet/AaMultisigPage.tsx')
 		expect(src).toContain("import { shellChatBlockedNow } from '@/services/shellChatCapability'")
-		expect(src).toContain("Toast.show({ content: shellChatBlockedNow() ? tu('shell_chat_unavailable_body') : 'Wallet signing key unavailable.' })")
-		expect(src).toContain("setTransferCreateError(shellChatBlockedNow() ? tu('shell_chat_unavailable_body') : 'Wallet signing key unavailable.')")
-		expect(src).toContain("fail(shellChatBlockedNow() ? tu('shell_chat_unavailable_body') : 'Wallet signing key unavailable.')")
+		expect(src).toContain("Toast.show({ content: shellChatBlockedNow() ? shellChatBlockedText() : 'Wallet signing key unavailable.' })")
+		expect(src).toContain("setTransferCreateError(shellChatBlockedNow() ? shellChatBlockedText() : 'Wallet signing key unavailable.')")
+		expect(src).toContain("fail(shellChatBlockedNow() ? shellChatBlockedText() : 'Wallet signing key unavailable.')")
 	})
 
 	it('Genesis node, L1 and L0 pages: the armor follows the shell state, so the action buttons stay disabled', () => {

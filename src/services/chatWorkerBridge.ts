@@ -13,6 +13,14 @@
  * Routing: listen encrypted to mailbox B via entry C ≠ B; never direct-connect B.
  */
 
+import { nativeReceiptPath } from './receiptCapability'
+import { isShellContext } from './shellContext'
+import { sharedOfferGate } from './routeOfferGate'
+import { invalidateStoredTrust } from './receiptRouteTrust'
+import { createRouteTable, applyRouteEligibility, type RouteTable, type RouteEligibility } from './nativeRouteTable'
+import { onShellPublicEoaChange, shellPublicEoaOrEmpty } from './nativeIdentityPublic'
+import { qaSendStage, qaLine, qaErrorName, qaErrorCode } from '@/utils/qaLog'
+import { NATIVE_CLIENT_HAS_LOCAL_LIBRARY } from './historyCapability'
 import {
 	createBeamioChatClient,
 	runFirstOpenInWorker,
@@ -117,6 +125,41 @@ export const setCurrentAccountGetter = (fn: (() => string) | null): void => {
 /** The account the active worker client is bound to (lower case), or null when there is no client. Reads and buffer batches are checked
  * against it (historyClientBinding.ts), so an old client never feeds a new account. */
 export const boundAccountOfActiveClient = (): string | null => (activeClient ? activeClientEoa : null)
+
+/**
+ * The contact routes handed to the native module for its own delivered-receipt path (nativeRouteTable.ts). Memory only. The table is sent only
+ * while a native client with the send capability is active; otherwise it is kept and sent again when the native chat has started.
+ */
+export const nativeRoutes: RouteTable = createRouteTable({
+	send: (routes) => {
+		if (!nativeReceiptPath() || !activeClient || !activeClientIsNative || !nativeSendReady()) return false
+		activeClient.setRoutes(routes)
+		return true
+	},
+})
+/** A contact's route becomes known (a successful recipient lookup, an inbound sender): offered to the native module, for a contact the page already knows. */
+export const noteNativeContactRoute = (address: string, userPublicKeyArmored: string, routerArmoredPublicKey: string): boolean =>
+	nativeReceiptPath() ? nativeRoutes.note(address, userPublicKeyArmored, routerArmoredPublicKey) : false
+/** One eligibility of a contact's receipt route (offer, keep, remove); only on the native receipt path. */
+export const applyNativeRouteEligibility = (
+	address: string,
+	eligibility: RouteEligibility,
+	route: { publicArmored: string; routersArmoreds: string } | undefined,
+): 'offered' | 'removed' | 'unchanged' => applyRouteEligibility(nativeRoutes, nativeReceiptPath, address, eligibility, route)
+/** An account change or an identity clear: the route table, the offer gate's spacing records and its running reads all go (nothing of the old account stays). */
+export const clearNativeRouteState = (): void => {
+	nativeRoutes.clear()
+	sharedOfferGate.reset()
+	invalidateStoredTrust()
+}
+/** The own account changed to another one: no route of the old account is kept or sent. */
+let lastOwnEoaForRoutes = ''
+onShellPublicEoaChange(() => {
+	const eoa = shellPublicEoaOrEmpty().toLowerCase()
+	if (lastOwnEoaForRoutes && eoa !== lastOwnEoaForRoutes) clearNativeRouteState()
+	lastOwnEoaForRoutes = eoa
+})
+
 /** `hello` result of the active daemon (`legacy` until it answers, or for daemons before protocol v1). */
 let activeFeatures: ChatDaemonFeatures = negotiateChatDaemon(null)
 
@@ -150,7 +193,10 @@ export async function sendChatViaNativeDaemon(
 	opts?: { beamioNoPush?: boolean },
 ): Promise<boolean> {
 	// unit e: the UI lock refuses the send before any bridge request.
-	if (chatAccessRefused('send')) return false
+	if (chatAccessRefused('send')) {
+		qaSendStage('access_refused')
+		return false
+	}
 	const deadline = Date.now() + NATIVE_SEND_READY_WAIT_MS
 	while (!nativeSendReady() && Date.now() < deadline) {
 		await new Promise((resolve) => setTimeout(resolve, 200))
@@ -158,12 +204,14 @@ export async function sendChatViaNativeDaemon(
 	const client = activeClient
 	if (!client || !nativeSendReady()) {
 		console.warn('[chat] native daemon not ready after 10 s; send failed')
+		qaSendStage('daemon_not_ready')
 		return false
 	}
 	try {
 		await client.sendMessage(to, payload, opts?.beamioNoPush ? { beamioNoPush: true } : undefined)
 		return true
-	} catch {
+	} catch (e) {
+		qaSendStage(`native_error:${String((e as { code?: unknown })?.code ?? (e as Error)?.name ?? 'unknown').slice(0, 40)}`)
 		return false
 	}
 }
@@ -453,12 +501,23 @@ export const readLocalChatHistory = async (convKey: string, viewport: ChatLocalV
 	const h = activeClient?.history
 	// no history client yet: not ready, nothing is judged
 	if (!h || typeof h.openConversation !== 'function') return { kind: 'not_ready' }
+	// a native shell client has no page-side local library (its openConversation is a stub): no judgement, no notice
+	if (activeClientIsNative && !NATIVE_CLIENT_HAS_LOCAL_LIBRARY) {
+		if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', 'local_read kind=not_ready reason=no_local_library')
+		return { kind: 'not_ready' }
+	}
 	try {
 		const page = await h.openConversation(convKey, viewport)
 		// a chat with no local library or no record: a normal empty session
-		if (!page) return { kind: 'no_library' }
+		if (!page) {
+			if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', 'local_read kind=no_library')
+			return { kind: 'no_library' }
+		}
+		// QA only: the page source decides whether the history notice shows (anything but local is unreadable)
+		if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `local_read kind=page source=${String(page.source)} items=${page.items.length}`)
 		return { kind: 'page', source: page.source, items: page.items.length }
-	} catch {
+	} catch (e) {
+		if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `local_read kind=read_error name=${qaErrorName(e)} code=${qaErrorCode(e)} op=openConversation`)
 		return { kind: 'read_error' }
 	}
 }
@@ -722,10 +781,12 @@ export const resumeNativeChatListen = (): boolean => {
  * it keeps for call pushes. Call before the page drops the wallet.
  */
 export const clearNativeChatIdentity = (): void => {
+	clearNativeRouteState()
 	// A module that negotiated without `identity.provision` stores no keys. With no
 	// `hello` answer (or no running module) send it anyway: older modules ignore it.
 	if (activeClientIsNative && !daemonAllows('identity.provision')) return
-	const cmd = { type: 'clearIdentity', reqId: -1 }
+	// a valid reqId (the SDK answers a negative one with bad_request at its entry); nobody waits for the answer
+	const cmd = { type: 'clearIdentity', reqId: 0 }
 	try {
 		const ios = (window as unknown as { CashTreesIOS?: { chatModuleCommand?: (p: Record<string, unknown>) => void } })
 			.CashTreesIOS

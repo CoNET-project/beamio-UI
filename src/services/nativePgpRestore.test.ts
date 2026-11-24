@@ -180,6 +180,34 @@ describe('restore (pgpRestore): waits for pgpRestoreResult', () => {
 		await expect(restoreNativePgp(ACCOUNT)).resolves.toEqual({ ok: false, code: 'readback_failed', failure: null })
 	})
 
+	it('pgp_verify_failed as a refused ack: returned at once as a failure, nothing waited for', async () => {
+		installShell([NATIVE_KEYS_CAPABILITY])
+		replyFor = () => ({ ack: { type: 'ack', ok: false, error: 'pgp_verify_failed' } })
+		await expect(restoreNativePgp(ACCOUNT)).resolves.toEqual({ ok: false, code: 'pgp_verify_failed', failure: 'pgp_verify_failed' })
+		expect(sentOf(NATIVE_PGP_RESTORE_COMMAND)).toHaveLength(1)
+	})
+
+	it('pgp_verify_failed in the ack result (ui failed, offerEntry true): returned at once, no event is awaited', async () => {
+		installShell([NATIVE_KEYS_CAPABILITY])
+		replyFor = () => ({ ack: { type: 'ack', ok: true, result: { code: 'pgp_verify_failed', ui: 'failed', offerEntry: true } } })
+		await expect(restoreNativePgp(ACCOUNT)).resolves.toEqual({ ok: false, code: 'pgp_verify_failed', failure: 'pgp_verify_failed' })
+		expect(sentOf(NATIVE_PGP_RESTORE_COMMAND)).toHaveLength(1)
+	})
+
+	it('pgp_verify_failed as the result event maps to the same failure', async () => {
+		installShell([NATIVE_KEYS_CAPABILITY])
+		replyFor = () => ({ ack: { type: 'ack', ok: true, result: { accepted: true } }, events: [{ type: 'pgpRestoreResult', code: 'pgp_verify_failed' }] })
+		await expect(restoreNativePgp(ACCOUNT)).resolves.toEqual({ ok: false, code: 'pgp_verify_failed', failure: 'pgp_verify_failed' })
+	})
+
+	it('other refused acks keep failure null (unchanged), including an unknown code', async () => {
+		installShell([NATIVE_KEYS_CAPABILITY])
+		replyFor = () => ({ ack: { type: 'ack', ok: false, error: 'locked' } })
+		await expect(restoreNativePgp(ACCOUNT)).resolves.toEqual({ ok: false, code: 'locked', failure: null })
+		replyFor = () => ({ ack: { type: 'ack', ok: false, error: 'something_new' } })
+		await expect(restoreNativePgp(ACCOUNT)).resolves.toEqual({ ok: false, code: 'unknown_ack', failure: null })
+	})
+
 	it('a refused ack (already_exists) is returned at once and nothing is waited for', async () => {
 		installShell([NATIVE_KEYS_CAPABILITY])
 		replyFor = () => ({ ack: { type: 'ack', ok: false, error: 'already_exists' } })

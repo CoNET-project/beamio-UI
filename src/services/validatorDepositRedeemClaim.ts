@@ -3,6 +3,7 @@ import { CONET_VALIDATOR_DEPOSIT_REDEEM } from '@/config/chainAddresses'
 import { conetDepinProvider, beamioApi } from '@/utils/constants'
 import { resolveSigningPrivateKeyArmor } from '@/utils/resolveSigningPrivateKeyArmor'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { tu } from '@/locale/beamioLocale'
 import {
 	readValidatorDepositRedeemOnChain,
@@ -87,7 +88,7 @@ export async function signAndSubmitValidatorDepositRedeemClaim(params: {
 }): Promise<{ success: true; txHash?: string } | { success: false; error: string }> {
 	// Option A: a shell without the chat capability sends nothing and uses no key, even one passed in.
 	if (shellChatBlockedNow()) {
-		return { success: false, error: tu('shell_chat_unavailable_body') }
+		return { success: false, error: shellChatBlockedText() }
 	}
 	const preview = await previewValidatorDepositRedeemClaim({
 		secretCode: params.secretCode,

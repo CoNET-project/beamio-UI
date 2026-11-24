@@ -1,4 +1,5 @@
 import { SHELL_TIMEOUT, hasBeamioShell, postBeamioShell, requestBeamioShell } from './beamioShellChannel'
+import { noteBridgeCommand } from './qaBridgeCounter'
 /** Android：`JavascriptInterface` 注入 `window.CashTreesAndroid`。iOS：WK 注入 `window.CashTreesIOS`（方法签名对齐 Android）。 */
 
 /** Guardian node the shell may POST `http://{ip}/post`. Domain is diagnostic only. */
@@ -739,6 +740,7 @@ export function dispatchNativeSystemCallAction(
 		| 'dismissIncomingSystemCall',
 	payload: Record<string, unknown>,
 ): boolean {
+	noteBridgeCommand('systemCall', action)
 	const w = cashTreesNativeWindow()
 	if (!w) return false
 	if (hasBeamioShell()) return postBeamioShell(action, { ...payload })
@@ -765,6 +767,7 @@ export function dispatchNativeSystemCallAction(
 function tryNativeOpenUrl(url: string, onRefused?: (error: string) => void): boolean {
 	const w = cashTreesNativeWindow()
 	if (!w) return false
+	noteBridgeCommand('external', 'openURL')
 
 	if (typeof w.CashTreesIOS?.openURL === 'function') {
 		try {

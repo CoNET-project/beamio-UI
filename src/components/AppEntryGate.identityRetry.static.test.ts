@@ -34,7 +34,7 @@ describe('AppEntryGate: the unanswered hello is probed on the cadence and retrie
 
 describe('ShellChatUnavailableNotice: the retry hint on the identity entries', () => {
 	it('the hint reads from the locale key and the retry action requests a probe', () => {
-		expect(notice).toContain("tu(unanswered ? 'native_not_ready_hint' : 'shell_chat_unavailable_body')")
+		expect(notice).toContain("tu(missing ? 'shell_chat_unavailable_body' : windowOpen ? 'native_preparing_wallet' : 'native_not_ready_hint')")
 		expect(notice).toContain('onClick={() => requestNativeIdentityRetry()}')
 	})
 })

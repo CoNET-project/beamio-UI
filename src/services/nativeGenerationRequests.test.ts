@@ -91,10 +91,22 @@ afterEach(() => {
 	delete w.CashTreesIOS
 })
 
+
+/** The page waits up to 35 s for the first generation event of a declared shell; under fake timers a test steps through that wait. */
+const outWait = async (): Promise<void> => {
+	for (let i = 0; i < 190; i++) {
+		jest.advanceTimersByTime(200)
+		for (let k = 0; k < 10; k++) await Promise.resolve()
+	}
+}
+
 describe('send, group text and mailbox commands carry inboundGeneration (1)', () => {
 	it('nothing is sent before a generation has been announced; send rejects with native_unavailable', async () => {
 		const client = await startClient()
-		await expect(client.sendMessage(TO, 'hi', { sendId: 's1' })).rejects.toThrow('native_unavailable')
+		jest.useFakeTimers()
+		const rejected = expect(client.sendMessage(TO, 'hi', { sendId: 's1' })).rejects.toThrow('native_unavailable')
+		await outWait()
+		await rejected
 		expect(countOf('send')).toBe(0)
 	})
 
@@ -124,7 +136,10 @@ describe('send, group text and mailbox commands carry inboundGeneration (1)', ()
 
 	it('a mailbox command before any announcement returns false and sends nothing', async () => {
 		const client = await startClient()
-		await expect(client.postOwnMailboxCommand({ command: 'y' })).resolves.toBe(false)
+		jest.useFakeTimers()
+		const result = client.postOwnMailboxCommand({ command: 'y' })
+		await outWait()
+		await expect(result).resolves.toBe(false)
 		expect(countOf('ownMailboxCommand')).toBe(0)
 	})
 })
@@ -212,8 +227,13 @@ describe('the group roster and tombstone carry the field when declared', () => {
 
 	it('before any announcement, the roster and the tombstone are native_unavailable and nothing is sent', async () => {
 		const client = await startClient()
-		await expect(client.issueGroupRoster({} as never)).rejects.toThrow('native_unavailable')
-		await expect(client.issueGroupTombstone({} as never)).rejects.toThrow('native_unavailable')
+		jest.useFakeTimers()
+		const roster = expect(client.issueGroupRoster({} as never)).rejects.toThrow('native_unavailable')
+		await outWait()
+		await roster
+		const tombstone = expect(client.issueGroupTombstone({} as never)).rejects.toThrow('native_unavailable')
+		await outWait()
+		await tombstone
 		expect(countOf('issueGroupRoster')).toBe(0)
 		expect(countOf('issueGroupTombstone')).toBe(0)
 	})
@@ -222,7 +242,10 @@ describe('the group roster and tombstone carry the field when declared', () => {
 describe('to): capability, events, the 35 s wait, sendId, the group roster and tombstone', () => {
 	it('the shell declares inbound.generation.v1 and no event has arrived: send is not sent and the caller gets native_unavailable', async () => {
 		const client = await startClient()
-		await expect(client.sendMessage(TO, 'hi', { sendId: 'ig32' })).rejects.toThrow('native_unavailable')
+		jest.useFakeTimers()
+		const rejected = expect(client.sendMessage(TO, 'hi', { sendId: 'ig32' })).rejects.toThrow('native_unavailable')
+		await outWait()
+		await rejected
 		expect(countOf('send')).toBe(0)
 	})
 

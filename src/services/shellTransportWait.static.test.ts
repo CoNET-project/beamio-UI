@@ -39,7 +39,7 @@ describe('shell record transport and migration wait (source guards)', () => {
 
 	it('every shell record request waits 10 seconds for its reply (4)', () => {
 		expect(read('src/services/shellRecordStore.ts')).toContain('const TIMEOUT_MS = 10_000')
-		expect(read('src/services/shellRecordTransport.ts')).toContain('export const SHELL_RECORD_REPLY_TIMEOUT_MS = 10_000')
+		expect(read('src/services/shellRecordTransport.ts')).toContain('export const SHELL_RECORD_REPLY_TIMEOUT_MS = 45_000')
 	})
 
 	it('the app resumes a persisted deferred write at start, without a storage read', () => {

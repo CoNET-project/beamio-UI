@@ -82,10 +82,23 @@ describe('an envelope or group request carries inboundGeneration at the top leve
 	})
 })
 
+
+/** The page waits up to 35 s for the first generation event of a declared shell; under fake timers a test steps through that wait. */
+const outWait = async (): Promise<void> => {
+	for (let i = 0; i < 190; i++) {
+		jest.advanceTimersByTime(200)
+		for (let k = 0; k < 10; k++) await Promise.resolve()
+	}
+}
+
 describe('no generation announced yet (real path)', () => {
 	it('the envelope is refused as native_unavailable and no gossipSign is sent', async () => {
 		installShell(DECLARED)
-		await expect(nativeSignWithGeneration('envelope', () => 'hello')).resolves.toEqual({ ok: false, reason: 'native_unavailable' })
+		jest.useFakeTimers()
+		const result = nativeSignWithGeneration('envelope', () => 'hello')
+		await outWait()
+		await expect(result).resolves.toEqual({ ok: false, reason: 'native_unavailable' })
+		jest.useRealTimers()
 		expect(gossipSigns()).toEqual([])
 	})
 })

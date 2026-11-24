@@ -27,6 +27,8 @@ function script(answers: Array<GenerationAttemptAnswer | ((n: number) => Generat
 	const waits: number[] = []
 	let gen: unknown = start
 	const deps: GenerationRequestDeps = {
+		sleep: async () => undefined,
+		timeoutMs: undefined,
 		generation: () => gen,
 		send: async (cmd, timeoutMs) => {
 			sent.push(cmd)
@@ -62,6 +64,19 @@ describe('and: the new page always carries the field ', () => {
 		const s = script([ACK_OK], '2')
 		await expect(requestWithInboundGeneration(build('group'), s.deps)).resolves.toEqual({ ok: false, reason: 'bad_request' })
 		expect(s.sent).toEqual([])
+	})
+
+	it('declared and no generation yet: the request waits for the event, then sends with the field (never sent without it, never failed)', async () => {
+		const s = script([ACK_OK], null)
+		let polls = 0
+		s.deps.sleep = async () => {
+			polls += 1
+			if (polls === 3) s.setGeneration(7)
+		}
+		await expect(requestWithInboundGeneration(build('send'), s.deps)).resolves.toEqual({ ok: true, result: { sent: true } })
+		expect(polls).toBe(3)
+		expect(s.sent).toHaveLength(1)
+		expect(s.sent[0].inboundGeneration).toBe(7)
 	})
 
 	it('nothing announced yet: native_unavailable, nothing sent ', async () => {

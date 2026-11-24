@@ -88,6 +88,8 @@ jest.mock('@/providers/DaemonProvider', () => {
 })
 
 const storeCalls = { storeSystemDataAndWait: 0 }
+/** The EOA each page write-back of the pre-read was asked for (the derived address; never the reply's own field). */
+const persistedEoas: string[] = []
 /** Per-case read-back override (the shell read-back of the record after a write; undefined = the default record that keeps the phrase). */
 const readBackOverride: { value?: unknown } = {}
 jest.mock('@/services/beamio', () => ({
@@ -115,6 +117,7 @@ jest.mock('@/services/beamio', () => ({
 	// mismatch; a record without a profile is absent. The verdict names are the page write-back verdicts of persistPageIdbMnemonic.
 	persistPageIdbMnemonic: async (_record: unknown, _phrase: string, eoa: string) => {
 		storeCalls.storeSystemDataAndWait += 1
+		persistedEoas.push(eoa.trim().toLowerCase())
 		const back = readBackOverride.value as { profiles?: Array<{ keyID?: string }> } | undefined
 		if (back === undefined) return 'verified'
 		const keyID = back.profiles?.[0]?.keyID
@@ -301,6 +304,7 @@ async function start(opts: { page: any; nativeEoa?: any; preread?: any; reach?: 
 	race.prereadThrow = false
 	race.writes = 0
 	storeCalls.storeSystemDataAndWait = 0
+	persistedEoas.length = 0
 	PWA_LOG.length = 0
 	installShell()
 	renderApp()
@@ -439,10 +443,16 @@ describe('entry case 4 and the pre-read boundaries (native pre-read through the 
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
 	})
 
-	it('EOA mismatch: a valid pre-read whose phrase derives another address is unknown; nothing is adopted or written', async () => {
+	it('old shell: a reply eoa that differs from the derived address is ignored; the derived address is adopted and the reply address is written nowhere (0.53.47)', async () => {
+		race.page = EMPTY
 		await start({ page: EMPTY, preread: payload({ code: 'ok', mnemonic: PHRASE_X, eoa: EOA_Y }), nativeEoa: addr(EOA_X) })
-		expect(homeShown()).toBe(false)
-		expect(storeCalls.storeSystemDataAndWait).toBe(0)
+		expect(homeShown()).toBe(true)
+		expect(persistedEoas).toEqual([EOA_X.toLowerCase()])
+		expect(shellSent.filter((r) => typeof r.eoa === 'string' && String(r.eoa).toLowerCase() === EOA_Y.toLowerCase())).toHaveLength(0)
+		expect(PWA_LOG.some((l) => l.includes('eoa field ignored (mismatch)'))).toBe(true)
+		expect(PWA_LOG.join('\n').toLowerCase()).not.toContain(EOA_Y.toLowerCase())
+		expect(PWA_LOG.join('\n').toLowerCase()).not.toContain(EOA_X.toLowerCase())
+		expect(PWA_LOG.some((l) => l.includes('onboarding'))).toBe(false)
 	})
 })
 
@@ -532,10 +542,11 @@ describe('E6 page side (PE-01, NE-01..NE-08), through AppEntryGate', () => {
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
 	})
 
-	it('NE-07/NE-08 no phrase in logs, console, telemetry or crash reports on the refusal paths (a valid answer whose phrase derives another EOA)', async () => {
+	it('NE-07/NE-08 no phrase in logs, console, telemetry or crash reports on the mismatch path (a valid answer whose reply eoa differs from the derived EOA is adopted on the derived one, 0.53.47)', async () => {
+		race.page = EMPTY
 		await start({ page: EMPTY, preread: payload({ code: 'ok', mnemonic: PHRASE_X, eoa: EOA_Y }), nativeEoa: addr(EOA_X) })
-		expect(homeShown()).toBe(false)
-		expect(storeCalls.storeSystemDataAndWait).toBe(0)
+		expect(homeShown()).toBe(true)
+		expect(storeCalls.storeSystemDataAndWait).toBeGreaterThanOrEqual(1)
 		expect(leakedText(fetchSpy, consoles)).not.toContain(PHRASE_X)
 		expect(PWA_LOG.length).toBeGreaterThan(0) // the gate did log; only states, never the phrase
 	})
@@ -644,11 +655,54 @@ describe('E7 page side (P-01, P-02, P-03, P-06, P-07), through AppEntryGate', ()
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
 	})
 
-	it('(a) plaintext pre-read without eoa is unsupported: the legacy path, never onboarding (d99d0ce3 B.3; capability missing)', async () => {
-		await start({ page: EMPTY, preread: payload({ code: 'ok', mnemonic: PHRASE_X }), nativeEoa: addr(EOA_X) })
-		expect(PWA_LOG.some((l) => l.includes('pre_read_unsupported') || l.includes('legacy'))).toBe(true)
+	it('plaintext without eoa through the gate: adopted on the derived address; no phrase in logs, console or network (0.53.47)', async () => {
+		const consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined)
+		const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+		const errSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined)
+		const fetchSpy = jest.fn(async () => new Response('{}'))
+		;(globalThis as any).fetch = fetchSpy
+		race.page = EMPTY
+		await start({ page: EMPTY, preread: payload({ code: 'ok', mnemonic: PHRASE_X }), nativeEoa: { kind: 'refused', code: 'no_key' } })
+		expect(homeShown()).toBe(true)
+		expect(storeCalls.storeSystemDataAndWait).toBeGreaterThanOrEqual(1)
+		expect(document.querySelector('[data-testid="preread-passcode-input"]')).toBeNull()
+		const everything = [
+			...PWA_LOG,
+			...consoleSpy.mock.calls.flat().map(String),
+			...warnSpy.mock.calls.flat().map(String),
+			...errSpy.mock.calls.flat().map(String),
+			...(fetchSpy.mock.calls.length ? [JSON.stringify(fetchSpy.mock.calls)] : []),
+		].join('\n')
+		expect(everything).not.toContain(PHRASE_X)
+		consoleSpy.mockRestore()
+		warnSpy.mockRestore()
+		errSpy.mockRestore()
+	})
+
+	it('reverse: without a reply eoa, a phrase for another account than the local page record is still refused (cross-account write guard unchanged)', async () => {
+		await start({ page: WALLET_ONLY_X, preread: payload({ code: 'ok', mnemonic: PHRASE_Y }), nativeEoa: addr(EOA_Y) })
+		expect(PWA_LOG.some((l) => l.includes('pre-read address differs from the local account record: verify_failed'))).toBe(true)
+		expect(homeShown()).toBe(false)
 		expect(onboardingLogged()).toBe(false)
+		expect(persistedEoas).toEqual([])
 		expect(storeCalls.storeSystemDataAndWait).toBe(0)
+	})
+
+	it('reverse: with a mismatching reply eoa, the cross-account write guard still decides on the derived address', async () => {
+		await start({ page: WALLET_ONLY_X, preread: payload({ code: 'ok', mnemonic: PHRASE_Y, eoa: EOA_X }), nativeEoa: addr(EOA_Y) })
+		expect(PWA_LOG.some((l) => l.includes('pre-read address differs from the local account record: verify_failed'))).toBe(true)
+		expect(homeShown()).toBe(false)
+		expect(persistedEoas).toEqual([])
+	})
+
+	it('(a) plaintext pre-read without eoa is adopted on the derived address: no passcode page, written then read back, home, never onboarding (0.53.47)', async () => {
+		race.page = EMPTY
+		await start({ page: EMPTY, preread: payload({ code: 'ok', mnemonic: PHRASE_X }), nativeEoa: addr(EOA_X) })
+		expect(storeCalls.storeSystemDataAndWait).toBeGreaterThanOrEqual(1)
+		expect(homeShown()).toBe(true)
+		expect(onboardingLogged()).toBe(false)
+		expect(document.querySelector('[data-testid="preread-passcode-input"]')).toBeNull()
+		expect(PWA_LOG.join('\n')).not.toContain(PHRASE_X)
 	})
 
 	it('(b) TS-06b: no_key, kPresent true, read ok, pre-read confirmed_missing, IDB empty: onboarding even with a key present (key_only), and nothing is deleted or written (the private key, the page copy and the IDB record stay)', async () => {

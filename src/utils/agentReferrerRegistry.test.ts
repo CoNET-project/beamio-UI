@@ -47,6 +47,7 @@ jest.mock('@/utils/globals', () => ({
 
 jest.mock('@/services/shellChatCapability', () => ({
 	shellChatBlockedNow: () => mockBlocked,
+	shellChatBlockedText: () => 'shell_chat_unavailable_body',
 }), { virtual: true })
 
 jest.mock('@/locale/beamioLocale', () => ({

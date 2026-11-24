@@ -22,6 +22,7 @@ import { AgentTempAccountStates } from '@/pages/BountyBoard/AgentTempAccountStat
 import { tu } from '@/locale/beamioLocale'
 import { useIdentityEntryDisabled } from '@/hooks/useIdentityEntryDisabled'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 
 export function AgentBusinessInviteSheet({
 	open,
@@ -86,7 +87,7 @@ export function AgentBusinessInviteSheet({
 		// Option A: a shell without the chat capability checks and registers nothing; the sheet shows the unified copy.
 		if (identityEntryDisabled) {
 			setAgentState('error')
-			setStatusError(tu('shell_chat_unavailable_body'))
+			setStatusError(shellChatBlockedText())
 			return
 		}
 		let cancelled = false
@@ -207,7 +208,7 @@ export function AgentBusinessInviteSheet({
 		if (creating || agentState !== 'agent' || atTempCap) return
 		// Option A: a blocked shell creates no temp account and stores nothing.
 		if (shellChatBlockedNow()) {
-			setCreateError(tu('shell_chat_unavailable_body'))
+			setCreateError(shellChatBlockedText())
 			return
 		}
 		setCreating(true)

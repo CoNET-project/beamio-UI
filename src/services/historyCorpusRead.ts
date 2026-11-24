@@ -20,8 +20,13 @@
  *
  * The log line carries the reason and the number of entries only, never an address. SYNTHETIC values only.
  */
+import { qaLine } from '@/utils/qaLog'
 import type { HistoryEntry } from '@conet.project/chat-sdk'
 import { canReadForAccount } from './historyClientBinding'
+import type { ColdStartBackoff } from './coldStartBackoff'
+
+/** What the chat list may show: still loading, or the read is settled (done with entries, done empty, or the window used up). */
+export type CorpusReadStatus = 'loading' | 'settled'
 
 /** Delay before a retry after a failed read. Engineering default, not a project decision. */
 export const CORPUS_READ_RETRY_MS = 2_000
@@ -54,6 +59,14 @@ export interface CorpusReadDeps {
 	schedule?: (fn: () => void, ms: number) => void
 	/** A numbers-only log line. */
 	log?: (line: string) => void
+	/**
+	 * Shell mode: a failed read (null) and an EMPTY read are not final while the cold-start window lasts. They are retried on this backoff
+	 * (1, 2, 4, 8, 16 s, then every 16 s, 60 s window; an attempt count is not a stop condition). Used up: the read settles (empty). Without it
+	 * (the browser) the old rule stays: three attempts, and an empty read is done.
+	 */
+	backoff?: ColdStartBackoff
+	/** Reports the status the chat list shows. Default: nothing. */
+	onStatus?: (status: CorpusReadStatus) => void
 	/** Delay before a retry after a failed read. Default CORPUS_READ_RETRY_MS. */
 	retryMs?: number
 	/** Attempts per account and client, including the first. Default CORPUS_READ_MAX_ATTEMPTS. */
@@ -75,6 +88,8 @@ export function createCorpusReadScheduler(deps: CorpusReadDeps): CorpusReadSched
 	const isCurrent = deps.isCurrent ?? (() => true)
 
 	let last: CorpusReadState | null = null
+	/** QA builds only: the last not-started state that was logged, so the same state is logged once. */
+	let lastNotStartedLog = ''
 	let doneFor: string | null = null
 	let inFlight: string | null = null
 	/** The key (account and client) the attempts count for. The attempts are not reset by a key that comes and goes. */
@@ -90,18 +105,46 @@ export function createCorpusReadScheduler(deps: CorpusReadDeps): CorpusReadSched
 		return 'worker_ready'
 	}
 
+	const status = (s: CorpusReadStatus): void => deps.onStatus?.(s)
+	/** Shell mode: how many answered reads in a row held no entries. Three of them (about 7 s on the backoff) settle the list as empty; the reads go on. */
+	let emptyReads = 0
+	const EMPTY_SETTLES_AFTER = 3
+
+	/** Shell mode: the next wait on the cold-start backoff, or settle (empty) when the window is used up. */
+	const retryOnBackoff = (myGen: number, why: 'failed' | 'empty'): void => {
+		const step = deps.backoff!.next('historyCorpus')
+		if (step.kind === 'exhausted') {
+			log(`[history] corpus read settled reason=${why} attempts=${step.attempt} elapsed=${step.elapsedMs} ms: the window is used up`)
+			if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `history settled reason=${why} attempts=${step.attempt}`)
+			doneFor = attemptKey
+			status('settled')
+			return
+		}
+		log(`[history] corpus read ${why}: attempt ${step.attempt}, next in ${step.delayMs} ms, ${step.elapsedMs} ms since the first`)
+		schedule(() => {
+			if (myGen === gen && last) sync(last)
+		}, step.delayMs)
+	}
+
 	const run = (account: string, key: string, reason: CorpusReadReason): void => {
 		const myGen = gen
 		inFlight = key
+		if (emptyReads < EMPTY_SETTLES_AFTER) status('loading')
 		const failed = (): void => {
 			if (myGen !== gen) return
 			inFlight = null
+			if (deps.backoff) {
+				retryOnBackoff(myGen, 'failed')
+				return
+			}
 			attempts += 1
 			log(`[history] corpus read failed reason=${reason} attempt=${attempts}`)
 			if (attempts < maxAttempts) {
 				schedule(() => {
 					if (myGen === gen && last) sync(last)
 				}, retryMs)
+			} else {
+				status('settled')
 			}
 		}
 		let pending: Promise<HistoryEntry[] | null>
@@ -118,9 +161,24 @@ export function createCorpusReadScheduler(deps: CorpusReadDeps): CorpusReadSched
 				return
 			}
 			inFlight = null
+			if (!entries.length && deps.backoff) {
+				// an empty read from a client that has just become ready is not "no history": it is read again on the backoff
+				log(`[history] corpus read reason=${reason} entries=0`)
+				emptyReads += 1
+				if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `history read entries=0 empty_reads=${emptyReads}`)
+				// Answered three times with nothing: a list with no conversations is shown (a new account must not spin for the whole window);
+				// the reads continue on the backoff and any rows that arrive are applied.
+				if (emptyReads >= EMPTY_SETTLES_AFTER) status('settled')
+				retryOnBackoff(myGen, 'empty')
+				return
+			}
+			emptyReads = 0
+			if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `history read entries=${entries.length}`)
 			doneFor = key
 			attempts = 0
+			deps.backoff?.reset('historyCorpus')
 			log(`[history] corpus read reason=${reason} entries=${entries.length}`)
+			status('settled')
 			if (!entries.length) return
 			if (!isCurrent(account)) {
 				log(`[history] corpus read dropped reason=${reason}: the account changed`)
@@ -141,6 +199,7 @@ export function createCorpusReadScheduler(deps: CorpusReadDeps): CorpusReadSched
 			inFlight = null
 			attemptKey = null
 			attempts = 0
+			emptyReads = 0
 			return
 		}
 		if (prev && prev.account.toLowerCase() !== account) deps.onReset?.()
@@ -149,6 +208,18 @@ export function createCorpusReadScheduler(deps: CorpusReadDeps): CorpusReadSched
 			// that comes back for the same account and client does not repeat the full read. The attempts of this key are kept too.
 			gen += 1
 			inFlight = null
+			status('loading')
+			// QA builds only (REACT_APP_QA_BRIDGE_COUNTER, a build-time constant): why the full read did not start. Booleans and an integer only;
+			// no address, key or content. It changes nothing else, and it is logged once per distinct state.
+			if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') {
+				const why = !state.keyReady && state.epoch <= 0 ? 'no_page_key_and_client_not_ready' : !state.keyReady ? 'no_page_key' : 'client_not_ready'
+				const line = `[history] corpus read not started keyReady=${state.keyReady} epoch=${state.epoch} reason=${why}`
+				if (line !== lastNotStartedLog) {
+					lastNotStartedLog = line
+					log(line)
+					if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `history not_started key=${state.keyReady ? 1 : 0} epoch=${state.epoch}`)
+				}
+			}
 			return
 		}
 		const key = `${account}#${state.epoch}`
@@ -161,9 +232,10 @@ export function createCorpusReadScheduler(deps: CorpusReadDeps): CorpusReadSched
 		if (key !== attemptKey) {
 			attemptKey = key
 			attempts = 0
+			deps.backoff?.reset('historyCorpus')
 		}
-		// the attempts of this key are used up: a profile update does not start them again.
-		if (attempts >= maxAttempts) return
+		// the attempts of this key are used up: a profile update does not start them again. (Shell mode has no count limit: its window decides.)
+		if (!deps.backoff && attempts >= maxAttempts) return
 		if (!canReadForAccount(deps.boundAccount(), account)) {
 			// The active client is not bound to this account (an old client, or none yet). Nothing is read and nothing is counted as done;
 			// the next worker epoch (a new client) syncs again.

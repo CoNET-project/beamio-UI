@@ -46,15 +46,18 @@ describe('NP-17: an untrusted page request is refused by the shell: untrusted_so
 	})
 })
 
-describe('NP-18: an old shell that replies a plaintext without eoa is the capability-missing path (no invented behaviour, no reference address)', () => {
-	it('ok mnemonic without eoa → unknown with reason unsupported, never valid, never a write', () => {
-		expect(prereadFromAnswer(ok({ code: 'ok', mnemonic: PHRASE }))).toEqual({ kind: 'unknown', reason: 'unsupported' })
+describe('NP-18 (superseded 0.53.47): a plaintext without eoa is valid on the derived address; only the missing eoa is relaxed', () => {
+	it('ok mnemonic without eoa → valid, address derived from the phrase', () => {
+		const r = prereadFromAnswer(ok({ code: 'ok', mnemonic: PHRASE }))
+		expect(r.kind).toBe('valid')
 	})
 })
 
-describe('NP-19 (PWA side): the derived address D differs from the reply eoa → verify_failed, nothing written', () => {
-	it('D = E1 and the reply eoa = E2 → unknown with reason verify_failed', () => {
-		expect(prereadFromAnswer(ok({ code: 'ok', mnemonic: PHRASE, eoa: E2 }))).toEqual({ kind: 'unknown', reason: 'verify_failed' })
+describe('NP-19 (superseded 0.53.47): the reply eoa is not a gate; the derived address D is used', () => {
+	it('D = E1 and the reply eoa = E2 → valid on E1 (the reply field is ignored)', () => {
+		const r = prereadFromAnswer(ok({ code: 'ok', mnemonic: PHRASE, eoa: E2 }))
+		expect(r.kind).toBe('valid')
+		expect((r as { eoa: string }).eoa).not.toBe(E2.toLowerCase())
 	})
 })
 

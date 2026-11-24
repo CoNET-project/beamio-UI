@@ -1,4 +1,6 @@
 import { isBeamioWebHostname } from '@/utils/beamioWebHost'
+import { qaLine } from '@/utils/qaLog'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { nativePrereadRoundInFlight } from '@/services/prereadRound'
 import { resolveRecipientForSend } from "@/utils/recipientPublicKey"
 // App.tsx
@@ -41,6 +43,12 @@ import { ensureNativePushBoundForWallet, ensurePushDeviceTokenListener } from "@
 import { mirrorChatMessageToHistory } from "@/services/chatHistoryMirror"
 import { runChatLocalMigration } from "@/services/chatLocalMigration"
 import { unlockChatLocalWallet } from "@/services/chatLocalWallet"
+import { onShellChatStarted, offerContactRoute } from '@/services/chat'
+import { createColdStartBackoff } from '@/services/coldStartBackoff'
+import { setHistoryListStatus } from '@/services/historyListStatus'
+import { shellPublicEoaOrEmpty, onShellPublicEoaChange } from '@/services/nativeIdentityPublic'
+import { nativeRoutes } from "@/services/chatWorkerBridge"
+import { nativeReceiptPath } from "@/services/receiptCapability"
 import { awaitWorkerHistoryTail, onHistoryBuffer, loadWorkerHistory, resumeNativeChatListen, onWorkerReady, readDecryptedChatHistory, boundAccountOfActiveClient, setCurrentAccountGetter, captureInboundAckTarget, releaseInboundLines, inboundAckIsBrowser, inboundArmorHashesOf, isInboundLineMarked } from "@/services/chatWorkerBridge"
 import { settleInboundBatch } from "@/services/inboundBatchSettle"
 import { recordInboundLine, recordDroppedLine, recordRejectedLine, newInboundLists, classifyInboundLine, parseInboundLine, settleInputOf } from "@/services/inboundRowRecord"
@@ -519,7 +527,7 @@ function AppShell() {
       // In a shell without the chat capability the password unlock does not exist; say so instead.
       Toast.show({
         content: shellChatBlockedNow()
-          ? tu('shell_chat_unavailable_body')
+          ? shellChatBlockedText()
           : tu('unlock_your_wallet_with_your_access_password_to_claim_coupons'),
         position: 'top',
       })
@@ -1689,7 +1697,25 @@ function AppShell() {
 			(accountEoaFor(resolveSigningPrivateKeyArmor(profile)) || '').toLowerCase(),
 		[],
 	)
-	const historyAccountNow = useCallback((): string => historyAccountOf(CoNET_Data?.profiles?.[0]), [historyAccountOf])
+	/**
+	 * The account of the full history read and its merge. Browser: as historyAccountOf (the page key's account). Shell: the page holds no signing
+	 * key, so it is the public EOA of the native identity (identityPublic), and only while the page's profile is that same account; a profile of
+	 * another account never matches the native EOA, so nothing is merged into it.
+	 */
+	const corpusAccountOf = useCallback(
+		(profile: { privateKeyArmor?: string | null; keyID?: unknown } | null | undefined): string => {
+			if (isShellContext()) {
+				const native = shellPublicEoaOrEmpty().toLowerCase()
+				const keyId = typeof profile?.keyID === 'string' ? profile.keyID.trim().toLowerCase() : ''
+				// not the native account (or the native identity is not known yet): the page-key account, as before; the merge then drops it
+				// unless it equals the native EOA (shellAccountCheck)
+				return native && keyId === native ? native : historyAccountOf(profile)
+			}
+			return historyAccountOf(profile)
+		},
+		[historyAccountOf],
+	)
+	const historyAccountNow = useCallback((): string => corpusAccountOf(CoNET_Data?.profiles?.[0]), [corpusAccountOf])
 	// the merge of the history restore, for the corpus read scheduler (set by the restore effect while it is mounted).
 	const applyEntriesRef = useRef<((entries: HistoryEntry[]) => void) | null>(null)
 
@@ -1714,6 +1740,8 @@ function AppShell() {
 				return resolveSigningPrivateKeyArmor(p0) || (typeof p0?.privateKeyArmor === 'string' ? p0.privateKeyArmor : '')
 			},
 			accountOfKey: (pk) => accountEoaFor(pk) || '',
+			// shell: no page key; the batch account must be the native identity's EOA
+			shellAccountCheck: isShellContext() ? (account: string) => shellPublicEoaOrEmpty().toLowerCase() === account : undefined,
 			seen: restoredHistoryKeysRef.current,
 			isCancelled: () => cancelled,
 			existingPeersNow: () => {
@@ -1871,18 +1899,65 @@ function AppShell() {
 			boundAccount: () => boundAccountOfActiveClient(),
 			// The seen set is cleared only when the account goes empty or changes; a key that is briefly missing does not clear it.
 			onReset: () => restoredHistoryKeysRef.current.clear(),
+			// shell: a failed or empty read is retried on the cold-start backoff (a 60 s window, no attempt-count stop), and the chat list says
+			// "loading" until the read settles. The browser keeps its rules.
+			backoff: isShellContext() ? createColdStartBackoff() : undefined,
+			onStatus: isShellContext() ? setHistoryListStatus : undefined,
 			log: (line) => console.info(line),
 		})
 	}
 	const historyKeyPresent = !!(profiles?.[0]?.privateKeyArmor || '').trim()
+	// shell: the read runs again when the chat start succeeds (identity ready, listen started)
+	const [shellStartedTick, setShellStartedTick] = useState(0)
+	const lastHistoryGateLogRef = useRef('')
+	// shell: the native public EOA becoming known changes the account of the history read, so the read gate is evaluated again at that moment
+	const [nativeEoaTick, setNativeEoaTick] = useState(0)
+	useEffect(() => onShellPublicEoaChange(() => setNativeEoaTick((n) => n + 1)), [])
+	useEffect(() => onShellChatStarted(() => setShellStartedTick((n) => n + 1)), [])
 	useEffect(() => {
 		// The account is the same source as the owner of a merge (accountEoaFor), not the keyID.
+		const account = corpusAccountOf(profiles?.[0])
+		// Shell: ready means the account exists and the native chat client is ready and bound to it (the page holds no key). Browser: the page key.
+		const keyReady = isShellContext() ? !!account && boundAccountOfActiveClient() === account : !!resolveSigningPrivateKeyArmor(profiles?.[0])
+		if (isShellContext() && process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') {
+			// QA only, booleans and integers: why the full history read has no account or no ready client (once per distinct state)
+			const nativeKnown = !!shellPublicEoaOrEmpty()
+			const keyIdOk = typeof profiles?.[0]?.keyID === 'string' && profiles[0].keyID.trim() !== ''
+			const line = `history gate account=${account ? 1 : 0} native=${nativeKnown ? 1 : 0} keyid=${keyIdOk ? 1 : 0} bound=${boundAccountOfActiveClient() === account && account ? 1 : 0} epoch=${workerEpoch + shellStartedTick}`
+			if (line !== lastHistoryGateLogRef.current) {
+				lastHistoryGateLogRef.current = line
+				if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', line)
+			}
+		}
 		corpusReadRef.current?.sync({
-			account: historyAccountOf(profiles?.[0]),
-			keyReady: !!resolveSigningPrivateKeyArmor(profiles?.[0]),
-			epoch: workerEpoch,
+			account,
+			keyReady,
+			epoch: workerEpoch + shellStartedTick,
 		})
-	}, [historyKeyPresent, workerEpoch, profiles, historyAccountOf])
+	}, [historyKeyPresent, workerEpoch, shellStartedTick, nativeEoaTick, profiles, corpusAccountOf])
+	// shell: when the native chat has started its route table is empty, so the page's table is sent again and the routes of the recent conversations (at most 64)
+	// are fetched in the background, one at a time (a contact's route is offered to the native module for the delivered receipt)
+	useEffect(() => {
+		if (!nativeReceiptPath() || shellStartedTick === 0) return
+		nativeRoutes.resend()
+		let cancelled = false
+		const chats = CoNET_Data?.profiles?.[0]?.chats
+		const recent = (Array.isArray(chats) ? [...chats] : [])
+			.sort((a, b) => lastMessageTsOf(b) - lastMessageTsOf(a))
+			.slice(0, 64)
+			.map((c) => String(c?.address ?? '').toLowerCase())
+			.filter(Boolean)
+		void (async () => {
+			for (const address of recent) {
+				if (cancelled) return
+				await offerContactRoute(address)
+				await new Promise<void>((resolve) => setTimeout(resolve, 150))
+			}
+		})()
+		return () => {
+			cancelled = true
+		}
+	}, [shellStartedTick])
 	// D8 / spec: import the plaintext copies into the encrypted library, then purge them after read-back.
 	useEffect(() => {
 		if (!gossip || !historyEoa) return
@@ -2471,7 +2546,8 @@ function AppShell() {
 				const ackCtx = getGossipDeliveryAckContext()
 				const pk = profile.privateKeyArmor
 				// Native: the mailbox ACK is sent here. Browser: the batch ACK follows the store commit.
-				if (!inboundAckIsBrowser() && armorHashRaw && ackCtx?.routerArmoredPublicKey && pk) {
+				// A shell: the native module sends the mailbox ACK and the delivered receipt itself (setRoutes + ackInbound), so this page code does not run there.
+				if (!nativeReceiptPath() && !inboundAckIsBrowser() && armorHashRaw && ackCtx?.routerArmoredPublicKey && pk) {
 					void postMailboxDeliveryAck({
 						armorHash: armorHashRaw,
 						sendId: deliveryReceipt.sendId,
@@ -2615,7 +2691,12 @@ function AppShell() {
 				const inboundSendId = extractInboundSendId(displayText)
 				const ackCtx = getGossipDeliveryAckContext()
 				const pk = profile.privateKeyArmor
-				if (pk) {
+				// A shell: the native module sends the delivered receipt (it is given the sender's route by setRoutes); never from this page code, whatever key the profile holds.
+				if (nativeReceiptPath() && isNew) {
+					const sender = String(nextChat.address || '').toLowerCase()
+					if (sender) void offerContactRoute(sender)
+				}
+				if (pk && !nativeReceiptPath()) {
 					void (async () => {
 						let senderPgp = nextChat.chatData?.publicArmored || ''
 						let senderMailboxRoute = nextChat.chatData?.routersArmoreds || ''
@@ -3760,6 +3841,11 @@ function AppShell() {
 	)
 }
 
+
+const lastMessageTsOf = (chat: { messages?: Array<{ createdAt?: number }> } | undefined): number => {
+	const m = chat?.messages
+	return Array.isArray(m) && m.length ? Number(m[m.length - 1]?.createdAt ?? 0) || 0 : 0
+}
 
 export default function App() {
   return <AppShell />

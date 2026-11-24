@@ -17,7 +17,11 @@
  * (checked before Android).
  */
 
+import { nextChatTransportReqId } from './reqIdSpaces'
+import { qaLine } from '@/utils/qaLog'
 import { ethers } from 'ethers'
+import { noteBridgeCommand } from '@/utils/qaBridgeCounter'
+import { getCachedHelloRaw } from './nativeChatRouteRegister'
 import { INBOUND_GENERATION_CAPABILITY, latestInboundGeneration } from './inboundGeneration'
 import {
 	requestWithInboundGeneration,
@@ -127,9 +131,12 @@ export type NativeChatBridge = {
  * Modules from protocol v1 answer `hello`; older ones never do. `init` waits for that answer, up to this limit. Before this change the
  * wait was a fixed 150 ms window (HELLO_SETTLE_MS), so a real S25 (hello round trip 424 to 478 ms) read a declared capability as missing
  * Now a declared capability is read when its answer arrives. The cost is only the start-up delay of an old shell that never
- * answers hello: that shell is decided after this limit (5 s) instead of after 150 ms.
+ * answers hello: that shell is decided after this limit instead of after 150 ms.
+ *
+ * 2026-11-24 (late is not dead): the limit is the 180 s cold-start window, not 5 s. A hello that has not answered yet is not a missing
+ * capability, so the init waits for it (the slowest seen was 39 s on a cold S25). The page's shared hello answer is used when it is already there.
  */
-const HELLO_TIMEOUT_MS = 5_000
+const HELLO_TIMEOUT_MS = 180_000
 
 const LEGACY_FEATURES: ChatDaemonFeatures = negotiateChatDaemon(null)
 
@@ -138,6 +145,7 @@ const IOS_NATIVE_CHAT_BRIDGE: NativeChatBridge = {
 	eventName: 'cashtreesios',
 	legacyHistory: true,
 	postCommand(cmd) {
+		noteBridgeCommand('chatModule', cmd.type)
 		const ios = (window as Window & {
 			CashTreesIOS?: { chatModuleCommand?: (p: Record<string, unknown>) => void }
 		}).CashTreesIOS
@@ -168,6 +176,10 @@ const LEGACY_HISTORY_LOAD_ALL = 1_000_000
 const LEGACY_APPEND_QUEUE_MAX = 500
 const LEGACY_LOAD_RETRY_MS = 30_000
 const LEGACY_LOAD_RETRY_MAX = 10
+/** The native history sync answers `sync_failed` when its local store is closed or locked, a fetch failed or only part arrived: retryable, bounded. */
+const SYNC_FAILED_CODE = 'sync_failed'
+const SYNC_FAILED_RETRY_MS = 30_000
+const SYNC_FAILED_RETRY_MAX = 10
 
 const REGISTRY_GET_POINTER_ABI = [
 	'function getPointer(address) view returns (bytes32 indexHash,uint64 ts,uint64 seq,uint64 updatedAt)',
@@ -226,6 +238,8 @@ class NativeHistoryBridge implements BeamioChatHistory {
 	private legacySynced = false
 	private legacyRetries = 0
 	private legacyRetryTimer: ReturnType<typeof setTimeout> | null = null
+	private syncFailedRetries = 0
+	private syncFailedTimer: ReturnType<typeof setTimeout> | null = null
 	private corpus = new Map<string, HistoryEntry>()
 	private appendQueue: Array<{ entry: Omit<HistoryEntry, 'seq'>; done: () => void }> = []
 	/** Legacy loads and appends run one at a time, so a load's pointer rewrite is told apart. */
@@ -269,6 +283,7 @@ class NativeHistoryBridge implements BeamioChatHistory {
 		this.readyState = 'pending'
 		this.legacySynced = false
 		this.legacyRetries = 0
+		this.syncFailedRetries = 0
 		this.clearRetry()
 	}
 
@@ -311,6 +326,8 @@ class NativeHistoryBridge implements BeamioChatHistory {
 	private clearRetry(): void {
 		if (this.legacyRetryTimer) clearTimeout(this.legacyRetryTimer)
 		this.legacyRetryTimer = null
+		if (this.syncFailedTimer) clearTimeout(this.syncFailedTimer)
+		this.syncFailedTimer = null
 	}
 
 	load(options?: HistoryLoadOptions): Promise<void> {
@@ -328,7 +345,25 @@ class NativeHistoryBridge implements BeamioChatHistory {
 
 	private async loadNative(options?: HistoryLoadOptions): Promise<void> {
 		this.client.log('info', '[chatHistory] native history.load → on-chain pointer / IPFS index')
-		await this.client.request<void>({ type: 'historyLoad', reqId: 0, options }, HISTORY_LOAD_TIMEOUT_MS)
+		try {
+			await this.client.request<void>({ type: 'historyLoad', reqId: 0, options }, HISTORY_LOAD_TIMEOUT_MS)
+			this.syncFailedRetries = 0
+		} catch (ex) {
+			// sync_failed (syncState=error) is retryable: never "synced" and never "no history". The load still rejects (the caller logs it);
+			// the next load is scheduled here, bounded. Any other failure is unchanged.
+			if ((ex as Error)?.message === SYNC_FAILED_CODE) this.scheduleSyncFailedRetry(options)
+			throw ex
+		}
+	}
+
+	private scheduleSyncFailedRetry(options?: HistoryLoadOptions): void {
+		if (this.syncFailedRetries >= SYNC_FAILED_RETRY_MAX || this.syncFailedTimer) return
+		this.syncFailedRetries += 1
+		this.client.log('warn', `[chatHistory] native history sync_failed (retryable) — retry ${this.syncFailedRetries} in ${SYNC_FAILED_RETRY_MS / 1000}s`)
+		this.syncFailedTimer = setTimeout(() => {
+			this.syncFailedTimer = null
+			void this.load(options).catch(() => undefined)
+		}, SYNC_FAILED_RETRY_MS)
 	}
 
 	private async loadLegacy(options?: HistoryLoadOptions): Promise<void> {
@@ -503,7 +538,6 @@ class NativeHistoryBridge implements BeamioChatHistory {
 }
 
 class NativeConetChatClientImpl implements BeamioChatClient {
-	private reqSeq = 1
 	private pending = new Map<number, Pending>()
 	private listeners: { [K in ChatEventName]?: ListenerBag<K> } = {}
 	private historyBridge: NativeHistoryBridge
@@ -545,15 +579,18 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 	}
 
 	private startHello(): Promise<ChatDaemonHello | null> {
-		const answer = this.request<unknown>(
-			{ type: 'hello', reqId: 0, protocolVersion: CHAT_DAEMON_PROTOCOL_VERSION },
-			HELLO_TIMEOUT_MS,
-		)
+		const shared = getCachedHelloRaw()
+		const ask: Promise<unknown> =
+			shared !== undefined
+				? Promise.resolve(shared)
+				: this.request<unknown>({ type: 'hello', reqId: 0, protocolVersion: CHAT_DAEMON_PROTOCOL_VERSION }, HELLO_TIMEOUT_MS)
+		const answer = ask
 			.then((result) => {
 				const features = negotiateChatDaemon(result)
 				this.features = features
 				const offered = (result as { capabilities?: unknown } | null)?.capabilities
 				this.helloOffered = Array.isArray(offered) ? offered.filter((c): c is string => typeof c === 'string') : []
+				if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', `hello caps=${this.helloOffered.length} gen=${this.helloOffered.includes(INBOUND_GENERATION_CAPABILITY) ? 1 : 0} deferAck=${this.helloOffered.includes('inbound.deferAck') ? 1 : 0}`)
 				if (features.status === 'negotiated') {
 					this.helloRaw = result
 					this.log(
@@ -594,7 +631,7 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 		} catch {
 			readNodes = null
 		}
-		// decide only after the hello answer has arrived, or after its 5 s limit with no answer (null).
+		// decide only after the hello answer has arrived, or after the 180 s window with no answer (null).
 		await hello
 		// The init is never sent with an empty list . A full init needs a node list and fails without one. An identity-only
 		// init (G1) omits the `nodes` key when no list is available: the native layer keeps the nodes it has stored.
@@ -626,11 +663,12 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 			runtime: { ...DEFAULT_RUNTIME, ...(this.config.runtime ?? {}) },
 			...(haveNodes ? { nodes: this.nodes } : {}),
 			routes: this.routes,
+			// Written only when the hello declares `inbound.deferAck`: a shell that does not declare it gets no field.
 			// `deferAck: true` (capability `inbound.deferAck`): this page calls `ackInbound` after it has stored or shown each
 			// message. The native module reads `true` as a new page; `false` or a missing field is an old page. The module sends
 			// the mailbox ACK itself at store time and keeps the armor until `ackInbound`. The old meaning (the module holds the mailbox
 			// ACK until `ackInbound`) is withdrawn. Older SDKs ignore the field.
-			deferAck: true,
+			...(this.helloOffered.includes('inbound.deferAck') ? { deferAck: true } : {}),
 		}
 			assertCapabilityPayload(payload, 'init')
 		const ready = await this.request<{ historyApi?: unknown } | undefined>({ type: 'init', reqId: 0, payload }, 180_000)
@@ -640,7 +678,11 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 		if (!identityOnly && this.allows('identity.provision')) {
 			const provisionPayload = { ...publicIdentityFields(this.config.identity), nodes: this.nodes }
 			assertCapabilityPayload(provisionPayload, 'provisionIdentity')
-			this.postCommand({ type: 'provisionIdentity', reqId: -1, payload: provisionPayload })
+			// A real request with a valid reqId (the SDK refuses a negative one at the entry, bad_request with a null reqId): the answer is read, not dropped.
+			this.request<unknown>({ type: 'provisionIdentity', payload: provisionPayload }, 30_000).then(
+				() => this.log('info', `${this.bridge.label}: provisionIdentity accepted`),
+				(e: unknown) => this.log('warn', `${this.bridge.label}: provisionIdentity refused (${String((e as Error)?.message || 'unknown').slice(0, 40)})`),
+			)
 		}
 		this.historyBridge._setHistoryFeatures(
 			this.features,
@@ -679,18 +721,28 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 	ackInbound(armorHashes: string[]): void {
 		const hashes = (armorHashes || []).filter((h) => typeof h === 'string' && h.length > 0)
 		if (!hashes.length || this.destroyed || !this.allows('inbound.deferAck')) return
-		this.postCommand({ type: 'ackInbound', armorHashes: hashes })
+		this.postNoReply({ type: 'ackInbound', armorHashes: hashes })
 	}
 
+	/**
+	 * The contact routes for the native receipt path: the WHOLE table (the native side replaces its table), with the page's own account EOA
+	 * (the native side ignores a table whose EOA is not its session's). Memory only on the native side; the init payload keeps routes [].
+	 */
 	setRoutes(routes: ChatRoute[]): void {
-		this.routes = routes || []
-		this.postCommand({ type: 'setRoutes', routes: this.routes })
+		if (this.destroyed) return
+		const eoa = String(this.config.identity.eoaAddress || '').trim().toLowerCase()
+		if (!eoa) return
+		const list = (routes || [])
+			.filter((r) => r && r.address && r.userPublicKeyArmored && r.routerArmoredPublicKey)
+			.map((r) => ({ eoaAddress: String(r.address).toLowerCase(), userPublicKeyArmored: r.userPublicKeyArmored, routerArmoredPublicKey: r.routerArmoredPublicKey }))
+		this.postNoReply({ type: 'setRoutes', eoa, routes: list })
+		if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', `routes set n=${list.length} own=${eoa.slice(0, 8)} first=${list.slice(0, 3).map((r) => r.eoaAddress.slice(0, 8)).join(',')}`)
 	}
 
 	setNodes(nodes: NodeInfo[]): void {
 		if (!nodes?.length) return
 		this.nodes = nodes
-		this.postCommand({ type: 'setNodes', nodes })
+		this.postNoReply({ type: 'setNodes', nodes })
 	}
 
 	async sendGroupMessage(request: GroupSendRequest): Promise<GroupSendResult> {
@@ -715,7 +767,10 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 		const sendId = opts?.sendId || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 		// The same sendId on every attempt: the native layer de-duplicates by it.
 		const out = await this.requestWithGeneration(
-			(g) => withInboundGeneration({ type: 'send', to, payload, sendId, beamioNoPush: opts?.beamioNoPush }, g),
+			(g) => {
+				if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', `gen has=${g === undefined ? 0 : 1} value=${typeof g === 'number' ? g : 'none'}`)
+				return withInboundGeneration({ type: 'send', to, payload, sendId, beamioNoPush: opts?.beamioNoPush }, g)
+			},
 			60_000,
 		)
 		if (!out.ok) throw new Error(out.reason)
@@ -807,11 +862,11 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 	}
 
 	pause(): void {
-		this.postCommand({ type: 'pause' })
+		this.postNoReply({ type: 'pause' })
 	}
 
 	resume(): void {
-		this.postCommand({ type: 'resume' })
+		this.postNoReply({ type: 'resume' })
 	}
 
 	/**
@@ -850,10 +905,24 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 		return () => set!.delete(cb)
 	}
 
+	/** Request numbers of commands nobody waits for: their answer is dropped without a warning. */
+	private readonly noReplyIds = new Map<number, string>()
+
+	/**
+	 * A command the page does not wait for (ackInbound, setRoutes, setNodes, pause, resume). It still carries a valid reqId: the SDK refuses a command with a
+	 * missing or negative reqId at its entry (bad_request, reqId null), so a bare command is never accepted. The answer is ignored.
+	 */
+	private postNoReply(cmd: Record<string, unknown>): void {
+		const reqId = nextChatTransportReqId()
+		this.noReplyIds.set(reqId, String(cmd.type))
+		if (this.noReplyIds.size > 200) this.noReplyIds.delete(this.noReplyIds.keys().next().value as number)
+		this.postCommand({ ...cmd, reqId })
+	}
+
 	/** Exposed for history bridge / internal request helper. */
 	request<T>(cmd: Record<string, unknown>, timeoutMs = 20_000): Promise<T> {
 		if (this.destroyed) return Promise.reject(new Error('native chat destroyed'))
-		const reqId = this.reqSeq++
+		const reqId = nextChatTransportReqId()
 		const body = { ...cmd, reqId }
 		// Correlation (PWA side only): the log carries the command type and the reqId, never the payload.
 		const type = String(cmd.type)
@@ -906,7 +975,12 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 	 */
 	private async generationDeclared(): Promise<boolean> {
 		if (this.helloAnswer) await this.helloAnswer
-		return this.features.status === 'negotiated' && this.helloOffered.includes(INBOUND_GENERATION_CAPABILITY)
+		const negotiated = this.features.status === 'negotiated'
+		const declared = negotiated && this.helloOffered.includes(INBOUND_GENERATION_CAPABILITY)
+		// QA only: the declaration and the generation the page holds (the field is sent only when the hello declares it)
+		const latest = latestInboundGeneration()
+		if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', `gen declared=${declared ? 1 : 0} value=${typeof latest === 'number' ? latest : 'none'}`)
+		return declared
 	}
 
 	/** One attempt of `requestWithGeneration`: the ack or a refusal, or `timeout` when no answer came in time. */
@@ -1050,6 +1124,18 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 
 		if (type === 'ready' || type === 'ack') {
 			const reqId = Number(msg.reqId)
+			const noReplyType = this.noReplyIds.get(reqId)
+			if (noReplyType !== undefined) {
+				this.noReplyIds.delete(reqId)
+				if (type === 'ack' && msg.ok === false) this.log('warn', `${this.bridge.label}: a command nobody waits for was refused (${String(msg.error || 'unknown').slice(0, 40)})`)
+				// QA only: the answer of setRoutes (accepted / dropped counts, or the refusal code), codes and integers only
+				if (noReplyType === 'setRoutes') {
+					const code = /^[a-z0-9_]{1,40}$/.test(String(msg.error ?? '')) ? String(msg.error) : 'none'
+					const res = (msg.result ?? {}) as { accepted?: unknown; dropped?: unknown }
+					if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', `routes ack ok=${msg.ok === true ? 1 : 0} error=${code} accepted=${Number.isInteger(res.accepted) ? res.accepted : -1} dropped=${Number.isInteger(res.dropped) ? res.dropped : -1}`)
+				}
+				return
+			}
 			const pending = this.pending.get(reqId)
 			if (!pending) {
 				// a reply after its request timed out, or an unknown reqId: logged (type and reqId only), nothing is resolved

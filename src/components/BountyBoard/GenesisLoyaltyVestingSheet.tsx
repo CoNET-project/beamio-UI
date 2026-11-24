@@ -9,6 +9,7 @@ import { showBeamioToast, showBeamioToastError } from '@/locale/beamioToast'
 import { tu } from '@/locale/beamioLocale'
 import { useIdentityEntryDisabled } from '@/hooks/useIdentityEntryDisabled'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { formatDigitalAssetDisplay } from '@/utils/formatDigitalAssetDisplay'
 
 type Props = {
@@ -73,7 +74,7 @@ export function GenesisLoyaltyVestingSheet({ open, onClose, airdrop, eoa }: Prop
 	const handleRelease = useCallback(async () => {
 		// Option A: a shell without the chat capability releases nothing and reads no key.
 		if (shellChatBlockedNow()) {
-			showBeamioToastError(tu('shell_chat_unavailable_body'))
+			showBeamioToastError(shellChatBlockedText())
 			return
 		}
 		if (!eoa) {
@@ -200,7 +201,7 @@ export function GenesisLoyaltyVestingSheet({ open, onClose, airdrop, eoa }: Prop
 					</button>
 					<p className="mt-2.5 text-center text-[11px] leading-relaxed text-slate-400">
 						{identityEntryDisabled
-							? tu('shell_chat_unavailable_body')
+							? shellChatBlockedText()
 							: view.releasable > 0
 								? 'Claimed to your Main Wallet (EOA). Network gas is paid from your wallet.'
 								: view.started

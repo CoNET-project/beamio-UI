@@ -7,6 +7,7 @@ import { fiatPrefix, formatAmount } from '@/services/currency'
 import { postMerchantGiftAAtoEOA, signMerchantGiftOpenContainer } from '@/services/BeamioCard'
 import { resolveSigningPrivateKeyArmor } from '@/utils/resolveSigningPrivateKeyArmor'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { IpfsImg } from '@/components/IpfsImg'
 import {
 	BeamioSearchResultRow,
@@ -186,7 +187,7 @@ export default function MerchantAssetGiftSheet({ onClose, cards, profile, onSucc
 		setSubmitError(null)
 		// Option A: a shell without the chat capability sends no gift and reads no key.
 		if (shellChatBlockedNow()) {
-			setSubmitError(tu('shell_chat_unavailable_body'))
+			setSubmitError(shellChatBlockedText())
 			return
 		}
 		if (!selected || !amountValid) {

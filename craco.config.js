@@ -98,6 +98,10 @@ module.exports = {
             // and the "[BeamioBoot]" literal is not shipped. Only a build with REACT_APP_BEAMIO_BOOT_TRACE=true keeps it.
             webpackConfig.plugins.push(new webpack.DefinePlugin({
                 'process.env.REACT_APP_BEAMIO_BOOT_TRACE': JSON.stringify(process.env.REACT_APP_BEAMIO_BOOT_TRACE === 'true' ? 'true' : 'false'),
+                // New-account registration (accountCreateRegister) and first-identity status: QA builds only until accepted.
+                'process.env.REACT_APP_NEW_ACCOUNT_REGISTRATION': JSON.stringify(process.env.REACT_APP_NEW_ACCOUNT_REGISTRATION === 'true' ? 'true' : 'false'),
+                // QA-only bridge command counter (utils/qaBridgeCounter.ts): a build-time constant, so every other build folds the counter away.
+                'process.env.REACT_APP_QA_BRIDGE_COUNTER': JSON.stringify(process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true' ? 'true' : 'false'),
             }));
             webpackConfig.plugins.forEach((plugin) => {
                 const name = plugin && plugin.constructor && plugin.constructor.name

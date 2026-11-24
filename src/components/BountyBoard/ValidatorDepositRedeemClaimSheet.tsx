@@ -4,6 +4,7 @@ import { Toast } from 'antd-mobile'
 import { useDaemonContext } from '@/providers/DaemonProvider'
 import { resolveSigningPrivateKeyArmor } from '@/utils/resolveSigningPrivateKeyArmor'
 import { shellChatBlockedNow } from '@/services/shellChatCapability'
+import { shellChatBlockedText } from '@/services/shellChatCapability'
 import { tu } from '@/locale/beamioLocale'
 import {
 	previewValidatorDepositRedeemClaim,
@@ -57,7 +58,7 @@ export function ValidatorDepositRedeemClaimSheet({ open, onClose, claimerEoa, on
 		setFormError('')
 		// Option A: a shell without the chat capability claims nothing and reads no key.
 		if (shellChatBlockedNow()) {
-			setFormError(tu('shell_chat_unavailable_body'))
+			setFormError(shellChatBlockedText())
 			return
 		}
 		const armor = resolveSigningPrivateKeyArmor(profiles?.[0])
