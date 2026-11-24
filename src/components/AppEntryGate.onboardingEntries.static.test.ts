@@ -23,6 +23,21 @@ describe('the entries that open the onboarding for "no account" are confirmed by
 		expect(SRC).not.toMatch(/navigator\.userAgent/)
 	})
 
+	it('the confirmation sends no native command from a page without a bridge, and an unsupported pre-read is confirmed by walletStatus (never an endless wait, never a bare proceed)', () => {
+		const at = SRC.indexOf('const confirmNoMnemonicOnNative = async')
+		const body = SRC.slice(at, at + 5500)
+		const guard = body.indexOf("if (!isShellContext()) return 'proceed'")
+		expect(guard).toBeGreaterThan(0)
+		// the browser guard comes before the native pre-read
+		expect(guard).toBeLessThan(body.indexOf('queryNativeMnemonicPreread()'))
+		expect(body).toContain("const prereadUnsupported = real.kind === 'unknown' && real.reason === 'unsupported'")
+		expect(body).toContain("if (real.kind !== 'absent' && !prereadUnsupported) {")
+		// the unsupported answer is read through walletStatus whatever platform the shell declares
+		expect(body).toContain("if (platform !== 'ios' || prereadUnsupported) {")
+		// the other unknowns (not_ready, read_timeout, read_error) keep the wait
+		expect(body).toContain("real.reason === 'read_timeout' ? 'native_read_timeout' : real.reason === 'not_ready' ? 'pre_read_not_ready' : 'record_unreadable'")
+	})
+
 	it('the four entries use openOnboardingConfirmed: chat capability resolved, walletEoaAddress no_key, storage read empty with native no_key, native no_key event', () => {
 		for (const where of ["'chat capability resolved'", "'walletEoaAddress no_key'", "'storage read empty with native no_key'", "'native no_key event'"]) {
 			expect(SRC).toContain(`openOnboardingConfirmed(${where})`)

@@ -1059,6 +1059,9 @@ export default function AppEntryGate() {
 	 * copies: no_key confirms; a wallet there (unlocked, phrase_only) is the home on its address; locked waits for the unlock; any other answer waits.
 	 */
 	const confirmNoMnemonicOnNative = async (reqId: string): Promise<'proceed' | 'handled'> => {
+		// A page with no native bridge (an ordinary browser) has no native record to confirm against: the page store read is the only
+		// source, and it already said empty. No native command is sent there.
+		if (!isShellContext()) return 'proceed'
 		const real = await queryNativeMnemonicPreread()
 		publishNativePwaLog('info', `[startup] reqId=${reqId} onboarding confirmation read=${real.kind}${real.kind === 'unknown' && real.reason ? ` reason=${real.reason}` : ''}`)
 		if (real.kind === 'cipher') {
@@ -1073,7 +1076,10 @@ export default function AppEntryGate() {
 			waitNativeLocked('onboarding confirmation read locked')
 			return 'handled'
 		}
-		if (real.kind !== 'absent') {
+		// A shell that has no pre-read command at all (reason 'unsupported', an older build) cannot answer it, now or later: waiting would never end.
+		// It is confirmed by the walletStatus read below instead, and only an explicit no_key proceeds (any other answer waits).
+		const prereadUnsupported = real.kind === 'unknown' && real.reason === 'unsupported'
+		if (real.kind !== 'absent' && !prereadUnsupported) {
 			logStartRoute(reqId, 'none_yet')
 			startupWait(
 				`onboarding confirmation read unknown (${real.reason ?? 'unknown'}): retry, no onboarding`,
@@ -1083,7 +1089,7 @@ export default function AppEntryGate() {
 		}
 		const hello = await probeNativeCapabilities().catch(() => null)
 		const platform = validNativeApp(hello && typeof hello === 'object' ? (hello as { nativeApp?: unknown }).nativeApp : undefined)?.platform ?? null
-		if (platform !== 'ios') {
+		if (platform !== 'ios' || prereadUnsupported) {
 			const ws = await queryNativeWalletStatus()
 			publishNativePwaLog('info', `[startup] reqId=${reqId} onboarding confirmation platform=${platform ?? 'undeclared'} walletStatus=${ws.status}`)
 			if (ws.status === 'unlocked' || ws.status === 'phrase_only') {
