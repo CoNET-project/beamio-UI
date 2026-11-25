@@ -349,3 +349,75 @@ describe('hidden page masks the secret fields again', () => {
 		Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
 	})
 })
+
+describe('shell: the result wait is bounded (120 s)', () => {
+	afterEach(() => {
+		jest.useRealTimers()
+	})
+
+	it('no result event in 120 s after an accepted submit: the session is cancelled, generic copy shows, the state stays cleared, and a new submit reopens the session', async () => {
+		await mount()
+		fillLogin()
+		jest.useFakeTimers()
+		await submitLogin()
+		expect(submit).toHaveBeenCalledTimes(1)
+		// still waiting just before the limit: no cancel, no form
+		act(() => {
+			jest.advanceTimersByTime(119_000)
+		})
+		expect(cancel).not.toHaveBeenCalled()
+		expect(screen.queryByPlaceholderText('••••••••••••')).toBeNull()
+		act(() => {
+			jest.advanceTimersByTime(1_000)
+		})
+		expect(cancel).toHaveBeenCalledTimes(1)
+		expect(screen.getAllByText('something_went_wrong_while_restoring_your_wallet').length).toBeGreaterThan(0)
+		expect((screen.getByPlaceholderText('••••••••••••') as HTMLInputElement).value).toBe('')
+		expect(document.body.textContent).not.toContain(PASSWORD)
+		// retry: the old session is gone, so a new one is opened and the credential goes out again
+		fillLogin()
+		await submitLogin()
+		expect(open).toHaveBeenCalledTimes(2)
+		expect(submit).toHaveBeenCalledTimes(2)
+	})
+
+	it('the recovery code path times out the same way', async () => {
+		await mount()
+		goRecovery()
+		fireEvent.change(codeBox(), { target: { value: CODE } })
+		jest.useFakeTimers()
+		await submitCode()
+		act(() => {
+			jest.advanceTimersByTime(120_000)
+		})
+		expect(cancel).toHaveBeenCalledTimes(1)
+		expect(codeBox().value).toBe('')
+		expect(screen.getAllByText('something_went_wrong_while_restoring_your_wallet').length).toBeGreaterThan(0)
+	})
+
+	it('a result event before the limit stops the timer: no cancel later', async () => {
+		await mount()
+		fillLogin()
+		jest.useFakeTimers()
+		await submitLogin()
+		await act(async () => emit({ code: 'bad_pin' }))
+		act(() => {
+			jest.advanceTimersByTime(300_000)
+		})
+		expect(cancel).not.toHaveBeenCalled()
+	})
+
+	it('unmounting the page stops the timer: the unmount cancel is the only one', async () => {
+		const view = render(<RestoreWalletUnifiedScreen onClose={jest.fn()} onRestore={jest.fn()} />)
+		await waitFor(() => expect(screen.getByPlaceholderText('yourtag')).toBeTruthy())
+		fillLogin()
+		jest.useFakeTimers()
+		await submitLogin()
+		view.unmount()
+		expect(cancel).toHaveBeenCalledTimes(1)
+		act(() => {
+			jest.advanceTimersByTime(300_000)
+		})
+		expect(cancel).toHaveBeenCalledTimes(1)
+	})
+})

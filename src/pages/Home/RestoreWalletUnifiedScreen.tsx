@@ -97,6 +97,9 @@ export type RestoreWalletFlowPayload = {
 }
 
 
+/** How long the page waits for the engine's result after an accepted submit (PM decision, 120 s). */
+export const RESULT_WAIT_TIMEOUT_MS = 120_000
+
 export type RestoreWalletUnifiedScreenProps = {
 	onClose: () => void
 	onRestore: (payload: RestoreWalletFlowPayload) => void | Promise<void>
@@ -129,6 +132,14 @@ export default function RestoreWalletUnifiedScreen({
 	const activeTab: RestoreTab = tab
 	/** The shell recovery session is open (nativeRecoveryOpen answered ok) until ok or cancelled. */
 	const sessionOpenRef = useRef(false)
+	/** The wait for the engine's result after the shell accepted a submit; never longer than RESULT_WAIT_TIMEOUT_MS. */
+	const resultTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+	const clearResultTimer = () => {
+		if (resultTimerRef.current !== null) {
+			clearTimeout(resultTimerRef.current)
+			resultTimerRef.current = null
+		}
+	}
 	/** Gate: top frame and trusted origin always, plus the shell capability in a shell. A blocked page shows an error and a retry. */
 	const [gate, setGate] = useState<{ state: 'checking' | 'ready' | 'blocked'; reason?: string }>({ state: shell ? 'checking' : 'ready' })
 	const [gateTry, setGateTry] = useState(0)
@@ -210,6 +221,7 @@ export default function RestoreWalletUnifiedScreen({
 	useEffect(() => {
 		if (!shell) return
 		const offRecovery = onNativeRecoveryResult(({ code, eoa, cooldownSec }) => {
+			clearResultTimer()
 			setLoginLoading(false)
 			setRecoveryLoading(false)
 			if (code === 'cancelled') {
@@ -237,6 +249,7 @@ export default function RestoreWalletUnifiedScreen({
 		})
 		return () => {
 			offRecovery()
+			clearResultTimer()
 			announceNativeFlowPending(false)
 			// leaving with a session open ends it as cancelled (idempotent)
 			if (sessionOpenRef.current) {
@@ -265,6 +278,18 @@ export default function RestoreWalletUnifiedScreen({
 			showError(tu(recoveryOpenErrorKey(sent.reason)))
 			return false
 		}
+		// The shell accepted the request: the result must come as an event. If it never does, the page does not stay on the loading screen.
+		clearResultTimer()
+		resultTimerRef.current = setTimeout(() => {
+			resultTimerRef.current = null
+			if (!sessionOpenRef.current) return
+			setLoginLoading(false)
+			setRecoveryLoading(false)
+			// end the engine session as cancelled; the next submit opens a new one. The form state was cleared when the request was built.
+			sessionOpenRef.current = false
+			void nativeRecoveryCancel()
+			showError(tu('something_went_wrong_while_restoring_your_wallet'))
+		}, RESULT_WAIT_TIMEOUT_MS)
 		return true
 	}
 
@@ -612,6 +637,7 @@ export default function RestoreWalletUnifiedScreen({
 			setRecoveryError('')
 			return
 		}
+		clearResultTimer()
 		if (sessionOpenRef.current) {
 			sessionOpenRef.current = false
 			void nativeRecoveryCancel()
