@@ -131,6 +131,30 @@ describe('browser branch: every failed attempt shows its error', () => {
 		expect(screen.queryByText('network_error_try_again')).toBeNull()
 	})
 
+	it('0.53.48.1: a registered account whose local save failed still closes with the recovery code and tells the user to save it', async () => {
+		const alertSpy = jest.spyOn(window, 'alert').mockImplementation(() => undefined)
+		beamio.createRecover.mockResolvedValueOnce({ ...CREATED, persistFailed: true })
+		const close = jest.fn()
+		const press = await fill(close)
+		press()
+		await waitFor(() => expect(close).toHaveBeenCalledTimes(1), { timeout: 5000 })
+		expect(close.mock.calls[0][0]).toMatchObject({ beamioTag: TAG, passcode: 'SYNTH-CODE' })
+		expect(alertSpy).toHaveBeenCalledWith('create_account_registered_save_code')
+		expect(screen.queryByText('create_account_local_error')).toBeNull()
+		alertSpy.mockRestore()
+	})
+
+	it('a normal success shows no such notice', async () => {
+		const alertSpy = jest.spyOn(window, 'alert').mockImplementation(() => undefined)
+		beamio.createRecover.mockResolvedValueOnce(CREATED)
+		const close = jest.fn()
+		const press = await fill(close)
+		press()
+		await waitFor(() => expect(close).toHaveBeenCalledTimes(1), { timeout: 5000 })
+		expect(alertSpy).not.toHaveBeenCalled()
+		alertSpy.mockRestore()
+	})
+
 	it('a failure and then a success: the error is gone and the flow closes with the created account', async () => {
 		beamio.createRecover.mockResolvedValueOnce(null).mockResolvedValueOnce(CREATED)
 		const close = jest.fn()

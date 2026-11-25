@@ -3581,12 +3581,12 @@ export async function assertUnregisteredBeforeCreate(
  * Test seam for createRecover: the local store probe and the new wallet, which read or write IndexedDB and the key store (not available
  * under jest). Production never passes deps: the defaults are the real functions.
  */
-export type CreateRecoverDeps = { checkStatus: typeof checkStorageWithStatus; createWallet: typeof createOrGetWallet }
+export type CreateRecoverDeps = { checkStatus: typeof checkStorageWithStatus; createWallet: typeof createOrGetWallet; persist: typeof persistAndVerifyLocalWallet }
 
 export const createRecover = async (BeamioName: string, pin: string, options: { mustReuseKey?: boolean; deps?: Partial<CreateRecoverDeps> } = {}) => {
 	// The test seam is honoured only under the test runner: NODE_ENV is fixed at build time, so a production page cannot pass deps (R78 2.2 (d)).
 	const testSeam = process.env.NODE_ENV === 'test' ? options.deps : undefined
-	const deps: CreateRecoverDeps = { checkStatus: checkStorageWithStatus, createWallet: createOrGetWallet, ...testSeam }
+	const deps: CreateRecoverDeps = { checkStatus: checkStorageWithStatus, createWallet: createOrGetWallet, persist: persistAndVerifyLocalWallet, ...testSeam }
 	let step = 'createOrGetWallet'
 	try {
 		// (overwrite estimate): a confirmed local EOA key is reused, so the EOA stays the same and the key is not replaced. A new
@@ -3642,21 +3642,37 @@ export const createRecover = async (BeamioName: string, pin: string, options: { 
 
 		// AppEntryGate requires beamio.accountName + mnemonic in IndexedDB `"conet"`.
 		// Verify round-trip so Welcome is never shown with an empty local wallet.
+		// 0.53.48.1: the page write gate is closed until the create flow is complete (LoadingPage opens it after this function returns), so this
+		// one write runs inside the restore write window: the window lets exactly this save through, the gate itself still opens later.
+		// Before, the save was discarded by the closed gate, the re-read was empty, and an account that newUser had already registered was
+		// reported as not created with its recovery code never shown.
 		step = 'persist'
 		const tag = BeamioName.trim().replace(/^@+/, '')
-		if (tag) {
-			temp.beamio = buildMinimalBeamioFromAccountName(tag)
-			setCoNET_Data(temp)
-			await persistAndVerifyLocalWallet(tag)
-		} else {
-			setCoNET_Data(temp)
-			await persistAndVerifyLocalWallet()
+		let persistFailed = false
+		allowRestoreWrite()
+		try {
+			if (tag) {
+				temp.beamio = buildMinimalBeamioFromAccountName(tag)
+				setCoNET_Data(temp)
+				await deps.persist(tag)
+			} else {
+				setCoNET_Data(temp)
+				await deps.persist()
+			}
+			logRecoverStep('persist', 'ok')
+		} catch (persistErr) {
+			// The account is registered already (newUser answered ok): the user gets the recovery code in any case. The local copy is written
+			// again by the onboarding save after the user has seen the code (the gate is open by then).
+			persistFailed = true
+			logRecoverStep('persist', 'fail', persistErr)
+		} finally {
+			endRestoreWriteWindow()
 		}
-		logRecoverStep('persist', 'ok')
 		// the create flow succeeded on this device: the local creation record (never sent). A failed write only leaves the account
 		// without the record, so its first registration stays refused; the create itself is not failed.
 		if (!markLocallyCreatedAccount(new ethers.Wallet(wallet).address)) logRecoverStep('local_record', 'fail')
 
+		if (persistFailed) return { ...obj, persistFailed: true as const }
 		return obj
 	} catch (err) {
 		if (err instanceof LocalCreateError || err instanceof CreateRemoteError) throw err
