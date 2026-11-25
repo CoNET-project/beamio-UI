@@ -116,8 +116,29 @@ const CreateUsernamePinScreen = forwardRef<
 ) {
 	const { tu } = useTu()
 	/** 0.53.50 (r3sk R-1 a): the tag that passed step 1 is locked for step 2 and, after an interruption, prefilled and locked for the completion. */
-	const [lockedTag, setLockedTag] = useState(() => (isShellContext() ? readPendingCreateTag() : ''))
-	const [beamioName, setBeamioName] = useState(() => (isShellContext() ? readPendingCreateTag() : ""))
+	const [lockedTag, setLockedTag] = useState('')
+	const [beamioName, setBeamioName] = useState("")
+	/** The wallet of this create (step 1): the record of the locked tag is kept and cleared under it. */
+	const createEoaRef = useRef('')
+	// After an interruption the device already has the wallet: the tag recorded for it is prefilled and locked. No record (another browser,
+	// cleared storage, a wallet that is not readable): nothing is locked and the user types the tag.
+	useEffect(() => {
+		if (!isShellContext()) return
+		let alive = true
+		void readWalletEoaAddress()
+			.catch(() => null)
+			.then((r) => {
+				if (!alive || !r || r.kind !== 'address') return
+				const tag = readPendingCreateTag(r.eoa)
+				if (!tag) return
+				createEoaRef.current = r.eoa
+				setLockedTag(tag)
+				setBeamioName(tag)
+			})
+		return () => {
+			alive = false
+		}
+	}, [])
 	const [password, setPassword] = useState("")
 	const [passwordTouched, setPasswordTouched] = useState(false)
 	const [showPassword, setShowPassword] = useState(false)
@@ -133,7 +154,7 @@ const CreateUsernamePinScreen = forwardRef<
 	// v10.2 r4 §2.2: the native create wait (event first, 10-minute fallback) and its cancel timer.
 	const createWaitRef = useRef<CreateWaitState>({ kind: 'idle' })
 	/** 0.53.50: the onboarding create waits here for step 1 (nativeAccountCreateOpen) to report; the result listener resolves it. */
-	type ShellCreateStep = { kind: 'created' } | { kind: 'exists' } | { kind: 'failed' }
+	type ShellCreateStep = { kind: 'created'; eoa: string } | { kind: 'exists' } | { kind: 'failed' }
 	const shellCreateWaitRef = useRef<((step: ShellCreateStep) => void) | null>(null)
 	const createWaitCancelRef = useRef<(() => void) | null>(null)
 	const createWaitSeqRef = useRef(0)
@@ -194,7 +215,7 @@ const CreateUsernamePinScreen = forwardRef<
 			if (waiter) {
 				if (accepted.code === 'ok' || accepted.code === 'already_exists') {
 					nativeCreatePendingRef.current = false
-					waiter({ kind: accepted.code === 'ok' ? 'created' : 'exists' })
+					waiter(accepted.code === 'ok' ? { kind: 'created', eoa: accepted.eoa ?? '' } : { kind: 'exists' })
 					return
 				}
 				waiter({ kind: 'failed' })
@@ -503,7 +524,9 @@ const CreateUsernamePinScreen = forwardRef<
 		}
 	}, [shellRecoverCode])
 	const finishShellRegister = (wallet: string) => {
-		clearPendingCreateTag()
+		// step 4 is done (the code was confirmed, or the registration was complete already): the record of the locked tag goes
+		clearPendingCreateTag(wallet)
+		clearPendingCreateTag(createEoaRef.current)
 		setCreateError('')
 		announceNativeFlowPending(false)
 		announceNativeWalletEstablished()
@@ -543,7 +566,7 @@ const CreateUsernamePinScreen = forwardRef<
 		switch (out.code) {
 			case 'tag_taken':
 				// the registry holds this tag for another account: the lock is released so the user can choose another tag (the wallet stays)
-				clearPendingCreateTag()
+				clearPendingCreateTag(createEoaRef.current)
 				setLockedTag('')
 				// the last native check after the page's own pre-check (a race): the same copy as the pre-check, back to renaming
 				lastCheckedRef.current = ''
@@ -697,8 +720,16 @@ const CreateUsernamePinScreen = forwardRef<
 		const step = await stepDone
 		nativeCreatePendingRef.current = false
 		if (step.kind !== 'failed') {
-			// step 1 passed for this tag: step 2 uses this tag, and so does the completion after an interruption
-			writePendingCreateTag(trimmedTag)
+			// step 1 passed for this tag: it is recorded under the wallet; step 2 uses this tag, and so does the completion after an interruption
+			let eoa = step.kind === 'created' ? step.eoa : ''
+			if (!eoa) {
+				const r = await readWalletEoaAddress().catch(() => null)
+				eoa = r && r.kind === 'address' ? r.eoa : ''
+			}
+			if (eoa) {
+				createEoaRef.current = eoa
+				writePendingCreateTag(eoa, trimmedTag)
+			}
 			setLockedTag(trimmedTag)
 		}
 		if (step.kind === 'failed') {

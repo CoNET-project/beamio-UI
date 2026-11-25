@@ -8,7 +8,7 @@ Object.assign(globalThis, { TextEncoder: nodeUtil.TextEncoder, TextDecoder: node
 window.matchMedia = window.matchMedia || ((q: string) => ({ matches: false, media: q, onchange: null, addListener: () => undefined, removeListener: () => undefined, addEventListener: () => undefined, removeEventListener: () => undefined, dispatchEvent: () => false })) as never
 ;(globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserver = (globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserver || class { observe() {} unobserve() {} disconnect() {} }
 
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 jest.mock('@/locale/beamioLocale', () => ({ ...jest.requireActual('@/locale/beamioLocale'), tu: (key: string) => key, useTu: () => ({ tu: (key: string) => key, locale: 'en' }) }))
 jest.mock('@/services/beamio', () => ({
@@ -424,22 +424,21 @@ describe('r3sk 2: the recover code is hidden after 5 minutes of wall-clock time'
 	})
 })
 
-describe('r3sk 3: the tag of step 1 is the tag of step 2', () => {
-	const PENDING = 'beamio.pendingCreateTag.v1'
+describe('r3sk/r3sl 3: the tag of step 1 is the tag of step 2, recorded per wallet', () => {
+	const KEY = 'beamio.pendingCreateTag.v2'
+	const record = () => JSON.parse(localStorage.getItem(KEY) ?? '{}') as Record<string, string>
 
-	it('step 1 passed: the tag is locked in the field and stored (the tag only), and a failed step 2 retries with the same tag', async () => {
+	it('step 1 passed: the tag is recorded under the wallet and locked in the field; a failed step 2 retries with the same tag', async () => {
 		beamio.postAddUserPayload.mockResolvedValue({ kind: 'http', status: 503 })
 		await mount()
 		await press()
 		await created()
 		expect(await screen.findByText('network_error_try_again')).toBeTruthy()
-		expect(localStorage.getItem(PENDING)).toBe(TAG)
+		expect(record()).toEqual({ [WALLET]: TAG })
 		expect(tagInput().readOnly).toBe(true)
 		expect(tagInput().value).toBe(TAG)
-		// an attempt to change the tag is ignored
 		fireEvent.change(tagInput(), { target: { value: 'othertag99' } })
 		expect(tagInput().value).toBe(TAG)
-		// the retry uses step 1 and step 2 with the locked tag; no password or code was stored
 		beamio.postAddUserPayload.mockResolvedValue({ kind: 'ok' })
 		await refill()
 		await press()
@@ -447,6 +446,7 @@ describe('r3sk 3: the tag of step 1 is the tag of step 2', () => {
 		expect(nr.nativeAccountCreateOpen).toHaveBeenLastCalledWith(TAG)
 		await act(async () => emitCreate({ code: 'already_exists' }))
 		await screen.findByTestId('recover-code')
+		// only the tag and the wallet are stored: no password, no recover code
 		for (const store of [localStorage, sessionStorage]) {
 			for (let i = 0; i < store.length; i++) {
 				const entry = `${store.key(i)}=${store.getItem(store.key(i) as string)}`
@@ -456,60 +456,110 @@ describe('r3sk 3: the tag of step 1 is the tag of step 2', () => {
 		}
 	})
 
-	it('after an interruption the completion offers the stored tag prefilled and locked, and uses no other tag; the tag availability check is not asked again', async () => {
-		localStorage.setItem(PENDING, 'lockedtag77')
-		beamio.checkBeamioAccountAPI.mockClear()
-		await mount({ typeTag: false })
-		expect(tagInput().value).toBe('lockedtag77')
-		expect(tagInput().readOnly).toBe(true)
-		fireEvent.change(tagInput(), { target: { value: 'sneaky' } })
-		expect(tagInput().value).toBe('lockedtag77')
-		await press()
-		await waitFor(() => expect(nr.nativeAccountCreateOpen).toHaveBeenCalled(), { timeout: 5000 })
-		expect(nr.nativeAccountCreateOpen).toHaveBeenCalledWith('lockedtag77')
-		await act(async () => emitCreate({ code: 'already_exists' }))
-		await waitFor(() => expect(spc.sendAccountCreateRegister).toHaveBeenCalledTimes(1), { timeout: 5000 })
-		expect(spc.sendAccountCreateRegister.mock.calls[0][0]).toMatchObject({ tag: 'lockedtag77' })
-		expect(beamio.checkBeamioAccountAPI).not.toHaveBeenCalled()
-	})
-
-	it('completing the registration clears the stored tag', async () => {
+	it('a killed app and a new start: the record of this wallet locks the same tag, prefilled; the tag check is not asked; step 1 and 2 use it', async () => {
+		// the first run: step 1 passed, then the app was killed (the page is gone, the record stays)
 		await mount()
 		await press()
 		await created()
 		await screen.findByTestId('recover-code')
-		expect(localStorage.getItem(PENDING)).toBe(TAG)
+		cleanup()
+		expect(record()).toEqual({ [WALLET]: TAG })
+		// the new start: the device has the wallet; the page finds the record for it
+		jest.clearAllMocks()
+		beamio.checkBeamioAccountAPI.mockImplementation(async () => true)
+		eoaMod.readWalletEoaAddress.mockResolvedValue({ kind: 'address', eoa: WALLET })
+		nr.nativeAccountCreateOpen.mockResolvedValue({ ok: true, page: 'none' })
+		nr.onNativeAccountCreateResult.mockImplementation((cb: typeof emitCreate) => {
+			emitCreate = cb
+			return () => undefined
+		})
+		await mount({ typeTag: false })
+		await waitFor(() => expect(tagInput().value).toBe(TAG))
+		expect(tagInput().readOnly).toBe(true)
+		fireEvent.change(tagInput(), { target: { value: 'sneaky' } })
+		expect(tagInput().value).toBe(TAG)
+		await press()
+		await waitFor(() => expect(nr.nativeAccountCreateOpen).toHaveBeenCalledWith(TAG), { timeout: 5000 })
+		await act(async () => emitCreate({ code: 'already_exists' }))
+		await waitFor(() => expect(spc.sendAccountCreateRegister).toHaveBeenCalledTimes(1), { timeout: 5000 })
+		expect(spc.sendAccountCreateRegister.mock.calls[0][0]).toMatchObject({ tag: TAG })
+		expect(beamio.checkBeamioAccountAPI).not.toHaveBeenCalled()
+	})
+
+	it('a record of another wallet does not lock this one; no record at all (another browser, cleared storage): the user types the tag', async () => {
+		localStorage.setItem(KEY, JSON.stringify({ ['0x' + '2'.repeat(40)]: 'otherwallettag' }))
+		await mount()
+		await waitFor(() => expect(eoaMod.readWalletEoaAddress).toHaveBeenCalled())
+		expect(tagInput().readOnly).toBe(false)
+		expect(tagInput().value).toBe(TAG)
+		cleanup()
+		localStorage.clear()
+		await mount()
+		expect(tagInput().readOnly).toBe(false)
+	})
+
+	it('a wallet that cannot be read locks nothing', async () => {
+		localStorage.setItem(KEY, JSON.stringify({ [WALLET]: 'lockedtag77' }))
+		eoaMod.readWalletEoaAddress.mockResolvedValue({ kind: 'refused', code: 'locked' })
+		await mount()
+		expect(tagInput().readOnly).toBe(false)
+		expect(tagInput().value).toBe(TAG)
+	})
+
+	it('clearing time: the record stays while the recover code is on screen and after it hides unconfirmed; it goes when the user confirmed the code is saved', async () => {
+		await mount()
+		await press()
+		await created()
+		await screen.findByTestId('recover-code')
+		expect(record()).toEqual({ [WALLET]: TAG })
 		fireEvent.click(screen.getByTestId('recover-code-saved'))
+		// ticking the box is not the confirmation: the record is still there
+		expect(record()).toEqual({ [WALLET]: TAG })
 		await act(async () => {
 			fireEvent.click(screen.getByTestId('recover-code-continue'))
 		})
-		await waitFor(() => expect(localStorage.getItem(PENDING)).toBeNull())
+		await waitFor(() => expect(localStorage.getItem(KEY)).toBeNull())
 	})
 
-	it('a step 1 that fails leaves no lock', async () => {
+	it('clearing time: the record stays when the code hides after 5 minutes unconfirmed (the completion must still find the tag)', async () => {
+		await mount()
+		await press()
+		await created()
+		await screen.findByTestId('recover-code')
+		jest.useFakeTimers()
+		jest.setSystemTime(Date.now() + 301_000)
+		act(() => {
+			window.dispatchEvent(new Event('focus'))
+		})
+		expect(screen.queryByTestId('recover-code')).toBeNull()
+		expect(record()).toEqual({ [WALLET]: TAG })
+	})
+
+	it('clearing time: a registration that was complete already (already_registered, no code) clears the record when the page enters', async () => {
+		spc.sendAccountCreateRegister.mockResolvedValue({ type: 'ack', ok: false, reqId: 1, error: 'already_registered' })
+		await mount()
+		await press()
+		await created()
+		await waitFor(() => expect(wallet.notifyNativeWalletReady).toHaveBeenCalledWith(TAG, WALLET), { timeout: 5000 })
+		expect(localStorage.getItem(KEY)).toBeNull()
+	})
+
+	it('a step 1 that fails leaves no record and no lock', async () => {
 		nr.nativeAccountCreateOpen.mockResolvedValue({ ok: false, reason: 'not_ready' })
 		await mount()
 		await press()
 		await screen.findByText('create_account_try_later')
-		expect(localStorage.getItem(PENDING)).toBeNull()
+		expect(localStorage.getItem(KEY)).toBeNull()
 		expect(tagInput().readOnly).toBe(false)
 	})
 
-	it('tag_taken at step 2 releases the lock so the user can choose another tag', async () => {
+	it('tag_taken at step 2 releases the lock and the record so the user can choose another tag', async () => {
 		spc.sendAccountCreateRegister.mockResolvedValue({ type: 'ack', ok: false, reqId: 1, error: 'tag_taken' })
 		await mount()
 		await press()
 		await created()
 		expect(await screen.findByText('tag_is_already_taken')).toBeTruthy()
-		expect(localStorage.getItem(PENDING)).toBeNull()
+		expect(localStorage.getItem(KEY)).toBeNull()
 		await waitFor(() => expect(tagInput().readOnly).toBe(false))
-	})
-
-	it('the browser page is never locked (no stored tag is read outside a shell)', async () => {
-		// the file mocks isShellContext as true; the lock source is only read when it is true, and the browser create does not write the tag
-		const page = require('fs').readFileSync(require('path').join(__dirname, 'CreateUsernamePinScreen.tsx'), 'utf8')
-		expect(page).toMatch(/useState\(\(\) => \(isShellContext\(\) \? readPendingCreateTag\(\) : ''\)\)/)
-		const fn = page.slice(page.indexOf('const handleCreateWallet'))
-		expect(fn.indexOf('writePendingCreateTag')).toBe(-1)
 	})
 })
