@@ -27,7 +27,10 @@ jest.mock('@/services/resumeCreate', () => {
 		resumeCreateCheck: (...a: unknown[]) => {
 			;(globalThis as any).__checkCalls += 1
 			const o = (globalThis as any).__checkOverride as Array<unknown> | undefined
-			if (o && o.length) return Promise.resolve(o.length > 1 ? o.shift() : o[0])
+			if (o && o.length) {
+				const item = o.length > 1 ? o.shift() : o[0]
+				return typeof item === 'function' ? (item as () => Promise<unknown>)() : Promise.resolve(item)
+			}
 			return actual.resumeCreateCheck(...a)
 		},
 	}
@@ -309,6 +312,9 @@ describe('record for this wallet', () => {
 		await waitFor(() => expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy(), { timeout: 3000 })
 		await waitFor(() => expect(readPendingCreateRecord(EOA_NATIVE)).toBeNull())
 		expect(getResumeNotice()?.kind).toBe('code_not_shown')
+		// the card renders it, and only then is it counted as shown (S2)
+		expect(await screen.findByTestId('resume-notice-card')).toBeTruthy()
+		await waitFor(() => expect(localStorage.getItem('beamio.codeNoticeShown.v1') ?? '').toContain(EOA_NATIVE))
 		expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
 	})
 	it('registered on one host only: still registered (never a create page)', async () => {
@@ -373,6 +379,29 @@ describe('M1 re-entry: a second start while the resume page is open leaves it al
 		expect(g.__checkCalls).toBe(checksBefore)
 		expect(regCalls()).toBe(readsBefore)
 		expect(container).toBeTruthy()
+	})
+})
+
+describe('M1 stale check: a slower earlier check cannot take the screen back from the resume page', () => {
+	it('two checks in flight; the first routes the resume page, the second answers registered/uncertain: the page stays', async () => {
+		const g = globalThis as Record<string, any>
+		writePendingCreateTag(EOA_NATIVE, TAG)
+		let r1: (v: unknown) => void = () => undefined
+		let r2: (v: unknown) => void = () => undefined
+		g.__checkOverride = [() => new Promise((res) => { r1 = res }), () => new Promise((res) => { r2 = res })]
+		renderAt('/settings')
+		await waitFor(() => expect(g.__checkCalls).toBe(1), { timeout: 3000 })
+		g.__prereadAnswers = [{ kind: 'valid', eoa: EOA_NATIVE, phrase: PHRASE_NATIVE }]
+		await act(async () => {
+			window.dispatchEvent(new Event('beamio:native-wallet-ready'))
+		})
+		await waitFor(() => expect(g.__checkCalls).toBe(2), { timeout: 3000 })
+		await act(async () => r1(RESUME))
+		await waitFor(() => expect(onboardingShown()).toBe(true))
+		await act(async () => r2({ kind: 'uncertain', why: 'read_failed', recheckInMs: 60000 }))
+		await settle(200)
+		expect(onboardingShown()).toBe(true)
+		expect(screen.queryByText('SETTINGS-PAGE')).toBeNull()
 	})
 })
 
