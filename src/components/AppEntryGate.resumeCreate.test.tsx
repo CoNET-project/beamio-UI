@@ -103,7 +103,11 @@ jest.mock('@/services/nativeWallet', () => ({
 	NATIVE_WALLET_READY_EVENT: 'beamio:native-wallet-ready',
 	notifyNativeWalletReady: jest.fn(),
 	publicWalletSeed: (eoa: string) => ({ profiles: [{ keyID: eoa, isPrimary: true }] }),
-	reachNativeWallet: async () => ({ status: 'unknown' }),
+	reachNativeWallet: () => {
+		const g = globalThis as any
+		g.__reach = (g.__reach ?? 0) + 1
+		return g.__reachHold ? new Promise(() => undefined) : Promise.resolve({ status: 'unknown' })
+	},
 	rememberNativeEoa: jest.fn(),
 	releaseInitLockedHold: jest.fn(),
 	takeInitRefusal: () => null,
@@ -248,6 +252,8 @@ beforeEach(() => {
 	g.__regCalls = 0
 	g.__checkCalls = 0
 	g.__checkOverride = undefined
+	g.__reach = 0
+	g.__reachHold = false
 	g.__voiceBusy = false
 	g.__shell = true
 })
@@ -506,5 +512,75 @@ describe('S1 late route: uncertain at entry, then idle-only', () => {
 		})
 		await waitFor(() => expect(g.__checkCalls).toBeGreaterThanOrEqual(3), { timeout: 3000 })
 		await waitFor(() => expect(onboardingShown()).toBe(true), { timeout: 3000 })
+	})
+})
+
+describe('R2271-DEF-IOS-HOME-1: the G1 local home asks for the native wallet at entry, not after 30 s', () => {
+	const g1Start = () => {
+		const g = globalThis as Record<string, any>
+		g.__idbPage = { status: 'empty' }
+		g.__prereadAnswers = [{ kind: 'valid', eoa: EOA_NATIVE, phrase: PHRASE_NATIVE }]
+	}
+	it('entering the local home sends the first walletStatus/init attempt within 1 s (no 30 s wait)', async () => {
+		const g = globalThis as Record<string, any>
+		g1Start()
+		renderAt('/settings')
+		await waitFor(() => expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy(), { timeout: 3000 })
+		await waitFor(() => expect(g.__reach).toBe(1), { timeout: 1000 })
+	})
+
+	it('one attempt at a time: while it runs, the 30 s beat and a repeat entry add no call; after it ends the beat tries again', async () => {
+		const g = globalThis as Record<string, any>
+		const beats: Array<() => void> = []
+		const realSet = window.setInterval.bind(window)
+		const spy = jest.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms?: number) => {
+			if (ms === 30_000) {
+				beats.push(fn)
+				return 0 as never
+			}
+			return realSet(fn, ms)
+		}) as never)
+		g1Start()
+		g.__reachHold = true // the first attempt does not end
+		renderAt('/settings')
+		await waitFor(() => expect(g.__reach).toBe(1), { timeout: 3000 })
+		expect(beats.length).toBeGreaterThan(0)
+		await act(async () => {
+			beats.forEach((f) => f())
+		})
+		await settle(100)
+		expect(g.__reach).toBe(1)
+		spy.mockRestore()
+	})
+
+	it('after an attempt ends, the next beat tries again (the beat stays as the retry)', async () => {
+		const g = globalThis as Record<string, any>
+		const beats: Array<() => void> = []
+		const realSet = window.setInterval.bind(window)
+		const spy = jest.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms?: number) => {
+			if (ms === 30_000) {
+				beats.push(fn)
+				return 0 as never
+			}
+			return realSet(fn, ms)
+		}) as never)
+		g1Start()
+		renderAt('/settings')
+		await waitFor(() => expect(g.__reach).toBe(1), { timeout: 3000 })
+		await settle(50)
+		await act(async () => {
+			beats.forEach((f) => f())
+		})
+		await waitFor(() => expect(g.__reach).toBe(2), { timeout: 1000 })
+		spy.mockRestore()
+	})
+
+	it('the browser never asks for a native wallet', async () => {
+		const g = globalThis as Record<string, any>
+		g.__shell = false
+		g.__idbPage = { status: 'empty' }
+		renderAt('/settings')
+		await settle(400)
+		expect(g.__reach).toBe(0)
 	})
 })

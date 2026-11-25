@@ -509,6 +509,36 @@ export default function AppEntryGate() {
 	}
 
 	/**
+	 * The local home waits for the native wallet to reach G2 (walletStatus, then init). One attempt at a time: a try that is still running
+	 * makes the next trigger (the entry or the 30 s beat) a no-op, so calls never pile up. Shell only; the browser has no local home.
+	 */
+	const upgradeInFlightRef = useRef(false)
+	const upgradeLocalHome = async (): Promise<void> => {
+		if (!localModeRef.current || upgradeInFlightRef.current) return
+		upgradeInFlightRef.current = true
+		try {
+			// read again only once the capability is declared: a missing, refused or unanswered hello keeps the local home.
+			const cap = await shellIdentityState()
+			if (cap !== 'declared') return
+			const native = await reachNativeWallet()
+			if (native.status === 'unlocked') {
+				notifyNativeWalletReady('')
+				return
+			}
+			// an address mismatch ends the local home for the recovery entry.
+			if (takeInitRefusal() === 'address_mismatch') {
+				// 0.53.44: no recovery screen at startup; the start waits in the background
+				localModeRef.current = false
+				startupWait('address mismatch (background, data kept; no recovery screen at startup)', 'read_failed')
+			}
+		} catch {
+			/* the 30 s beat tries again */
+		} finally {
+			upgradeInFlightRef.current = false
+		}
+	}
+
+	/**
 	 * the local home on a G1 wallet (the native record exists and is readable; the EOA is for display only). Chat and the
 	 * network features stay unavailable (waiting for init) until the wallet reaches G2.
 	 */
@@ -523,6 +553,8 @@ export default function AppEntryGate() {
 		markWalletEstablished()
 		enterApp()
 		notifyShellEntry('native-wallet-local')
+		// 0.53.51 (R2271-DEF-IOS-HOME-1): the first walletStatus/init attempt is made now, not after the first 30 s beat (shell only)
+		if (isShellContext()) void upgradeLocalHome()
 	}
 
 	/**
@@ -1933,24 +1965,8 @@ export default function AppEntryGate() {
 	}, [])
 
 	useEffect(() => {
-		const id = window.setInterval(() => {
-			if (!localModeRef.current) return
-			// read again only once the capability is declared: a missing, refused or unanswered hello keeps the local home.
-			void shellIdentityState().then(async (cap) => {
-				if (cap !== 'declared') return
-				const native = await reachNativeWallet()
-				if (native.status === 'unlocked') {
-					notifyNativeWalletReady('')
-					return
-				}
-				// an address mismatch ends the local home for the recovery entry.
-				if (takeInitRefusal() === 'address_mismatch') {
-					// 0.53.44: no recovery screen at startup; the start waits in the background
-					localModeRef.current = false
-					startupWait('address mismatch (background, data kept; no recovery screen at startup)', 'read_failed')
-				}
-			})
-		}, 30_000)
+		// the retry beat of the local home: the first try is made at entry (applyLocalWalletCore); this keeps trying every 30 s
+		const id = window.setInterval(() => void upgradeLocalHome(), 30_000)
 		return () => window.clearInterval(id)
 	}, [])
 
