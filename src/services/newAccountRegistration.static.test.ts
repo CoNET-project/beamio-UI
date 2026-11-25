@@ -44,7 +44,9 @@ describe('the password stays in one call', () => {
 		expect(create.indexOf('await handleShellCreate(trimmedTag, pwd)')).toBeGreaterThan(0)
 		expect(create.indexOf('await handleShellCreate(trimmedTag, pwd)')).toBeLessThan(create.indexOf('kks = await createRecover('))
 		const shell = page.slice(page.indexOf('const handleShellCreate'), page.indexOf('const handleCreateWallet'))
-		expect(shell.indexOf('await nativeAccountCreateOpen(trimmedTag)')).toBeLessThan(shell.indexOf('await handleShellRegister(trimmedTag, pwd)'))
+		// the normal path registers after step 1 (the last register call); the resume branch (the device already holds the key) registers with no step 1, and sits before the open
+		expect(shell.indexOf('await nativeAccountCreateOpen(trimmedTag)')).toBeLessThan(shell.lastIndexOf('await handleShellRegister(trimmedTag, pwd)'))
+		expect(shell.indexOf('if (resumeEoaLower) {')).toBeLessThan(shell.indexOf('await nativeAccountCreateOpen(trimmedTag)'))
 	})
 	it('0.53.50: the password field of the shell is shown always (the page collects it like the browser)', () => {
 		const page = src('pages/Home/CreateUsernamePinScreen.tsx')
