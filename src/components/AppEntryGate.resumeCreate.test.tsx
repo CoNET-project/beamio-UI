@@ -120,6 +120,8 @@ jest.mock('@/services/nativeWallet', () => ({
 			g.__runaway = true
 			return new Promise(() => undefined) // never answers: the loop stops here
 		}
+		if (g.__reachMode === 'not_ready') return Promise.resolve({ status: 'not_ready', notReadyReason: 'g1_uninitialized' })
+		if (g.__reachMode === 'no_key') return Promise.resolve({ status: 'no_key' })
 		if (g.__reachMode === 'locked') return Promise.resolve({ status: 'locked', eoa: g.__reachUnlocked })
 		if (g.__reachUnlocked) return Promise.resolve({ status: 'unlocked', eoa: g.__reachUnlocked })
 		return g.__reachHold ? new Promise(() => undefined) : Promise.resolve({ status: 'unknown' })
@@ -705,7 +707,8 @@ describe('R2271-DEF-IOS-HOME-1 loop guard: upgrade success -> wallet-ready -> st
 		expect(g().__runaway).toBeFalsy()
 	})
 
-	it('unlock -> lock -> entry again: a locked answer forgets the wallet, so the next entry asks at once; locked sends no ready event (no loop)', async () => {
+	// locked carries the wallet address; not_ready and no_key carry none: the local home's own wallet is forgotten in every case
+	it.each(['locked', 'not_ready', 'no_key'])('unlock -> %s -> entry again: the answer forgets the wallet, so the next entry asks at once; no ready event from it (no loop)', async (mode) => {
 		const beats: Array<() => void> = []
 		const realSet = window.setInterval.bind(window)
 		const spy = jest.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms?: number) => {
@@ -722,7 +725,7 @@ describe('R2271-DEF-IOS-HOME-1 loop guard: upgrade success -> wallet-ready -> st
 		await settle(300)
 		expect(g().__readyEvents).toBe(1) // unlocked: one ready event, the re-run asked no more
 		// the wallet gets locked: the next beat reads a locked answer (no ready event, memory cleared)
-		g().__reachMode = 'locked'
+		g().__reachMode = mode
 		await act(async () => {
 			beats.forEach((f) => f())
 		})
