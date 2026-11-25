@@ -1766,6 +1766,70 @@ export const wipeLocalWalletForRestore = async (): Promise<void> => {
 
 let checkStorageInFlight: Promise<CheckStorageResult> | null = null
 
+/** 0.53.52 (owner approval 2026-11-25): result of the silent deletion of a private-key-only page record. */
+export type PurgeKeyOnlyResult =
+  | { kind: 'deleted'; eoa: string }
+  | { kind: 'absent' }
+  | { kind: 'not_key_only' }
+  | { kind: 'unknown' }
+  | { kind: 'failed' }
+
+/**
+ * 0.53.52 (owner approval 2026-11-25): silent deletion of a private-key-only page record (a record of an internal build; the released versions kept a mnemonic).
+ * Compare and delete: the `init` document is read, accepted only when classifyPageKeyState says key_only (a plain record, a private key and NO mnemonic field at
+ * all), and removed with the revision it was read at, so a record that changed in between is not deleted. Every read failure, a wrapped or passcode record, a
+ * mnemonic of any kind and any unknown shape leave everything as it is. Only the `init` document and its cache copy are touched: not `meta`, not the device key
+ * store, not the chain, not the native record (the SDK deletes its own material).
+ */
+export const purgeKeyOnlyPageRecord = async (): Promise<PurgeKeyOnlyResult> => {
+  let doc: { _id: string; _rev?: string; title?: unknown }
+  let database: ReturnType<typeof PouchDB>
+  try {
+    await idbBlobCompatReady()
+    database = PouchDB(localDatabaseName, { auto_compaction: true })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeoutP = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('idb_timeout')), LEGACY_SHELL_READ_TIMEOUT_MS)
+    })
+    try {
+      doc = (await Promise.race([database.get('init', { latest: true }), timeoutP])) as typeof doc
+    } finally {
+      clearTimeout(timer)
+    }
+  } catch (ex: any) {
+    return isPouchMissingDocError(ex) ? { kind: 'absent' } : { kind: 'unknown' }
+  }
+  if (typeof doc.title !== 'string') return { kind: 'not_key_only' }
+  const parsed = parseInitRaw(doc.title) as Loose | null
+  if (classifyPageKeyState(parsed) !== 'key_only') return { kind: 'not_key_only' }
+  const keyID = (parsed?.profiles as Array<{ keyID?: unknown }> | undefined)?.[0]?.keyID
+  const eoa = typeof keyID === 'string' && /^0x[0-9a-fA-F]{40}$/.test(keyID.trim()) ? keyID.trim().toLowerCase() : ''
+  try {
+    // removed at the revision that was read: a concurrent write makes this throw a conflict, and nothing is lost
+    await database.remove(doc as never)
+  } catch (ex: any) {
+    if (!isPouchMissingDocError(ex)) return { kind: 'failed' }
+  }
+  try {
+    if (typeof caches !== 'undefined' && CACHE_WALLET_URL) {
+      const cache = await caches.open('beamio-wallet-v1')
+      await cache.delete(new Request(CACHE_WALLET_URL, { method: 'GET' }))
+    }
+  } catch {
+    /* no Cache API in this context: the copy is only a migration backup */
+  }
+  // the delete must be seen to have happened
+  try {
+    if ((await readDocTitle('init')) !== null) return { kind: 'failed' }
+  } catch {
+    return { kind: 'failed' }
+  }
+  resetWalletSession()
+  setCoNET_Data(null)
+  checkStorageInFlight = null
+  return { kind: 'deleted', eoa }
+}
+
 /**
  * Read the local wallet without collapsing storage failures into "new user".
  *
