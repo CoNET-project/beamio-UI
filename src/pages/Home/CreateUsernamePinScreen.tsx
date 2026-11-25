@@ -591,6 +591,12 @@ const CreateUsernamePinScreen = forwardRef<
 			abandonResumeForOtherWallet('payload wallet')
 			return
 		}
+		if (out.ok && resumeEoaLower && out.wallet.toLowerCase() !== resumeEoaLower) {
+			// the step 2 answer (already_registered: the wallet comes from the read-only address; a code path: the payload wallet) is for another wallet than the
+			// resume was found for: nothing is finished, no record is cleared, the entry judges again
+			abandonResumeForOtherWallet('step 2 result wallet')
+			return
+		}
 		if (out.ok) {
 			if (out.recoverCodeBase58) {
 				// r3sk: the screen protection is on before the code is rendered; a shell that cannot give it gets "unavailable" and no code

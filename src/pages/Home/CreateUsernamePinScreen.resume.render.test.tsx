@@ -247,6 +247,46 @@ describe('D2 in a resume: the device wallet must be the one the gate found', () 
 	})
 })
 
+describe('S-a: a resume whose step 2 ends on already_registered must answer the resume wallet', () => {
+	const OTHER = '0x' + '2'.repeat(40)
+	it('already_registered with the read-only address answering ANOTHER wallet: not finished, no record cleared, no notice, the entry judges again', async () => {
+		seedRecord()
+		spc.sendAccountCreateRegister.mockResolvedValue({ type: 'ack', ok: false, reqId: 1, error: 'already_registered' })
+		// the soft D2 read (at the press) sees the resume wallet; the read inside step 2 (existingEoa) sees another one
+		eoaMod.readWalletEoaAddress.mockResolvedValueOnce({ kind: 'address', eoa: WALLET }).mockResolvedValue({ kind: 'address', eoa: OTHER })
+		await mount({ resume: RESUME })
+		await press()
+		await waitFor(() => expect(retry.requestNativeIdentityRetry).toHaveBeenCalled(), { timeout: 5000 })
+		expect(wallet.notifyNativeWalletReady).not.toHaveBeenCalled()
+		expect(wallet.rememberNativeEoa).not.toHaveBeenCalled()
+		expect(rec()).toBeTruthy() // the resume wallet's record is not cleared
+		expect(noticeShown()).toBeNull()
+		expect(beamio.postAddUserPayload).not.toHaveBeenCalled()
+		expect(tagInput().readOnly).toBe(false)
+	})
+
+	it('the same wallet answers: the normal already_registered ending (N1, wallet entered)', async () => {
+		seedRecord()
+		spc.sendAccountCreateRegister.mockResolvedValue({ type: 'ack', ok: false, reqId: 1, error: 'already_registered' })
+		await mount({ resume: RESUME })
+		await press()
+		await waitFor(() => expect(wallet.notifyNativeWalletReady).toHaveBeenCalledWith(TAG, WALLET), { timeout: 5000 })
+		expect(noticeShown()).toBe('already_registered_keep_password')
+	})
+
+	it('the hard-guard failure shows no failure copy that could invite a second submit: the page goes back to the entry (no error line, no retry button state)', async () => {
+		seedRecord()
+		eoaMod.readWalletEoaAddress.mockResolvedValue({ kind: 'refused', code: 'not_ready' })
+		spc.sendAccountCreateRegister.mockResolvedValue({ type: 'ack', ok: true, reqId: 1, result: { ...RESULT, wallet: OTHER } })
+		await mount({ resume: RESUME })
+		await press()
+		await waitFor(() => expect(retry.requestNativeIdentityRetry).toHaveBeenCalled(), { timeout: 5000 })
+		for (const k of ['create_account_try_later', 'create_account_native_unavailable', 'network_error_try_again', 'create_account_unavailable']) {
+			expect(screen.queryByText(k)).toBeNull()
+		}
+	})
+})
+
 describe('the record: s before the first forward, a after a 2xx', () => {
 	it('a normal create ends with s and a (positive integers) on the record, s not later than a', async () => {
 		await mount()
