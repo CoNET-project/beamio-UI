@@ -376,13 +376,15 @@ describe('account reset at the gate', () => {
 
 	// ST-02: IDB has a valid mnemonic, native absent (no_key, kPresent false): the page account is the home (PWA first, spec 42(1)).
 	// Rewritten from "storage hasAccount=true" (the superseded judgement log): the native side is not asked.
-	it('ST-02: IDB has a valid mnemonic, native absent: the home on the page account, native not asked, no onboarding, no retry', async () => {
+	it('ST-02: IDB has a valid mnemonic, native absent: the home on the page account, native not asked for recovery (one upgrade attempt at entry), no onboarding, no retry', async () => {
 		race.idb = 'key'
 		race.reachCalls = 0
 		renderApp()
 		await waitFor(() => expect(publishNativePwaLog).toHaveBeenCalledWith('info', expect.stringContaining('page mnemonic is valid')), { timeout: 3000 })
 		expect(await screen.findByText('HOME_MARK', {}, { timeout: 3000 })).toBeTruthy()
-		expect(race.reachCalls).toBe(0)
+		// 0.53.51 (DEF-IOS-HOME-1): the local home makes ONE G1->G2 upgrade attempt at entry (reachNativeWallet: walletStatus, then init when g1_uninitialized);
+		// it is not a recovery read: the pre-read stays uncalled, nothing is onboarded, and the beat keeps the later retries. Before: 0, the first try came after 30 s.
+		await waitFor(() => expect(race.reachCalls).toBe(1))
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
 		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
 	})
@@ -411,7 +413,8 @@ describe('account reset at the gate', () => {
 		race.native = { status: 'not_ready', notReadyReason: 'g1_uninitialized' }
 		renderApp()
 		expect(await screen.findByText('HOME_MARK', {}, { timeout: 3000 })).toBeTruthy()
-		expect(race.reachCalls).toBe(0)
+		// 0.53.51 (DEF-IOS-HOME-1): one upgrade attempt at entry (the d83 case: valid page record, native G1); not a recovery read (see ST-02)
+		await waitFor(() => expect(race.reachCalls).toBe(1))
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
 		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
 	})
