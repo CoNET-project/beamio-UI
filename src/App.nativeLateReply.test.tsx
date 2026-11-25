@@ -53,6 +53,13 @@ const concurrency: { overlaps: number } = { overlaps: 0 }
 /** the pre-read requests (nativeMnemonicPreread) sent in this case: the start's native pre-read when the page store is confirmed empty */
 const prereads: { n: number } = { n: 0 }
 const HARD_CAP_MS = 30_000
+/**
+ * Timer jitter allowance of the overlap count. A request is "still open" only if it closes later than this after the next send. The close time of a
+ * request is the time its reply is due (set when it was sent); the next send follows the delivered reply by a few ms, and under load the timer that
+ * delivers the reply and the clock read of the next send can land 1 ms the wrong side of that boundary, which counted a spurious overlap (seen once in a full
+ * run). A real overlap in these scenarios is seconds long, so the margin hides nothing.
+ */
+const OVERLAP_JITTER_MS = 250
 
 const mockWrites: { n: number } = { n: 0 }
 
@@ -72,7 +79,7 @@ function installNativeHost(): void {
 				prereads.n += 1
 				// the pre-read is one request too: none is sent while an earlier one is open (its reply, or the page's 10 s inner timeout)
 				const preSentAt = Date.now() - T0.t
-				if (sends.some((x) => x.closeAt > preSentAt)) concurrency.overlaps += 1
+				if (sends.some((x) => x.closeAt > preSentAt + OVERLAP_JITTER_MS)) concurrency.overlaps += 1
 				const preAnswer = scenario.preread
 				const preReplyAt = preAnswer ? preSentAt + preAnswer.delayMs : null
 				sends.push({ reqId: cmd.reqId, sentAt: preSentAt, closeAt: Math.min(preReplyAt ?? Infinity, preSentAt + PREREAD_INNER_TIMEOUT_MS), replyAt: preReplyAt })
@@ -84,7 +91,7 @@ function installNativeHost(): void {
 			if (cmd.type !== 'shellRecordRead') return
 			const sentAt = Date.now() - T0.t
 			// the in-flight count: an earlier request still open at this send (not answered, not past its 30 s cap) is an overlap
-			if (sends.some((x) => x.closeAt > sentAt)) concurrency.overlaps += 1
+			if (sends.some((x) => x.closeAt > sentAt + OVERLAP_JITTER_MS)) concurrency.overlaps += 1
 			const answer = scenario.read(cmd.reqId)
 			const replyAt = answer ? sentAt + answer.delayMs : null
 			sends.push({ reqId: cmd.reqId, sentAt, closeAt: Math.min(replyAt ?? Infinity, sentAt + HARD_CAP_MS), replyAt })
