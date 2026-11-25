@@ -20,6 +20,16 @@ const PHRASE_OLD = 'old synthetic phrase three'
 
 jest.mock('../locale/beamioLocale', () => ({ tu: (key: string) => key }))
 jest.mock('@/locale/beamioLocale', () => ({ tu: (key: string) => key }), { virtual: true })
+jest.mock('@/services/resumeCreate', () => {
+	const actual = jest.requireActual('@/services/resumeCreate')
+	return {
+		...actual,
+		resumeCreateCheck: (...a: unknown[]) => {
+			;(globalThis as any).__checkCalls += 1
+			return actual.resumeCreateCheck(...a)
+		},
+	}
+})
 jest.mock('@/utils/voiceCallSession', () => ({ browserVoiceCallBusyFor: () => false }), { virtual: true })
 jest.mock('./PgpRestoreFailedNotice', () => () => null)
 jest.mock('./PgpFirstIdentityNotice', () => () => null)
@@ -225,6 +235,7 @@ beforeEach(() => {
 	g.__prereadAnswers = [{ kind: 'valid', eoa: EOA_NATIVE, phrase: PHRASE_NATIVE }]
 	g.__reg = {}
 	g.__regCalls = 0
+	g.__checkCalls = 0
 })
 const regCalls = () => (globalThis as any).__regCalls as number
 
@@ -234,6 +245,8 @@ describe('no record: the original entry, no registry read at all', () => {
 		renderAt('/settings')
 		await waitFor(() => expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy(), { timeout: 3000 })
 		expect(regCalls()).toBe(0)
+		// the non-hit path is the original synchronous entry: the async check is not even started
+		expect((globalThis as any).__checkCalls).toBe(0)
 		expect(screen.queryByText('ONBOARDING-PAGE')).toBeNull()
 	})
 	it("another wallet's record: still zero reads and home", async () => {
@@ -242,6 +255,7 @@ describe('no record: the original entry, no registry read at all', () => {
 		renderAt('/settings')
 		await waitFor(() => expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy(), { timeout: 3000 })
 		expect(regCalls()).toBe(0)
+		expect((globalThis as any).__checkCalls).toBe(0)
 	})
 })
 

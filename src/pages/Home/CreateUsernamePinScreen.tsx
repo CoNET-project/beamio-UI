@@ -577,7 +577,8 @@ const CreateUsernamePinScreen = forwardRef<
 				return
 			}
 			// r4 N1: the completion page of an interrupted create ended on "already registered": the password just typed did not take effect
-			if (out.alreadyRegistered && resumeEoaLower) pushResumeNotice('already_registered_keep_password', out.wallet)
+			// 0.53.51 (PM r4 absorb 1): shown on the F1 path on any create page (the password just typed was not adopted), and on a resume page that ended on already_registered at step 2; the normal page ending on step 2 already_registered keeps 0.53.50 behaviour (no notice)
+			if (out.alreadyRegistered && (resumeEoaLower || out.conflictAdopted)) pushResumeNotice('already_registered_keep_password', out.wallet)
 			finishShellRegister(out.wallet)
 			return
 		}

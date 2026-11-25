@@ -55,3 +55,4 @@ describe('unknown: never "unregistered" on a doubt', () => {
 		expect(await run({ chainId: async () => '0x36CA6' })).toBe('unregistered')
 	})
 })
+export {}

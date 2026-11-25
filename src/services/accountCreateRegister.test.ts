@@ -219,7 +219,7 @@ describe('F1 (0.53.51): a 409 means the server did not take this payload, so thi
 
 	it('409 and the registry has the account: ok, alreadyRegistered, and NO recover code (the no-code path)', async () => {
 		const out = await registerNewAccount({ tag: TAG, password: PASSWORD }, dup(async () => 'yes'))
-		expect(out).toEqual({ ok: true, wallet: WALLET, recoverCodeBase58: null, alreadyRegistered: true })
+		expect(out).toEqual({ ok: true, wallet: WALLET, recoverCodeBase58: null, alreadyRegistered: true, conflictAdopted: true })
 		expect(JSON.stringify(out)).not.toContain(CODE)
 	})
 

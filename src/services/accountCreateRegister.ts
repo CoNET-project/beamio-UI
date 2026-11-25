@@ -97,7 +97,7 @@ export type RegisterDeps = {
 }
 
 export type RegisterOutcome =
-	| { ok: true; wallet: string; recoverCodeBase58: string | null; alreadyRegistered: boolean }
+	| { ok: true; wallet: string; recoverCodeBase58: string | null; alreadyRegistered: boolean; /** F1 only: a 409 with the registry holding the account: the password just typed was not adopted */ conflictAdopted?: true }
 	| { ok: false; code: RegisterErrorCode | 'failed' | 'bad_response' | 'unavailable' | 'post_failed' | 'post_refused' | 'registry_unknown'; retryable: boolean }
 
 const BACKOFF_MS = [2000, 4000, 8000]
@@ -143,7 +143,7 @@ async function forwardHeld(deps: RegisterDeps): Promise<RegisterOutcome | null> 
 				held = null
 				// F1 (0.53.51): a 409 means the server did not take THIS payload; the registry keeps the recover record of the earlier registration.
 				// The code of this payload was never registered, so it is not handed on: the no-code already-registered path.
-				return { ok: true, wallet: h.payload.wallet, recoverCodeBase58: null, alreadyRegistered: true }
+				return { ok: true, wallet: h.payload.wallet, recoverCodeBase58: null, alreadyRegistered: true, conflictAdopted: true }
 			}
 			return { ok: false, code: has === 'unknown' ? 'registry_unknown' : 'post_refused', retryable: has === 'unknown' }
 		}

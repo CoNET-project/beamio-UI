@@ -238,7 +238,7 @@ describe('N1 and F1: a resume page that ends on "already registered"', () => {
 		expect(noticeShown()).toBe('already_registered_keep_password')
 	})
 
-	it('the same 409 on the NORMAL page: still no recover code, but no N1 notice (it is only for a resume)', async () => {
+	it('the same 409 on the NORMAL page: no recover code and the N1 notice too (the password just typed was not adopted)', async () => {
 		beamio.postAddUserPayload.mockResolvedValue({ kind: 'http', status: 409 })
 		beamio.registryHasAccount.mockResolvedValue('yes')
 		await mount()
@@ -246,6 +246,59 @@ describe('N1 and F1: a resume page that ends on "already registered"', () => {
 		await created()
 		await waitFor(() => expect(wallet.notifyNativeWalletReady).toHaveBeenCalledWith(TAG, WALLET), { timeout: 5000 })
 		expect(screen.queryByTestId('recover-code')).toBeNull()
+		expect(noticeShown()).toBe('already_registered_keep_password')
+	})
+
+	it('a NORMAL page that ends on step 2 already_registered keeps the 0.53.50 behaviour: no notice (no password was typed over an earlier one: the step-2 answer is the shell\'s own)', async () => {
+		spc.sendAccountCreateRegister.mockResolvedValue({ type: 'ack', ok: false, reqId: 1, error: 'already_registered' })
+		await mount()
+		await press()
+		await created()
+		await waitFor(() => expect(wallet.notifyNativeWalletReady).toHaveBeenCalledWith(TAG, WALLET), { timeout: 5000 })
+		expect(beamio.postAddUserPayload).not.toHaveBeenCalled()
 		expect(noticeShown()).toBeNull()
+	})
+
+	it('a RESUME page that ends on step 2 already_registered shows N1', async () => {
+		seedRecord()
+		spc.sendAccountCreateRegister.mockResolvedValue({ type: 'ack', ok: false, reqId: 1, error: 'already_registered' })
+		await mount({ resume: RESUME })
+		await press()
+		await created()
+		await waitFor(() => expect(wallet.notifyNativeWalletReady).toHaveBeenCalledWith(TAG, WALLET), { timeout: 5000 })
+		expect(noticeShown()).toBe('already_registered_keep_password')
+	})
+
+	it('N1 is still shown for a wallet that earlier had the D3 notice', async () => {
+		const { pushResumeNotice, dismissResumeNotice: dis } = require('@/services/resumeNotice')
+		pushResumeNotice('code_not_shown', WALLET)
+		dis()
+		seedRecord()
+		beamio.postAddUserPayload.mockResolvedValue({ kind: 'http', status: 409 })
+		beamio.registryHasAccount.mockResolvedValue('yes')
+		await mount({ resume: RESUME })
+		await press()
+		await created()
+		await waitFor(() => expect(noticeShown()).toBe('already_registered_keep_password'), { timeout: 5000 })
+	})
+
+	it('CP-25 style: the notice keys hold only wallet -> true; the tag, the password and the code are in no other storage entry', async () => {
+		seedRecord()
+		beamio.postAddUserPayload.mockResolvedValue({ kind: 'http', status: 409 })
+		beamio.registryHasAccount.mockResolvedValue('yes')
+		await mount({ resume: RESUME })
+		await press()
+		await created()
+		await waitFor(() => expect(noticeShown()).toBe('already_registered_keep_password'), { timeout: 5000 })
+		expect(JSON.parse(localStorage.getItem('beamio.passwordNoticeShown.v1') as string)).toEqual({ [WALLET]: true })
+		for (const store of [localStorage, sessionStorage]) {
+			for (let i = 0; i < store.length; i++) {
+				const key = store.key(i) as string
+				const entry = `${key}=${store.getItem(key)}`
+				expect(entry).not.toContain(PWD)
+				expect(entry).not.toContain(CODE)
+				if (entry.includes(TAG)) expect(key).toBe(KEY)
+			}
+		}
 	})
 })

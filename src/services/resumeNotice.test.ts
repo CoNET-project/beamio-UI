@@ -28,10 +28,24 @@ describe('resumeNotice', () => {
 		expect(pushResumeNotice('code_not_shown', E)).toBe(false)
 		expect(pushResumeNotice('code_not_shown', 'nope')).toBe(false)
 	})
-	it('the stored flag is booleans under the wallet only (no tag, no secret)', () => {
+	it('each kind has its own key, holding only wallet -> true (no tag, no secret)', () => {
 		pushResumeNotice('code_not_shown', E)
 		pushResumeNotice('already_registered_keep_password', E)
-		expect(JSON.parse(localStorage.getItem('beamio.codeNoticeShown.v1') as string)).toEqual({ [E]: { d3: true, n1: true } })
+		expect(JSON.parse(localStorage.getItem('beamio.codeNoticeShown.v1') as string)).toEqual({ [E]: true })
+		expect(JSON.parse(localStorage.getItem('beamio.passwordNoticeShown.v1') as string)).toEqual({ [E]: true })
+	})
+	it('a wallet that already had D3 can still get N1 (and the other way round)', () => {
+		expect(pushResumeNotice('code_not_shown', E)).toBe(true)
+		dismissResumeNotice()
+		expect(pushResumeNotice('already_registered_keep_password', E)).toBe(true)
+		expect(getResumeNotice()).toEqual({ kind: 'already_registered_keep_password', eoa: E })
+		localStorage.clear()
+		expect(pushResumeNotice('already_registered_keep_password', F)).toBe(true)
+		expect(pushResumeNotice('code_not_shown', F)).toBe(true)
+	})
+	it('an old-shape value (object per wallet) is ignored, not trusted', () => {
+		localStorage.setItem('beamio.passwordNoticeShown.v1', JSON.stringify({ [E]: { n1: true } }))
+		expect(pushResumeNotice('already_registered_keep_password', E)).toBe(true)
 	})
 	it('listeners are told on push and dismiss, and can unsubscribe', () => {
 		const l = jest.fn()
