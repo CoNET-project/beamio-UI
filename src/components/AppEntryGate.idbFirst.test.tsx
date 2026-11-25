@@ -38,6 +38,7 @@ jest.mock('../services/shellIdentitySource', () => ({
 }))
 jest.mock('@/providers/DaemonProvider', () => ({ useDaemonContext: () => ({ setIsInitialLoading: () => undefined }) }), { virtual: true })
 jest.mock('@/services/beamio', () => ({
+	purgeKeyOnlyPageRecord: async () => ({ kind: 'absent' }), // 0.53.52: no key-only record in these fixtures (the purge reads the page store)
 	checkStorageWithStatus: jest.fn(async () => ({ status: 'empty' })),
 	checkStorageWithStatusWithTimeout: jest.fn(async () => ({ status: 'empty' })),
 	checkStorageWithTransientRetry: async () => (globalThis as { __idbPage?: unknown }).__idbPage,

@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { useDaemonContext } from '@/providers/DaemonProvider'
-import { checkStorageWithStatus, checkStorageWithStatusWithTimeout, checkStorageWithTransientRetry, persistPageIdbMnemonic, registrationStateVia, persistPageIdbPasscodeRecord, readStoredRecordForVerify, sendPendingProfileSync, storeSystemDataAndWait } from '@/services/beamio'
+import { purgeKeyOnlyPageRecord, checkStorageWithStatus, checkStorageWithStatusWithTimeout, checkStorageWithTransientRetry, persistPageIdbMnemonic, registrationStateVia, persistPageIdbPasscodeRecord, readStoredRecordForVerify, sendPendingProfileSync, storeSystemDataAndWait } from '@/services/beamio'
 import { allowRestoreWrite, endRestoreWriteWindow, setPageWritePermit, type PageWritePermit } from '@/services/beamio'
 import { checkRecoveredRecord, checkShellReadBack, recoveredPageRecord } from '@/services/recoveredMnemonicRecord'
 import { releaseShellSessionSignerHold, holdShellSessionFromPhrase, loadShellSessionSigner, recordCarriesAccountKey, refreshShellSessionInMemory, shellSessionEoa } from '@/services/shellSessionSigner'
@@ -24,6 +24,9 @@ import { clearFailureRecord, manualRetryVisible, readFailureRecord, recordForFai
 import { getShellSyncState, setShellSyncManualCheck } from '@/services/shellSyncStatus'
 import { needsReread, rereadDecision } from '@/services/manualRetryReread'
 import { queryNativeWalletStatusForPreCheck } from '@/services/syncPreCheckReads'
+import { forgetPersistedShellEoa } from '@/services/shellIdentitySource'
+import { clearPendingCreateTag } from '@/services/pendingCreateTag'
+import { classifyPageKeyState } from '@/services/pageRecordKeyState'
 import { installPasscodeStateWatcher } from '@/services/passcodeStateWatch'
 import { decideNoKeyEntry, readNoKeyFacts } from '@/services/noKeyEntry'
 import { cleanupAfterVerifiedRecovery, readCleanupPending, startCleanupAfterRecovery } from '@/services/accountCleanupPending'
@@ -1143,6 +1146,15 @@ export default function AppEntryGate() {
 		}
 		const hello = await probeNativeCapabilities().catch(() => null)
 		const platform = validNativeApp(hello && typeof hello === 'object' ? (hello as { nativeApp?: unknown }).nativeApp : undefined)?.platform ?? null
+		if (platform === 'ios' && !prereadUnsupported) {
+			// 0.53.52 (owner approval 2026-11-25): the SDK deletes a key-only native record itself; until walletStatus says no_key the page only waits.
+			const ios = await queryNativeWalletStatus()
+			if (ios.status === 'not_ready' && ios.notReadyReason === 'key_only') {
+				logStartRoute(reqId, 'none_yet')
+				startupWait('native key-only record: waiting for the SDK deletion (no_key), no onboarding', 'status_not_no_key')
+				return 'handled'
+			}
+		}
 		if (platform !== 'ios' || prereadUnsupported) {
 			const ws = await queryNativeWalletStatus()
 			publishNativePwaLog('info', `[startup] reqId=${reqId} onboarding confirmation platform=${platform ?? 'undeclared'} walletStatus=${ws.status}`)
@@ -1166,11 +1178,40 @@ export default function AppEntryGate() {
 		return 'proceed'
 	}
 
+	/**
+	 * 0.53.52 (owner approval 2026-11-25): THE one place where a key-only page record is silently deleted, called by openOnboardingConfirmed, which every way into
+	 * the onboarding passes after the absence of a mnemonic was confirmed. Compare and delete (purgeKeyOnlyPageRecord): only a plain record with a private key
+	 * and no mnemonic at all goes; a read failure, a lock, a passcode record, a mnemonic of any kind or an unknown shape leaves everything and holds the start (no
+	 * onboarding). A process that has read a valid mnemonic never deletes (sessionSawValidRef). Returns true when the onboarding may open.
+	 */
+	const holdUnlessKeyOnlyPurged = async (reqId: string): Promise<boolean> => {
+		if (sessionSawValidRef.current) return true
+		const purged = await purgeKeyOnlyPageRecord()
+		if (purged.kind === 'unknown' || purged.kind === 'failed') {
+			publishNativePwaLog('warn', `[startup] reqId=${reqId} key-only page record check ${purged.kind}: nothing deleted, no onboarding; the start waits`)
+			logStartRoute(reqId, 'none_yet')
+			startupWait(`key-only page record ${purged.kind}: hold, not onboarding`, 'read_failed')
+			return false
+		}
+		if (purged.kind === 'deleted') {
+			// one line, no secret, no address
+			publishNativePwaLog('info', '[AppEntryGate] a key-only page record was deleted; the onboarding follows')
+			// the leftovers of that wallet: the kept address hint and a pending create record (they would revive the deleted account)
+			if (purged.eoa) {
+				forgetPersistedShellEoa(purged.eoa)
+				clearPendingCreateTag(purged.eoa)
+			}
+		}
+		return true
+	}
+
 	/** The entries that open the onboarding because no account was found (not the create-tag or the recovery entries): confirmed by the one real read first. */
-	const openOnboardingConfirmed = async (where: string): Promise<void> => {
-		const reqId = newStartReqId()
+	const openOnboardingConfirmed = async (where: string, opts?: { reqId?: string; alreadyConfirmed?: boolean; onProceed?: () => void }): Promise<void> => {
+		const reqId = opts?.reqId ?? newStartReqId()
 		publishNativePwaLog('info', `[startup] reqId=${reqId} onboarding requested by ${where}: confirming with one real native read`)
-		if ((await confirmNoMnemonicOnNative(reqId)) === 'handled') return
+		if (!opts?.alreadyConfirmed && (await confirmNoMnemonicOnNative(reqId)) === 'handled') return
+		if (!(await holdUnlessKeyOnlyPurged(reqId))) return
+		opts?.onProceed?.()
 		goOnboarding(false)
 	}
 
@@ -1459,12 +1500,17 @@ export default function AppEntryGate() {
 			if (outcome.route === 'onboard') {
 				// One real native read confirms the absence before the onboarding opens (shared with every other onboarding entry)
 				if ((await confirmNoMnemonicOnNative(reqId)) === 'handled') return
-				publishNativePwaLog('info', '[AppEntryGate] native mnemonic pre-read absent, page confirmed empty: onboarding')
-				logStartRoute(reqId, 'onboarding')
-				resolveShellChatCapability()
-				setStorageUnavailable(null)
-				// explicit gate: route === 'onboard' (nativeStartRoute) and the confirmation reads above (native no_key on Android)
-				goOnboarding(false)
+				// explicit gate: route === 'onboard' (nativeStartRoute) and the confirmation reads above (native no_key on Android); the key-only purge is inside the helper
+				await openOnboardingConfirmed('start route onboard', {
+					reqId,
+					alreadyConfirmed: true,
+					onProceed: () => {
+						publishNativePwaLog('info', '[AppEntryGate] native mnemonic pre-read absent, page confirmed empty: onboarding')
+						logStartRoute(reqId, 'onboarding')
+						resolveShellChatCapability()
+						setStorageUnavailable(null)
+					},
+				})
 				return
 			}
 			if (outcome.route === 'retry') {
@@ -1650,6 +1696,11 @@ export default function AppEntryGate() {
 				'info',
 				`[AppEntryGate] storage hasAccount=${hasAccount} needsRecover=${needsRecover} hasMnemonic=${hasMnemonic}`,
 			)
+			// 0.53.52 (owner approval 2026-11-25): a browser page record holding only a private key is not a valid account: deleted (compare-and-delete), then the onboarding
+			if (!isShellContext() && classifyPageKeyState(CoNETData as never) === 'key_only') {
+				await openOnboardingConfirmed('browser key-only page record', { alreadyConfirmed: true })
+				return
+			}
 			// A browser key with the recovery phrase and no completed BeamioTag goes straight to the Create Beamio ID page (it reuses the key). A key-only record keeps the existing route (enterApp).
 				if (beamioTagCreateNeeded({ shell: isShellContext(), presence, completedAccount: hasCompletedBeamioAccount(CoNETData), hasMnemonic: hasLocalPlaintextMnemonic(CoNETData) })) {
 					publishNativePwaLog('info', '[AppEntryGate] account key without BeamioTag → Create Beamio ID page (reuses the key)')
