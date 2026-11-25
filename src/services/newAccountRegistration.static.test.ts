@@ -38,17 +38,18 @@ describe('the password stays in one call', () => {
 	})
 	it('the create page clears the password as soon as the call returns and hands over before the old create path', () => {
 		const page = src('pages/Home/CreateUsernamePinScreen.tsx')
-		const fn = page.slice(page.indexOf('const handleShellRegister'), page.indexOf('const handleCreateWallet'))
+		const fn = page.slice(page.indexOf('const handleShellRegister'), page.indexOf('const handleShellCreate'))
 		expect(fn).toMatch(/finally \{[^}]*setPassword\(''\)/)
 		const create = page.slice(page.indexOf('const handleCreateWallet'))
-		expect(create.indexOf('await handleShellRegister(trimmedTag, pwd)')).toBeGreaterThan(0)
-		expect(create.indexOf('await handleShellRegister(trimmedTag, pwd)')).toBeLessThan(create.indexOf('await nativeAccountCreateOpen(trimmedTag)'))
-		expect(page).toMatch(/if \(ACCOUNT_CREATE_REGISTER_ENABLED\) \{/)
+		expect(create.indexOf('await handleShellCreate(trimmedTag, pwd)')).toBeGreaterThan(0)
+		expect(create.indexOf('await handleShellCreate(trimmedTag, pwd)')).toBeLessThan(create.indexOf('kks = await createRecover('))
+		const shell = page.slice(page.indexOf('const handleShellCreate'), page.indexOf('const handleCreateWallet'))
+		expect(shell.indexOf('await nativeAccountCreateOpen(trimmedTag)')).toBeLessThan(shell.indexOf('await handleShellRegister(trimmedTag, pwd)'))
 	})
-	it('the password field of the shell is shown only when the registration is enabled (production keeps its page unchanged)', () => {
+	it('0.53.50: the password field of the shell is shown always (the page collects it like the browser)', () => {
 		const page = src('pages/Home/CreateUsernamePinScreen.tsx')
-		expect(page).toMatch(/const shellNoPassword = shellNative && !ACCOUNT_CREATE_REGISTER_ENABLED/)
-		expect(page).toMatch(/\{!shellNoPassword \? \(<>/)
+		expect(page).not.toMatch(/shellNoPassword/)
+		expect(page).toMatch(/id="create-wallet-password"/)
 	})
 })
 

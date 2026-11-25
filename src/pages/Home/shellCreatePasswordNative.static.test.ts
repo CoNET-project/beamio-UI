@@ -1,59 +1,70 @@
 /**
  * @jest-environment node
  *
- * Shell account creation: the wallet password is not typed in the WebView; the native create page
- * takes it. The shell submit needs no page-side password rule and passes an empty password. Reads the sources.
+ * 0.53.50 (plan r3-create): the shell create page is the PWA page. It collects the BeamioTag and the password like the browser; the password goes
+ * to the native layer in accountCreateRegister over the trusted shell adapter, after the headless native create (nativeAccountCreateOpen). The page
+ * generates no key. Reads the sources.
  */
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
 const read = (rel: string) => readFileSync(join(__dirname, '..', '..', '..', 'src', rel), 'utf8')
 
-describe('shell create: no wallet password is typed in the WebView', () => {
+describe('shell create: the password is typed in the page like the browser', () => {
 	const page = read('pages/Home/CreateUsernamePinScreen.tsx')
 
-	it('the password block is not rendered in a shell (production); only a QA build with the new-account registration switch shows it', () => {
-		expect(page).toMatch(/const shellNative = isShellContext\(\)/)
-		expect(page).toMatch(/const shellNoPassword = shellNative && !ACCOUNT_CREATE_REGISTER_ENABLED/)
-		expect(page).toMatch(/\{!shellNoPassword \? \(<>[\s\S]*?<\/>\) : null\}/)
+	it('the password block is always rendered and always required (no shell exception)', () => {
+		expect(page).not.toMatch(/shellNoPassword/)
+		expect(page).toMatch(/const canSubmit = tagValid && pwdRulesOk && termsAccepted/)
+		expect(page).toMatch(/id="create-wallet-password"/)
+		expect(page).toMatch(/\{\.\.\.secretFieldProps\('pin'\)\}/)
 	})
 
-	it('the shell submit does not require a page-side password and passes an empty one', () => {
-		expect(page).toMatch(/const canSubmit = tagValid && \(shellNoPassword \|\| pwdRulesOk\)/)
-		expect(page).toMatch(/const p = shellNoPassword \? '' : password\.trim\(\)/)
-		expect(page).toMatch(/if \(!shellNoPassword && \(!l \|\| !m \|\| !n\)\) return/)
-	})
-
-	it('the shell branch opens the native create before any page-side account creation', () => {
-		const shell = page.indexOf("'[createAccount] shell: native create requested'")
-		const open = page.indexOf('await nativeAccountCreateOpen(trimmedTag)', shell)
-		const pageCreate = page.indexOf('kks = await createRecover(', shell)
+	it('the shell branch runs the three steps and never creates a key in the page', () => {
+		const create = page.slice(page.indexOf('const handleCreateWallet'))
+		const shell = create.indexOf('await handleShellCreate(trimmedTag, pwd)')
+		const pageCreate = create.indexOf('kks = await createRecover(')
 		expect(shell).toBeGreaterThan(0)
-		expect(open).toBeGreaterThan(shell)
-		expect(pageCreate).toBeGreaterThan(open)
+		expect(pageCreate).toBeGreaterThan(shell)
+		const fn = page.slice(page.indexOf('const handleShellCreate'), page.indexOf('const handleCreateWallet'))
+		const open = fn.indexOf('await nativeAccountCreateOpen(trimmedTag)')
+		const wait = fn.indexOf('await stepDone')
+		const register = fn.indexOf('await handleShellRegister(trimmedTag, pwd)')
+		expect(open).toBeGreaterThan(0)
+		expect(wait).toBeGreaterThan(open)
+		expect(register).toBeGreaterThan(wait)
+		expect(fn).not.toMatch(/createRecover|generateKeyPair|createOrGetWallet/)
+	})
+
+	it('the capability account.page-create.v1 is checked before anything is sent', () => {
+		const fn = page.slice(page.indexOf('const handleShellCreate'), page.indexOf('const handleCreateWallet'))
+		expect(fn.indexOf('await hasPageCreate()')).toBeGreaterThan(0)
+		expect(fn.indexOf('await hasPageCreate()')).toBeLessThan(fn.indexOf('await nativeAccountCreateOpen(trimmedTag)'))
 	})
 })
 
-describe('shell create: the pending native create follows rule (a)', () => {
+describe('shell create: the pending native create', () => {
 	const page = read('pages/Home/CreateUsernamePinScreen.tsx')
 
-	it('pending is set only when the native page opens, and no second open is sent while it is pending', () => {
-		//pending is set only when the ack's page is "opened"; none, absent or another page value waits for the result event.
-		expect(page).toMatch(/if \(opened\.page === 'opened'\) \{[\s\S]{0,200}nativeCreatePendingRef\.current = true/)
-		expect(page).toMatch(/if \(nativeCreatePendingRef\.current\) \{[\s\S]{0,200}return\s*\}[\s\S]{0,3000}const opened = await nativeAccountCreateOpen\(trimmedTag\)/)
+	it('pending is set after an accepted open, and no second open is sent while it is pending', () => {
+		const fn = page.slice(page.indexOf('const handleShellCreate'), page.indexOf('const handleCreateWallet'))
+		expect(fn).toMatch(/if \(nativeCreatePendingRef\.current\) \{[\s\S]{0,200}return\s*\}[\s\S]{0,4000}const opened = await nativeAccountCreateOpen\(trimmedTag\)/)
+		expect(fn).toMatch(/nativeCreatePendingRef\.current = true\s*\/\/[\s\S]{0,200}startNativeWait\(\)/)
 	})
 
-	it('ok and cancel clear pending; a failed result keeps it; unmount clears it', () => {
-		// r11 §11 (CT, NC-AE): ok is the only establishing result. already_exists is handed back to the entry judgement and never announces.
-		expect(page).toMatch(/if \(code === 'ok'\) \{[\s\S]{0,600}nativeCreatePendingRef\.current = false/)
-		// the wallet is announced as established synchronously, before any async read.
-		expect(page).toMatch(/if \(code === 'ok'\) \{[\s\S]{0,400}announceNativeWalletEstablished\(\)/)
-		expect(page).toMatch(/if \(code === 'already_exists'\) \{[\s\S]{0,400}requestNativeIdentityRetry\(\)/)
-		expect(page.slice(page.indexOf("if (code === 'already_exists')"), page.indexOf("if (code === 'already_exists')") + 500)).not.toMatch(/announceNativeWalletEstablished\(\)/)
+	it('a result for the page-run create (ok, already_exists) goes to step 2; other codes keep their copy; unmount clears pending', () => {
+		const start = page.indexOf('onNativeAccountCreateResult((accepted)')
+		const listener = page.slice(start, page.indexOf('return () => {', start))
+		expect(listener).toMatch(/const waiter = shellCreateWaitRef\.current/)
+		expect(listener).toMatch(/accepted\.code === 'ok' \|\| accepted\.code === 'already_exists'/)
+		expect(listener).toMatch(/waiter\(\{ kind: 'failed' \}\)/)
 		expect(page).toMatch(/if \(code === 'cancelled'\) \{\s*nativeCreatePendingRef\.current = false/)
-		const failed = page.indexOf("if (code === 'write_failed' || code === 'readback_failed') {")
-		expect(failed).toBeGreaterThan(0)
-		expect(page.slice(failed, failed + 500)).not.toMatch(/nativeCreatePendingRef\.current = false/)
 		expect(page).toMatch(/return \(\) => \{\s*off\(\)[\s\S]{0,160}nativeCreatePendingRef\.current = false/)
+	})
+
+	it('already_exists completes the registration only for an account the registry holds no tag for; otherwise the entry judgement', () => {
+		const fn = page.slice(page.indexOf('const handleShellCreate'), page.indexOf('const handleCreateWallet'))
+		expect(fn).toMatch(/step\.kind === 'exists' && !\(await canCompleteRegistration\(\)\)[\s\S]{0,200}requestNativeIdentityRetry\(\)/)
+		expect(page).toMatch(/lookup\.status === 'no_account'/)
 	})
 })

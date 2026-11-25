@@ -328,11 +328,7 @@ export default function RestoreWalletUnifiedScreen({
 		}
 	}, [tab, tu])
 
-	useEffect(() => {
-		if (!recoveryError) return
-		const t = setTimeout(() => setRecoveryError(''), 4000)
-		return () => clearTimeout(t)
-	}, [recoveryError])
+	// 0.53.50: an error line stays until the user types again or submits again (same as the login screen); there is no timer.
 
 	const formatBeamioName = () => {
 		const trimmed = normalizeBeamioTagInput(username)
@@ -633,6 +629,7 @@ export default function RestoreWalletUnifiedScreen({
 	const onBack = () => {
 		if (tab === 'scan') {
 			setTab('recovery')
+			setRecoveryError('')
 			return
 		}
 			if (tab === 'recovery') {

@@ -94,11 +94,15 @@ describe('cancel, cancelled, still-open and late-ok wiring (CT-13, CT-15, CT-15b
 })
 
 describe('nested result wait and write-failed hold (Android review, this batch)', () => {
-	it('page none starts the native wait so the nested result (already_bound, lookup_unavailable) is delivered', () => {
-		const at = src.indexOf("ack page=${opened.page ?? 'absent'}; waiting for the nested result event")
+	it('an accepted open starts the native wait, and the page waits for the result (ok, already_exists, already_bound, lookup_unavailable) before step 2', () => {
+		const at = src.indexOf('const opened = await nativeAccountCreateOpen(trimmedTag)')
 		expect(at).toBeGreaterThan(0)
-		const block = src.slice(at - 400, at + 200)
-		expect(block).toContain('startNativeWait()')
+		const wait = src.indexOf('startNativeWait()', at)
+		const step = src.indexOf('const step = await stepDone', at)
+		const register = src.indexOf('await handleShellRegister(trimmedTag, pwd)', at)
+		expect(wait).toBeGreaterThan(at)
+		expect(step).toBeGreaterThan(wait)
+		expect(register).toBeGreaterThan(step)
 	})
 
 	it('a write_failed without a reason holds the submit button and the submit handler (explanation only)', () => {

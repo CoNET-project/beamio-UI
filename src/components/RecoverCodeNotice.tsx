@@ -1,6 +1,7 @@
 /**
  * Shows the recover code the native layer returned once after a new account was created (base58). The code is held by this component only
  * (React state of the caller): never written to a store or a log. The user confirms that it was saved before the page goes on.
+ * 0.53.50: the shell shows it without select, copy or callout (the user writes it down); the caller keeps the screen protected meanwhile.
  */
 import { useState } from 'react'
 import { tu } from '../locale/beamioLocale'
@@ -12,7 +13,16 @@ export default function RecoverCodeNotice({ code, onDone }: { code: string; onDo
 			<div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl">
 				<h2 className="text-base font-semibold text-slate-900">{tu('create_account_recover_code_title')}</h2>
 				<p className="mt-2 text-sm text-slate-700">{tu('create_account_recover_code_body')}</p>
-				<p data-testid="recover-code" className="mt-3 select-all break-all rounded-lg bg-slate-100 p-3 font-mono text-sm text-slate-900">
+				<p
+					data-testid="recover-code"
+					// the shell shows the code to be written down: no select, no copy, no callout, no drag (0.53.50)
+					style={{ userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none' }}
+					onCopy={(e) => e.preventDefault()}
+					onCut={(e) => e.preventDefault()}
+					onContextMenu={(e) => e.preventDefault()}
+					onDragStart={(e) => e.preventDefault()}
+					className="mt-3 select-none break-all rounded-lg bg-slate-100 p-3 font-mono text-sm text-slate-900"
+				>
 					{code}
 				</p>
 				<label className="mt-3 flex items-center gap-2 text-sm text-slate-800">

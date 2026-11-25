@@ -468,3 +468,58 @@ describe('shell: the result wait is bounded (120 s)', () => {
 		expect(cancel).toHaveBeenCalledTimes(1)
 	})
 })
+
+describe('an error line stays until the user types again or submits again (no timer)', () => {
+	afterEach(() => {
+		jest.useRealTimers()
+	})
+
+	it('a recovery code error is still there long after 4 seconds', async () => {
+		await mount()
+		goRecovery()
+		fireEvent.change(codeBox(), { target: { value: CODE } })
+		// fake timers before the error appears, so a timer started by the error is the one that is advanced
+		jest.useFakeTimers()
+		await submitCode()
+		await act(async () => emit({ code: 'not_found' }))
+		expect(screen.getAllByText('recovery.native.not_found').length).toBeGreaterThan(0)
+		act(() => {
+			jest.advanceTimersByTime(60_000)
+		})
+		expect(screen.getAllByText('recovery.native.not_found').length).toBeGreaterThan(0)
+	})
+
+	it('typing in the code box clears it', async () => {
+		await mount()
+		goRecovery()
+		fireEvent.change(codeBox(), { target: { value: CODE } })
+		await submitCode()
+		await act(async () => emit({ code: 'not_found' }))
+		fireEvent.change(codeBox(), { target: { value: 'a' } })
+		expect(screen.queryByText('recovery.native.not_found')).toBeNull()
+	})
+
+	it('submitting again clears it while the request runs', async () => {
+		await mount()
+		goRecovery()
+		fireEvent.change(codeBox(), { target: { value: CODE } })
+		await submitCode()
+		await act(async () => emit({ code: 'already_exists' }))
+		expect(screen.getAllByText('recovery.native.already_exists').length).toBeGreaterThan(0)
+		fireEvent.change(codeBox(), { target: { value: CODE } })
+		expect(screen.queryByText('recovery.native.already_exists')).toBeNull()
+	})
+
+	it('a backoff line stays while the cooldown still blocks a new submit', async () => {
+		await mount()
+		goRecovery()
+		fireEvent.change(codeBox(), { target: { value: CODE } })
+		await submitCode()
+		await act(async () => emit({ code: 'backoff', cooldownSec: 30 }))
+		jest.useFakeTimers()
+		act(() => {
+			jest.advanceTimersByTime(10_000)
+		})
+		expect(screen.getAllByText(/recovery\.native\.backoff/).length).toBeGreaterThan(0)
+	})
+})

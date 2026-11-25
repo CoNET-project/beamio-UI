@@ -20,8 +20,8 @@ import { isShellContext } from "@/services/shellContext"
 import { publishNativePwaLog } from "@/utils/cashTreesNativePwaLog"
 import { notifyNativeWalletReady, reachNativeWallet, rememberNativeEoa } from "@/services/nativeWallet"
 import { warmArgon2Worker } from "@/services/argon2WorkerBridge"
-import { ACCOUNT_CREATE_REGISTER_ENABLED } from '@/utils/accountCreateRegisterFlag'
 import { realRegisterDeps, registerNewAccount } from '@/services/accountCreateRegister'
+import { hasPageCreate, setSecureScreen } from '@/services/shellPageCreate'
 import RecoverCodeNotice from '@/components/RecoverCodeNotice'
 import {
 	Eye,
@@ -126,6 +126,9 @@ const CreateUsernamePinScreen = forwardRef<
 	const nativeCreatePendingRef = useRef(false)
 	// v10.2 r4 §2.2: the native create wait (event first, 10-minute fallback) and its cancel timer.
 	const createWaitRef = useRef<CreateWaitState>({ kind: 'idle' })
+	/** 0.53.50: the onboarding create waits here for step 1 (nativeAccountCreateOpen) to report; the result listener resolves it. */
+	type ShellCreateStep = { kind: 'created' } | { kind: 'exists' } | { kind: 'failed' }
+	const shellCreateWaitRef = useRef<((step: ShellCreateStep) => void) | null>(null)
 	const createWaitCancelRef = useRef<(() => void) | null>(null)
 	const createWaitSeqRef = useRef(0)
 	// v10 §九: after a write_failed (any reason, or none) the next create action rereads walletEoaAddress first.
@@ -143,6 +146,11 @@ const CreateUsernamePinScreen = forwardRef<
 			announceNativeFlowPending(false)
 			setNativeOpening(false)
 			setLoading(false)
+			{
+				const w = shellCreateWaitRef.current
+				shellCreateWaitRef.current = null
+				w?.({ kind: 'failed' })
+			}
 			publishNativePwaLog('info', '[createAccount] shell: no result in 10 minutes; the wait ends, a new create needs the reread')
 			setCreateError(tu('create_account_try_later'))
 		})
@@ -173,6 +181,18 @@ const CreateUsernamePinScreen = forwardRef<
 			createWaitCancelRef.current = null
 			if (!waited.deliver) return
 			setNativeOpening(false)
+			// 0.53.50: a create that the page itself is running (steps 1 to 3) takes the result here. A new key (ok) or an account the device
+			// already has (already_exists) goes on to step 2; any other code ends the run after the copy below.
+			const waiter = shellCreateWaitRef.current
+			shellCreateWaitRef.current = null
+			if (waiter) {
+				if (accepted.code === 'ok' || accepted.code === 'already_exists') {
+					nativeCreatePendingRef.current = false
+					waiter({ kind: accepted.code === 'ok' ? 'created' : 'exists' })
+					return
+				}
+				waiter({ kind: 'failed' })
+			}
 			if (accepted.code === 'shape_violation') {
 				// r11 §11: an ok/code mismatch ends the wait at once, shows a retry, and logs the category only (never a key name or value).
 				publishNativePwaLog('warn', '[createAccount] native create result: shape violation (ok_code_mismatch); wait ended, retry offered')
@@ -381,11 +401,8 @@ const CreateUsernamePinScreen = forwardRef<
 
 	const { len8, mixed, numbers, hasLower, hasUpper } = passwordRuleChecks(password)
 	const pwdRulesOk = len8 && mixed && numbers
-	// Shell: the wallet password is not typed in the WebView; the native create page takes it.
-	const shellNative = isShellContext()
-	// QA builds only: the shell create page collects the password too and hands it to the native create (accountCreateRegister).
-	const shellNoPassword = shellNative && !ACCOUNT_CREATE_REGISTER_ENABLED
-	const canSubmit = tagValid && (shellNoPassword || pwdRulesOk) && termsAccepted && !loading && !tagChecking
+	// 0.53.50: the shell create page collects the password like the browser; it goes to the native layer in accountCreateRegister.
+	const canSubmit = tagValid && pwdRulesOk && termsAccepted && !loading && !tagChecking
 	// Four meter segments map 1:1 to length / lowercase / uppercase / digit.
 	// Persist is still the original 3 rules (mixed = both cases); all persist → 4/4 = 100%.
 	const passwordStrengthCount = [len8, hasLower, hasUpper, numbers].filter(Boolean).length
@@ -437,8 +454,17 @@ const CreateUsernamePinScreen = forwardRef<
 	/** The wallet of a finished registration, kept until the user has confirmed the recover code. */
 	const registeredWalletRef = useRef('')
 	const [shellRecoverCode, setShellRecoverCode] = useState<string | null>(null)
+	// the recover code shows with the screen protected (Android FLAG_SECURE, iOS app-switcher cover); off when it is confirmed or the page leaves
+	useEffect(() => {
+		if (!shellRecoverCode) return
+		void setSecureScreen(true)
+		return () => {
+			void setSecureScreen(false)
+		}
+	}, [shellRecoverCode])
 	const finishShellRegister = (wallet: string) => {
 		setCreateError('')
+		announceNativeFlowPending(false)
 		announceNativeWalletEstablished()
 		rememberNativeEoa(wallet)
 		void reachNativeWallet().then((st) => {
@@ -464,6 +490,7 @@ const CreateUsernamePinScreen = forwardRef<
 			finishShellRegister(out.wallet)
 			return
 		}
+		announceNativeFlowPending(false)
 		switch (out.code) {
 			case 'tag_taken':
 				// the last native check after the page's own pre-check (a race): the same copy as the pre-check, back to renaming
@@ -491,10 +518,153 @@ const CreateUsernamePinScreen = forwardRef<
 		}
 	}
 
+	/** The step 1 refusals: each open failure reason has its own copy; loading ends. */
+	const showShellOpenFailure = (opened: Extract<Awaited<ReturnType<typeof nativeAccountCreateOpen>>, { ok: false }>) => {
+		setLoading(false)
+		publishNativePwaLog('warn', `[createAccount] shell: native create unavailable reason=${opened.reason}`)
+		// OB-5 (v10 §九): a locked native side is not a completion and not a second create; the unlock branch (gate) resumes the start.
+		if (opened.reason === 'locked') {
+			setCreateError(tu('create_account_try_later'))
+			return
+		}
+		// Compatibility branch only (an old shell): the new SDKs send already_bound as the nested result event.
+		if (opened.reason === 'already_bound') {
+			openNativeRecoveryFromCreate()
+			return
+		}
+		if (opened.reason === 'lookup_unavailable') {
+			setCreateError(tu('create_account_try_later'))
+			return
+		}
+		if (opened.reason === 'bad_request') {
+			// the name is not a valid BeamioTag for the native create; nothing was sent
+			setCreateError(tu('create_account_invalid_name'))
+			return
+		}
+		if (opened.reason === 'not_available') {
+			if (opened.walletStatus === 'G1' || opened.walletStatus === 'G2') {
+				// G1 and G2 show "unavailable" and do not retry.
+				setCreateError(tu('create_account_unavailable'))
+				return
+			}
+			// G0, or no walletStatus (treated as G0): try later; the 15 s wait applies; three in a row show the terminal copy (manual retry stays open).
+			g0NotAvailableCountRef.current += 1
+			createCooldownUntilRef.current = Date.now() + 15_000
+			setCreateError(g0NotAvailableCountRef.current >= 3
+				? tu('create_account_unavailable_terminal')
+				: `${tu('create_account_try_later')} ${tu('create_account_close_native_first')}`)
+			return
+		}
+		// F-CREATE-1 §4, r10 OPEN-4: not_ready at the open is a retryable wait (try later), never the unsupported-version message.
+		if (opened.reason === 'not_ready') {
+			setCreateError(tu('create_account_try_later'))
+			return
+		}
+		// not_supported and no_key: the shell does not offer creation yet.
+		setCreateError(tu('create_account_native_unavailable'))
+	}
+
+	/**
+	 * The device already has an account (already_exists): the registration is completed only for the same account when the registry holds no
+	 * BeamioTag for it (an earlier run ended before addUser). Any other case goes back to the entry judgement.
+	 */
+	const canCompleteRegistration = async (): Promise<boolean> => {
+		try {
+			const r = await readWalletEoaAddress().catch(() => null)
+			if (!r || r.kind !== 'address') return false
+			const { getUserInfoLookup } = await import('@/services/beamio')
+			const lookup = await getUserInfoLookup(r.eoa)
+			return lookup.status === 'no_account'
+		} catch {
+			return false
+		}
+	}
+
+	/** Shell onboarding create (0.53.50): step 1 nativeAccountCreateOpen (headless), step 2 accountCreateRegister, step 3 addUser, then the recover code. */
+	const handleShellCreate = async (trimmedTag: string, pwd: string) => {
+		const stop = (copy: string) => {
+			setLoading(false)
+			announceNativeFlowPending(false)
+			setCreateError(copy)
+		}
+		// without identity.native-keys.v1 or account.page-create.v1 nothing is sent; the unified unavailable notice shows (no page fallback).
+		if ((await ensureShellChatState()) !== 'native_chat' || !(await hasPageCreate())) {
+			publishNativePwaLog('warn', '[createAccount] shell: identity.native-keys.v1 or account.page-create.v1 not declared; nothing sent')
+			return stop(tu('create_account_native_unavailable'))
+		}
+		createTagRef.current = trimmedTag
+		if (nativeCreatePendingRef.current) {
+			setLoading(false)
+			return
+		}
+		// after a G0 not_available the user waits at least 15 s before a new open (no same-reqId resend, no automatic retry).
+		if (Date.now() < createCooldownUntilRef.current) {
+			return stop(`${tu('create_account_try_later')} ${tu('create_account_close_native_first')}`)
+		}
+		// v10.2 r4 §2.2: a pending wait admits no new create; after the 10-minute fallback a new create needs the reread (PWA-RETRY-03).
+		if (createWaitRef.current.kind === 'cancelled') {
+			return stop(tu('create_account_close_native_retry'))
+		}
+		if (createWaitRef.current.kind === 'pending') {
+			return stop(tu('create_account_try_later'))
+		}
+		if (createWaitRef.current.kind === 'fallback') {
+			if (!canStartCreate(createWaitRef.current, { kind: 'timeout' })) {
+				return stop(tu('create_account_native_still_open'))
+			}
+			const r = await readWalletEoaAddress().catch(() => null)
+			const reread = r === null ? { kind: 'timeout' as const } : r.kind === 'address' ? { kind: 'address' as const } : { kind: 'refused' as const, code: r.code }
+			if (!canStartCreate(createWaitRef.current, reread)) return stop(tu('create_account_try_later'))
+			createWaitRef.current = { kind: 'idle' }
+		}
+		if (createRereadRequiredRef.current) {
+			const r = await readWalletEoaAddress().catch(() => null)
+			const reread = r === null ? { kind: 'timeout' as const } : r.kind === 'address' ? { kind: 'address' as const } : { kind: 'refused' as const, code: r.code }
+			if (rereadDecision(reread) !== 'send') {
+				return stop(tu('create_account_try_later'))
+			}
+			createRereadRequiredRef.current = false
+		}
+		// step 1: the waiter is set before the open, so a result that arrives right behind the ack is not lost
+		const stepDone = new Promise<ShellCreateStep>((resolve) => {
+			shellCreateWaitRef.current = resolve
+		})
+		announceNativeFlowPending(true)
+		publishNativePwaLog('info', '[createAccount] shell: native create requested (headless)')
+		const opened = await nativeAccountCreateOpen(trimmedTag)
+		if (!opened.ok) {
+			shellCreateWaitRef.current = null
+			announceNativeFlowPending(false)
+			showShellOpenFailure(opened)
+			return
+		}
+		g0NotAvailableCountRef.current = 0
+		nativeCreatePendingRef.current = true
+		// the wait starts: the nested result event (already_bound, lookup_unavailable) and the ok result are delivered through it
+		startNativeWait()
+		const step = await stepDone
+		nativeCreatePendingRef.current = false
+		if (step.kind === 'failed') {
+			// the result listener showed the copy for the code
+			setLoading(false)
+			announceNativeFlowPending(false)
+			return
+		}
+		if (step.kind === 'exists' && !(await canCompleteRegistration())) {
+			// an account the device already has, or the registry holds a tag for it: back to the entry judgement
+			setLoading(false)
+			announceNativeFlowPending(false)
+			requestNativeIdentityRetry()
+			return
+		}
+		// steps 2 and 3
+		await handleShellRegister(trimmedTag, pwd)
+	}
+
 	const handleCreateWallet = async (pwd: string) => {
 		const trimmedTag = normalizeBeamioTagInput(beamioName || "")
 		const { len8: l, mixed: m, numbers: n } = passwordRuleChecks(pwd)
-		if (!trimmedTag || (!shellNoPassword && (!l || !m || !n))) return
+		if (!trimmedTag || !l || !m || !n) return
 
 		setLoading(true)
 		setCreateError("")
@@ -504,133 +674,7 @@ const CreateUsernamePinScreen = forwardRef<
 		//in a shell the page never generates an account key (createRecover would, through createOrGetWallet). The shell
 		// creates the account natively; until it answers ok, the unavailable notice is shown. Logs carry no secret.
 		if (isShellContext()) {
-			// without identity.native-keys.v1 nothing is sent; the unified unavailable notice shows (no page fallback).
-			if ((await ensureShellChatState()) !== 'native_chat') {
-				publishNativePwaLog('warn', '[createAccount] shell: identity.native-keys.v1 not declared; nothing sent')
-				setLoading(false)
-				setCreateError(tu('create_account_native_unavailable'))
-				return
-			}
-			if (ACCOUNT_CREATE_REGISTER_ENABLED) {
-				// QA builds: the native layer creates and seals the account and returns the addUser payload; the page forwards it unchanged.
-				createTagRef.current = trimmedTag
-				await handleShellRegister(trimmedTag, pwd)
-				return
-			}
-			publishNativePwaLog('info', '[createAccount] shell: native create requested')
-			// the name is cached with its EOA only when the native result arrives (notifyNativeWalletReady)
-			createTagRef.current = trimmedTag
-			if (nativeCreatePendingRef.current) {
-				// The native page is still open for the last confirmation: no second open.
-				setLoading(false)
-				return
-			}
-			// (3): after a G0 not_available the user waits at least 15 s before a new open (no same-reqId resend, no automatic retry).
-			if (Date.now() < createCooldownUntilRef.current) {
-				setLoading(false)
-				setCreateError(`${tu('create_account_try_later')} ${tu('create_account_close_native_first')}`)
-				return
-			}
-			// v10.2 r4 §2.2: a pending wait admits no new create; after the 10-minute fallback a new create needs the reread (PWA-RETRY-03).
-			// r7 §一 (CT-15): after a cancel, the retry waits for the terminal result event of the same request (cancelled included).
-			if (createWaitRef.current.kind === 'cancelled') {
-				setLoading(false)
-				setCreateError(tu('create_account_close_native_retry'))
-				return
-			}
-			if (createWaitRef.current.kind === 'pending') {
-				setLoading(false)
-				setCreateError(tu('create_account_try_later'))
-				return
-			}
-			if (createWaitRef.current.kind === 'fallback') {
-				// CT-13 (r5 §二): after a fallback alone the native page may still be open; no new request until a terminal result or a cancel.
-				if (!canStartCreate(createWaitRef.current, { kind: 'timeout' })) {
-					setLoading(false)
-					setCreateError(tu('create_account_native_still_open'))
-					return
-				}
-				const r = await readWalletEoaAddress().catch(() => null)
-				const reread = r === null ? { kind: 'timeout' as const } : r.kind === 'address' ? { kind: 'address' as const } : { kind: 'refused' as const, code: r.code }
-				if (!canStartCreate(createWaitRef.current, reread)) {
-					setLoading(false)
-					setCreateError(tu('create_account_try_later'))
-					return
-				}
-				createWaitRef.current = { kind: 'idle' }
-			}
-			if (createRereadRequiredRef.current) {
-				const r = await readWalletEoaAddress().catch(() => null)
-				const reread = r === null ? { kind: 'timeout' as const } : r.kind === 'address' ? { kind: 'address' as const } : { kind: 'refused' as const, code: r.code }
-				if (rereadDecision(reread) !== 'send') {
-					setLoading(false)
-					setCreateError(tu('create_account_try_later'))
-					return
-				}
-				createRereadRequiredRef.current = false
-			}
-			const opened = await nativeAccountCreateOpen(trimmedTag)
-			setLoading(false)
-			if (opened.ok) {
-				g0NotAvailableCountRef.current = 0
-				if (opened.page === 'opened') {
-					// The first screen is open: "正在打开" until the native page reports a result (the protocol has no ready signal).
-					nativeCreatePendingRef.current = true
-					announceNativeFlowPending(true)
-					setNativeOpening(true)
-					// v10.2 r4 §2.2: the wait starts; the fallback (10 minutes, no result event) ends the wait only, judging nothing.
-					startNativeWait()
-					publishNativePwaLog('info', '[createAccount] shell: native create page opened')
-				} else {
-					// page none, absent or another value: no native page is waited for; the nested result event (the same reqId) decides. The wait starts
-					// so that the nested already_bound / lookup_unavailable result is delivered (Android, r10 OPEN-6).
-					startNativeWait()
-					publishNativePwaLog('info', `[createAccount] shell: ack page=${opened.page ?? 'absent'}; waiting for the nested result event`)
-				}
-				return
-			}
-			publishNativePwaLog('warn', `[createAccount] shell: native create unavailable reason=${opened.reason}`)
-			// OB-5 (v10 §九): a locked native side is not a completion and not a second create; the unlock branch (gate) resumes the start.
-			if (opened.reason === 'locked') {
-				setCreateError(tu('create_account_try_later'))
-				return
-			}
-			// Compatibility branch only: the new SDKs send already_bound as the nested result event (see nativeRecovery.ts), not as an ok:false
-			// open ack. Kept for an unverified old shell (旧壳未核). Remove after the old shells are confirmed.
-			if (opened.reason === 'already_bound') {
-				openNativeRecoveryFromCreate()
-				return
-			}
-			if (opened.reason === 'lookup_unavailable') {
-				setCreateError(tu('create_account_try_later'))
-				return
-			}
-			if (opened.reason === 'bad_request') {
-				// the name is not a valid BeamioTag for the native create; nothing was sent
-				setCreateError(tu('create_account_invalid_name'))
-				return
-			}
-			if (opened.reason === 'not_available') {
-				if (opened.walletStatus === 'G1' || opened.walletStatus === 'G2') {
-					//G1 and G2 show "unavailable" and do not retry.
-					setCreateError(tu('create_account_unavailable'))
-					return
-				}
-				// G0, or no walletStatus (treated as G0): try later; the 15 s wait applies; three in a row show the terminal copy (manual retry stays open).
-				g0NotAvailableCountRef.current += 1
-				createCooldownUntilRef.current = Date.now() + 15_000
-				setCreateError(g0NotAvailableCountRef.current >= 3
-					? tu('create_account_unavailable_terminal')
-					: `${tu('create_account_try_later')} ${tu('create_account_close_native_first')}`)
-				return
-			}
-			// F-CREATE-1 §4, r10 OPEN-4: not_ready at the open is a retryable wait (try later), never the unsupported-version message.
-			if (opened.reason === 'not_ready') {
-				setCreateError(tu('create_account_try_later'))
-				return
-			}
-			// not_supported and no_key: the shell does not offer creation yet.
-			setCreateError(tu('create_account_native_unavailable'))
+			await handleShellCreate(trimmedTag, pwd)
 			return
 		}
 		let kks: Awaited<ReturnType<typeof createRecover>> = null
@@ -691,9 +735,9 @@ const CreateUsernamePinScreen = forwardRef<
 		setRollbackPending(false)
 		const ok = await validateAndCheckTag()
 		if (!ok) return
-		const p = shellNoPassword ? '' : password.trim()
+		const p = password.trim()
 		const { len8: l, mixed: m, numbers: n } = passwordRuleChecks(p)
-		if (!shellNoPassword && (!l || !m || !n)) return
+		if (!l || !m || !n) return
 		await handleCreateWallet(p)
 	}
 
@@ -944,7 +988,7 @@ const CreateUsernamePinScreen = forwardRef<
 						</div>
 
 						<div className="mt-4 space-y-3.5 [@media(max-height:700px)]:mt-3 [@media(max-height:700px)]:space-y-3 [@media(max-height:640px)]:space-y-2.5 [@media(max-height:560px)]:mt-2 [@media(max-height:560px)]:space-y-2">
-							{!shellNoPassword ? (<>
+							<>
 							<div className="space-y-2 [@media(max-height:640px)]:space-y-1.5 [@media(max-height:560px)]:space-y-1">
 								<label htmlFor="create-wallet-password" className="block text-xs font-semibold uppercase tracking-[0.05em] text-[#424655] [@media(max-height:560px)]:text-[11px]">
 									{tu('secure_password')}
@@ -1017,7 +1061,7 @@ const CreateUsernamePinScreen = forwardRef<
 									</div>
 								) : null}
 							</div>
-							</>) : null}
+							</>
 						</div>
 
 						{!shouldHideInfoCards ? (

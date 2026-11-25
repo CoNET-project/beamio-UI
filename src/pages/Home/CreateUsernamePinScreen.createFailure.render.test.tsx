@@ -42,6 +42,7 @@ jest.mock('@/services/nativeWallet', () => ({ notifyNativeWalletReady: jest.fn()
 jest.mock('@/services/nativeWalletEstablished', () => ({ announceNativeWalletEstablished: jest.fn() }))
 jest.mock('@/services/nativeFlowPending', () => ({ announceNativeFlowPending: jest.fn() }))
 jest.mock('@/services/shellChatCapability', () => ({ ensureShellChatState: jest.fn(async () => 'native_chat') }))
+jest.mock('@/services/shellPageCreate', () => ({ hasPageCreate: async () => true, setSecureScreen: async () => true }))
 jest.mock('@/services/shellContext', () => ({ isShellContext: () => mockShellMode }))
 jest.mock('@/services/argon2WorkerBridge', () => ({ warmArgon2Worker: jest.fn() }))
 jest.mock('@/utils/cashTreesNativePwaLog', () => ({ publishNativePwaLog: jest.fn() }))
@@ -63,7 +64,8 @@ const fill = async (close: jest.Mock) => {
 	render(<CreateUsernamePinScreen close={close} />)
 	const tag = document.getElementById('create-beamio-tag-input') as HTMLInputElement
 	fireEvent.change(tag, { target: { value: TAG } })
-	if (!mockShellMode) fireEvent.change(document.getElementById('create-wallet-password') as HTMLInputElement, { target: { value: PWD } })
+	// 0.53.50: the shell create page collects the password too
+	fireEvent.change(document.getElementById('create-wallet-password') as HTMLInputElement, { target: { value: PWD } })
 	fireEvent.click(screen.getByRole('checkbox'))
 	fireEvent.blur(tag)
 	// the form is replaced by the loading screen while a create runs, so the button is looked up again for every press

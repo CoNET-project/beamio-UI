@@ -14,13 +14,13 @@
  * the one the user was shown). After a restart nothing is held: the command is called again, and `already_registered` ends it without addUser.
  */
 import { ACCOUNT_CREATE_REGISTER_ENABLED } from '@/utils/accountCreateRegisterFlag'
-import { nextReqId, requestNativeAck } from './nativeChatRouteRegister'
+import { nextReqId } from './nativeChatRouteRegister'
+import { sendAccountCreateRegister } from './shellPageCreate'
 import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
 
 export const ACCOUNT_CREATE_REGISTER_COMMAND = 'accountCreateRegister'
 export { ACCOUNT_CREATE_REGISTER_ENABLED }
 
-const COMMAND_TIMEOUT_MS = 120_000
 const WALLET_RE = /^0x[0-9a-f]{40}$/
 const SIGN_RE = /^0x[0-9a-fA-F]{130}$/
 const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]+$/
@@ -187,10 +187,8 @@ export async function realRegisterDeps(): Promise<RegisterDeps> {
 	const { postAddUserPayload, registryHasAccount } = await import('./beamio')
 	const { readWalletEoaAddress } = await import('./walletEoaAddress')
 	return {
-		send: async (cmd) => {
-			const answer = await requestNativeAck({ ...cmd }, COMMAND_TIMEOUT_MS, cmd.reqId)
-			return answer.kind === 'payload' ? answer.payload : null
-		},
+		// 0.53.50: the trusted shell adapter (Android window.BeamioShell, iOS CashTreesIOS), not the chat-module channel
+		send: async (cmd) => sendAccountCreateRegister({ reqId: cmd.reqId, tag: cmd.tag, password: cmd.password }),
 		forward: async (body) => postAddUserPayload(body),
 		registryHas: registryHasAccount,
 		existingEoa: async () => {

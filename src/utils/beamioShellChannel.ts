@@ -53,9 +53,10 @@ export type BeamioShellAction = (typeof BEAMIO_SHELL_ACTIONS)[number]
 /**
  * 0.53.49 (page-input recovery, Android shell 348e941a): three more actions on this channel, kept apart from the 21 above. `nativeRecoverySubmit`
  * takes exactly {path:"code", code} or {path:"account", name, password}; `nativeRecoveryCancel` takes no args; `shellCapabilities` takes no args and
- * answers {capabilities:[...]} (an old shell answers unknown_command). No args are logged here or anywhere on the page.
+ * answers {capabilities:[...]} (an old shell answers unknown_command). 0.53.50 (page-side onboarding create): `accountCreateRegister` takes exactly
+ * {tag, password} and answers the SDK result in `result`; `secureScreen` takes {on}. No args are logged here or anywhere on the page.
  */
-export const BEAMIO_SHELL_RECOVERY_ACTIONS = ['nativeRecoverySubmit', 'nativeRecoveryCancel', 'shellCapabilities'] as const
+export const BEAMIO_SHELL_RECOVERY_ACTIONS = ['nativeRecoverySubmit', 'nativeRecoveryCancel', 'shellCapabilities', 'accountCreateRegister', 'secureScreen'] as const
 export type BeamioShellRecoveryAction = (typeof BEAMIO_SHELL_RECOVERY_ACTIONS)[number]
 
 /** The shell's answer. `error` is a code (for example `origin_refused`, `bad_args`, `not_ready`, `not_supported`), never a value. */

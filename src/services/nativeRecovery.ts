@@ -277,16 +277,16 @@ export function isTrustedRecoveryOrigin(): boolean {
 }
 
 /** iOS: the capability table the shell injects (`window.__CT_IOS_CAPS__`; the SDK hello table cannot carry it). Object, array or Set. */
-function iosCapabilityDeclared(): boolean {
+function iosCapabilityDeclared(cap: string = PAGE_INPUT_RECOVERY_CAPABILITY): boolean {
 	if (typeof window === 'undefined') return false
 	const caps = (window as unknown as { __CT_IOS_CAPS__?: unknown }).__CT_IOS_CAPS__
-	if (caps instanceof Set) return caps.has(PAGE_INPUT_RECOVERY_CAPABILITY)
-	if (Array.isArray(caps)) return caps.includes(PAGE_INPUT_RECOVERY_CAPABILITY)
-	if (caps !== null && typeof caps === 'object') return (caps as Record<string, unknown>)[PAGE_INPUT_RECOVERY_CAPABILITY] === true
+	if (caps instanceof Set) return caps.has(cap)
+	if (Array.isArray(caps)) return caps.includes(cap)
+	if (caps !== null && typeof caps === 'object') return (caps as Record<string, unknown>)[cap] === true
 	return false
 }
 
-const isIosShell = (): boolean => getCashTreesNativeNfcHost() === 'ios'
+export const isIosShell = (): boolean => getCashTreesNativeNfcHost() === 'ios'
 
 /**
  * The shell declared that the page may enter the recovery credential (`recovery.page-input.v1`). iOS: the injected capability table.
@@ -294,12 +294,17 @@ const isIosShell = (): boolean => getCashTreesNativeNfcHost() === 'ios'
  * a missing channel). The platform difference stays in this file.
  */
 export async function hasPageInputRecovery(): Promise<boolean> {
-	if (isIosShell()) return iosCapabilityDeclared()
+	return shellCapabilityDeclared(PAGE_INPUT_RECOVERY_CAPABILITY)
+}
+
+/** One capability of the shell: iOS reads the injected table, Android asks shellCapabilities on window.BeamioShell. Never throws. */
+export async function shellCapabilityDeclared(cap: string): Promise<boolean> {
+	if (isIosShell()) return iosCapabilityDeclared(cap)
 	if (!hasBeamioShell()) return false
 	const ack = await requestBeamioShell('shellCapabilities', {}, SUBMIT_TIMEOUT_MS)
 	if (!ack.ok) return false
 	const caps = (ack.result as { capabilities?: unknown } | undefined)?.capabilities
-	return Array.isArray(caps) && caps.includes(PAGE_INPUT_RECOVERY_CAPABILITY)
+	return Array.isArray(caps) && caps.includes(cap)
 }
 
 export type NativeRecoverySubmitInput = { path: 'code'; code: string } | { path: 'account'; name: string; password: string }
@@ -310,8 +315,10 @@ const SUBMIT_REFUSALS = new Set(['origin_refused', 'not_available', 'bad_args', 
 /** Only one submit is in flight at a time (the shell answers busy to a second one; the page does not send it). */
 let submitInFlight = false
 
-/** iOS: `window.CashTreesIOS.<action>(args)`; the immediate answer is a `cashtreesios` event {action, ok, error?}. */
-function iosAction(action: 'nativeRecoverySubmit' | 'nativeRecoveryCancel', args: Record<string, unknown> | null): Promise<NativeRecoverySubmitOutcome> {
+export type ShellActionOutcome = { ok: true; result?: unknown } | { ok: false; reason: string }
+
+/** iOS: `window.CashTreesIOS.<action>(args)`; the answer is a `cashtreesios` event {action, ok, result?, error?}. The args are never logged. */
+export function iosShellAction(action: string, args: Record<string, unknown> | null, timeoutMs: number = SUBMIT_TIMEOUT_MS): Promise<ShellActionOutcome> {
 	return new Promise((resolve) => {
 		const host = (window as unknown as { CashTreesIOS?: Record<string, unknown> }).CashTreesIOS
 		const fn = host?.[action]
@@ -321,17 +328,17 @@ function iosAction(action: 'nativeRecoverySubmit' | 'nativeRecoveryCancel', args
 		}
 		let timer: ReturnType<typeof setTimeout> | undefined
 		const onEvent = (ev: Event) => {
-			const d = (ev as CustomEvent<{ action?: unknown; ok?: unknown; error?: unknown } | null>).detail
+			const d = (ev as CustomEvent<{ action?: unknown; ok?: unknown; result?: unknown; error?: unknown } | null>).detail
 			if (!d || typeof d !== 'object' || d.action !== action) return
-			done(d.ok === true ? { ok: true } : { ok: false, reason: typeof d.error === 'string' && SUBMIT_REFUSALS.has(d.error) ? d.error : 'bad_ack' })
+			done(d.ok === true ? { ok: true, ...(d.result !== undefined ? { result: d.result } : {}) } : { ok: false, reason: typeof d.error === 'string' && d.error ? d.error : 'bad_ack' })
 		}
-		const done = (out: NativeRecoverySubmitOutcome) => {
+		const done = (out: ShellActionOutcome) => {
 			if (timer !== undefined) clearTimeout(timer)
 			window.removeEventListener('cashtreesios', onEvent)
 			resolve(out)
 		}
 		window.addEventListener('cashtreesios', onEvent)
-		timer = setTimeout(() => done({ ok: false, reason: 'timeout' }), SUBMIT_TIMEOUT_MS)
+		timer = setTimeout(() => done({ ok: false, reason: 'timeout' }), timeoutMs)
 		try {
 			if (args === null) (fn as () => void).call(host)
 			else (fn as (a: Record<string, unknown>) => void).call(host, args)
@@ -339,6 +346,10 @@ function iosAction(action: 'nativeRecoverySubmit' | 'nativeRecoveryCancel', args
 			done({ ok: false, reason: 'native_unavailable' })
 		}
 	})
+}
+
+function iosAction(action: 'nativeRecoverySubmit' | 'nativeRecoveryCancel', args: Record<string, unknown> | null): Promise<NativeRecoverySubmitOutcome> {
+	return iosShellAction(action, args).then((out) => (out.ok ? { ok: true } : { ok: false, reason: SUBMIT_REFUSALS.has(out.reason) || out.reason === 'timeout' || out.reason === 'capability_missing' || out.reason === 'native_unavailable' ? out.reason : 'bad_ack' }))
 }
 
 /**
