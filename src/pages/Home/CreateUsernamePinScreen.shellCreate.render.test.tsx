@@ -355,6 +355,22 @@ describe('step 2 and 3 failures', () => {
 		expect(spc.sendAccountCreateRegister).toHaveBeenCalledTimes(2)
 	})
 
+	it('after tag_taken released the lock, even the SAME tag typed again is a new first create: step 1 is sent again', async () => {
+		spc.sendAccountCreateRegister.mockResolvedValueOnce({ type: 'ack', ok: false, reqId: 1, error: 'tag_taken' })
+		await mount()
+		await press()
+		await created()
+		expect(await screen.findByText('tag_is_already_taken')).toBeTruthy()
+		expect(nr.nativeAccountCreateOpen).toHaveBeenCalledTimes(1)
+		const tag = tagInput()
+		fireEvent.change(tag, { target: { value: TAG } })
+		fireEvent.blur(tag)
+		await refill()
+		await waitFor(() => expect(next().disabled).toBe(false), { timeout: 5000 })
+		await press()
+		await waitFor(() => expect(nr.nativeAccountCreateOpen).toHaveBeenCalledTimes(2), { timeout: 5000 })
+	})
+
 	it('the first create of a page still starts at step 1 (also after tag_taken released the lock)', async () => {
 		spc.sendAccountCreateRegister.mockResolvedValueOnce({ type: 'ack', ok: false, reqId: 1, error: 'tag_taken' })
 		await mount()
