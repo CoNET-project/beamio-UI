@@ -4,6 +4,7 @@
  */
 import { render, screen } from '@testing-library/react'
 import i18next from 'i18next'
+jest.mock('../services/chat', () => ({ regeneratePgpKeyByUser: jest.fn() }))
 import { FirstIdentityFailedNotice, FirstIdentitySettingUpNotice, ShellIdentityPendingNotice } from './ShellChatUnavailableNotice'
 
 beforeAll(async () => {
