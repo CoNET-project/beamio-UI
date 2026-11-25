@@ -21,7 +21,40 @@ export async function hasPageCreate(): Promise<boolean> {
 }
 
 /** Shell answers that are not a registration answer: the transport, the origin or the capability failed (the page treats them as unavailable). */
-const TRANSPORT_FAILURES = new Set(['timeout', 'origin_refused', 'capability_missing', 'native_unavailable', 'bridge_missing', 'not_supported', 'unknown_command', 'bad_args'])
+const TRANSPORT_FAILURES = new Set(['timeout', 'origin_refused', 'capability_missing', 'native_unavailable', 'bridge_missing', 'not_supported', 'unknown_command', 'bad_args', 'bad_request'])
+
+/**
+ * iOS (shell 115): `window.CashTreesIOS.accountCreateRegister({reqId, tag, password})`. The answer is the SDK ack envelope inside a `cashtreesios`
+ * event {action:'chatModuleEvent', event:{type:'ack', reqId, ok, result|error}}, paired by reqId; the shell's own refusals (origin_refused,
+ * bad_request) come in the same envelope. Resolves the envelope, or null when nothing came (no function, thrown, timeout).
+ */
+function iosRegister(cmd: { reqId: number; tag: string; password: string }): Promise<Record<string, unknown> | null> {
+	return new Promise((resolve) => {
+		const host = (window as unknown as { CashTreesIOS?: Record<string, unknown> }).CashTreesIOS
+		const fn = host?.accountCreateRegister
+		if (typeof fn !== 'function') return resolve(null)
+		let timer: ReturnType<typeof setTimeout> | undefined
+		const done = (v: Record<string, unknown> | null) => {
+			if (timer !== undefined) clearTimeout(timer)
+			window.removeEventListener('cashtreesios', onEvent)
+			resolve(v)
+		}
+		const onEvent = (ev: Event) => {
+			const d = (ev as CustomEvent<{ action?: unknown; event?: unknown } | null>).detail
+			if (!d || d.action !== 'chatModuleEvent' || !d.event || typeof d.event !== 'object') return
+			const e = d.event as Record<string, unknown>
+			if (e.type !== 'ack' || e.reqId !== cmd.reqId) return
+			done(e)
+		}
+		window.addEventListener('cashtreesios', onEvent)
+		timer = setTimeout(() => done(null), REGISTER_TIMEOUT_MS)
+		try {
+			;(fn as (a: Record<string, unknown>) => void).call(host, { reqId: cmd.reqId, tag: cmd.tag, password: cmd.password })
+		} catch {
+			done(null)
+		}
+	})
+}
 
 /**
  * Sends accountCreateRegister {tag, password} and answers the envelope the register parser reads ({type:'ack', ok, reqId, result|error}), or
@@ -33,7 +66,11 @@ export async function sendAccountCreateRegister(cmd: { reqId: number; tag: strin
 	const args = { tag: cmd.tag, password: cmd.password }
 	let out: { ok: true; result?: unknown } | { ok: false; reason: string }
 	if (isIosShell()) {
-		out = await iosShellAction('accountCreateRegister', args, REGISTER_TIMEOUT_MS)
+		const env = await iosRegister(cmd)
+		if (env === null) return null
+		if (env.ok === true) return { type: 'ack', ok: true, reqId: cmd.reqId, result: env.result }
+		const error = typeof env.error === 'string' ? env.error : ''
+		return !error || TRANSPORT_FAILURES.has(error) ? null : { type: 'ack', ok: false, reqId: cmd.reqId, error }
 	} else {
 		if (!hasBeamioShell()) return null
 		const ack = await requestBeamioShell('accountCreateRegister', args, REGISTER_TIMEOUT_MS)

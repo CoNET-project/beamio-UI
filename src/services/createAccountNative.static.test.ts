@@ -38,12 +38,14 @@ describe('new account in a shell: native create, typed local errors (S25)', () =
 	})
 
 	it('a shell creates the account natively; the page never runs createRecover (which generates a key) in a shell', () => {
-		const shellBranch = screen.indexOf('if (isShellContext()) {')
-		const nativeOpen = screen.indexOf('await nativeAccountCreateOpen(trimmedTag)', shellBranch)
+		// 0.53.50: the shell branch of handleCreateWallet hands over to handleShellCreate (native create first), and createRecover is after it
+		const shellBranch = screen.indexOf('await handleShellCreate(trimmedTag, pwd)')
+		const nativeOpen = screen.indexOf('await nativeAccountCreateOpen(trimmedTag)', screen.indexOf('const handleShellCreate'))
 		const pageCreate = screen.indexOf('kks = await createRecover(trimmedTag, pwd, { mustReuseKey: reuseExistingKey })')
 		expect(shellBranch).toBeGreaterThan(0)
-		expect(nativeOpen).toBeGreaterThan(shellBranch)
-		expect(pageCreate).toBeGreaterThan(nativeOpen)
+		expect(nativeOpen).toBeGreaterThan(0)
+		expect(nativeOpen).toBeLessThan(shellBranch)
+		expect(pageCreate).toBeGreaterThan(shellBranch)
 		expect(screen).not.toContain('recoveryCreateOpen')
 		expect(screen).toContain("'create_account_native_unavailable'")
 		expect(screen).toContain("tu('create_account_try_later')")

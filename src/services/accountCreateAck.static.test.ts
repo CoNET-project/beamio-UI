@@ -24,12 +24,12 @@ describe('the account-create ack rules on the create screen', () => {
 		expect(s).toMatch(/g0NotAvailableCountRef\.current >= 3/)
 	})
 
-	it('page "opened" shows the opening state; any other page value waits for the result event', () => {
+	it('0.53.50: the create is headless: any accepted open (the page value is not used) starts the wait and the page waits for the result event before step 2', () => {
 		const s = text('pages/Home/CreateUsernamePinScreen.tsx')
-		expect(s).toContain("if (opened.page === 'opened') {")
-		expect(s).toContain('setNativeOpening(true)')
-		expect(s).toContain("tu('create_account_opening')")
-		expect(s).toContain('waiting for the nested result event')
+		const fn = s.slice(s.indexOf('const handleShellCreate'), s.indexOf('const handleCreateWallet'))
+		expect(fn).not.toContain('opened.page')
+		expect(fn.indexOf('startNativeWait()')).toBeGreaterThan(fn.indexOf('await nativeAccountCreateOpen(trimmedTag)'))
+		expect(fn.indexOf('const step = await stepDone')).toBeGreaterThan(fn.indexOf('startNativeWait()'))
 	})
 
 	it('the open call is not repeated with the same reqId: each call is a new open, and there is no automatic retry', () => {

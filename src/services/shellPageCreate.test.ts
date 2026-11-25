@@ -99,27 +99,47 @@ describe('sendAccountCreateRegister (Android window.BeamioShell)', () => {
 	})
 })
 
-describe('sendAccountCreateRegister (iOS CashTreesIOS)', () => {
+describe('sendAccountCreateRegister (iOS 115: CashTreesIOS + SDK ack in chatModuleEvent)', () => {
 	const setIos = (fn: unknown) => {
 		;(globalThis as { __host?: string }).__host = 'ios'
 		setRecoveryOriginForTest({ href: IOS, topFrame: true })
 		;(window as unknown as { __CT_IOS_CAPS__?: unknown }).__CT_IOS_CAPS__ = { [CAP]: true }
 		;(window as unknown as { CashTreesIOS?: unknown }).CashTreesIOS = { accountCreateRegister: fn, secureScreen: fn }
 	}
-	const answer = (detail: Record<string, unknown>) => window.dispatchEvent(new CustomEvent('cashtreesios', { detail }))
+	const ack = (event: Record<string, unknown>) => window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'chatModuleEvent', event } }))
 
-	it('calls CashTreesIOS.accountCreateRegister with {tag, password} and reads result from the cashtreesios answer', async () => {
-		const fn = jest.fn(() => queueMicrotask(() => answer({ action: 'accountCreateRegister', ok: true, result: RESULT })))
+	it('calls CashTreesIOS.accountCreateRegister with exactly {reqId, tag, password} and pairs the SDK ack by reqId', async () => {
+		const fn = jest.fn(() => queueMicrotask(() => {
+			ack({ type: 'ack', reqId: 999, ok: true, result: { other: 1 } }) // another request's ack is ignored
+			ack({ type: 'ack', reqId: 9, ok: true, result: RESULT })
+		}))
 		setIos(fn)
 		expect(await sendAccountCreateRegister({ reqId: 9, tag: 'synthtag', password: 'canary-Passw0rd1' })).toEqual({ type: 'ack', ok: true, reqId: 9, result: RESULT })
-		expect(fn).toHaveBeenCalledWith({ tag: 'synthtag', password: 'canary-Passw0rd1' })
+		expect(fn).toHaveBeenCalledWith({ reqId: 9, tag: 'synthtag', password: 'canary-Passw0rd1' })
 	})
 
-	it('an SDK error passes through, origin_refused is null', async () => {
-		setIos(jest.fn(() => queueMicrotask(() => answer({ action: 'accountCreateRegister', ok: false, error: 'seal_failed' }))))
-		expect(await sendAccountCreateRegister({ reqId: 9, tag: 'a', password: 'b' })).toEqual({ type: 'ack', ok: false, reqId: 9, error: 'seal_failed' })
-		setIos(jest.fn(() => queueMicrotask(() => answer({ action: 'accountCreateRegister', ok: false, error: 'origin_refused' }))))
+	it('an SDK error passes through; the shell refusals origin_refused and bad_request are unavailable (null)', async () => {
+		for (const [error, want] of [['seal_failed', { type: 'ack', ok: false, reqId: 9, error: 'seal_failed' }], ['tag_taken', { type: 'ack', ok: false, reqId: 9, error: 'tag_taken' }], ['origin_refused', null], ['bad_request', null]] as const) {
+			setIos(jest.fn(() => queueMicrotask(() => ack({ type: 'ack', reqId: 9, ok: false, error }))))
+			expect(await sendAccountCreateRegister({ reqId: 9, tag: 'a', password: 'b' })).toEqual(want)
+		}
+	})
+
+	it('an event of another action or a non-ack is ignored; a missing shim is null; nothing is sent from an untrusted origin', async () => {
+		const fn = jest.fn(() => queueMicrotask(() => {
+			window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'secureScreen', ok: true } }))
+			ack({ type: 'other', reqId: 9, ok: true })
+			ack({ type: 'ack', reqId: 9, ok: true, result: RESULT })
+		}))
+		setIos(fn)
+		expect(await sendAccountCreateRegister({ reqId: 9, tag: 'a', password: 'b' })).toEqual({ type: 'ack', ok: true, reqId: 9, result: RESULT })
+		setIos(undefined)
 		expect(await sendAccountCreateRegister({ reqId: 9, tag: 'a', password: 'b' })).toBeNull()
+		const fn2 = jest.fn()
+		setIos(fn2)
+		setRecoveryOriginForTest({ href: 'https://beamio.ca.evil.com/app/', topFrame: true })
+		expect(await sendAccountCreateRegister({ reqId: 9, tag: 'a', password: 'b' })).toBeNull()
+		expect(fn2).not.toHaveBeenCalled()
 	})
 })
 
