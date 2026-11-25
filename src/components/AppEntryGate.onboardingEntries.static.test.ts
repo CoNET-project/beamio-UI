@@ -57,7 +57,7 @@ describe('the entries that open the onboarding for "no account" are confirmed by
 	})
 
 	it('0.53.52: a process that read a valid mnemonic never purges, and every purge verdict other than deleted/absent/not_key_only holds the start', () => {
-		const h = SRC.slice(SRC.indexOf('const holdUnlessKeyOnlyPurged = async'), SRC.indexOf('const confirmNoMnemonicOnNative'))
+		const h = SRC.slice(SRC.indexOf('const holdUnlessKeyOnlyPurged = async'), SRC.indexOf('const openOnboardingConfirmed'))
 		expect(h.indexOf('if (sessionSawValidRef.current) return true')).toBeGreaterThan(-1)
 		expect(h.indexOf('if (sessionSawValidRef.current) return true')).toBeLessThan(h.indexOf('purgeKeyOnlyPageRecord()'))
 		expect(h).toContain("purged.kind === 'unknown' || purged.kind === 'failed'")
