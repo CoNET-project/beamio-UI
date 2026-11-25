@@ -218,15 +218,62 @@ describe('shell: recovery code', () => {
 		expect(codeBox().value).toBe(CODE)
 	})
 
-	it('iOS shell: a paste is taken by the page and the clipboard is emptied', async () => {
-		;(globalThis as { __host?: string }).__host = 'ios'
-		const write = jest.fn().mockResolvedValue(undefined)
-		Object.defineProperty(navigator, 'clipboard', { value: { writeText: write }, configurable: true })
-		await mount()
-		goRecovery()
-		fireEvent.paste(codeBox(), { clipboardData: { getData: () => CODE } })
-		expect(codeBox().value).toBe(CODE)
-		expect(write).toHaveBeenCalledWith('')
+	describe('iOS shell paste', () => {
+		const clip = () => {
+			const write = jest.fn().mockResolvedValue(undefined)
+			Object.defineProperty(navigator, 'clipboard', { value: { writeText: write }, configurable: true })
+			return write
+		}
+		const paste = (value: string) => {
+			const ev = new Event('paste', { bubbles: true, cancelable: true }) as Event & { clipboardData?: unknown }
+			ev.clipboardData = { getData: () => value }
+			act(() => {
+				codeBox().dispatchEvent(ev)
+			})
+			return ev
+		}
+
+		beforeEach(() => {
+			;(globalThis as { __host?: string }).__host = 'ios'
+		})
+
+		it('a recovery-code-format paste is taken by the page and the clipboard is emptied', async () => {
+			const write = clip()
+			await mount()
+			goRecovery()
+			const ev = paste(`  ${CODE}  `)
+			expect(ev.defaultPrevented).toBe(true)
+			expect(codeBox().value).toBe(CODE)
+			expect(write).toHaveBeenCalledTimes(1)
+			expect(write).toHaveBeenCalledWith('')
+		})
+
+		it.each([
+			['a mnemonic', 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'],
+			['a private key', '0x' + '1'.repeat(64)],
+			['a URL', 'https://example.invalid/restore'],
+			['a 21-character code', CODE.slice(1)],
+			['a 23-character code', CODE + 'x'],
+			['text around a code', `my code ${CODE}`],
+			['empty text', ''],
+		])('%s: the default paste runs and the clipboard is not touched', async (_name, text) => {
+			const write = clip()
+			await mount()
+			goRecovery()
+			const ev = paste(text)
+			expect(ev.defaultPrevented).toBe(false)
+			expect(write).not.toHaveBeenCalled()
+		})
+
+		it('Android shell: the paste handler is not installed (default paste, clipboard untouched)', async () => {
+			;(globalThis as { __host?: string }).__host = 'android'
+			const write = clip()
+			await mount()
+			goRecovery()
+			const ev = paste(CODE)
+			expect(ev.defaultPrevented).toBe(false)
+			expect(write).not.toHaveBeenCalled()
+		})
 	})
 })
 

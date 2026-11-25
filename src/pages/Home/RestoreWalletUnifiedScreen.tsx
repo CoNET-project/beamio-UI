@@ -460,14 +460,17 @@ export default function RestoreWalletUnifiedScreen({
 		setRecoveryError('')
 	}
 
-	/** iOS shell: the page takes the pasted value itself and empties the clipboard, so the value does not stay in the field's paste path. */
+	/**
+	 * iOS shell, recovery code box only: a paste that is in the recovery code format is taken by the page and the clipboard is emptied, so the
+	 * code does not stay in the field's paste path or on the clipboard. Any other paste is left alone: the default paste runs and the
+	 * clipboard is not touched.
+	 */
 	const onShellIosPaste = (e: { preventDefault: () => void; clipboardData?: DataTransfer | null }) => {
+		const value = (e.clipboardData?.getData('text') ?? '').trim()
+		if (!isRecoveryCodeFormat(value)) return
 		e.preventDefault()
-		const value = e.clipboardData?.getData('text') ?? ''
-		if (value) {
-			setRecoveryCode(value.trim())
-			setRecoveryError('')
-		}
+		setRecoveryCode(value)
+		setRecoveryError('')
 		try {
 			void navigator.clipboard?.writeText?.('')?.catch?.(() => undefined)
 		} catch {
