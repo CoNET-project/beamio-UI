@@ -25,7 +25,7 @@ describe('createRecover: the local save after newUser', () => {
 		chainIdentityRead.read = async () => ({ status: 'no_account' })
 		;(globalThis as { fetch?: unknown }).fetch = jest.fn(async (url: unknown) => {
 			if (String(url).includes('/api/addUser')) posts.push(String(url))
-			return { ok: true, status: 200, json: async () => ({}) }
+			return { ok: true, status: 200, json: async () => ({ ok: true }) }
 		})
 	})
 	afterEach(() => setPageWritePermit(null))

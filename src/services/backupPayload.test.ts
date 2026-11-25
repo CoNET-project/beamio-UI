@@ -75,7 +75,7 @@ beforeEach(() => {
 	captured = null
 	global.fetch = jest.fn(async (url: string, init: { body?: unknown }) => {
 		captured = { url: String(url), raw: String(init.body) }
-		return { ok: true, json: async () => ({}) } as unknown as Response
+		return { ok: true, json: async () => ({ ok: true }) } as unknown as Response
 	}) as unknown as typeof fetch
 })
 
