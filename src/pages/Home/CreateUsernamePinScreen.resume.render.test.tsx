@@ -84,6 +84,7 @@ const OK_ENVELOPE = { type: 'ack', ok: true, reqId: 1, result: RESULT }
 let emitCreate: (r: { code: string; eoa?: string; reason?: string }) => void
 
 beforeEach(() => {
+	resumeMounted = false
 	jest.clearAllMocks()
 	dismissResumeNotice()
 	resetAccountCreateRegisterForTest()
@@ -109,7 +110,9 @@ beforeEach(() => {
 })
 
 const tagInput = () => document.getElementById('create-beamio-tag-input') as HTMLInputElement
+let resumeMounted = false
 const mount = async (opts: { typeTag?: boolean; resume?: { eoa: string; tag: string } } = {}) => {
+	resumeMounted = !!opts.resume
 	const onRequestRestore = jest.fn()
 	const view = render(<CreateUsernamePinScreen close={jest.fn()} onRequestRestore={onRequestRestore} resumeEoa={opts.resume?.eoa} resumeTag={opts.resume?.tag} />)
 	const tag = tagInput()
@@ -131,6 +134,11 @@ const refill = async () => {
 	await waitFor(() => expect(next().disabled).toBe(false), { timeout: 5000 })
 }
 const created = async () => {
+	// a resume page sends no step 1 (the device already holds the key): there is no create result to wait for, step 2 follows the press directly
+	if (resumeMounted) {
+		await waitFor(() => expect(spc.sendAccountCreateRegister).toHaveBeenCalled(), { timeout: 5000 })
+		return
+	}
 	await waitFor(() => expect(nr.nativeAccountCreateOpen).toHaveBeenCalled(), { timeout: 5000 })
 	await act(async () => emitCreate({ code: 'ok', eoa: WALLET }))
 }
@@ -152,15 +160,34 @@ describe('resume: the tag is locked, there is nothing to choose', () => {
 		expect(nr.queryNativeWalletStatusForPreCheck).not.toHaveBeenCalled()
 	})
 
-	it('pressing next runs step 1 with the locked tag, and the normal three steps follow with the recover code shown (no N1 notice)', async () => {
+	it('pressing next sends NO step 1: the locked tag goes straight to step 2 and 3, and the recover code shows (no N1 notice)', async () => {
 		seedRecord()
 		await mount({ resume: RESUME })
 		await press()
-		await waitFor(() => expect(nr.nativeAccountCreateOpen).toHaveBeenCalledWith(TAG), { timeout: 5000 })
-		await act(async () => emitCreate({ code: 'ok', eoa: WALLET }))
 		await waitFor(() => expect(spc.sendAccountCreateRegister.mock.calls[0]?.[0]).toMatchObject({ tag: TAG, password: PWD }), { timeout: 5000 })
+		expect(nr.nativeAccountCreateOpen).not.toHaveBeenCalled()
 		expect(await screen.findByTestId('recover-code')).toBeTruthy()
 		expect(noticeShown()).toBeNull()
+	})
+
+	it.each([
+		['not_available (Android: a key exists)', { ok: false, reason: 'not_available' }],
+		['already_exists', { ok: true, page: 'none' }],
+	])('whatever the shell would answer to step 1 (%s) cannot matter: it is not sent', async (_n, answer) => {
+		seedRecord()
+		nr.nativeAccountCreateOpen.mockResolvedValue(answer)
+		await mount({ resume: RESUME })
+		await press()
+		expect(await screen.findByTestId('recover-code')).toBeTruthy()
+		expect(nr.nativeAccountCreateOpen).not.toHaveBeenCalled()
+		expect(screen.queryByText('create_account_native_unavailable')).toBeNull()
+	})
+
+	it('the normal page still sends step 1 first (unchanged)', async () => {
+		await mount()
+		await press()
+		await waitFor(() => expect(nr.nativeAccountCreateOpen).toHaveBeenCalledWith(TAG), { timeout: 5000 })
+		expect(spc.sendAccountCreateRegister).not.toHaveBeenCalled() // step 2 waits for the step 1 result
 	})
 
 	it('there is no way to put the lock aside on the page (no later / skip control)', async () => {
@@ -170,19 +197,49 @@ describe('resume: the tag is locked, there is nothing to choose', () => {
 	})
 })
 
-describe('D2: the wallet step 1 answers for must be the one the gate found', () => {
-	it('another wallet: the lock is dropped, no record is written for it, nothing is registered, try-later copy', async () => {
+describe('D2 in a resume: the device wallet must be the one the gate found', () => {
+	const OTHER = '0x' + '2'.repeat(40)
+	it('soft check: the read-only wallet address answers another wallet: nothing is sent, the lock is dropped, the entry judges again', async () => {
 		seedRecord()
+		eoaMod.readWalletEoaAddress.mockResolvedValue({ kind: 'address', eoa: OTHER })
 		await mount({ resume: RESUME })
 		await press()
-		await waitFor(() => expect(nr.nativeAccountCreateOpen).toHaveBeenCalled(), { timeout: 5000 })
-		const OTHER = '0x' + '2'.repeat(40)
-		await act(async () => emitCreate({ code: 'ok', eoa: OTHER }))
-		expect(await screen.findByText('create_account_try_later')).toBeTruthy()
+		await waitFor(() => expect(retry.requestNativeIdentityRetry).toHaveBeenCalled(), { timeout: 5000 })
 		expect(spc.sendAccountCreateRegister).not.toHaveBeenCalled()
 		expect(beamio.postAddUserPayload).not.toHaveBeenCalled()
+		expect(nr.nativeAccountCreateOpen).not.toHaveBeenCalled()
 		const all = JSON.parse(localStorage.getItem(KEY) ?? '{}')
 		expect(all[OTHER]).toBeUndefined()
+		expect(all[WALLET]).toBeTruthy() // the resume wallet's own record is left alone
+		expect(tagInput().readOnly).toBe(false)
+	})
+
+	it('soft check answers the same wallet (any case): the resume goes on', async () => {
+		seedRecord()
+		eoaMod.readWalletEoaAddress.mockResolvedValue({ kind: 'address', eoa: WALLET.toUpperCase().replace('0X', '0x') })
+		await mount({ resume: RESUME })
+		await press()
+		expect(await screen.findByTestId('recover-code')).toBeTruthy()
+	})
+
+	it('no answer from the read-only address (refused) is not a mismatch: the resume goes on', async () => {
+		seedRecord()
+		eoaMod.readWalletEoaAddress.mockResolvedValue({ kind: 'refused', code: 'not_ready' })
+		await mount({ resume: RESUME })
+		await press()
+		expect(await screen.findByTestId('recover-code')).toBeTruthy()
+	})
+
+	it('hard guard: the read-only address cannot tell, but step 2 answers for another wallet: no addUser, no s on the record, the lock is dropped', async () => {
+		seedRecord()
+		eoaMod.readWalletEoaAddress.mockResolvedValue({ kind: 'refused', code: 'not_ready' })
+		spc.sendAccountCreateRegister.mockResolvedValue({ type: 'ack', ok: true, reqId: 1, result: { ...RESULT, wallet: OTHER } })
+		await mount({ resume: RESUME })
+		await press()
+		await waitFor(() => expect(retry.requestNativeIdentityRetry).toHaveBeenCalled(), { timeout: 5000 })
+		expect(beamio.postAddUserPayload).not.toHaveBeenCalled()
+		expect(screen.queryByTestId('recover-code')).toBeNull()
+		expect((rec() as { s?: number } | undefined)?.s).toBeUndefined()
 		expect(tagInput().readOnly).toBe(false)
 	})
 })

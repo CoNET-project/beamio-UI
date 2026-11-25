@@ -543,8 +543,19 @@ const CreateUsernamePinScreen = forwardRef<
 			else setCreateError(tu('create_account_try_later'))
 		})
 	}
+	/** D2: the device wallet is not the one this resume was found for: the lock is dropped, nothing is sent, the other wallet's record is left alone; the entry judges again. */
+	const abandonResumeForOtherWallet = (where: string) => {
+		publishNativePwaLog('warn', `[createAccount] resume: the device wallet is not the one the resume was found for (${where}); the locked tag is dropped`)
+		createEoaRef.current = ''
+		setLockedTag('')
+		setPassword('')
+		setLoading(false)
+		announceNativeFlowPending(false)
+		requestNativeIdentityRetry()
+	}
 	const handleShellRegister = async (tag: string, pwd: string) => {
 		let out
+		let otherWallet = false
 		try {
 			const deps = await realRegisterDeps()
 			const recordEoa = createEoaRef.current
@@ -553,6 +564,17 @@ const CreateUsernamePinScreen = forwardRef<
 				{ tag, password: pwd },
 				{
 					...deps,
+					// hard D2 guard: in a resume the wallet the native layer answers for in step 2 must be the one the resume was found for. A reply for
+					// another wallet is turned into a failure before anything is forwarded (no addUser, and no `s` written for the wrong record).
+					send: async (cmd) => {
+						const reply = await deps.send(cmd)
+						const r = reply as { ok?: unknown; result?: { wallet?: unknown } } | null
+						if (resumeEoaLower && r?.ok === true && String(r.result?.wallet ?? '').toLowerCase() !== resumeEoaLower) {
+							otherWallet = true
+							return { type: 'ack', ok: false, reqId: (reply as { reqId?: number }).reqId ?? cmd.reqId, error: 'failed' } as typeof reply
+						}
+						return reply
+					},
 					beforeFirstForward: () => markPendingForwardSent(recordEoa, Date.now()),
 					afterForwardOk: (atMs) => markPendingForwardAccepted(recordEoa, atMs),
 				},
@@ -561,6 +583,10 @@ const CreateUsernamePinScreen = forwardRef<
 			// the password leaves the page state as soon as the call returns
 			setPassword('')
 			setLoading(false)
+		}
+		if (otherWallet) {
+			abandonResumeForOtherWallet('payload wallet')
+			return
 		}
 		if (out.ok) {
 			if (out.recoverCodeBase58) {
@@ -688,6 +714,24 @@ const CreateUsernamePinScreen = forwardRef<
 			return stop(tu('create_account_native_unavailable'))
 		}
 		createTagRef.current = trimmedTag
+		// 0.53.51 resume (Android va5 finding): the device already holds the key, so step 1 (nativeAccountCreateOpen) is not sent at all. Android answers it
+		// with not_available (a key exists), not already_exists as the design assumed, and that ended the resume at "native create unavailable". The tag is
+		// the locked one and the wallet is the one the gate found; steps 2 and 3 follow directly.
+		if (resumeEoaLower) {
+			// D2 (soft): when the native read-only wallet address answers, it must be the wallet this resume was found for. No answer is not a mismatch;
+			// the hard guard is at the forward of step 3 (handleShellRegister): a payload for another wallet is never sent.
+			const read = await Promise.race([
+				readWalletEoaAddress().catch(() => null),
+				new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 3000)),
+			])
+			if (read && read.kind === 'address' && read.eoa.toLowerCase() !== resumeEoaLower) {
+				abandonResumeForOtherWallet('walletEoaAddress')
+				return
+			}
+			announceNativeFlowPending(true)
+			await handleShellRegister(trimmedTag, pwd)
+			return
+		}
 		if (nativeCreatePendingRef.current) {
 			setLoading(false)
 			return
