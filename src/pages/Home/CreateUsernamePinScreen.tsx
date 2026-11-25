@@ -22,6 +22,7 @@ import { notifyNativeWalletReady, reachNativeWallet, rememberNativeEoa } from "@
 import { warmArgon2Worker } from "@/services/argon2WorkerBridge"
 import { realRegisterDeps, registerNewAccount } from '@/services/accountCreateRegister'
 import { hasPageCreate, setSecureScreen } from '@/services/shellPageCreate'
+import { clearPendingCreateTag, readPendingCreateTag, writePendingCreateTag } from '@/services/pendingCreateTag'
 import RecoverCodeNotice from '@/components/RecoverCodeNotice'
 import {
 	Eye,
@@ -39,6 +40,9 @@ import { APP_FLOATING_CHROME_MAIN_TOP_PT, APP_TITLE_BLOCK_TO_FIRST_CONTROL_MB } 
 import { useTu } from '@/locale/beamioLocale'
 import { getCurrentBeamioUiLocale } from '@/locale/i18n'
 import { openInAppBrowser } from '@/utils/cashTreesNativeNfc'
+
+/** How long the recover code may stay on screen (r3sk), in wall-clock milliseconds. */
+export const RECOVER_CODE_TTL_MS = 5 * 60 * 1000
 
 const BEAMIO_TERMS_URL = "https://beamio.ca/terms"
 const BEAMIO_PRIVACY_URL = "https://beamio.ca/privacy"
@@ -111,7 +115,9 @@ const CreateUsernamePinScreen = forwardRef<
 	ref
 ) {
 	const { tu } = useTu()
-	const [beamioName, setBeamioName] = useState("")
+	/** 0.53.50 (r3sk R-1 a): the tag that passed step 1 is locked for step 2 and, after an interruption, prefilled and locked for the completion. */
+	const [lockedTag, setLockedTag] = useState(() => (isShellContext() ? readPendingCreateTag() : ''))
+	const [beamioName, setBeamioName] = useState(() => (isShellContext() ? readPendingCreateTag() : ""))
 	const [password, setPassword] = useState("")
 	const [passwordTouched, setPasswordTouched] = useState(false)
 	const [showPassword, setShowPassword] = useState(false)
@@ -326,6 +332,8 @@ const CreateUsernamePinScreen = forwardRef<
 	}
 
 	const validateAndCheckTag = async () => {
+		// a locked tag was checked before step 1 (or is registered to this wallet after an interruption): it is not asked again
+		if (lockedTag) return true
 		if (tagStatus === "checking") return false
 
 		const { ok, v, msg } = localValidateTag(beamioName)
@@ -362,10 +370,11 @@ const CreateUsernamePinScreen = forwardRef<
 		}
 	}
 
-	const tagChecking = tagStatus === "checking"
-	const tagValid = tagStatus === "valid"
+	const tagChecking = !lockedTag && tagStatus === "checking"
+	const tagValid = !!lockedTag || tagStatus === "valid"
 
 	useEffect(() => {
+		if (lockedTag) return
 		const trimmed = normalizeBeamioTagInput(beamioName)
 		if (trimmed.length <= 2) return
 		if (trimmed === lastCheckedRef.current && tagStatus === "valid") return
@@ -454,15 +463,47 @@ const CreateUsernamePinScreen = forwardRef<
 	/** The wallet of a finished registration, kept until the user has confirmed the recover code. */
 	const registeredWalletRef = useRef('')
 	const [shellRecoverCode, setShellRecoverCode] = useState<string | null>(null)
-	// the recover code shows with the screen protected (Android FLAG_SECURE, iOS app-switcher cover); off when it is confirmed or the page leaves
+	/** The wall-clock moment the recover code was rendered (r3sk: the 5-minute limit is judged on absolute time, not on a timer that background throttling can stall). */
+	const codeShownAtRef = useRef(0)
+	// The screen protection was turned on before the code was rendered (handleShellRegister); it goes off when the code is gone or the page leaves.
 	useEffect(() => {
 		if (!shellRecoverCode) return
-		void setSecureScreen(true)
 		return () => {
 			void setSecureScreen(false)
 		}
 	}, [shellRecoverCode])
+	// The code is hidden after RECOVER_CODE_TTL_MS of wall-clock time. Checked by a timer and, because a background page's timers are throttled,
+	// at once when the page comes back (visibilitychange, pageshow, focus, resume).
+	useEffect(() => {
+		if (!shellRecoverCode) return
+		const expire = () => {
+			registeredWalletRef.current = ''
+			codeShownAtRef.current = 0
+			setShellRecoverCode(null)
+			announceNativeFlowPending(false)
+			setCreateError(tu('create_account_recover_code_expired'))
+		}
+		const check = () => {
+			if (codeShownAtRef.current > 0 && Date.now() - codeShownAtRef.current >= RECOVER_CODE_TTL_MS) expire()
+		}
+		const onVisible = () => {
+			if (document.visibilityState === 'visible') check()
+		}
+		const timer = setInterval(check, 1000)
+		document.addEventListener('visibilitychange', onVisible)
+		document.addEventListener('resume', check)
+		window.addEventListener('pageshow', check)
+		window.addEventListener('focus', check)
+		return () => {
+			clearInterval(timer)
+			document.removeEventListener('visibilitychange', onVisible)
+			document.removeEventListener('resume', check)
+			window.removeEventListener('pageshow', check)
+			window.removeEventListener('focus', check)
+		}
+	}, [shellRecoverCode])
 	const finishShellRegister = (wallet: string) => {
+		clearPendingCreateTag()
 		setCreateError('')
 		announceNativeFlowPending(false)
 		announceNativeWalletEstablished()
@@ -483,7 +524,15 @@ const CreateUsernamePinScreen = forwardRef<
 		}
 		if (out.ok) {
 			if (out.recoverCodeBase58) {
+				// r3sk: the screen protection is on before the code is rendered; a shell that cannot give it gets "unavailable" and no code
+				const secured = await setSecureScreen(true)
+				if (!secured) {
+					announceNativeFlowPending(false)
+					setCreateError(tu('create_account_native_unavailable'))
+					return
+				}
 				registeredWalletRef.current = out.wallet
+				codeShownAtRef.current = Date.now()
 				setShellRecoverCode(out.recoverCodeBase58)
 				return
 			}
@@ -493,6 +542,9 @@ const CreateUsernamePinScreen = forwardRef<
 		announceNativeFlowPending(false)
 		switch (out.code) {
 			case 'tag_taken':
+				// the registry holds this tag for another account: the lock is released so the user can choose another tag (the wallet stays)
+				clearPendingCreateTag()
+				setLockedTag('')
 				// the last native check after the page's own pre-check (a race): the same copy as the pre-check, back to renaming
 				lastCheckedRef.current = ''
 				setTagStatus('invalid')
@@ -644,6 +696,11 @@ const CreateUsernamePinScreen = forwardRef<
 		startNativeWait()
 		const step = await stepDone
 		nativeCreatePendingRef.current = false
+		if (step.kind !== 'failed') {
+			// step 1 passed for this tag: step 2 uses this tag, and so does the completion after an interruption
+			writePendingCreateTag(trimmedTag)
+			setLockedTag(trimmedTag)
+		}
 		if (step.kind === 'failed') {
 			// the result listener showed the copy for the code
 			setLoading(false)
@@ -662,7 +719,8 @@ const CreateUsernamePinScreen = forwardRef<
 	}
 
 	const handleCreateWallet = async (pwd: string) => {
-		const trimmedTag = normalizeBeamioTagInput(beamioName || "")
+		// a locked tag (step 1 passed) is the only tag step 2 may use
+		const trimmedTag = lockedTag || normalizeBeamioTagInput(beamioName || "")
 		const { len8: l, mixed: m, numbers: n } = passwordRuleChecks(pwd)
 		if (!trimmedTag || !l || !m || !n) return
 
@@ -928,7 +986,7 @@ const CreateUsernamePinScreen = forwardRef<
 									dir="ltr"
 									translate="no"
 									name="beamioTag"
-									readOnly={loading || tagChecking}
+									readOnly={loading || tagChecking || !!lockedTag}
 									type="text"
 									autoCapitalize="none"
 									autoCorrect="off"
@@ -944,7 +1002,7 @@ const CreateUsernamePinScreen = forwardRef<
 									value={beamioName}
 									placeholder={tu('username')}
 									onChange={(e) => {
-										if (tagChecking) return
+										if (tagChecking || lockedTag) return
 										const next = normalizeBeamioTagInput(e.currentTarget.value)
 										setBeamioName(next)
 										setTagStatus("idle")

@@ -86,6 +86,7 @@ beforeEach(() => {
 	resetAccountCreateRegisterForTest()
 	localStorage.clear()
 	sessionStorage.clear()
+	jest.useRealTimers()
 	beamio.checkBeamioAccountAPI.mockImplementation(async () => true)
 	chatCap.ensureShellChatState.mockImplementation(async () => 'native_chat')
 	spc.hasPageCreate.mockResolvedValue(true)
@@ -103,11 +104,12 @@ beforeEach(() => {
 	})
 })
 
-const mount = async () => {
+const tagInput = () => document.getElementById('create-beamio-tag-input') as HTMLInputElement
+const mount = async (opts: { typeTag?: boolean } = {}) => {
 	const onRequestRestore = jest.fn()
 	const view = render(<CreateUsernamePinScreen close={jest.fn()} onRequestRestore={onRequestRestore} />)
-	const tag = document.getElementById('create-beamio-tag-input') as HTMLInputElement
-	fireEvent.change(tag, { target: { value: TAG } })
+	const tag = tagInput()
+	if (opts.typeTag !== false) fireEvent.change(tag, { target: { value: TAG } })
 	fireEvent.change(document.getElementById('create-wallet-password') as HTMLInputElement, { target: { value: PWD } })
 	fireEvent.click(screen.getByRole('checkbox'))
 	fireEvent.blur(tag)
@@ -325,5 +327,189 @@ describe('step 2 and 3 failures', () => {
 		await waitFor(() => expect(wallet.notifyNativeWalletReady).toHaveBeenCalledWith(TAG, WALLET), { timeout: 5000 })
 		expect(beamio.postAddUserPayload).not.toHaveBeenCalled()
 		expect(screen.queryByTestId('recover-code')).toBeNull()
+	})
+})
+
+describe('r3sk 1: the screen protection is on before the recover code is rendered', () => {
+	it('secureScreen(on) is asked first; the code is rendered only after it answered ok', async () => {
+		let release: (v: boolean) => void = () => undefined
+		spc.setSecureScreen.mockImplementation((on: boolean) => (on ? new Promise<boolean>((r) => { release = r }) : Promise.resolve(true)))
+		await mount()
+		await press()
+		await created()
+		await waitFor(() => expect(spc.setSecureScreen).toHaveBeenCalledWith(true), { timeout: 5000 })
+		// the shell has not answered yet: no code on screen
+		expect(screen.queryByTestId('recover-code')).toBeNull()
+		await act(async () => release(true))
+		expect((await screen.findByTestId('recover-code')).textContent).toBe(CODE)
+	})
+
+	it('a shell that cannot protect the screen (error answer): no code is shown, "unavailable" shows, the wallet is not entered', async () => {
+		spc.setSecureScreen.mockResolvedValue(false)
+		await mount()
+		await press()
+		await created()
+		expect(await screen.findByText('create_account_native_unavailable')).toBeTruthy()
+		expect(screen.queryByTestId('recover-code')).toBeNull()
+		expect(document.body.textContent).not.toContain(CODE)
+		expect(wallet.notifyNativeWalletReady).not.toHaveBeenCalled()
+	})
+})
+
+describe('r3sk 2: the recover code is hidden after 5 minutes of wall-clock time', () => {
+	const showCode = async () => {
+		await mount()
+		await press()
+		await created()
+		await screen.findByTestId('recover-code')
+	}
+	const visible = () => Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+
+	it('coming back to the foreground after a throttled background: the code is cleared at once, without any timer having fired', async () => {
+		await showCode()
+		jest.useFakeTimers()
+		// the page was in the background: timers did not run, the clock moved on
+		jest.setSystemTime(Date.now() + 299_000)
+		visible()
+		act(() => {
+			document.dispatchEvent(new Event('visibilitychange'))
+		})
+		expect(screen.queryByTestId('recover-code')).toBeTruthy() // 4:59: still shown
+		jest.setSystemTime(Date.now() + 2_000)
+		act(() => {
+			document.dispatchEvent(new Event('visibilitychange'))
+		})
+		expect(screen.queryByTestId('recover-code')).toBeNull()
+		expect(document.body.textContent).not.toContain(CODE)
+		expect(spc.setSecureScreen).toHaveBeenLastCalledWith(false)
+		expect(screen.getAllByText('create_account_recover_code_expired').length).toBeGreaterThan(0)
+		expect(wallet.notifyNativeWalletReady).not.toHaveBeenCalled()
+	})
+
+	it.each([['resume', () => document.dispatchEvent(new Event('resume'))], ['pageshow', () => window.dispatchEvent(new Event('pageshow'))], ['focus', () => window.dispatchEvent(new Event('focus'))]])('the %s event checks the absolute time too', async (_n, fire) => {
+		await showCode()
+		jest.useFakeTimers()
+		jest.setSystemTime(Date.now() + 301_000)
+		act(() => {
+			fire()
+		})
+		expect(screen.queryByTestId('recover-code')).toBeNull()
+	})
+
+	it('a hidden page does not clear early: visibilitychange while hidden never expires the code before 5 minutes', async () => {
+		await showCode()
+		jest.useFakeTimers()
+		jest.setSystemTime(Date.now() + 10_000)
+		Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+		act(() => {
+			document.dispatchEvent(new Event('visibilitychange'))
+		})
+		expect(screen.queryByTestId('recover-code')).toBeTruthy()
+		visible()
+	})
+
+	it('the user confirming before the limit enters as before, and nothing expires later', async () => {
+		await showCode()
+		fireEvent.click(screen.getByTestId('recover-code-saved'))
+		await act(async () => {
+			fireEvent.click(screen.getByTestId('recover-code-continue'))
+		})
+		await waitFor(() => expect(wallet.notifyNativeWalletReady).toHaveBeenCalledWith(TAG, WALLET))
+		jest.useFakeTimers()
+		jest.setSystemTime(Date.now() + 600_000)
+		act(() => {
+			window.dispatchEvent(new Event('focus'))
+		})
+		expect(screen.queryByText('create_account_recover_code_expired')).toBeNull()
+	})
+})
+
+describe('r3sk 3: the tag of step 1 is the tag of step 2', () => {
+	const PENDING = 'beamio.pendingCreateTag.v1'
+
+	it('step 1 passed: the tag is locked in the field and stored (the tag only), and a failed step 2 retries with the same tag', async () => {
+		beamio.postAddUserPayload.mockResolvedValue({ kind: 'http', status: 503 })
+		await mount()
+		await press()
+		await created()
+		expect(await screen.findByText('network_error_try_again')).toBeTruthy()
+		expect(localStorage.getItem(PENDING)).toBe(TAG)
+		expect(tagInput().readOnly).toBe(true)
+		expect(tagInput().value).toBe(TAG)
+		// an attempt to change the tag is ignored
+		fireEvent.change(tagInput(), { target: { value: 'othertag99' } })
+		expect(tagInput().value).toBe(TAG)
+		// the retry uses step 1 and step 2 with the locked tag; no password or code was stored
+		beamio.postAddUserPayload.mockResolvedValue({ kind: 'ok' })
+		await refill()
+		await press()
+		await waitFor(() => expect(nr.nativeAccountCreateOpen).toHaveBeenCalledTimes(2), { timeout: 5000 })
+		expect(nr.nativeAccountCreateOpen).toHaveBeenLastCalledWith(TAG)
+		await act(async () => emitCreate({ code: 'already_exists' }))
+		await screen.findByTestId('recover-code')
+		for (const store of [localStorage, sessionStorage]) {
+			for (let i = 0; i < store.length; i++) {
+				const entry = `${store.key(i)}=${store.getItem(store.key(i) as string)}`
+				expect(entry).not.toContain(CODE)
+				expect(entry).not.toContain(PWD)
+			}
+		}
+	})
+
+	it('after an interruption the completion offers the stored tag prefilled and locked, and uses no other tag; the tag availability check is not asked again', async () => {
+		localStorage.setItem(PENDING, 'lockedtag77')
+		beamio.checkBeamioAccountAPI.mockClear()
+		await mount({ typeTag: false })
+		expect(tagInput().value).toBe('lockedtag77')
+		expect(tagInput().readOnly).toBe(true)
+		fireEvent.change(tagInput(), { target: { value: 'sneaky' } })
+		expect(tagInput().value).toBe('lockedtag77')
+		await press()
+		await waitFor(() => expect(nr.nativeAccountCreateOpen).toHaveBeenCalled(), { timeout: 5000 })
+		expect(nr.nativeAccountCreateOpen).toHaveBeenCalledWith('lockedtag77')
+		await act(async () => emitCreate({ code: 'already_exists' }))
+		await waitFor(() => expect(spc.sendAccountCreateRegister).toHaveBeenCalledTimes(1), { timeout: 5000 })
+		expect(spc.sendAccountCreateRegister.mock.calls[0][0]).toMatchObject({ tag: 'lockedtag77' })
+		expect(beamio.checkBeamioAccountAPI).not.toHaveBeenCalled()
+	})
+
+	it('completing the registration clears the stored tag', async () => {
+		await mount()
+		await press()
+		await created()
+		await screen.findByTestId('recover-code')
+		expect(localStorage.getItem(PENDING)).toBe(TAG)
+		fireEvent.click(screen.getByTestId('recover-code-saved'))
+		await act(async () => {
+			fireEvent.click(screen.getByTestId('recover-code-continue'))
+		})
+		await waitFor(() => expect(localStorage.getItem(PENDING)).toBeNull())
+	})
+
+	it('a step 1 that fails leaves no lock', async () => {
+		nr.nativeAccountCreateOpen.mockResolvedValue({ ok: false, reason: 'not_ready' })
+		await mount()
+		await press()
+		await screen.findByText('create_account_try_later')
+		expect(localStorage.getItem(PENDING)).toBeNull()
+		expect(tagInput().readOnly).toBe(false)
+	})
+
+	it('tag_taken at step 2 releases the lock so the user can choose another tag', async () => {
+		spc.sendAccountCreateRegister.mockResolvedValue({ type: 'ack', ok: false, reqId: 1, error: 'tag_taken' })
+		await mount()
+		await press()
+		await created()
+		expect(await screen.findByText('tag_is_already_taken')).toBeTruthy()
+		expect(localStorage.getItem(PENDING)).toBeNull()
+		await waitFor(() => expect(tagInput().readOnly).toBe(false))
+	})
+
+	it('the browser page is never locked (no stored tag is read outside a shell)', async () => {
+		// the file mocks isShellContext as true; the lock source is only read when it is true, and the browser create does not write the tag
+		const page = require('fs').readFileSync(require('path').join(__dirname, 'CreateUsernamePinScreen.tsx'), 'utf8')
+		expect(page).toMatch(/useState\(\(\) => \(isShellContext\(\) \? readPendingCreateTag\(\) : ''\)\)/)
+		const fn = page.slice(page.indexOf('const handleCreateWallet'))
+		expect(fn.indexOf('writePendingCreateTag')).toBe(-1)
 	})
 })

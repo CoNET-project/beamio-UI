@@ -151,6 +151,7 @@
     "native_not_ready_hint": "The native wallet is not ready yet. You can retry.",
     "merchant_os_open_failed": "Could not open Business OS. Try again later.",
     "create_account_registered_save_code": "Your account is registered, but this device could not save it yet. Save your recovery code now, then continue. Do not create another account.",
+    "create_account_recover_code_expired": "For your security the recovery code was hidden after 5 minutes. Your account is created: continue here to enter it, and sign in later with your Beamio ID and password.",
     "create_account_local_error": "An account cannot be created on this device right now.",
     "create_account_mnemonic_missing": "This device's account is missing its recovery phrase, so the username can't be created right now. Your account and assets are not affected.",
     "create_account_existing_key_required": "This device's existing account key can't be confirmed right now, so the username can't be created. Your account and assets are not affected.",
