@@ -124,6 +124,8 @@ const CreateUsernamePinScreen = forwardRef<
 	const [lockedTag, setLockedTag] = useState(() => (resumeTag ?? '').trim().replace(/^@+/, ''))
 	const [beamioName, setBeamioName] = useState(() => (resumeTag ?? '').trim().replace(/^@+/, ''))
 	/** The wallet of this create (step 1): the record of the locked tag is kept and cleared under it. A resume starts with the wallet the gate found. */
+	/** the tag for which step 1 (the native create) already passed on this page: the device then holds the key, and a retry never sends step 1 again */
+	const stepOnePassedForRef = useRef('')
 	const createEoaRef = useRef((resumeEoa ?? '').trim().toLowerCase())
 	/** a resume of an interrupted create (the gate sent the user here with a locked tag) */
 	const resumeEoaLower = (resumeEoa ?? '').trim().toLowerCase()
@@ -547,6 +549,7 @@ const CreateUsernamePinScreen = forwardRef<
 	const abandonResumeForOtherWallet = (where: string) => {
 		publishNativePwaLog('warn', `[createAccount] resume: the device wallet is not the one the resume was found for (${where}); the locked tag is dropped`)
 		createEoaRef.current = ''
+		stepOnePassedForRef.current = ''
 		setLockedTag('')
 		setPassword('')
 		setLoading(false)
@@ -613,6 +616,7 @@ const CreateUsernamePinScreen = forwardRef<
 			case 'tag_taken':
 				// the registry holds this tag for another account: the lock is released so the user can choose another tag (the wallet stays)
 				clearPendingCreateTag(createEoaRef.current)
+				stepOnePassedForRef.current = ''
 				setLockedTag('')
 				// the last native check after the page's own pre-check (a race): the same copy as the pre-check, back to renaming
 				lastCheckedRef.current = ''
@@ -732,6 +736,13 @@ const CreateUsernamePinScreen = forwardRef<
 			await handleShellRegister(trimmedTag, pwd)
 			return
 		}
+		// A retry on this page after step 1 already passed (step 2 or 3 failed, e.g. addUser on a bad network): the key and the held payload are here, so step 1
+		// is not sent again. G1 and G2 answer it with not_available (spec r3sn/r3so), which would end the retry at "unavailable". The first create still starts at step 1.
+		if (stepOnePassedForRef.current === trimmedTag && createEoaRef.current) {
+			announceNativeFlowPending(true)
+			await handleShellRegister(trimmedTag, pwd)
+			return
+		}
 		if (nativeCreatePendingRef.current) {
 			setLoading(false)
 			return
@@ -806,6 +817,7 @@ const CreateUsernamePinScreen = forwardRef<
 				writePendingCreateTag(eoa, trimmedTag)
 			}
 			setLockedTag(trimmedTag)
+			stepOnePassedForRef.current = eoa ? trimmedTag : ''
 		}
 		if (step.kind === 'failed') {
 			// the result listener showed the copy for the code

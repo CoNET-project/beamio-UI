@@ -310,15 +310,67 @@ describe('step 2 and 3 failures', () => {
 		expect(beamio.postAddUserPayload).toHaveBeenCalledTimes(4)
 		expect(screen.queryByTestId('recover-code')).toBeNull()
 		expect(spc.sendAccountCreateRegister).toHaveBeenCalledTimes(1)
-		// manual retry: step 1 answers already_exists (the key exists), the held payload is forwarded, no second registration command
+		// manual retry (spec r3sn/r3so): the key exists now, so G1/G2 would answer step 1 with not_available. The page does not send step 1 again:
+		// the held payload is forwarded, no second registration command, and the recover code shows
+		nr.nativeAccountCreateOpen.mockResolvedValue({ ok: false, reason: 'not_available', walletStatus: 'G1' })
 		beamio.postAddUserPayload.mockResolvedValue({ kind: 'ok' })
 		await refill()
 		await press()
-		await waitFor(() => expect(nr.nativeAccountCreateOpen).toHaveBeenCalledTimes(2), { timeout: 5000 })
-		await act(async () => emitCreate({ code: 'already_exists' }))
 		await screen.findByTestId('recover-code')
+		expect(nr.nativeAccountCreateOpen).toHaveBeenCalledTimes(1) // the first create only
 		expect(spc.sendAccountCreateRegister).toHaveBeenCalledTimes(1)
 		expect(beamio.postAddUserPayload).toHaveBeenCalledTimes(5)
+		expect(screen.queryByText('create_account_unavailable')).toBeNull()
+	})
+
+	it('step 1 passed, step 3 fails, retry: only step 3 is sent again (not step 1), and after it succeeds the recover code page shows', async () => {
+		beamio.postAddUserPayload.mockResolvedValue({ kind: 'network' })
+		await mount()
+		await press()
+		await created()
+		expect(await screen.findByText('network_error_try_again')).toBeTruthy()
+		expect(nr.nativeAccountCreateOpen).toHaveBeenCalledTimes(1)
+		nr.nativeAccountCreateOpen.mockResolvedValue({ ok: false, reason: 'not_available', walletStatus: 'G2' })
+		beamio.postAddUserPayload.mockResolvedValue({ kind: 'ok' })
+		await refill()
+		await press()
+		const code = await screen.findByTestId('recover-code')
+		expect(code.textContent).toBe(CODE)
+		expect(nr.nativeAccountCreateOpen).toHaveBeenCalledTimes(1)
+		expect(spc.sendAccountCreateRegister).toHaveBeenCalledTimes(1)
+	})
+
+	it('a failure of step 2 (nothing held yet) retried: step 2 is asked again, step 1 is not', async () => {
+		spc.sendAccountCreateRegister.mockResolvedValueOnce(null)
+		await mount()
+		await press()
+		await created()
+		expect(await screen.findByText('create_account_native_unavailable')).toBeTruthy()
+		nr.nativeAccountCreateOpen.mockResolvedValue({ ok: false, reason: 'not_available', walletStatus: 'G1' })
+		spc.sendAccountCreateRegister.mockResolvedValue(OK_ENVELOPE)
+		await refill()
+		await press()
+		await screen.findByTestId('recover-code')
+		expect(nr.nativeAccountCreateOpen).toHaveBeenCalledTimes(1)
+		expect(spc.sendAccountCreateRegister).toHaveBeenCalledTimes(2)
+	})
+
+	it('the first create of a page still starts at step 1 (also after tag_taken released the lock)', async () => {
+		spc.sendAccountCreateRegister.mockResolvedValueOnce({ type: 'ack', ok: false, reqId: 1, error: 'tag_taken' })
+		await mount()
+		await press()
+		await created()
+		expect(await screen.findByText('tag_is_already_taken')).toBeTruthy()
+		expect(nr.nativeAccountCreateOpen).toHaveBeenCalledTimes(1)
+		// the user chooses another tag: this is a new first create, so step 1 is sent again
+		const tag = tagInput()
+		fireEvent.change(tag, { target: { value: 'othertag01' } })
+		fireEvent.blur(tag)
+		await refill()
+		await waitFor(() => expect(next().disabled).toBe(false), { timeout: 5000 })
+		await press()
+		await waitFor(() => expect(nr.nativeAccountCreateOpen).toHaveBeenCalledTimes(2), { timeout: 5000 })
+		expect(nr.nativeAccountCreateOpen).toHaveBeenLastCalledWith('othertag01')
 	})
 
 	it('already_registered (the registry has it, no recover code): no addUser, enters after the answer', async () => {
@@ -446,10 +498,10 @@ describe('r3sk/r3sl 3: the tag of step 1 is the tag of step 2, recorded per wall
 		beamio.postAddUserPayload.mockResolvedValue({ kind: 'ok' })
 		await refill()
 		await press()
-		await waitFor(() => expect(nr.nativeAccountCreateOpen).toHaveBeenCalledTimes(2), { timeout: 5000 })
-		expect(nr.nativeAccountCreateOpen).toHaveBeenLastCalledWith(TAG)
-		await act(async () => emitCreate({ code: 'already_exists' }))
+		// the retry is steps 2 and 3 with the locked tag: step 1 is not sent again (the device holds the key; G1/G2 would answer not_available)
 		await screen.findByTestId('recover-code')
+		expect(nr.nativeAccountCreateOpen).toHaveBeenCalledTimes(1)
+		expect(spc.sendAccountCreateRegister.mock.calls[0]?.[0]).toMatchObject({ tag: TAG })
 		// only the tag and the wallet are stored: no password, no recover code
 		for (const store of [localStorage, sessionStorage]) {
 			for (let i = 0; i < store.length; i++) {
