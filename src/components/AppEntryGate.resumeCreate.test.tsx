@@ -3,7 +3,7 @@
  * the registry (two hosts) between the create page (tag locked, props shown) and the home; with no record nothing is read.
  * The registry reads are the I/O boundary (mocked per host); the decisions and the record store are the real code.
  */
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import AppEntryGate from './AppEntryGate'
 import { CONET_RPC_URL, CONET_RPC_SECONDARY } from '@/config/chainAddresses'
@@ -126,7 +126,7 @@ jest.mock('@/components/SplashScreen', () => () => null, { virtual: true })
 jest.mock('@/components/EmbeddedPwaUpdateBanner', () => ({ EmbeddedPwaUpdateBanner: () => null }), { virtual: true })
 jest.mock('@/pages/Home/LoadingPage', () => {
 	const R = require('react')
-	return (p: any) => R.createElement('div', null, 'ONBOARDING-PAGE', p.resumeCreate ? ' RESUME ' + p.resumeCreate.tag + ' ' + p.resumeCreate.eoa : '')
+	return (p: any) => R.createElement('div', null, 'ONBOARDING-PAGE', p.resumeCreate ? ' RESUME ' + p.resumeCreate.tag + ' ' + p.resumeCreate.eoa : '', R.createElement('input', { 'data-testid': 'pw-input' }))
 }, { virtual: true })
 jest.mock('@/utils/cashTreesNativeNfc', () => ({ isCashTreesNativeWebView: () => true, getCashTreesNativeNfcHost: () => null }), { virtual: true })
 jest.mock('@/utils/cashTreesNativePwaLog', () => ({
@@ -365,6 +365,9 @@ describe('M1 re-entry: a second start while the resume page is open leaves it al
 		const { container } = renderAt('/settings')
 		await waitFor(() => expect(onboardingShown()).toBe(true), { timeout: 3000 })
 		const node = screen.getByText(/ONBOARDING-PAGE/)
+		// the user is typing a password in the resume page
+		const pw = screen.getByTestId('pw-input') as HTMLInputElement
+		fireEvent.change(pw, { target: { value: 'typed-synthetic-value' } })
 		const checksBefore = g.__checkCalls
 		const readsBefore = regCalls()
 		// the start runs again (a native wallet-ready event re-runs the same gate)
@@ -376,6 +379,8 @@ describe('M1 re-entry: a second start while the resume page is open leaves it al
 		expect(onboardingShown()).toBe(true)
 		expect(screen.queryByText('SETTINGS-PAGE')).toBeNull()
 		expect(screen.getByText(/ONBOARDING-PAGE/)).toBe(node) // the same element: not remounted
+		expect(screen.getByTestId('pw-input')).toBe(pw)
+		expect((screen.getByTestId('pw-input') as HTMLInputElement).value).toBe('typed-synthetic-value') // the typed input is intact
 		expect(g.__checkCalls).toBe(checksBefore)
 		expect(regCalls()).toBe(readsBefore)
 		expect(container).toBeTruthy()

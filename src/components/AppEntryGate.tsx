@@ -1667,7 +1667,9 @@ export default function AppEntryGate() {
 		secondaryUrl: CONET_RPC_SECONDARY,
 	}
 	const goResumeCreate = (eoa: string, tag: string) => {
-		// a resume page that is already open for this wallet is never routed again (the user may be typing in it)
+		// a resume page that is already open for this wallet is never routed again (the user may be typing in it).
+		// Defence in depth: no current entry can reach this (resumeEntry and the fired mark stop a second route first), so a mutant that
+		// removes this line cannot be killed by a test; that is expected.
 		if (resumeCreateRef.current?.eoa === eoa && onboardingOpenRef.current) return
 		markResumeFired(eoa)
 		resumeCreateRef.current = { eoa, tag }
