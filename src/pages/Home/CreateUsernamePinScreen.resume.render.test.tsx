@@ -274,6 +274,18 @@ describe('S-a: a resume whose step 2 ends on already_registered must answer the 
 		expect(noticeShown()).toBe('already_registered_keep_password')
 	})
 
+	it('the same wallet in another letter case (checksum form) is the same wallet: the normal already_registered ending', async () => {
+		const LOWER = '0xabcdef0123456789abcdef0123456789abcdef01'
+		const MIXED = '0xAbCdEf0123456789aBcDeF0123456789AbCdEf01'
+		localStorage.setItem(KEY, JSON.stringify({ [LOWER]: { t: TAG } }))
+		spc.sendAccountCreateRegister.mockResolvedValue({ type: 'ack', ok: false, reqId: 1, error: 'already_registered' })
+		eoaMod.readWalletEoaAddress.mockResolvedValue({ kind: 'address', eoa: MIXED })
+		await mount({ resume: { eoa: LOWER, tag: TAG } })
+		await press()
+		await waitFor(() => expect(wallet.notifyNativeWalletReady).toHaveBeenCalled(), { timeout: 5000 })
+		expect(retry.requestNativeIdentityRetry).not.toHaveBeenCalled()
+	})
+
 	it('the hard-guard failure shows no failure copy that could invite a second submit: the page goes back to the entry (no error line, no retry button state)', async () => {
 		seedRecord()
 		eoaMod.readWalletEoaAddress.mockResolvedValue({ kind: 'refused', code: 'not_ready' })
