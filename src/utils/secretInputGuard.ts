@@ -3,7 +3,8 @@
  * showed a pasted secret in the system accessibility log). The page cannot stop the OS from observing a field. The
  * mitigations here remove what the page can remove: autofill, spelling, autocorrect, capitalisation and password-manager
  * capture, copy and cut out of the field, and, for numeric PIN and passcode fields, paste (the digits are typed). A recovery
- * code or a password may still be pasted in a browser; a shell does not show those fields at all.
+ * code or a password may still be pasted in a browser. Since 0.53.49 a shell shows those fields too (the restore page is the PWA page there),
+ * with the same guard; the credential goes to the native engine and the page state is cleared as soon as the request is built.
  */
 export type SecretFieldKind = 'pin' | 'secret'
 

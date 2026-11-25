@@ -46,14 +46,15 @@ describe('password-type inputs carry the secret guard', () => {
 describe('shell recovery path', () => {
 	const restore = read('src/pages/Home/RestoreWalletUnifiedScreen.tsx')
 
-	it('the shell shows the native recovery button in place of the recovery code form', () => {
-		//a shell renders from activeTab, which is always 'recovery' in a shell (no password tab).
-		expect(restore).toContain("const activeTab: RestoreTab = shell ? 'recovery' : tab")
-		expect(restore).toMatch(/activeTab === 'recovery' && shell \? \(/)
-		expect(restore).toMatch(/onClick=\{\(\) => void openNativeRecovery\(\)\}/)
+	it('0.53.49: a shell shows the same tabs as the browser, with the secret guard on every field', () => {
+		expect(restore).toContain('const activeTab: RestoreTab = tab')
+		expect(restore).not.toMatch(/activeTab === 'recovery' && shell \? \(/)
+		const k = restore.indexOf('id="welcome-back-recovery-code"')
+		expect(restore.slice(k - 600, k + 1200)).toMatch(/\{\.\.\.secretFieldProps\('secret'\)\}/)
+		expect(restore.slice(k - 600, k + 1200)).toMatch(/autoComplete="off"[\s\S]*autoCorrect="off"|autoCorrect="off"[\s\S]*autoComplete="off"/)
 	})
 
-	it('the recovery submit returns to the native page in a shell, before any in-page call', () => {
+	it('the recovery submit in a shell goes to the engine before any in-page restore call', () => {
 		const fn = restore.indexOf('const handleRecoverySubmit = async')
 		const guard = restore.indexOf('if (shell) {', fn)
 		const call = restore.indexOf('restoreWithRedeemDetailed(recoveryCode', fn)
@@ -62,15 +63,16 @@ describe('shell recovery path', () => {
 		expect(call).toBeGreaterThan(guard)
 	})
 
-	it('the shell outcome is a short code: ok enters without a reload, legacy_record shows its line', () => {
-		expect(restore).toMatch(/onNativeRecoveryResult\(\(\{ code, eoa \}\) => \{/)
-		expect(restore).toMatch(/if \(code === 'ok'\) \{[\s\S]{0,500}notifyNativeWalletReady\(initialBeamioTag, eoa\)/)
+	it('the shell outcome is a short code: ok enters without a reload, the others show PWA copy', () => {
+		expect(restore).toMatch(/onNativeRecoveryResult\(\(\{ code, eoa, cooldownSec \}\) => \{/)
+		expect(restore).toMatch(/if \(code === 'ok'\) \{[\s\S]{0,700}notifyNativeWalletReady\(initialBeamioTag, eoa\)/)
 		expect(restore).not.toMatch(/if \(code === 'ok'\) \{\s*window\.location\.reload\(\)/)
-		expect(restore).toMatch(/nativeRecoveryCopyKey\(code\)[\s\S]{0,40}setRecoveryError\(tu\(copyKey\)\)/)  // legacy_record keeps its copy through the mapping
+		expect(restore).toMatch(/nativeRecoveryCopyKey\(code\)/)
 	})
 
-	it('the native recovery command carries only its type and reqId', () => {
+	it('the open command carries only its type and reqId; the credential goes only in the submit action', () => {
 		const native = read('src/services/nativeRecovery.ts')
 		expect(native).toMatch(/requestNativeAck\(\{ type: NATIVE_RECOVERY_OPEN_COMMAND \}/)
+		expect(native).toMatch(/type: NATIVE_RECOVERY_SUBMIT_COMMAND, reqId: nextReqId\(\), path: 'code', code: input\.code/)
 	})
 })

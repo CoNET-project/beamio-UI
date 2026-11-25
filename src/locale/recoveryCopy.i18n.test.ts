@@ -6,8 +6,8 @@ import i18next from 'i18next'
 import { tu } from '@/locale/beamioLocale'
 import { nativeRecoveryCopyKey, recoveryOpenErrorKey } from '@/services/nativeRecovery'
 
-const OPEN_REASONS = ['not_supported', 'not_available', 'bad_request', 'key_over_bridge_refused', 'timeout']
-const NATIVE_CODES = ['legacy_record', 'not_ready', 'unregister_refused', 'busy', 'clear_failed', 'main_thread', 'unknown']
+const OPEN_REASONS = ['not_supported', 'not_available', 'bad_request', 'key_over_bridge_refused', 'timeout', 'capability_missing', 'untrusted_origin', 'origin_refused']
+const NATIVE_CODES = ['legacy_record', 'not_ready', 'unregister_refused', 'busy', 'clear_failed', 'main_thread', 'unknown', 'bad_pin', 'backoff', 'not_found', 'network_error', 'already_exists', 'record_invalid', 'write_failed', 'readback_failed', 'invalid_format']
 
 function keysUnderTest(): string[] {
 	const keys = new Set<string>()
@@ -33,6 +33,12 @@ describe.each(['en', 'zh-CN'])('recovery and import copy resolves through tu (%s
 			expect(out).not.toBe(`ui.${key}`)
 			expect(out.trim().length).toBeGreaterThan(0)
 		}
+	})
+
+	it('the retry label and the backoff seconds resolve', () => {
+		expect(tu('recovery.native.retry')).not.toBe('recovery.native.retry')
+		const out = tu('recovery.native.backoff', { seconds: 7 })
+		expect(out).toContain('7')
 	})
 
 	it('the generic restore failure key (kept under ui) shows its text', () => {

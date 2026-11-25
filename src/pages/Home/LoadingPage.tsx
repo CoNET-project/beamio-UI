@@ -1408,7 +1408,7 @@ export default function BeamioOnboardingModal({ home, onInitComplete, requireWal
 						>
 							
 							{
-								settingsOpen === 'CreateUsernamePinScreen' && <CreateUsernamePinScreen ref={createUsernameRef} isRedeemFlow={!!redeemFromUrl} onRequestClose={requireBeamioTagCreate ? undefined : () => setSettingsOpen('')} reuseExistingKey={requireBeamioTagCreate} onCreatingWalletChange={setCreateWalletLoading} close={qr => {
+								settingsOpen === 'CreateUsernamePinScreen' && <CreateUsernamePinScreen ref={createUsernameRef} isRedeemFlow={!!redeemFromUrl} onRequestRestore={(tag) => { setRestoreFromUrlBeamioTag(tag.trim().replace(/^@+/, '')); setSettingsOpen('RestoreWalletScreen') }} onRequestClose={requireBeamioTagCreate ? undefined : () => setSettingsOpen('')} reuseExistingKey={requireBeamioTagCreate} onCreatingWalletChange={setCreateWalletLoading} close={qr => {
 									// 0.53.44: the account creation is complete: the page write gate opens before any onboarding save (persistAndVerifyLocalWallet, init).
 									onNewAccountCreated?.()
 									setQrDataUrl(qr.qrDataUrl)

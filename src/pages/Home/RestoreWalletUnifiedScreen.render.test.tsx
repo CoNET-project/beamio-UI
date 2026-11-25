@@ -13,7 +13,7 @@ import { C2_SAMPLE_PHRASE } from './restoreEntryFixture'
 
 jest.mock('@/locale/beamioLocale', () => ({ ...jest.requireActual('@/locale/beamioLocale'), tu: (key: string) => key, useTu: () => ({ tu: (key: string) => key, locale: 'en' }) }))
 jest.mock('@/services/beamio', () => ({ onWalletEvent: (name: string, cb: (v: string) => void) => { if (name === 'scan:url') (globalThis as { __scanUrl?: (v: string) => void }).__scanUrl = cb; return () => undefined }, restoreWithRedeemDetailed: jest.fn(), restoreWithUserPin: jest.fn() }))
-jest.mock('@/services/nativeRecovery', () => ({ nativeRecoveryCopyKey: () => null, nativeRecoveryOpen: jest.fn(), onNativeRecoveryResult: () => () => undefined, recoveryOpenErrorKey: () => '' }))
+jest.mock('@/services/nativeRecovery', () => ({ nativeRecoveryCopyKey: () => null, nativeRecoveryOpen: jest.fn(), nativeRecoverySubmit: jest.fn(), nativeRecoveryCancel: jest.fn(), hasPageInputRecovery: async () => true, isTopFrameForRecovery: () => true, isTrustedRecoveryOrigin: () => true, onNativeRecoveryResult: () => () => undefined, recoveryOpenErrorKey: () => '' }))
 jest.mock('@/services/nativeWallet', () => ({ notifyNativeWalletReady: jest.fn(), rememberNativeEoa: jest.fn(), reachNativeWallet: jest.fn() }))
 jest.mock('@/services/argon2WorkerBridge', () => ({ warmArgon2Worker: jest.fn() }))
 jest.mock('@/services/shellContext', () => ({ isShellContext: () => false }))

@@ -11,6 +11,7 @@ import { nativeRecoveryOpen } from '../services/nativeRecovery'
 jest.mock('../locale/beamioLocale', () => ({ tu: (key: string) => key }))
 jest.mock('../services/nativeChatRouteRegister', () => ({ requestNativeAck: jest.fn(), nextReqId: () => 1, probeNativeCapabilities: jest.fn(), helloWithinWindow: () => true, onHelloValid: () => () => undefined, getCachedHello: () => undefined, getCachedHelloRaw: () => undefined }))
 jest.mock('../services/nativeRecovery', () => ({ nativeRecoveryOpen: jest.fn(async () => ({ ok: true })) }))
+jest.mock('../pages/Home/RestoreWalletUnifiedScreen', () => ({ __esModule: true, default: () => <div data-testid="pwa-restore-page" /> }))
 // the local page record decides the refused copy (the decision): mocked per case here
 const mockLocalPage: { next: 'valid' | 'no_mnemonic' | 'address_only' | 'throws' } = { next: 'valid' }
 jest.mock('../services/beamio', () => ({
@@ -137,12 +138,13 @@ describe('the clear answers that are neither a clear nor a missing account', () 
 })
 
 describe('the closed notice from an import switch', () => {
-	it('the button is the import retry and opens the native import page; nothing is cleared from here', () => {
+	it('the button is the import retry and opens the PWA restore page (no native recovery page); nothing is cleared from here', async () => {
 		setIdentityClosed({ reason: 'unregister_refused', source: 'import' })
 		render(<ShellIdentityClosedNotice />)
 		expect(screen.queryByRole('button', { name: 'chat.clear_failed.entry' })).toBeNull()
 		fireEvent.click(screen.getByRole('button', { name: 'chat.import_retry.entry' }))
-		expect(openMock).toHaveBeenCalledTimes(1)
+		expect(await screen.findByTestId('pwa-restore-page')).toBeTruthy()
+		expect(openMock).not.toHaveBeenCalled()
 		expect(clearMock).not.toHaveBeenCalled()
 	})
 })

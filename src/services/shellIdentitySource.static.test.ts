@@ -12,7 +12,7 @@ const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), '
 describe('the public address is kept only on an ok restore', () => {
 	it('the recovery ok branch keeps the eoa through rememberNativeEoa (which persists it), and does not reload (directive)', () => {
 		const src = read('pages/Home/RestoreWalletUnifiedScreen.tsx')
-		expect(src).toMatch(/onNativeRecoveryResult\(\(\{ code, eoa \}\) => \{[\s\S]*?if \(code === 'ok'\) \{[\s\S]*?rememberNativeEoa\(eoa\)/)
+		expect(src).toMatch(/onNativeRecoveryResult\(\(\{ code, eoa, cooldownSec \}\) => \{[\s\S]*?if \(code === 'ok'\) \{[\s\S]*?rememberNativeEoa\(eoa\)/)
 		expect(src).not.toMatch(/if \(code === 'ok'\) \{[\s\S]{0,400}window\.location\.reload\(\)/)
 		expect(read('services/nativeWallet.ts')).toMatch(/export function rememberNativeEoa[\s\S]*?persistShellEoa\(nativeEoaHint\)/)
 	})

@@ -919,7 +919,16 @@
       "legacy_record": "此账户使用的是旧版恢复记录，本版暂不支持恢复。",
       "busy": "正在处理上一次请求，请稍候。",
       "import_incomplete": "导入未完成，请重试。",
-      "not_ready": "钱包暂未就绪，请稍后重试。"
+      "not_ready": "钱包暂未就绪，请稍后重试。",
+      "bad_pin": "密码或恢复码不正确，请重试。",
+      "backoff": "尝试次数过多，请在 {{seconds}} 秒后重试。",
+      "not_found": "未找到与这些信息对应的账户。",
+      "already_exists": "此设备上已有钱包，未做任何改动。",
+      "record_invalid": "此恢复记录无法读取，请重试。",
+      "write_failed": "钱包未能保存到此设备，请重试。",
+      "capability_missing": "请先更新应用，再恢复钱包。",
+      "untrusted_origin": "此页面无法进行恢复，请重新打开应用后再试。",
+      "retry": "重试"
     }
   },
   "errors": {

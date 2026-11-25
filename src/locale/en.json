@@ -919,7 +919,16 @@
       "legacy_record": "This account uses an older recovery record that this app version cannot restore yet.",
       "busy": "A previous request is still in progress. Please wait.",
       "import_incomplete": "Import did not complete. Please try again.",
-      "not_ready": "Your wallet isn't ready yet. Please try again later."
+      "not_ready": "Your wallet isn't ready yet. Please try again later.",
+      "bad_pin": "The password or recovery code is incorrect. Please try again.",
+      "backoff": "Too many attempts. Try again in {{seconds}} seconds.",
+      "not_found": "No account was found for these details.",
+      "already_exists": "This device already has a wallet. Nothing was changed.",
+      "record_invalid": "This recovery record could not be read. Please try again.",
+      "write_failed": "Your wallet could not be saved on this device. Please try again.",
+      "capability_missing": "Please update the app before restoring your wallet.",
+      "untrusted_origin": "Restore is not available from this page. Please reopen the app and try again.",
+      "retry": "Try again"
     }
   },
   "errors": {

@@ -11,7 +11,7 @@ import { eventPayloadOf, NATIVE_EVENT_NAMES, withoutGlobalNoKeyLock } from './na
 import { beginPrereadRound } from './prereadRound'
 import { nextReqId, probeNativeCapabilities, requestNativeAck } from './nativeChatRouteRegister'
 import { PASSCODE_CAPABILITY } from './passcode/passcodeCommands'
-import { sendShellWalletSyncCommand, shellRecordTransportKind } from './shellRecordTransport'
+import { sendShellActionCommand, sendShellWalletSyncCommand, shellRecordTransportKind, type ShellRecordAnswer } from './shellRecordTransport'
 import { getCashTreesNativeNfcHost } from '@/utils/cashTreesNativeNfc'
 import { parsePasscodeStatus, type NativeWalletState as NativeWalletStateReport } from './accountJudgement'
 import { parseWalletStatusResult } from './accountPresence'
@@ -60,6 +60,15 @@ export type NativeRecoveryResultCode = (typeof NATIVE_RECOVERY_RESULT_CODES)[num
  * `unknown` and the import-incomplete codes share the generic "import did not complete, try again" copy.
  */
 export const nativeRecoveryCopyKey = (code: string): string | null => {
+	// 0.53.49: the recovery page is the PWA page, so every result code has PWA copy (ok and cancelled show none).
+	if (code === 'bad_pin') return 'recovery.native.bad_pin'
+	if (code === 'backoff') return 'recovery.native.backoff'
+	if (code === 'not_found') return 'recovery.native.not_found'
+	if (code === 'network_error') return 'network_error'
+	if (code === 'already_exists') return 'recovery.native.already_exists'
+	if (code === 'record_invalid') return 'recovery.native.record_invalid'
+	if (code === 'write_failed' || code === 'readback_failed') return 'recovery.native.write_failed'
+	if (code === 'invalid_format') return 'invalid_recovery_code_format'
 	if (code === 'legacy_record') return 'recovery.native.legacy_record'
 	// the wallet is not ready yet (the native store or the wallet state is not ready). Placeholder copy until the formal copy flow.
 	if (code === 'not_ready') return 'recovery.native.not_ready'
@@ -82,6 +91,9 @@ export type NativeRecoveryResult = {
  * reason (bad_request, key_over_bridge_refused, a timeout) uses the generic restore failure. A failed open is never a success.
  */
 export function recoveryOpenErrorKey(reason: string): string {
+	if (reason === 'capability_missing') return 'recovery.native.capability_missing'
+	if (reason === 'busy') return 'recovery.native.busy'
+	if (reason === 'untrusted_origin' || reason === 'origin_refused') return 'recovery.native.untrusted_origin'
 	if (reason === 'not_supported') return 'recovery.native.not_supported'
 	if (reason === 'not_available') return 'recovery.native.not_available'
 	return 'something_went_wrong_while_restoring_your_wallet'
@@ -203,6 +215,177 @@ export async function nativeRecoveryOpen(): Promise<{ ok: true } | { ok: false; 
 		return { ok: true }
 	}
 	return { ok: false, reason: typeof p.error === 'string' && p.error ? p.error : 'bad_ack' }
+}
+
+/**
+ * 0.53.49 (plan A, P1): the recovery page is the PWA page in the shell too. The recovery code, or the account name and password, go to
+ * the native recovery engine through two shell actions (`nativeRecoverySubmit`, `nativeRecoveryCancel`). The page does not decrypt, does not
+ * hold a mnemonic and does not write the native key store; the outcome is still the `nativeRecoveryResult` event. Nothing here logs an input.
+ * The actions are sent only from a trusted origin in the top frame, and only when the shell declared `recovery.page-input.v1`.
+ */
+export const NATIVE_RECOVERY_SUBMIT_COMMAND = 'nativeRecoverySubmit'
+export const NATIVE_RECOVERY_CANCEL_COMMAND = 'nativeRecoveryCancel'
+export const PAGE_INPUT_RECOVERY_CAPABILITY = 'recovery.page-input.v1'
+const SUBMIT_TIMEOUT_MS = 20_000
+
+/** Exact origins (no prefix or substring match): the iOS shell package, the Android shell assets, the public PWA. */
+const TRUSTED_SHELL_ORIGINS: readonly string[] = ['cashtrees-local://localhost', 'https://appassets.androidplatform.net']
+const TRUSTED_WEB_ORIGIN = 'https://beamio.ca'
+
+/** Test seam: the location and top-frame facts the predicate reads (null: the real window). */
+let recoveryOriginOverride: { href: string; topFrame: boolean } | null = null
+export function setRecoveryOriginForTest(v: { href: string; topFrame: boolean } | null): void {
+	recoveryOriginOverride = v
+}
+
+function topFrame(): boolean {
+	if (recoveryOriginOverride) return recoveryOriginOverride.topFrame
+	try {
+		return typeof window !== 'undefined' && window.top === window.self
+	} catch {
+		return false
+	}
+}
+
+/** The page is the top frame (an embedding frame is refused everywhere, the browser too). */
+export function isTopFrameForRecovery(): boolean {
+	return topFrame()
+}
+
+/**
+ * The recovery page may take a credential only in the top frame of a trusted origin. Exact origin equality; the public PWA must be under /app/.
+ * A development build also accepts localhost. This is page-side depth only: the shell channel is the real gate.
+ */
+export function isTrustedRecoveryOrigin(): boolean {
+	if (!topFrame()) return false
+	let href = ''
+	if (recoveryOriginOverride) href = recoveryOriginOverride.href
+	else if (typeof window !== 'undefined' && window.location) href = window.location.href
+	let url: URL
+	try {
+		url = new URL(href)
+	} catch {
+		return false
+	}
+	// Only these schemes can carry a trusted origin: blob:, data:, file:, javascript: and other schemes are refused whatever origin they inherit.
+	// The origin is built from scheme and host (the host keeps a port; a user-info part such as beamio.ca@evil.com never counts).
+	if (url.protocol !== 'https:' && url.protocol !== 'cashtrees-local:' && !(process.env.NODE_ENV === 'development' && url.protocol === 'http:')) return false
+	const origin = `${url.protocol}//${url.host}`
+	if (TRUSTED_SHELL_ORIGINS.includes(origin)) return true
+	if (origin === TRUSTED_WEB_ORIGIN) return url.pathname === '/app' || url.pathname.startsWith('/app/')
+	if (process.env.NODE_ENV === 'development') return origin === 'http://localhost:3000' || origin === 'http://127.0.0.1:3000'
+	return false
+}
+
+/** iOS: the capability table the shell injects (`window.__CT_IOS_CAPS__`; the SDK hello table cannot carry it). Object, array or Set. */
+function iosCapabilityDeclared(): boolean {
+	if (typeof window === 'undefined') return false
+	const caps = (window as unknown as { __CT_IOS_CAPS__?: unknown }).__CT_IOS_CAPS__
+	if (caps instanceof Set) return caps.has(PAGE_INPUT_RECOVERY_CAPABILITY)
+	if (Array.isArray(caps)) return caps.includes(PAGE_INPUT_RECOVERY_CAPABILITY)
+	if (caps !== null && typeof caps === 'object') return (caps as Record<string, unknown>)[PAGE_INPUT_RECOVERY_CAPABILITY] === true
+	return false
+}
+
+const isIosShell = (): boolean => getCashTreesNativeNfcHost() === 'ios'
+
+/**
+ * The shell declared that the page may enter the recovery credential (`recovery.page-input.v1`). iOS: the injected capability table.
+ * Android and the rest: the hello capability list. The platform difference stays in this file (the hello table and the injected table).
+ */
+export async function hasPageInputRecovery(): Promise<boolean> {
+	if (isIosShell()) return iosCapabilityDeclared()
+	const probe = await probeNativeCapabilities()
+	return probe.answered && probe.capabilities.includes(PAGE_INPUT_RECOVERY_CAPABILITY)
+}
+
+export type NativeRecoverySubmitInput = { path: 'code'; code: string } | { path: 'account'; name: string; password: string }
+export type NativeRecoverySubmitOutcome = { ok: true } | { ok: false; reason: string }
+
+const SUBMIT_REFUSALS = new Set(['origin_refused', 'not_available', 'bad_args', 'not_supported', 'busy'])
+
+/** Only one submit is in flight at a time (the shell answers busy to a second one; the page does not send it). */
+let submitInFlight = false
+
+/** iOS: `window.CashTreesIOS.<action>(args)`; the immediate answer is a `cashtreesios` event {action, ok, error?}. */
+function iosAction(action: 'nativeRecoverySubmit' | 'nativeRecoveryCancel', args: Record<string, unknown> | null): Promise<NativeRecoverySubmitOutcome> {
+	return new Promise((resolve) => {
+		const host = (window as unknown as { CashTreesIOS?: Record<string, unknown> }).CashTreesIOS
+		const fn = host?.[action]
+		if (typeof fn !== 'function') {
+			resolve({ ok: false, reason: 'capability_missing' })
+			return
+		}
+		let timer: ReturnType<typeof setTimeout> | undefined
+		const onEvent = (ev: Event) => {
+			const d = (ev as CustomEvent<{ action?: unknown; ok?: unknown; error?: unknown } | null>).detail
+			if (!d || typeof d !== 'object' || d.action !== action) return
+			done(d.ok === true ? { ok: true } : { ok: false, reason: typeof d.error === 'string' && SUBMIT_REFUSALS.has(d.error) ? d.error : 'bad_ack' })
+		}
+		const done = (out: NativeRecoverySubmitOutcome) => {
+			if (timer !== undefined) clearTimeout(timer)
+			window.removeEventListener('cashtreesios', onEvent)
+			resolve(out)
+		}
+		window.addEventListener('cashtreesios', onEvent)
+		timer = setTimeout(() => done({ ok: false, reason: 'timeout' }), SUBMIT_TIMEOUT_MS)
+		try {
+			if (args === null) (fn as () => void).call(host)
+			else (fn as (a: Record<string, unknown>) => void).call(host, args)
+		} catch {
+			done({ ok: false, reason: 'native_unavailable' })
+		}
+	})
+}
+
+/**
+ * Hands one credential to the native engine. ok means the shell accepted the request; the recovery result comes as the event.
+ * The input is never logged and never kept: the command object is built here and dropped.
+ */
+export async function nativeRecoverySubmit(input: NativeRecoverySubmitInput): Promise<NativeRecoverySubmitOutcome> {
+	if (!isTrustedRecoveryOrigin()) return { ok: false, reason: 'untrusted_origin' }
+	if (!(await hasPageInputRecovery())) return { ok: false, reason: 'capability_missing' }
+	if (submitInFlight) return { ok: false, reason: 'busy' }
+	submitInFlight = true
+	try {
+		if (isIosShell()) {
+			return await iosAction('nativeRecoverySubmit', input.path === 'code' ? { path: 'code', code: input.code } : { path: 'account', name: input.name, password: input.password })
+		}
+		const cmd: Record<string, unknown> =
+			input.path === 'code'
+				? { type: NATIVE_RECOVERY_SUBMIT_COMMAND, reqId: nextReqId(), path: 'code', code: input.code }
+				: { type: NATIVE_RECOVERY_SUBMIT_COMMAND, reqId: nextReqId(), path: 'account', name: input.name, password: input.password }
+		let answer
+		try {
+			answer = await sendShellActionCommand(cmd, SUBMIT_TIMEOUT_MS)
+		} catch {
+			return { ok: false, reason: 'native_unavailable' }
+		}
+		return judgeActionAnswer(answer)
+	} finally {
+		submitInFlight = false
+	}
+}
+
+/** Tells the engine the page is leaving (or backing out): the session ends as cancelled. Never throws, never carries data. */
+export async function nativeRecoveryCancel(): Promise<NativeRecoverySubmitOutcome> {
+	if (!isTrustedRecoveryOrigin()) return { ok: false, reason: 'untrusted_origin' }
+	try {
+		if (isIosShell()) return await iosAction('nativeRecoveryCancel', null)
+		const answer = await sendShellActionCommand({ type: NATIVE_RECOVERY_CANCEL_COMMAND, reqId: nextReqId() }, SUBMIT_TIMEOUT_MS)
+		return judgeActionAnswer(answer)
+	} catch {
+		return { ok: false, reason: 'native_unavailable' }
+	}
+}
+
+function judgeActionAnswer(answer: ShellRecordAnswer): NativeRecoverySubmitOutcome {
+	if (answer.kind === 'origin_refused') return { ok: false, reason: 'origin_refused' }
+	if (answer.kind !== 'payload') return { ok: false, reason: answer.kind === 'timeout' ? 'timeout' : 'native_unavailable' }
+	const p = answer.payload as { ok?: unknown; error?: unknown }
+	if (p.ok === true) return { ok: true }
+	const error = typeof p.error === 'string' ? p.error : ''
+	return { ok: false, reason: SUBMIT_REFUSALS.has(error) ? error : 'bad_ack' }
 }
 
 /**

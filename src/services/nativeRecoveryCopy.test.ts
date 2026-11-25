@@ -21,8 +21,17 @@ describe('native result codes', () => {
 		expect(nativeRecoveryCopyKey('main_thread')).toBe('recovery.native.import_incomplete')
 		expect(nativeRecoveryCopyKey('unknown')).toBe('recovery.native.import_incomplete')
 	})
-	it('existing codes keep the native page copy (no PWA copy key), legacy_record keeps its copy', () => {
-		for (const c of ['bad_pin', 'backoff', 'not_found', 'network_error', 'ok', 'cancelled', 'invalid_key', 'invalid_mnemonic', 'address_mismatch']) {
+	it('0.53.49: the page is the PWA page, so the former native-page codes have PWA copy; ok, cancelled and the import codes have none', () => {
+		expect(nativeRecoveryCopyKey('bad_pin')).toBe('recovery.native.bad_pin')
+		expect(nativeRecoveryCopyKey('backoff')).toBe('recovery.native.backoff')
+		expect(nativeRecoveryCopyKey('not_found')).toBe('recovery.native.not_found')
+		expect(nativeRecoveryCopyKey('network_error')).toBe('network_error')
+		expect(nativeRecoveryCopyKey('already_exists')).toBe('recovery.native.already_exists')
+		expect(nativeRecoveryCopyKey('record_invalid')).toBe('recovery.native.record_invalid')
+		expect(nativeRecoveryCopyKey('write_failed')).toBe('recovery.native.write_failed')
+		expect(nativeRecoveryCopyKey('readback_failed')).toBe('recovery.native.write_failed')
+		expect(nativeRecoveryCopyKey('invalid_format')).toBe('invalid_recovery_code_format')
+		for (const c of ['ok', 'cancelled', 'invalid_key', 'invalid_mnemonic', 'address_mismatch']) {
 			expect(nativeRecoveryCopyKey(c)).toBeNull()
 		}
 		expect(nativeRecoveryCopyKey('legacy_record')).toBe('recovery.native.legacy_record')
@@ -35,9 +44,12 @@ describe('native result codes', () => {
 			if (k) keys.add(k)
 		}
 		for (const k of keys) {
-			expect(typeof lookup(k, en)).toBe('string')
-			expect(typeof lookup(k, zh)).toBe('string')
+			// a top-level key (network_error, invalid_recovery_code_format) lives under ui
+			const inEn = lookup(k, en) ?? lookup(`ui.${k}`, en)
+			const inZh = lookup(k, zh) ?? lookup(`ui.${k}`, zh)
+			expect(typeof inEn).toBe('string')
+			expect(typeof inZh).toBe('string')
 		}
-		expect(keys.size).toBe(5)
+		expect(keys.size).toBe(13)
 	})
 })

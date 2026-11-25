@@ -9,10 +9,11 @@
  *
  * The copy is a placeholder pending final wording. SYNTHETIC values only.
  */
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { tu } from '../locale/beamioLocale'
 import { useVisibleReadPoll } from '../hooks/useHelloWait'
-import { nativeRecoveryOpen } from '../services/nativeRecovery'
+// loaded on demand: the restore page is heavy and only the import-retry button needs it
+const RestoreWalletUnifiedScreen = lazy(() => import('../pages/Home/RestoreWalletUnifiedScreen'))
 import {
 	clearShellChatIdentity,
 	getIdentityClosed,
@@ -76,6 +77,8 @@ export function ShellIdentityClosedNotice({
 	const [view, setView] = useState<View>('idle')
 	const [notice, setNotice] = useState<ClearNotice>('none')
 	const [localKey, setLocalKey] = useState<LocalKeyState>('unknown')
+	/** 0.53.49: the import retry opens the PWA restore page (no native recovery page); it hands the credential to the native engine. */
+	const [restoring, setRestoring] = useState(false)
 	useEffect(() => {
 		if (notice !== 'refused') return
 		let alive = true
@@ -87,6 +90,15 @@ export function ShellIdentityClosedNotice({
 		}
 	}, [notice])
 	if (!closed) return null
+	if (restoring) {
+		return (
+			<div className="fixed inset-0 z-[70] flex min-h-0 flex-col bg-[#f3f4fb]">
+				<Suspense fallback={null}>
+					<RestoreWalletUnifiedScreen onClose={() => setRestoring(false)} onRestore={async () => undefined} />
+				</Suspense>
+			</div>
+		)
+	}
 	const fromImport = closed.source === 'import'
 
 	const clear = async () => {
@@ -146,7 +158,7 @@ export function ShellIdentityClosedNotice({
 						<button
 							type="button"
 							disabled={view === 'busy'}
-							onClick={() => void nativeRecoveryOpen()}
+							onClick={() => setRestoring(true)}
 							className="rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-[#071126] disabled:opacity-60"
 						>
 							{tu('chat.import_retry.entry')}

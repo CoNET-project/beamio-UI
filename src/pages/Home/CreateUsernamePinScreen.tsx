@@ -6,7 +6,7 @@ import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle } f
 import { AppButton } from "@/components/button/AppButton"
 import { checkBeamioAccountAPI, createRecover, CreateRemoteError, LocalCreateError } from "@/services/beamio"
 import { createRecoverCopyKey, createRemoteErrorCopyKey } from '@/services/createRecoverCopy'
-import { nativeAccountCreateOpen, nativeRecoveryOpen, onNativeAccountCreateResult, onNativeRecoveryResult, recoveryOpenErrorKey } from "@/services/nativeRecovery"
+import { nativeAccountCreateOpen, onNativeAccountCreateResult } from "@/services/nativeRecovery"
 import { announceNativeWalletEstablished } from "@/services/nativeWalletEstablished"
 import { cancelCreateWait, canStartCreate, onCreateResult, scheduleCreateFallback, startCreateWait, tickCreateWait, type CreateWaitState } from "@/services/nativeCreateWait"
 import { readWalletEoaAddress } from "@/services/walletEoaAddress"
@@ -103,9 +103,11 @@ const CreateUsernamePinScreen = forwardRef<
 		onCreatingWalletChange?: (creating: boolean) => void,
 		/** the account has a key without a BeamioTag. This page reuses that key, has no back step and never creates a wallet. */
 		reuseExistingKey?: boolean,
+		/** an already-bound account: the parent opens the PWA restore page with this tag. */
+		onRequestRestore?: (tag: string) => void,
 	}
 >(function CreateUsernamePinScreen(
-	{ close, isRedeemFlow = false, onRequestClose, onCreatingWalletChange, reuseExistingKey = false },
+	{ close, isRedeemFlow = false, onRequestClose, onCreatingWalletChange, reuseExistingKey = false, onRequestRestore },
 	ref
 ) {
 	const { tu } = useTu()
@@ -154,30 +156,11 @@ const CreateUsernamePinScreen = forwardRef<
 	const g0NotAvailableCountRef = useRef(0)
 	const createCooldownUntilRef = useRef(0)
 	const [nativeOpening, setNativeOpening] = useState(false)
-	//an already-bound account opens the native recovery from this page; its ok result enters the app on the original EOA.
-	const recoveryFromCreateRef = useRef(false)
+	// 0.53.49: an already-bound account opens the PWA restore page (prefilled with the tag typed here); that page hands the credential to the
+	// native engine and enters the app on the original EOA itself. This page opens no native recovery page.
 	const openNativeRecoveryFromCreate = () => {
-		recoveryFromCreateRef.current = true
-		void nativeRecoveryOpen().then((out) => {
-			if (!out.ok) {
-				recoveryFromCreateRef.current = false
-				setCreateError(tu(recoveryOpenErrorKey(out.reason)))
-			}
-		})
+		onRequestRestore?.(createTagRef.current)
 	}
-	useEffect(() => {
-		if (!isShellContext()) return
-		return onNativeRecoveryResult(({ code, eoa }) => {
-			if (!recoveryFromCreateRef.current || code !== 'ok') return
-			recoveryFromCreateRef.current = false
-			announceNativeWalletEstablished()
-			rememberNativeEoa(eoa)
-			void reachNativeWallet().then((st) => {
-				if (st.status === 'unlocked') notifyNativeWalletReady(createTagRef.current, eoa)
-				else setCreateError(tu('create_account_try_later'))
-			})
-		})
-	}, [])
 
 	// Shell: the native create page reports its result. ok enters the app on the native wallet, with no reload.
 	useEffect(() => {
