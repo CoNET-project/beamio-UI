@@ -12,8 +12,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { tu } from '../locale/beamioLocale'
 import { useVisibleReadPoll } from '../hooks/useHelloWait'
-// loaded on demand: the restore page is heavy and only the import-retry button needs it
-const RestoreWalletUnifiedScreen = lazy(() => import('../pages/Home/RestoreWalletUnifiedScreen'))
 import {
 	clearShellChatIdentity,
 	getIdentityClosed,
@@ -22,6 +20,8 @@ import {
 	type IdentityClosedState,
 } from '../services/shellIdentityClosed'
 import { getShellRetryExhausted, requestShellRetryNow, subscribeShellRetryExhausted } from '../services/shellChatRetryCap'
+// loaded on demand: the restore page is heavy and only the import-retry button needs it
+const RestoreWalletUnifiedScreen = lazy(() => import('../pages/Home/RestoreWalletUnifiedScreen'))
 
 export function useIdentityClosedState(): IdentityClosedState {
 	const [state, setState] = useState<IdentityClosedState>(() => getIdentityClosed())
