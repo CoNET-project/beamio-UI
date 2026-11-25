@@ -62,6 +62,23 @@ describe('createRecover: the local save after newUser', () => {
 		expect(consultPageWriteGate('after_failed_persist')).toBe(false)
 	})
 
+	it('order: after a failed save the account is registered; a second createRecover on the same wallet is refused with already_registered and does not call newUser again', async () => {
+		const failing = jest.fn(async () => {
+			throw new Error('[persistAndVerifyLocalWallet] re-read failed: empty')
+		})
+		const first = await createRecover('synthtag', '123456', { deps: { checkStatus: emptyStore, createWallet: newWallet, persist: failing as never } })
+		if (!first) throw new Error('createRecover returned null')
+		expect((first as { persistFailed?: boolean }).persistFailed).toBe(true)
+		expect(posts).toHaveLength(1)
+		// the chain now holds the account; the same wallet comes back from the local store (the later onboarding save)
+		chainIdentityRead.read = async () => ({ status: 'ok', info: { exists: true } as never })
+		const loaded = (async () => ({ status: 'loaded', data: first.temp }) as never)
+		const persist = jest.fn()
+		await expect(createRecover('synthtag', '123456', { deps: { checkStatus: loaded, createWallet: newWallet, persist: persist as never } })).rejects.toMatchObject({ step: 'already_registered' })
+		expect(posts).toHaveLength(1) // newUser (addUser) was not called again
+		expect(persist).not.toHaveBeenCalled()
+	})
+
 	it('a refusal before newUser still throws and sends nothing (the registration check is unchanged)', async () => {
 		chainIdentityRead.read = async () => ({ status: 'ok', info: { exists: true } as never })
 		const persist = jest.fn()
