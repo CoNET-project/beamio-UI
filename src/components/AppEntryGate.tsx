@@ -513,6 +513,12 @@ export default function AppEntryGate() {
 	 * makes the next trigger (the entry or the 30 s beat) a no-op, so calls never pile up. Shell only; the browser has no local home.
 	 */
 	const upgradeInFlightRef = useRef(false)
+	/**
+	 * The wallets (lower case) that this process already saw unlocked through reachNativeWallet. The entry-time attempt is made only for a wallet
+	 * not in this set: an unlocked answer sends notifyNativeWalletReady, which re-runs the start, which enters the local home again (a valid page
+	 * record always does); without this memory that re-entry would ask again at once and the two would feed each other without end.
+	 */
+	const reachedUnlockedRef = useRef(new Set<string>())
 	const upgradeLocalHome = async (): Promise<void> => {
 		if (!localModeRef.current || upgradeInFlightRef.current) return
 		upgradeInFlightRef.current = true
@@ -522,6 +528,8 @@ export default function AppEntryGate() {
 			if (cap !== 'declared') return
 			const native = await reachNativeWallet()
 			if (native.status === 'unlocked') {
+				const eoaKey = typeof (native as { eoa?: unknown }).eoa === 'string' ? (native as { eoa: string }).eoa.toLowerCase() : ''
+				if (eoaKey) reachedUnlockedRef.current.add(eoaKey)
 				notifyNativeWalletReady('')
 				return
 			}
@@ -554,7 +562,7 @@ export default function AppEntryGate() {
 		enterApp()
 		notifyShellEntry('native-wallet-local')
 		// 0.53.51 (R2271-DEF-IOS-HOME-1): the first walletStatus/init attempt is made now, not after the first 30 s beat (shell only)
-		if (isShellContext()) void upgradeLocalHome()
+		if (isShellContext() && !reachedUnlockedRef.current.has(eoa.trim().toLowerCase())) void upgradeLocalHome()
 	}
 
 	/**

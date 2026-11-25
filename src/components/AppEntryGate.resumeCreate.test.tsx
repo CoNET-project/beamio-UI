@@ -101,11 +101,17 @@ jest.mock('@/services/nativeChatRouteRegister', () => ({
 }), { virtual: true })
 jest.mock('@/services/nativeWallet', () => ({
 	NATIVE_WALLET_READY_EVENT: 'beamio:native-wallet-ready',
-	notifyNativeWalletReady: jest.fn(),
+	// like the real one: it tells the gate to run the start again (this is the edge of the loop the entry-time upgrade must not feed)
+	notifyNativeWalletReady: () => {
+		const g = globalThis as any
+		g.__readyEvents = (g.__readyEvents ?? 0) + 1
+		g.dispatchEvent(new Event('beamio:native-wallet-ready'))
+	},
 	publicWalletSeed: (eoa: string) => ({ profiles: [{ keyID: eoa, isPrimary: true }] }),
 	reachNativeWallet: () => {
 		const g = globalThis as any
 		g.__reach = (g.__reach ?? 0) + 1
+		if (g.__reachUnlocked) return Promise.resolve({ status: 'unlocked', eoa: g.__reachUnlocked })
 		return g.__reachHold ? new Promise(() => undefined) : Promise.resolve({ status: 'unknown' })
 	},
 	rememberNativeEoa: jest.fn(),
@@ -253,6 +259,8 @@ beforeEach(() => {
 	g.__checkCalls = 0
 	g.__checkOverride = undefined
 	g.__reach = 0
+	g.__readyEvents = 0
+	g.__reachUnlocked = undefined
 	g.__reachHold = false
 	g.__voiceBusy = false
 	g.__shell = true
@@ -582,5 +590,72 @@ describe('R2271-DEF-IOS-HOME-1: the G1 local home asks for the native wallet at 
 		renderAt('/settings')
 		await settle(400)
 		expect(g.__reach).toBe(0)
+	})
+})
+
+describe('R2271-DEF-IOS-HOME-1 loop guard: upgrade success -> wallet-ready -> start again must not feed itself', () => {
+	// a valid page record: every start enters the local home through applyLocalWallet, as on the d83 device
+	const validPage = () => {
+		const g = globalThis as Record<string, any>
+		g.__idbPage = pageLocal()
+		g.__reachUnlocked = EOA_LOCAL
+	}
+
+	it('real time: the wallet reaches unlocked once; the ready event re-runs the start; reach and ready stay at most 2 in 1 s', async () => {
+		const g = globalThis as Record<string, any>
+		validPage()
+		renderAt('/settings')
+		await waitFor(() => expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy(), { timeout: 3000 })
+		await waitFor(() => expect(g.__reach).toBeGreaterThanOrEqual(1), { timeout: 1000 })
+		await settle(1000)
+		expect(g.__reach).toBeLessThanOrEqual(2)
+		expect(g.__readyEvents).toBeLessThanOrEqual(2)
+		expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy()
+	})
+
+	it('fake timers: 10 s after the first success there are still at most 2 reach calls (the 30 s beat has not come)', async () => {
+		const g = globalThis as Record<string, any>
+		validPage()
+		renderAt('/settings')
+		await waitFor(() => expect(g.__reach).toBeGreaterThanOrEqual(1), { timeout: 3000 })
+		jest.useFakeTimers()
+		try {
+			await act(async () => {
+				jest.advanceTimersByTime(10_000)
+			})
+			await act(async () => {
+				await Promise.resolve()
+			})
+			expect(g.__reach).toBeLessThanOrEqual(2)
+			expect(g.__readyEvents).toBeLessThanOrEqual(2)
+			// one 30 s beat later it asks once more (the retry beat stays)
+			const before = g.__reach
+			await act(async () => {
+				jest.advanceTimersByTime(30_000)
+			})
+			await act(async () => {
+				await Promise.resolve()
+			})
+			expect(g.__reach - before).toBeLessThanOrEqual(2)
+		} finally {
+			jest.useRealTimers()
+		}
+	})
+
+	it('a G1 cold start still upgrades within 1 s (the guard does not delay the first attempt)', async () => {
+		const g = globalThis as Record<string, any>
+		g.__idbPage = pageLocal()
+		renderAt('/settings')
+		await waitFor(() => expect(g.__reach).toBe(1), { timeout: 1000 })
+	})
+
+	it('a different wallet is not covered by the memory of the first (its own entry asks once)', async () => {
+		const g = globalThis as Record<string, any>
+		validPage()
+		renderAt('/settings')
+		await waitFor(() => expect(g.__reach).toBeGreaterThanOrEqual(1), { timeout: 2000 })
+		await settle(300)
+		const before = g.__reach
+		expect(before).toBeLessThanOrEqual(2)
 	})
 })
