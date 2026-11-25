@@ -519,6 +519,8 @@ export default function AppEntryGate() {
 	 * record always does); without this memory that re-entry would ask again at once and the two would feed each other without end.
 	 */
 	const reachedUnlockedRef = useRef(new Set<string>())
+	/** the wallet (lower case) of the local home that is on now */
+	const localHomeEoaRef = useRef('')
 	const upgradeLocalHome = async (): Promise<void> => {
 		if (!localModeRef.current || upgradeInFlightRef.current) return
 		upgradeInFlightRef.current = true
@@ -533,6 +535,11 @@ export default function AppEntryGate() {
 				notifyNativeWalletReady('')
 				return
 			}
+			// Not unlocked (locked, no key, not ready): forget this wallet, so that the next entry (after an unlock, say) asks again at once
+			// instead of waiting for the 30 s beat. A locked answer sends no ready event, so this cannot start the loop.
+			if (localHomeEoaRef.current) reachedUnlockedRef.current.delete(localHomeEoaRef.current)
+			const answeredEoa = typeof (native as { eoa?: unknown }).eoa === 'string' ? (native as { eoa: string }).eoa.toLowerCase() : ''
+			if (answeredEoa) reachedUnlockedRef.current.delete(answeredEoa)
 			// an address mismatch ends the local home for the recovery entry.
 			if (takeInitRefusal() === 'address_mismatch') {
 				// 0.53.44: no recovery screen at startup; the start waits in the background
@@ -552,6 +559,7 @@ export default function AppEntryGate() {
 	 */
 	const applyLocalWalletCore = (eoa: string) => {
 		localModeRef.current = true
+		localHomeEoaRef.current = eoa.trim().toLowerCase()
 		const seed = publicWalletSeed(eoa)
 		setCoNET_Data(seed)
 		setBootCoNETData(seed)

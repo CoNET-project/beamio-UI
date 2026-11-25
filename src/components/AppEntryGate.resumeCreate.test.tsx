@@ -105,12 +105,22 @@ jest.mock('@/services/nativeWallet', () => ({
 	notifyNativeWalletReady: () => {
 		const g = globalThis as any
 		g.__readyEvents = (g.__readyEvents ?? 0) + 1
+		// hard cap: a runaway loop must end in a clean red assertion, not in an out-of-memory crash
+		if (g.__readyEvents > 50) {
+			g.__runaway = true
+			return
+		}
 		g.dispatchEvent(new Event('beamio:native-wallet-ready'))
 	},
 	publicWalletSeed: (eoa: string) => ({ profiles: [{ keyID: eoa, isPrimary: true }] }),
 	reachNativeWallet: () => {
 		const g = globalThis as any
 		g.__reach = (g.__reach ?? 0) + 1
+		if (g.__reach > 50) {
+			g.__runaway = true
+			return new Promise(() => undefined) // never answers: the loop stops here
+		}
+		if (g.__reachMode === 'locked') return Promise.resolve({ status: 'locked', eoa: g.__reachUnlocked })
 		if (g.__reachUnlocked) return Promise.resolve({ status: 'unlocked', eoa: g.__reachUnlocked })
 		return g.__reachHold ? new Promise(() => undefined) : Promise.resolve({ status: 'unknown' })
 	},
@@ -191,6 +201,9 @@ jest.mock('@/utils/consumerWalletGate', () => {
 	// fixture derivation: the synthetic phrases map to their synthetic addresses (jsdom cannot run the real derivation here)
 	const fixtures: Record<string, string> = {
 		'local synthetic phrase one': '0x1111111111111111111111111111111111111111',
+		'mixed synthetic phrase': '0xabcdef0123456789abcdef0123456789abcdef01',
+		'lower synthetic phrase': '0xabcdef0123456789abcdef0123456789abcdef01',
+		'second synthetic phrase': '0xfedcba9876543210fedcba9876543210fedcba98',
 		'native synthetic phrase two': '0x2222222222222222222222222222222222222222',
 		'old synthetic phrase three': '0x3333333333333333333333333333333333333333',
 	}
@@ -261,6 +274,8 @@ beforeEach(() => {
 	g.__reach = 0
 	g.__readyEvents = 0
 	g.__reachUnlocked = undefined
+	g.__reachMode = undefined
+	g.__runaway = false
 	g.__reachHold = false
 	g.__voiceBusy = false
 	g.__shell = true
@@ -594,30 +609,33 @@ describe('R2271-DEF-IOS-HOME-1: the G1 local home asks for the native wallet at 
 })
 
 describe('R2271-DEF-IOS-HOME-1 loop guard: upgrade success -> wallet-ready -> start again must not feed itself', () => {
-	// a valid page record: every start enters the local home through applyLocalWallet, as on the d83 device
-	const validPage = () => {
-		const g = globalThis as Record<string, any>
-		g.__idbPage = pageLocal()
-		g.__reachUnlocked = EOA_LOCAL
+	const MIXED = '0xAbCdEf0123456789aBcDeF0123456789AbCdEf01'
+	const SECOND = '0xFeDcBa9876543210fEdCbA9876543210FeDcBa98'
+	const pageOf = (phrase: string, eoa: string) => ({ status: 'loaded', data: { mnemonicPhrase: phrase, profiles: [{ keyID: eoa }], beamio: {} } })
+	const g = () => globalThis as Record<string, any>
+	// every case ends on these two facts: the loop did not run away (the hard cap in the mocks was never hit), and the home stayed
+	const bounded = (max: number) => {
+		expect(g().__runaway).toBeFalsy()
+		expect(g().__reach).toBeLessThanOrEqual(max)
+		expect(g().__readyEvents).toBeLessThanOrEqual(max)
 	}
 
 	it('real time: the wallet reaches unlocked once; the ready event re-runs the start; reach and ready stay at most 2 in 1 s', async () => {
-		const g = globalThis as Record<string, any>
-		validPage()
+		g().__idbPage = pageLocal()
+		g().__reachUnlocked = EOA_LOCAL
 		renderAt('/settings')
 		await waitFor(() => expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy(), { timeout: 3000 })
-		await waitFor(() => expect(g.__reach).toBeGreaterThanOrEqual(1), { timeout: 1000 })
+		await waitFor(() => expect(g().__reach).toBeGreaterThanOrEqual(1), { timeout: 1000 })
 		await settle(1000)
-		expect(g.__reach).toBeLessThanOrEqual(2)
-		expect(g.__readyEvents).toBeLessThanOrEqual(2)
+		bounded(2)
 		expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy()
 	})
 
-	it('fake timers: 10 s after the first success there are still at most 2 reach calls (the 30 s beat has not come)', async () => {
-		const g = globalThis as Record<string, any>
-		validPage()
+	it('fake timers: 10 s after the first success there are still at most 2 reach calls; one 30 s beat later at most 2 more', async () => {
+		g().__idbPage = pageLocal()
+		g().__reachUnlocked = EOA_LOCAL
 		renderAt('/settings')
-		await waitFor(() => expect(g.__reach).toBeGreaterThanOrEqual(1), { timeout: 3000 })
+		await waitFor(() => expect(g().__reach).toBeGreaterThanOrEqual(1), { timeout: 3000 })
 		jest.useFakeTimers()
 		try {
 			await act(async () => {
@@ -626,36 +644,101 @@ describe('R2271-DEF-IOS-HOME-1 loop guard: upgrade success -> wallet-ready -> st
 			await act(async () => {
 				await Promise.resolve()
 			})
-			expect(g.__reach).toBeLessThanOrEqual(2)
-			expect(g.__readyEvents).toBeLessThanOrEqual(2)
-			// one 30 s beat later it asks once more (the retry beat stays)
-			const before = g.__reach
+			bounded(2)
+			const before = g().__reach
 			await act(async () => {
 				jest.advanceTimersByTime(30_000)
 			})
 			await act(async () => {
 				await Promise.resolve()
 			})
-			expect(g.__reach - before).toBeLessThanOrEqual(2)
+			expect(g().__runaway).toBeFalsy()
+			expect(g().__reach - before).toBeLessThanOrEqual(2)
 		} finally {
 			jest.useRealTimers()
 		}
 	})
 
 	it('a G1 cold start still upgrades within 1 s (the guard does not delay the first attempt)', async () => {
-		const g = globalThis as Record<string, any>
-		g.__idbPage = pageLocal()
+		g().__idbPage = pageLocal()
 		renderAt('/settings')
-		await waitFor(() => expect(g.__reach).toBe(1), { timeout: 1000 })
+		await waitFor(() => expect(g().__reach).toBe(1), { timeout: 1000 })
 	})
 
-	it('a different wallet is not covered by the memory of the first (its own entry asks once)', async () => {
-		const g = globalThis as Record<string, any>
-		validPage()
+	// real wallet addresses are checksummed (mixed case) wherever the native side supplies them: the two sides must meet whatever the case of either.
+	// The page path derives a lower-case address (the gate compares it with the lower-cased keyID); the pre-read path takes the native address as given.
+	it('case: the page record (lower case) and the native answer in checksum case: still one attempt and no loop', async () => {
+		g().__idbPage = pageOf('lower synthetic phrase', MIXED.toLowerCase())
+		g().__reachUnlocked = MIXED
 		renderAt('/settings')
-		await waitFor(() => expect(g.__reach).toBeGreaterThanOrEqual(1), { timeout: 2000 })
+		await waitFor(() => expect(g().__reach).toBeGreaterThanOrEqual(1), { timeout: 2000 })
+		await settle(800)
+		bounded(2)
+	})
+
+	it('case: the entry address in checksum case (native pre-read supplies it) and the native answer in lower case: still one attempt and no loop', async () => {
+		g().__idbPage = { status: 'empty' }
+		g().__prereadAnswers = [{ kind: 'valid', eoa: MIXED, phrase: 'mixed synthetic phrase' }]
+		g().__reachUnlocked = MIXED.toLowerCase()
+		renderAt('/settings')
+		await waitFor(() => expect(g().__reach).toBeGreaterThanOrEqual(1), { timeout: 2000 })
+		await settle(800)
+		bounded(2)
+	})
+
+	it('two wallets: after A is unlocked, the entry of B asks once more (the memory is per wallet)', async () => {
+		g().__idbPage = pageLocal()
+		g().__reachUnlocked = EOA_LOCAL
+		renderAt('/settings')
+		await waitFor(() => expect(g().__reach).toBe(1), { timeout: 2000 })
 		await settle(300)
-		const before = g.__reach
-		expect(before).toBeLessThanOrEqual(2)
+		expect(g().__reach).toBe(1) // A: asked once, the re-run did not ask again
+		// B enters (another account on the same page record store): its own first entry asks once
+		g().__idbPage = pageOf('second synthetic phrase', SECOND.toLowerCase())
+		g().__reachUnlocked = SECOND
+		await act(async () => {
+			window.dispatchEvent(new Event('beamio:native-wallet-ready'))
+		})
+		await waitFor(() => expect(g().__reach).toBe(2), { timeout: 2000 })
+		await settle(500)
+		expect(g().__reach).toBe(2)
+		expect(g().__runaway).toBeFalsy()
+	})
+
+	it('unlock -> lock -> entry again: a locked answer forgets the wallet, so the next entry asks at once; locked sends no ready event (no loop)', async () => {
+		const beats: Array<() => void> = []
+		const realSet = window.setInterval.bind(window)
+		const spy = jest.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms?: number) => {
+			if (ms === 30_000) {
+				beats.push(fn)
+				return 0 as never
+			}
+			return realSet(fn, ms)
+		}) as never)
+		g().__idbPage = pageLocal()
+		g().__reachUnlocked = EOA_LOCAL
+		renderAt('/settings')
+		await waitFor(() => expect(g().__reach).toBe(1), { timeout: 2000 })
+		await settle(300)
+		expect(g().__readyEvents).toBe(1) // unlocked: one ready event, the re-run asked no more
+		// the wallet gets locked: the next beat reads a locked answer (no ready event, memory cleared)
+		g().__reachMode = 'locked'
+		await act(async () => {
+			beats.forEach((f) => f())
+		})
+		await waitFor(() => expect(g().__reach).toBe(2), { timeout: 2000 })
+		await settle(300)
+		expect(g().__readyEvents).toBe(1)
+		// the user unlocks; the start runs again: the entry asks AT ONCE (no wait for the beat), gets unlocked, one ready event, then quiet
+		g().__reachMode = undefined
+		await act(async () => {
+			window.dispatchEvent(new Event('beamio:native-wallet-ready'))
+		})
+		await waitFor(() => expect(g().__reach).toBe(3), { timeout: 2000 })
+		await settle(500)
+		expect(g().__reach).toBe(3)
+		expect(g().__readyEvents).toBe(2)
+		expect(g().__runaway).toBeFalsy()
+		spy.mockRestore()
 	})
 })

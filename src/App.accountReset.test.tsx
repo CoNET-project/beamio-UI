@@ -397,6 +397,9 @@ describe('account reset at the gate', () => {
 		await waitFor(() => expect(race.reachOnly).toBe(1))
 		expect(race.prereadCalls).toBe(0) // the upgrade attempt is not a recovery read
 		expect(race.reachCalls).toBe(1) // and nothing else asked the native side
+		await new Promise((r) => setTimeout(r, 300)) // and it stays so: no late pre-read
+		expect(race.prereadCalls).toBe(0)
+		expect(race.reachOnly).toBe(1)
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
 		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
 	})
@@ -431,6 +434,9 @@ describe('account reset at the gate', () => {
 		await waitFor(() => expect(race.reachOnly).toBe(1))
 		expect(race.prereadCalls).toBe(0)
 		expect(race.reachCalls).toBe(1)
+		await new Promise((r) => setTimeout(r, 300))
+		expect(race.prereadCalls).toBe(0)
+		expect(race.reachOnly).toBe(1)
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
 		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
 	})
