@@ -18,6 +18,8 @@ import { shellAccountKeyOrEmpty } from '../services/nativeIdentityPublic'
 import { regeneratePgpKeyByUser } from '../services/chat'
 import type { PgpRestoreFailure } from '../services/pgpRestore'
 import { pgpCreateEligible } from '../services/pgpIdentityEligibility'
+import { PGP_IDENTITY_CREATE_ENABLED } from '../utils/pgpIdentityCreateFlag'
+import { pgpCreateFailureCopyKey } from '../services/pgpCreateFailureCopy'
 
 /** The replacement button is not shown for class 4 until the native replacement exists. */
 export function showsReplaceButton(code: PgpRestoreFailure): boolean {
@@ -33,17 +35,17 @@ export function generateAnswerOutcome(result: { ok: boolean; reason?: string }):
 
 export default function PgpRestoreFailedNotice({ code: _code }: { code: PgpRestoreFailure }) {
 	const [busy, setBusy] = useState(false)
-	const [failedReason, setFailedReason] = useState<string | null>(null)
+	const [failedKey, setFailedKey] = useState<string | null>(null)
 	const [unsupported, setUnsupported] = useState(false)
 
 	const generate = async () => {
 		// not_ready (class 4) is a shell action only; a browser never generates from it.
 		if (_code === 'pgp_restore_not_ready' && !isShellContext()) {
-			setFailedReason(tu('chat.restore_retry.body'))
+			setFailedKey('chat.restore_retry.body')
 			return
 		}
 		setBusy(true)
-		setFailedReason(null)
+		setFailedKey(null)
 		const result = isShellContext() ? await nativeGenerateNewPgpKey(shellAccountKeyOrEmpty()) : await regeneratePgpKeyByUser()
 		setBusy(false)
 		const outcome = generateAnswerOutcome(result)
@@ -56,11 +58,12 @@ export default function PgpRestoreFailedNotice({ code: _code }: { code: PgpResto
 			setUnsupported(true)
 			return
 		}
-		setFailedReason(!result.ok && 'reason' in result ? result.reason : null)
+		setFailedKey(pgpCreateFailureCopyKey(!result.ok && 'reason' in result ? result.reason : undefined))
 	}
 
 	// first-identity rule: in a shell the create action is shown only for a confirmed first identity (same rule in every build)
-	const shellNotEligible = isShellContext() && !pgpCreateEligible(shellAccountKeyOrEmpty())
+	// 0.53.52: with the click path closed in a shell (PGP_IDENTITY_CREATE_ENABLED false) the button is not shown either: no click that sends nothing
+	const shellNotEligible = isShellContext() && (!PGP_IDENTITY_CREATE_ENABLED || !pgpCreateEligible(shellAccountKeyOrEmpty()))
 	const hideButton = unsupported || !showsReplaceButton(_code) || shellNotEligible
 
 	return (
@@ -72,9 +75,9 @@ export default function PgpRestoreFailedNotice({ code: _code }: { code: PgpResto
 						{tu('chat.replace_not_supported')}
 					</p>
 				) : null}
-				{failedReason !== null && (
+				{failedKey !== null && (
 					<p role="alert" className="mt-3 text-sm leading-6 text-amber-200">
-						{tu('chat.restore_retry.body')}
+						{tu(failedKey)}
 					</p>
 				)}
 				{hideButton ? null : (

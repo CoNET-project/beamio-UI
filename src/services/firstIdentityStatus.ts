@@ -1,5 +1,5 @@
 /**
- * `firstIdentityStatus` (frozen protocol v1 §2; QA builds only until accepted). The SDK reports the first chat identity's registration on its own;
+ * `firstIdentityStatus` (frozen protocol v1 §2; on in every build since 0.53.52, behind the shell capability identity.first.status.v1). The SDK reports the first chat identity's registration on its own;
  * the page only shows it and re-reads identityPublic. The page never sends a create command because of it.
  *
  * The event carries a state and optional reason, attempt and retryAfterMs, and nothing else. Anything with another key is dropped. Terminal states
@@ -7,6 +7,15 @@
  */
 import { FIRST_IDENTITY_STATUS_ENABLED } from '@/utils/accountCreateRegisterFlag'
 import { eventPayloadOf, NATIVE_EVENT_NAMES } from './nativeKeyState'
+
+/** The shell capability that says the SDK sets up the first chat identity itself and reports it with firstIdentityStatus. */
+export const FIRST_IDENTITY_STATUS_CAPABILITY = 'identity.first.status.v1'
+/**
+ * The longest the page waits for a firstIdentityStatus event once "setting up" is shown (a declared capability and then silence). Every event restarts it
+ * (a retry_later restarts it after its own retryAfterMs). At the end the page lands on the failed notice, which says the next start retries. PROVISIONAL:
+ * to be aligned with the event cadence of the iOS and Android SDKs; the tests use the constant, not the number.
+ */
+export const FIRST_IDENTITY_NO_EVENT_TIMEOUT_MS = 90_000
 
 export const FIRST_IDENTITY_STATUS_EVENT = 'firstIdentityStatus'
 export type FirstIdentityState = 'registering' | 'registered' | 'retry_later' | 'identity_pending' | 'failed'

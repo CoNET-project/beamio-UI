@@ -5,11 +5,12 @@ import { setTrustDecisionObserver, resolveTrustedRoute } from '@/utils/recipient
 import { qaSendStage, qaLine } from '@/utils/qaLog'
 import { NATIVE_WALLET_READY_EVENT } from './nativeWallet'
 import { FIRST_IDENTITY_STATUS_ENABLED } from '@/utils/accountCreateRegisterFlag'
-import { getFirstIdentityStatus, subscribeFirstIdentityStatus, type FirstIdentityStatus } from './firstIdentityStatus'
+import { createFirstIdentityWatchdog } from './firstIdentityWatchdog'
+import { FIRST_IDENTITY_NO_EVENT_TIMEOUT_MS, FIRST_IDENTITY_STATUS_CAPABILITY, getFirstIdentityStatus, subscribeFirstIdentityStatus, type FirstIdentityStatus } from './firstIdentityStatus'
 import { createFirstIdentityReaction } from './firstIdentityReaction'
 import { createColdStartBackoff } from './coldStartBackoff'
 import { notifyPgpMigrateEvent } from './pgpMigrationRunner'
-import { getCachedHello } from './nativeChatRouteRegister'
+import { getCachedHello, probeNativeCapabilities } from './nativeChatRouteRegister'
 import { setFirstIdentitySetup } from './shellFirstIdentitySetup'
 import { diagnosticCode } from './diagnosticCodes'
 import { abortAfter, BOOT_REQUEST_TIMEOUT_MS } from '@/utils/bootTimeout'
@@ -521,11 +522,19 @@ export function resetShellReentryForTest(): void {
 	upgradeRetryTriggered = false
 }
 /**
- * firstIdentityStatus (QA builds, frozen protocol v1 §4): the page shows "setting up", waits, and re-reads identityPublic; it never sends a create command.
+ * firstIdentityStatus (frozen protocol v1 §4; every build since 0.53.52, behind the shell capability identity.first.status.v1): the page shows "setting up", waits, and re-reads identityPublic; it never sends a create command.
  * retry_later waits retryAfterMs (1 s to 5 min) or the page's own ladder, and every retry_later counts against the shell retry cap; at the cap the
- * existing retry-stopped notice takes over. registered re-reads at once. identity_pending shows the pending notice. failed shows a failure, no retry.
+ * existing retry-stopped notice takes over. registered re-reads at once. identity_pending shows the pending notice. failed shows a failure that says the next
+ * start retries (no button). No event for FIRST_IDENTITY_NO_EVENT_TIMEOUT_MS lands on the same failed notice.
  */
 let firstIdentityRetryTimer: ReturnType<typeof setTimeout> | undefined
+/** The no-event watchdog of "setting up" (0.53.52): see firstIdentityWatchdog.ts. At its end the page lands on the failed notice (the next start retries). */
+const firstIdentityWatchdog = createFirstIdentityWatchdog(() => {
+	chatBootLog('shell chat: first identity setup: no event within the watchdog; the failed notice (the next start retries)', 'warn')
+	setFirstIdentitySetup('failed')
+})
+const clearFirstIdentityWatchdog = (): void => firstIdentityWatchdog.clear()
+const armFirstIdentityWatchdog = (ms: number): void => firstIdentityWatchdog.arm(ms)
 const startShellChatNow = (): void => {
 	if (!isShellContext() || !chatRetryArgs || initChatInProgress) return
 	const [setProfiles, setAllNodes, setGossip, , newMessage] = chatRetryArgs
@@ -549,6 +558,8 @@ const reactToFirstIdentity = createFirstIdentityReaction({
 	startNow: startShellChatNow,
 	showPending: () => setShellChatUiState('identity_pending'),
 	retryExhausted: () => setShellRetryExhausted(true),
+	setWatchdog: (ms) => armFirstIdentityWatchdog(ms),
+	clearWatchdog: () => clearFirstIdentityWatchdog(),
 	log: (m) => chatBootLog(m, 'info'),
 })
 export const applyFirstIdentityStatus = (s: FirstIdentityStatus): void => {
@@ -606,6 +617,11 @@ const shellChatStartDeps = (ctx: {
 	showIdentityPending: () => setShellChatUiState('identity_pending'),
 	setPgpTemporary: (value: boolean) => setShellPgpTemporary(value),
 	setFirstIdentitySetup: FIRST_IDENTITY_STATUS_ENABLED ? (value: boolean) => setFirstIdentitySetup(value ? 'setting_up' : 'idle') : undefined,
+	firstIdentityStatusDeclared: async () => {
+		const probe = await probeNativeCapabilities()
+		return !!probe.answered && probe.capabilities.includes(FIRST_IDENTITY_STATUS_CAPABILITY)
+	},
+	armFirstIdentityWatchdog: () => armFirstIdentityWatchdog(FIRST_IDENTITY_NO_EVENT_TIMEOUT_MS),
 	getNodes: async () => (await getCoNETNodesOrThrow()) as unknown as Array<{ domain: string; armoredPublicKey?: string }>,
 	setAllNodes: (n) => {
 		// The native chat module chooses its own voice relay from this list, as the browser path does.

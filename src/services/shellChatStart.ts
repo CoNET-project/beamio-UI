@@ -7,7 +7,7 @@ import { qaLine } from '@/utils/qaLog'
 import type { NativeIdentityPublic } from './nativeIdentityPublic'
 import type { PgpEvaluation, PgpRestoreOutcome } from './nativePgpRestore'
 import type { PgpRestoreFailure } from './pgpRestore'
-import { firstIdentityConfirmed, grantPgpCreateEligibility, revokePgpCreateEligibility } from './pgpIdentityEligibility'
+import { firstIdentityConfirmed, revokePgpCreateEligibility } from './pgpIdentityEligibility'
 
 export type ShellStartResult =
 	| 'started'
@@ -58,7 +58,7 @@ export interface ShellChatStartDeps {
 	readPersistedEoa: () => string
 	/** true: no identity source, show "retry later"; false: the identity is read, clear it. */
 	setIdentityPending: (pending: boolean) => void
-	/** true: no chain record and no backup (first identity): the page shows the entry. */
+	/** true: no chain record and no backup (first identity): the page shows the entry. Not set true in 0.53.52 (no click path). */
 	setFirstIdentity: (value: boolean) => void
 	/** G1: init with the persisted EOA only; route and PGP keys are not sent. A refusal leaves the start waiting. */
 	initWithPersistedEoa?: (eoa: string, nodes: nodeInfo[]) => Promise<{ ok: true } | { ok: false; reason: string }>
@@ -74,8 +74,12 @@ export interface ShellChatStartDeps {
 	showPgpFailure: (code: PgpRestoreFailure) => void
 	/** the unified chat-unavailable state (option A), the same screen as a missing identity capability. */
 	showChatUnavailable: () => void
-	/** QA builds: the SDK sets up the first identity on its own; the page shows "setting up" (no button) and waits for firstIdentityStatus or the next identityPublic. */
+	/** the SDK sets up the first identity on its own (shell declares identity.first.status.v1); the page shows "setting up" (no button) and waits for firstIdentityStatus or the next identityPublic. */
 	setFirstIdentitySetup?: (value: boolean) => void
+	/** 0.53.52: does the shell declare identity.first.status.v1 (the SDK sets up the first identity itself)? Without it the page never shows "setting up". */
+	firstIdentityStatusDeclared?: () => Promise<boolean>
+	/** 0.53.52: starts the no-event watchdog when "setting up" is shown; it lands on the failed notice if no event follows. */
+	armFirstIdentityWatchdog?: () => void
 	/** the chat identity is pending (not a first identity, not confirmed): its own notice, not the app-update notice. */
 	showIdentityPending: () => void
 	/**
@@ -289,18 +293,28 @@ async function evaluateMissingPgp(deps: ShellChatStartDeps, accountKey: string):
 	if (ev.state === 'first_identity') {
 		// first-identity rule: a first identity needs the legacy report ABSENT and an unregistered chain. Anything else (a field missing, unknown,
 		// PRESENT, UNREADABLE, registered) is not a first identity: no create entry, and the identity waits for a restore.
-		if (firstIdentityConfirmed(ev) && deps.setFirstIdentitySetup) {
-			// QA builds (frozen protocol v1 §4.1): a confirmed first identity shows "setting up", no generate button, no create command from the page.
-			deps.setFirstIdentitySetup(true)
-			deps.setFirstIdentity(false)
-			deps.log('info', 'shell chat: first identity confirmed; the SDK sets it up; the page waits (no create entry)')
-			return 'pgp_first_identity'
-		}
 		if (firstIdentityConfirmed(ev)) {
-			grantPgpCreateEligibility(accountKey)
-			deps.setFirstIdentity(true)
-			deps.log('info', 'shell chat: legacy ABSENT and chain unregistered (first identity); the user creates it from the entry')
-			return 'pgp_first_identity'
+			// 0.53.52 (frozen protocol v1 §4.1, DECISION 0.53.52): a confirmed first identity is set up by the SDK on its own, and only a shell that declares
+			// identity.first.status.v1 does that. The page then shows "setting up" (no button, no command) and waits for the events; a watchdog lands it on
+			// the failed notice if nothing comes. A shell that does not declare the capability gets the "identity pending" notice: no button, no command
+			// (there is no click path in this release: PGP_IDENTITY_CREATE_ENABLED stays false).
+			let declared = false
+			try {
+				declared = !!deps.setFirstIdentitySetup && !!deps.firstIdentityStatusDeclared && (await deps.firstIdentityStatusDeclared())
+			} catch {
+				declared = false
+			}
+			revokePgpCreateEligibility(accountKey)
+			deps.setFirstIdentity(false)
+			if (declared) {
+				deps.setFirstIdentitySetup!(true)
+				deps.armFirstIdentityWatchdog?.()
+				deps.log('info', 'shell chat: first identity confirmed; the SDK sets it up (identity.first.status.v1 declared); the page waits (no create entry, no command)')
+				return 'pgp_first_identity'
+			}
+			deps.log('info', 'shell chat: first identity confirmed but the shell does not declare identity.first.status.v1: the identity is pending (no button, no command)')
+			deps.showIdentityPending()
+			return 'pgp_identity_pending'
 		}
 		revokePgpCreateEligibility(accountKey)
 		deps.setFirstIdentity(false)
