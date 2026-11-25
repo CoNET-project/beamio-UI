@@ -42,21 +42,35 @@ const emit = () => {
 	for (const l of [...listeners]) l()
 }
 
-/** Shows the notice unless it was shown for this wallet before. Returns true when it is now showing. Replaces another notice (one at a time). */
+/** Writes the "shown" flag of a notice (wallet -> true, in the key of its kind). */
+function writeFlag(kind: ResumeNoticeKind, eoa: string): void {
+	const shown = readShown(kind)
+	if (shown[eoa]) return
+	shown[eoa] = true
+	writeShown(kind, shown)
+}
+
+/**
+ * Queues the notice for the card unless it was shown for this wallet before. Returns true when it is now pending. Replaces another notice (one at a time).
+ * The "shown" flag is NOT written here: it is written when the card really renders the notice (`markResumeNoticeShown`) or when the notice is dismissed,
+ * so a notice that never reached the screen is not used up.
+ */
 export function pushResumeNotice(kind: ResumeNoticeKind, eoaRaw: string): boolean {
 	const eoa = eoaRaw.trim().toLowerCase()
 	if (!/^0x[0-9a-f]{40}$/.test(eoa)) return false
-	const shown = readShown(kind)
-	if (shown[eoa]) return false
-	shown[eoa] = true
-	writeShown(kind, shown)
+	if (readShown(kind)[eoa]) return false
 	current = { kind, eoa }
 	emit()
 	return true
 }
 
 export const getResumeNotice = (): { kind: ResumeNoticeKind; eoa: string } | null => current
+/** The card rendered the pending notice: it counts as shown (once). */
+export function markResumeNoticeShown(): void {
+	if (current) writeFlag(current.kind, current.eoa)
+}
 export function dismissResumeNotice(): void {
+	if (current) writeFlag(current.kind, current.eoa)
 	current = null
 	emit()
 }

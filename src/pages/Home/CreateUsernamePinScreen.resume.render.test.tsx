@@ -290,6 +290,8 @@ describe('N1 and F1: a resume page that ends on "already registered"', () => {
 		await press()
 		await created()
 		await waitFor(() => expect(noticeShown()).toBe('already_registered_keep_password'), { timeout: 5000 })
+		// the card is not on this page: the flag is written when the notice is dismissed (or rendered by the card on the home)
+		dismissResumeNotice()
 		expect(JSON.parse(localStorage.getItem('beamio.passwordNoticeShown.v1') as string)).toEqual({ [WALLET]: true })
 		for (const store of [localStorage, sessionStorage]) {
 			for (let i = 0; i < store.length; i++) {

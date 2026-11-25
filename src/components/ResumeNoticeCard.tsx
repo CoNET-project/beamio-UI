@@ -4,7 +4,7 @@
  */
 import { useEffect, useState } from 'react'
 import { tu } from '../locale/beamioLocale'
-import { dismissResumeNotice, getResumeNotice, subscribeResumeNotice } from '../services/resumeNotice'
+import { dismissResumeNotice, getResumeNotice, markResumeNoticeShown, subscribeResumeNotice } from '../services/resumeNotice'
 
 const COPY_KEY = {
 	code_not_shown: 'create_account_code_not_shown_notice',
@@ -17,6 +17,10 @@ export default function ResumeNoticeCard() {
 		setNotice(getResumeNotice())
 		return subscribeResumeNotice(() => setNotice(getResumeNotice()))
 	}, [])
+	// the notice counts as shown once the card is on the screen with it
+	useEffect(() => {
+		if (notice) markResumeNoticeShown()
+	}, [notice])
 	if (!notice) return null
 	return (
 		<div data-testid="resume-notice-card" role="status" className="pointer-events-none fixed inset-x-0 top-[max(0.75rem,env(safe-area-inset-top))] z-[9000] flex justify-center px-4">

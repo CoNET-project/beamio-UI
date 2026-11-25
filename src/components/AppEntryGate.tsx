@@ -61,7 +61,7 @@ import { EmbeddedPwaUpdateBanner } from '@/components/EmbeddedPwaUpdateBanner'
 import IdentityEntryPrompt from '@/components/IdentityEntryPrompt'
 import ResumeNoticeCard from '@/components/ResumeNoticeCard'
 import { CONET_RPC_SECONDARY, CONET_RPC_URL } from '@/config/chainAddresses'
-import { flushQueuedResume, hasPendingCreateRecord, hasQueuedResume, markResumeFired, registerResumeBusyProbe, requestResumeRoute, resumeCreateCheck, type ResumeDeps, type ResumeVerdict } from '@/services/resumeCreate'
+import { flushQueuedResume, hasPendingCreateRecord, hasResumeFired, clearResumeFired, hasQueuedResume, markResumeFired, registerResumeBusyProbe, requestResumeRoute, resumeCreateCheck, type ResumeDeps, type ResumeVerdict } from '@/services/resumeCreate'
 import { pushResumeNotice } from '@/services/resumeNotice'
 import BeamioOnboardingModal from '@/pages/Home/LoadingPage'
 import { isCashTreesNativeWebView } from '@/utils/cashTreesNativeNfc'
@@ -524,114 +524,6 @@ export default function AppEntryGate() {
 		enterApp()
 		notifyShellEntry('native-wallet-local')
 	}
-
-	// ---- 0.53.51 R2271-DEF-CREATE-RESUME-1: an interrupted onboarding create is resumed with its tag locked --------------------------------
-	// The two entry functions of the shell home (applyNativeWallet, applyLocalWallet) are wrapped: when this device holds a pending create
-	// record for the wallet, the registry decides (resumeCreateCheck: two hosts, chain id, minimum wait) between the create page and the home.
-	// With no record nothing is awaited and the original function runs unchanged.
-	const vaultLockedRef = useRef(false)
-	vaultLockedRef.current = vaultLocked
-	const nativeFlowOpenRef = useRef(false)
-	const onboardingOpenRef = useRef(false)
-	const resumeRecheckTimerRef = useRef<number | undefined>(undefined)
-	/** the wallet whose resume check was uncertain: a check is made again when the page comes back to the foreground */
-	const uncertainResumeEoaRef = useRef<string | null>(null)
-	onboardingOpenRef.current = showBeamioOnboardingModal
-	const resumeDeps: ResumeDeps = {
-		now: () => Date.now(),
-		mono: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
-		read: (url, tag, eoa) => registrationStateVia(url, tag, eoa),
-		primaryUrl: CONET_RPC_URL,
-		secondaryUrl: CONET_RPC_SECONDARY,
-	}
-	// Not a no_key route: goResumeCreate is reached only for a wallet the device already holds (the native entry answered with this wallet, and a
-	// pending create record exists for it), so the shell not-ready guard of the start does not apply. The create page then re-checks the wallet (D2).
-	const goResumeCreate = (eoa: string, tag: string) => {
-		markResumeFired(eoa)
-		publishNativePwaLog('info', '[AppEntryGate] interrupted create: the create page with the locked tag')
-		setResumeCreate({ eoa, tag })
-		goOnboarding(false, true)
-	}
-	/** A check after the home is shown (the entry was uncertain): the same verdicts, routed through the idle-only event. */
-	const handleLateResumeVerdict = (eoa: string, v: ResumeVerdict) => {
-		if (v.kind !== 'uncertain') uncertainResumeEoaRef.current = null
-		if (v.kind === 'resume') {
-			requestResumeRoute(eoa, v.tag, goResumeCreate)
-		} else if (v.kind === 'registered') {
-			pushResumeNotice('code_not_shown', eoa)
-		} else if (v.kind === 'uncertain') {
-			scheduleResumeRecheck(eoa, v.recheckInMs)
-		}
-	}
-	const scheduleResumeRecheck = (eoa: string, delayMs: number) => {
-		uncertainResumeEoaRef.current = eoa
-		if (resumeRecheckTimerRef.current !== undefined) window.clearTimeout(resumeRecheckTimerRef.current)
-		resumeRecheckTimerRef.current = window.setTimeout(() => {
-			resumeRecheckTimerRef.current = undefined
-			void resumeCreateCheck(eoa, resumeDeps).then((v) => handleLateResumeVerdict(eoa, v), () => scheduleResumeRecheck(eoa, 60_000))
-		}, delayMs)
-	}
-	/** returns true when the resume check owns this entry (it calls `proceed` itself); false: the caller runs its original code at once */
-	const resumeEntry = (eoa: string, proceed: () => void): boolean => {
-		if (!isShellContext()) return false
-		if (!hasPendingCreateRecord(eoa)) return false
-		void resumeCreateCheck(eoa, resumeDeps).then(
-			(v) => {
-				if (v.kind === 'resume') {
-					goResumeCreate(eoa, v.tag)
-					return
-				}
-				if (v.kind === 'registered') pushResumeNotice('code_not_shown', eoa)
-				if (v.kind === 'uncertain') scheduleResumeRecheck(eoa, v.recheckInMs)
-				proceed()
-			},
-			() => proceed(),
-		)
-		return true
-	}
-	const applyNativeWallet = (eoa: string) => {
-		if (resumeEntry(eoa, () => applyNativeWalletCore(eoa))) return
-		applyNativeWalletCore(eoa)
-	}
-	const applyLocalWallet = (eoa: string) => {
-		if (resumeEntry(eoa, () => applyLocalWalletCore(eoa))) return
-		applyLocalWalletCore(eoa)
-	}
-	// The busy signals and the idle triggers of the late resume route (D4): never while a call, the settings, the unlock screen, a native flow or the create
-	// page itself is on; a request that has to wait is started on the next idle signal (foreground, route change, the 30 s visible poll).
-	useEffect(() => {
-		let voiceCallModule: typeof import('@/utils/voiceCallSession') | null = null
-		void import('@/utils/voiceCallSession').then((m) => { voiceCallModule = m }, () => undefined)
-		const offs = [
-			registerResumeBusyProbe(() => window.location.pathname.startsWith('/settings')),
-			registerResumeBusyProbe(() => vaultLockedRef.current),
-			registerResumeBusyProbe(() => nativeFlowOpenRef.current),
-			// the call module is loaded on demand (not at import time); until it is loaded the user counts as busy (never start on a doubt)
-			registerResumeBusyProbe(() => (voiceCallModule ? voiceCallModule.browserVoiceCallBusyFor({}) : true)),
-			registerResumeBusyProbe(() => onboardingOpenRef.current),
-		]
-		const flush = () => {
-			if (hasQueuedResume()) flushQueuedResume(goResumeCreate)
-		}
-		const onVisible = () => {
-			if (document.visibilityState !== 'visible') return
-			flush()
-			if (uncertainResumeEoaRef.current) scheduleResumeRecheck(uncertainResumeEoaRef.current, 1_000)
-		}
-		const poll = window.setInterval(() => {
-			if (document.visibilityState === 'visible') flush()
-		}, 30_000)
-		document.addEventListener('visibilitychange', onVisible)
-		window.addEventListener('popstate', flush)
-		return () => {
-			offs.forEach((off) => off())
-			window.clearInterval(poll)
-			document.removeEventListener('visibilitychange', onVisible)
-			window.removeEventListener('popstate', flush)
-			if (resumeRecheckTimerRef.current !== undefined) window.clearTimeout(resumeRecheckTimerRef.current)
-		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [])
 
 	/**
 	 * Native G2 and no page wallet record: the page asks walletCredential once and keeps the sealed blob with the restored mnemonic in its
@@ -1753,6 +1645,123 @@ export default function AppEntryGate() {
 	// the retry screen's button and its timer call the latest init
 	initRef.current = init
 
+	// ---- 0.53.51 R2271-DEF-CREATE-RESUME-1: an interrupted onboarding create is resumed with its tag locked --------------------------------
+	// The two entry functions of the shell home (applyNativeWallet, applyLocalWallet) are wrapped: when this device holds a pending create
+	// record for the wallet, the registry decides (resumeCreateCheck: two hosts, chain id, minimum wait) between the create page and the home.
+	// With no record nothing is awaited and the original function runs unchanged.
+	const vaultLockedRef = useRef(false)
+	vaultLockedRef.current = vaultLocked
+	const nativeFlowOpenRef = useRef(false)
+	const onboardingOpenRef = useRef(false)
+	const resumeRecheckTimerRef = useRef<number | undefined>(undefined)
+	/** the resume page that is routed now (the wallet and the tag) */
+	const resumeCreateRef = useRef<{ eoa: string; tag: string } | null>(null)
+	/** the wallet whose resume check was uncertain: a check is made again when the page comes back to the foreground */
+	const uncertainResumeEoaRef = useRef<string | null>(null)
+	onboardingOpenRef.current = showBeamioOnboardingModal
+	const resumeDeps: ResumeDeps = {
+		now: () => Date.now(),
+		mono: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
+		read: (url, tag, eoa) => registrationStateVia(url, tag, eoa),
+		primaryUrl: CONET_RPC_URL,
+		secondaryUrl: CONET_RPC_SECONDARY,
+	}
+	const goResumeCreate = (eoa: string, tag: string) => {
+		// a resume page that is already open for this wallet is never routed again (the user may be typing in it)
+		if (resumeCreateRef.current?.eoa === eoa && onboardingOpenRef.current) return
+		markResumeFired(eoa)
+		resumeCreateRef.current = { eoa, tag }
+		publishNativePwaLog('info', '[AppEntryGate] interrupted create: the create page with the locked tag')
+		setResumeCreate({ eoa, tag })
+		goOnboarding(false, true)
+	}
+	/** A check after the home is shown (the entry was uncertain): the same verdicts, routed through the idle-only event. */
+	const handleLateResumeVerdict = (eoa: string, v: ResumeVerdict) => {
+		if (v.kind !== 'uncertain') uncertainResumeEoaRef.current = null
+		if (v.kind === 'resume') {
+			requestResumeRoute(eoa, v.tag, goResumeCreate)
+		} else if (v.kind === 'registered') {
+			pushResumeNotice('code_not_shown', eoa)
+		} else if (v.kind === 'uncertain') {
+			scheduleResumeRecheck(eoa, v.recheckInMs)
+		}
+	}
+	const scheduleResumeRecheck = (eoa: string, delayMs: number) => {
+		uncertainResumeEoaRef.current = eoa
+		if (resumeRecheckTimerRef.current !== undefined) window.clearTimeout(resumeRecheckTimerRef.current)
+		resumeRecheckTimerRef.current = window.setTimeout(() => {
+			resumeRecheckTimerRef.current = undefined
+			void resumeCreateCheck(eoa, resumeDeps).then((v) => handleLateResumeVerdict(eoa, v), () => scheduleResumeRecheck(eoa, 60_000))
+		}, delayMs)
+	}
+	/** returns true when the resume check owns this entry (it calls `proceed` itself); false: the caller runs its original code at once */
+	const resumeEntry = (eoa: string, proceed: () => void): boolean => {
+		if (!isShellContext()) return false
+		if (!hasPendingCreateRecord(eoa)) return false
+		// the start runs more than once (retries, a native ready event): with the resume page already routed for this wallet nothing is checked
+		// again and nothing is routed: the page stays as it is (no remount, no home, no lost input)
+		if (hasResumeFired(eoa)) return true
+		void resumeCreateCheck(eoa, resumeDeps).then(
+			(v) => {
+				if (hasResumeFired(eoa)) return // another entry routed it while this check ran
+				if (v.kind === 'resume') {
+					goResumeCreate(eoa, v.tag)
+					return
+				}
+				if (v.kind === 'registered') pushResumeNotice('code_not_shown', eoa)
+				if (v.kind === 'uncertain') scheduleResumeRecheck(eoa, v.recheckInMs)
+				proceed()
+			},
+			() => proceed(),
+		)
+		return true
+	}
+	const applyNativeWallet = (eoa: string) => {
+		if (resumeEntry(eoa, () => applyNativeWalletCore(eoa))) return
+		applyNativeWalletCore(eoa)
+	}
+	const applyLocalWallet = (eoa: string) => {
+		if (resumeEntry(eoa, () => applyLocalWalletCore(eoa))) return
+		applyLocalWalletCore(eoa)
+	}
+	// The busy signals and the idle triggers of the late resume route (D4): never while a call, the settings, the unlock screen, a native flow or the create
+	// page itself is on; a request that has to wait is started on the next idle signal (foreground, route change, the 30 s visible poll).
+	useEffect(() => {
+		// the browser has no resume route: nothing is listened to, scheduled or loaded there
+		if (!isShellContext()) return
+		let voiceCallModule: typeof import('@/utils/voiceCallSession') | null = null
+		void import('@/utils/voiceCallSession').then((m) => { voiceCallModule = m }, () => undefined)
+		const offs = [
+			registerResumeBusyProbe(() => window.location.pathname.startsWith('/settings')),
+			registerResumeBusyProbe(() => vaultLockedRef.current),
+			registerResumeBusyProbe(() => nativeFlowOpenRef.current),
+			// the call module is loaded on demand (not at import time); until it is loaded the user counts as busy (never start on a doubt)
+			registerResumeBusyProbe(() => (voiceCallModule ? voiceCallModule.browserVoiceCallBusyFor({}) : true)),
+			registerResumeBusyProbe(() => onboardingOpenRef.current),
+		]
+		const flush = () => {
+			if (hasQueuedResume()) flushQueuedResume(goResumeCreate)
+		}
+		const onVisible = () => {
+			if (document.visibilityState !== 'visible') return
+			flush()
+			if (uncertainResumeEoaRef.current) scheduleResumeRecheck(uncertainResumeEoaRef.current, 1_000)
+		}
+		const poll = window.setInterval(() => {
+			if (document.visibilityState === 'visible') flush()
+		}, 30_000)
+		document.addEventListener('visibilitychange', onVisible)
+		window.addEventListener('popstate', flush)
+		return () => {
+			offs.forEach((off) => off())
+			window.clearInterval(poll)
+			document.removeEventListener('visibilitychange', onVisible)
+			window.removeEventListener('popstate', flush)
+			if (resumeRecheckTimerRef.current !== undefined) window.clearTimeout(resumeRecheckTimerRef.current)
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [])
+
 	// the identity hello is unanswered: it is probed again after 10 s, then 30 s, then every 60 s. Stops once it answers.
 	useEffect(() => {
 		if (!identityUnansweredRef.current || identityProbesDoneRef.current >= BRIDGE_HELLO_MAX_PROBES) return
@@ -2089,6 +2098,8 @@ export default function AppEntryGate() {
 					home={() => {
 						setShowBeamioOnboardingModal(false)
 						setRequireWalletRecover(false)
+						if (resumeCreateRef.current) clearResumeFired(resumeCreateRef.current.eoa)
+						resumeCreateRef.current = null
 						setResumeCreate(null)
 						setRestoreFromHold(false)
 						setSplashVisible(false)

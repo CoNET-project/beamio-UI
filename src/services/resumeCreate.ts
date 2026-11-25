@@ -136,6 +136,13 @@ export function markResumeFired(eoa: string): boolean {
 	return was
 }
 
+/** True when a resume route was already started for this wallet in this process (read only). */
+export const hasResumeFired = (eoa: string): boolean => firedFor.has(eoa.trim().toLowerCase())
+/** Forgets the routed mark for the wallet: called when its resume page has ended (completed or closed), so a later interrupted create can route again. */
+export const clearResumeFired = (eoa: string): void => {
+	firedFor.delete(eoa.trim().toLowerCase())
+}
+
 export type ResumeBusyProbe = () => boolean
 const busyProbes = new Set<ResumeBusyProbe>()
 /** A signal that the user is busy (a call, the settings, the passcode screen, a native flow, the create page itself). Returns the remover. */
@@ -145,6 +152,8 @@ export function registerResumeBusyProbe(probe: ResumeBusyProbe): () => void {
 		busyProbes.delete(probe)
 	}
 }
+/** How many busy probes are registered (the gate registers none in a browser). */
+export const resumeBusyProbeCount = (): number => busyProbes.size
 export const isIdleForResume = (): boolean => {
 	for (const p of busyProbes) {
 		try {

@@ -9,7 +9,7 @@ import AppEntryGate from './AppEntryGate'
 import { CONET_RPC_URL, CONET_RPC_SECONDARY } from '@/config/chainAddresses'
 import { clearPendingCreateTag, markPendingForwardSent, readPendingCreateRecord, writePendingCreateTag } from '@/services/pendingCreateTag'
 import { getResumeNotice, dismissResumeNotice } from '@/services/resumeNotice'
-import { resetResumeCreateForTest } from '@/services/resumeCreate'
+import { resetResumeCreateForTest, resumeBusyProbeCount } from '@/services/resumeCreate'
 
 const EOA_LOCAL = '0x1111111111111111111111111111111111111111'
 const EOA_NATIVE = '0x2222222222222222222222222222222222222222'
@@ -26,11 +26,16 @@ jest.mock('@/services/resumeCreate', () => {
 		...actual,
 		resumeCreateCheck: (...a: unknown[]) => {
 			;(globalThis as any).__checkCalls += 1
+			const o = (globalThis as any).__checkOverride as Array<unknown> | undefined
+			if (o && o.length) return Promise.resolve(o.length > 1 ? o.shift() : o[0])
 			return actual.resumeCreateCheck(...a)
 		},
 	}
 })
-jest.mock('@/utils/voiceCallSession', () => ({ browserVoiceCallBusyFor: () => false }), { virtual: true })
+jest.mock('@/utils/voiceCallSession', () => {
+	;(globalThis as any).__voiceLoads = ((globalThis as any).__voiceLoads ?? 0) + 1
+	return { browserVoiceCallBusyFor: () => !!(globalThis as any).__voiceBusy }
+}, { virtual: true })
 jest.mock('./PgpRestoreFailedNotice', () => () => null)
 jest.mock('./PgpFirstIdentityNotice', () => () => null)
 jest.mock('../services/pgpRestore', () => ({ getPgpRestoreFailure: () => null, subscribePgpRestoreFailure: () => () => undefined }))
@@ -109,7 +114,10 @@ jest.mock('@/services/shellSessionSigner', () => ({
 	shellSessionEoa: () => '',
 }), { virtual: true })
 jest.mock('@/utils/globals', () => ({ setCoNET_Data: jest.fn() }), { virtual: true })
-jest.mock('@/components/PasscodeLockScreen', () => () => null, { virtual: true })
+jest.mock('@/components/PasscodeLockScreen', () => {
+	const R = require('react')
+	return (p: any) => R.createElement('button', { 'data-testid': 'unlock', onClick: () => p.onUnlocked() }, 'UNLOCK')
+}, { virtual: true })
 jest.mock('@/services/walletVaultEvents', () => ({ VAULT_LOCKED_EVENT: 'beamio:vault-locked' }), { virtual: true })
 jest.mock('@/components/SplashScreen', () => () => null, { virtual: true })
 jest.mock('@/components/EmbeddedPwaUpdateBanner', () => ({ EmbeddedPwaUpdateBanner: () => null }), { virtual: true })
@@ -123,7 +131,7 @@ jest.mock('@/utils/cashTreesNativePwaLog', () => ({
 		;(globalThis as { __logs?: string[] }).__logs!.push(String(message))
 	},
 }), { virtual: true })
-jest.mock('@/services/shellContext', () => ({ isShellContext: () => true }), { virtual: true })
+jest.mock('@/services/shellContext', () => ({ isShellContext: () => (globalThis as any).__shell !== false }), { virtual: true })
 jest.mock('@/services/shellStoreWait', () => {
 	const actual = jest.requireActual('../services/shellStoreWait')
 	return { ...actual, nativeStoreWaitDelayMs: () => 0, splashDeadlineAction: () => 'release' }
@@ -226,9 +234,9 @@ const setReg = (p: string, q: string) => {
 	;(globalThis as any).__reg = { [CONET_RPC_URL]: p, [CONET_RPC_SECONDARY]: q }
 }
 beforeEach(() => {
+	dismissResumeNotice()
 	localStorage.clear()
 	resetResumeCreateForTest()
-	dismissResumeNotice()
 	const g = globalThis as Record<string, any>
 	// a shell interrupted create: the page record is absent and the native pre-read answers with the wallet (the applyNativeWallet entry)
 	g.__idbPage = { status: 'empty' }
@@ -236,8 +244,33 @@ beforeEach(() => {
 	g.__reg = {}
 	g.__regCalls = 0
 	g.__checkCalls = 0
+	g.__checkOverride = undefined
+	g.__voiceBusy = false
+	g.__shell = true
 })
 const regCalls = () => (globalThis as any).__regCalls as number
+
+// FIRST in the file on purpose: the voice module mock counts its loads once per file, and the browser must not load it
+describe('M3 browser: the resume machinery is not there at all', () => {
+	it('no busy probe, no popstate listener, no dynamic import of the call module, no resume check', async () => {
+		const g = globalThis as Record<string, any>
+		g.__shell = false
+		g.__idbPage = { status: 'empty' }
+		g.__prereadAnswers = []
+		writePendingCreateTag(EOA_NATIVE, TAG)
+		setReg('unregistered', 'unregistered')
+		const add = jest.spyOn(window, 'addEventListener')
+		const before = (g.__voiceLoads ?? 0) as number
+		renderAt('/settings')
+		await settle(400)
+		expect(resumeBusyProbeCount()).toBe(0)
+		expect(add.mock.calls.some((c) => c[0] === 'popstate')).toBe(false)
+		expect(((g.__voiceLoads ?? 0) as number) - before).toBe(0)
+		expect(g.__checkCalls).toBe(0)
+		expect(regCalls()).toBe(0)
+		add.mockRestore()
+	})
+})
 
 describe('no record: the original entry, no registry read at all', () => {
 	it('home, zero reads', async () => {
@@ -311,5 +344,133 @@ describe('no "Later" way out: the resume page is the only way and there is no ho
 		const s = require('fs').readFileSync(require('path').join(__dirname, 'AppEntryGate.tsx'), 'utf8')
 		const part = s.slice(s.indexOf('0.53.51 R2271-DEF-CREATE-RESUME-1'), s.indexOf('const applyNativeWallet = '))
 		expect(part).not.toMatch(/\blater\b|skip|complete.?account/i)
+	})
+})
+
+const UNCERTAIN = { kind: 'uncertain', why: 'min_wait', recheckInMs: 80 }
+const RESUME = { kind: 'resume', tag: TAG }
+const onboardingShown = () => !!screen.queryByText(new RegExp(`RESUME ${TAG} ${EOA_NATIVE}`, 'i'))
+
+describe('M1 re-entry: a second start while the resume page is open leaves it alone', () => {
+	it('after the resume page is routed, a native ready event (init runs again) does not check again, remount, or enter the home', async () => {
+		writePendingCreateTag(EOA_NATIVE, TAG)
+		setReg('unregistered', 'unregistered')
+		const g = globalThis as Record<string, any>
+		const { container } = renderAt('/settings')
+		await waitFor(() => expect(onboardingShown()).toBe(true), { timeout: 3000 })
+		const node = screen.getByText(/ONBOARDING-PAGE/)
+		const checksBefore = g.__checkCalls
+		const readsBefore = regCalls()
+		// the start runs again (a native wallet-ready event re-runs the same gate)
+		g.__prereadAnswers = [{ kind: 'valid', eoa: EOA_NATIVE, phrase: PHRASE_NATIVE }]
+		await act(async () => {
+			window.dispatchEvent(new Event('beamio:native-wallet-ready'))
+		})
+		await settle(300)
+		expect(onboardingShown()).toBe(true)
+		expect(screen.queryByText('SETTINGS-PAGE')).toBeNull()
+		expect(screen.getByText(/ONBOARDING-PAGE/)).toBe(node) // the same element: not remounted
+		expect(g.__checkCalls).toBe(checksBefore)
+		expect(regCalls()).toBe(readsBefore)
+		expect(container).toBeTruthy()
+	})
+})
+
+describe('S1 late route: uncertain at entry, then idle-only', () => {
+	it('uncertain: the home shows at once, a recheck is scheduled, and the later resume verdict routes when idle', async () => {
+		writePendingCreateTag(EOA_NATIVE, TAG)
+		;(globalThis as any).__checkOverride = [UNCERTAIN, RESUME]
+		renderAt('/settings')
+		await waitFor(() => expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy(), { timeout: 3000 })
+		expect(onboardingShown()).toBe(false)
+		expect((globalThis as any).__checkCalls).toBe(1)
+		await waitFor(() => expect((globalThis as any).__checkCalls).toBe(2), { timeout: 2000 })
+		await waitFor(() => expect(onboardingShown()).toBe(true), { timeout: 2000 })
+	})
+
+	it('during a call the route waits (stays home); when the call ends and the page sees an idle signal it routes', async () => {
+		const g = globalThis as Record<string, any>
+		writePendingCreateTag(EOA_NATIVE, TAG)
+		g.__checkOverride = [UNCERTAIN, RESUME]
+		renderAt('/settings')
+		await waitFor(() => expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy(), { timeout: 3000 })
+		g.__voiceBusy = true
+		await waitFor(() => expect(g.__checkCalls).toBe(2), { timeout: 2000 })
+		await settle(200)
+		expect(onboardingShown()).toBe(false)
+		expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy()
+		g.__voiceBusy = false
+		await act(async () => {
+			window.dispatchEvent(new PopStateEvent('popstate'))
+		})
+		await waitFor(() => expect(onboardingShown()).toBe(true), { timeout: 2000 })
+	})
+
+	it('visibilitychange to visible flushes the queued route', async () => {
+		const g = globalThis as Record<string, any>
+		writePendingCreateTag(EOA_NATIVE, TAG)
+		g.__checkOverride = [UNCERTAIN, RESUME]
+		renderAt('/settings')
+		await waitFor(() => expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy(), { timeout: 3000 })
+		g.__voiceBusy = true
+		await waitFor(() => expect(g.__checkCalls).toBe(2), { timeout: 2000 })
+		await settle(150)
+		g.__voiceBusy = false
+		await act(async () => {
+			document.dispatchEvent(new Event('visibilitychange'))
+		})
+		await waitFor(() => expect(onboardingShown()).toBe(true), { timeout: 2000 })
+	})
+
+	it('the 30 s visible poll flushes the queued route', async () => {
+		const g = globalThis as Record<string, any>
+		const polls: Array<() => void> = []
+		const realSet = window.setInterval.bind(window)
+		const spy = jest.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms?: number) => {
+			if (ms === 30_000) {
+				polls.push(fn)
+				return 0 as never
+			}
+			return realSet(fn, ms)
+		}) as never)
+		writePendingCreateTag(EOA_NATIVE, TAG)
+		g.__checkOverride = [UNCERTAIN, RESUME]
+		renderAt('/settings')
+		await waitFor(() => expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy(), { timeout: 3000 })
+		g.__voiceBusy = true
+		await waitFor(() => expect(g.__checkCalls).toBe(2), { timeout: 2000 })
+		await settle(150)
+		g.__voiceBusy = false
+		expect(polls.length).toBeGreaterThan(0)
+		await act(async () => {
+			polls.forEach((f) => f())
+		})
+		await waitFor(() => expect(onboardingShown()).toBe(true), { timeout: 2000 })
+		spy.mockRestore()
+	})
+
+	it('vault locked: a resume verdict does not route; after the unlock the entry checks again and routes', async () => {
+		const g = globalThis as Record<string, any>
+		writePendingCreateTag(EOA_NATIVE, TAG)
+		g.__checkOverride = [UNCERTAIN, RESUME]
+		renderAt('/settings')
+		await waitFor(() => expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy(), { timeout: 3000 })
+		// the lock comes up before the recheck answers
+		await act(async () => {
+			window.dispatchEvent(new Event('beamio:vault-locked'))
+		})
+		await waitFor(() => expect(screen.getByTestId('unlock')).toBeTruthy())
+		await waitFor(() => expect(g.__checkCalls).toBe(2), { timeout: 2000 })
+		await settle(200)
+		expect(onboardingShown()).toBe(false)
+		// the unlock runs the start again: the entry checks again (a fresh verdict) and routes
+		g.__checkOverride = [RESUME]
+		g.__idbPage = { status: 'empty' }
+		g.__prereadAnswers = [{ kind: 'valid', eoa: EOA_NATIVE, phrase: PHRASE_NATIVE }]
+		await act(async () => {
+			screen.getByTestId('unlock').click()
+		})
+		await waitFor(() => expect(g.__checkCalls).toBeGreaterThanOrEqual(3), { timeout: 3000 })
+		await waitFor(() => expect(onboardingShown()).toBe(true), { timeout: 3000 })
 	})
 })

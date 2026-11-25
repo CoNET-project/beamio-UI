@@ -99,7 +99,11 @@ export function writePendingCreateTag(eoa: string, tag: string): void {
 	writeMap(map)
 }
 
-/** Step 3 is about to be sent (the first send of this cycle): `s` is set to `atMs` and an older `a` is dropped (a new send cycle). */
+/**
+ * Step 3 is about to be sent (the first send of this cycle): `s` is set to `atMs` and an older `a` is dropped (a new send cycle).
+ * Dropping the old `a` is deliberate: the new send is a new request that may sit in the server queue, so the long wait that followed the
+ * earlier 2xx no longer describes it; B1 counts from this `s` (30 min) until the new 2xx writes a fresh `a`.
+ */
 export function markPendingForwardSent(eoa: string, atMs: number): void {
 	const e = cleanEoa(eoa)
 	const s = cleanTime(atMs)

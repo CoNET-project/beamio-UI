@@ -1,11 +1,11 @@
 /** 0.53.51 one-time notices: once per wallet and kind, one at a time, non-secret flags only. SYNTHETIC values only. */
-import { dismissResumeNotice, getResumeNotice, pushResumeNotice, subscribeResumeNotice } from './resumeNotice'
+import { dismissResumeNotice, getResumeNotice, markResumeNoticeShown, pushResumeNotice, subscribeResumeNotice } from './resumeNotice'
 
 const E = '0x' + '1'.repeat(40)
 const F = '0x' + '2'.repeat(40)
 beforeEach(() => {
-	localStorage.clear()
 	dismissResumeNotice()
+	localStorage.clear()
 })
 
 describe('resumeNotice', () => {
@@ -25,12 +25,15 @@ describe('resumeNotice', () => {
 	})
 	it('the address is case-insensitive; a bad address shows nothing', () => {
 		expect(pushResumeNotice('code_not_shown', E.toUpperCase().replace('0X', '0x'))).toBe(true)
+		dismissResumeNotice()
 		expect(pushResumeNotice('code_not_shown', E)).toBe(false)
 		expect(pushResumeNotice('code_not_shown', 'nope')).toBe(false)
 	})
 	it('each kind has its own key, holding only wallet -> true (no tag, no secret)', () => {
 		pushResumeNotice('code_not_shown', E)
+		dismissResumeNotice()
 		pushResumeNotice('already_registered_keep_password', E)
+		dismissResumeNotice()
 		expect(JSON.parse(localStorage.getItem('beamio.codeNoticeShown.v1') as string)).toEqual({ [E]: true })
 		expect(JSON.parse(localStorage.getItem('beamio.passwordNoticeShown.v1') as string)).toEqual({ [E]: true })
 	})
@@ -42,6 +45,22 @@ describe('resumeNotice', () => {
 		localStorage.clear()
 		expect(pushResumeNotice('already_registered_keep_password', F)).toBe(true)
 		expect(pushResumeNotice('code_not_shown', F)).toBe(true)
+	})
+	it('S2: pushing writes no flag; the flag is written when the card renders it (markResumeNoticeShown) or when it is dismissed', () => {
+		expect(pushResumeNotice('code_not_shown', E)).toBe(true)
+		expect(localStorage.getItem('beamio.codeNoticeShown.v1')).toBeNull()
+		// a notice that never reached the screen is not used up: it can be pushed again
+		expect(pushResumeNotice('code_not_shown', E)).toBe(true)
+		markResumeNoticeShown()
+		expect(JSON.parse(localStorage.getItem('beamio.codeNoticeShown.v1') as string)).toEqual({ [E]: true })
+		expect(getResumeNotice()).not.toBeNull() // still on screen until dismissed
+		dismissResumeNotice()
+		expect(pushResumeNotice('code_not_shown', E)).toBe(false)
+	})
+	it('S2: dismissing without a render still counts as shown (the user closed it)', () => {
+		pushResumeNotice('already_registered_keep_password', E)
+		dismissResumeNotice()
+		expect(JSON.parse(localStorage.getItem('beamio.passwordNoticeShown.v1') as string)).toEqual({ [E]: true })
 	})
 	it('an old-shape value (object per wallet) is ignored, not trusted', () => {
 		localStorage.setItem('beamio.passwordNoticeShown.v1', JSON.stringify({ [E]: { n1: true } }))
