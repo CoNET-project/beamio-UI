@@ -166,6 +166,9 @@ describe('resume: the tag is locked, there is nothing to choose', () => {
 		await press()
 		await waitFor(() => expect(spc.sendAccountCreateRegister.mock.calls[0]?.[0]).toMatchObject({ tag: TAG, password: PWD }), { timeout: 5000 })
 		expect(nr.nativeAccountCreateOpen).not.toHaveBeenCalled()
+		// the native flow is announced as pending while steps 2 and 3 run (the gate does not take the screen over meanwhile)
+		const { announceNativeFlowPending } = jest.requireMock('@/services/nativeFlowPending') as { announceNativeFlowPending: jest.Mock }
+		expect(announceNativeFlowPending).toHaveBeenCalledWith(true)
 		expect(await screen.findByTestId('recover-code')).toBeTruthy()
 		expect(noticeShown()).toBeNull()
 	})
