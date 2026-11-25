@@ -144,7 +144,12 @@ describe('the wiring and the constants (source)', () => {
 		expect(src).toContain('probe.capabilities.includes(FIRST_IDENTITY_STATUS_CAPABILITY)')
 		expect(src).toContain('armFirstIdentityWatchdog: () => armFirstIdentityWatchdog(FIRST_IDENTITY_NO_EVENT_TIMEOUT_MS)')
 		expect(src).toContain('setWatchdog: (ms) => armFirstIdentityWatchdog(ms)')
-		expect(src).toContain("setShellChatUiState('identity_pending')")
+		// the watchdog lands on "identity pending", not on the failed notice
+		const at = src.indexOf('createFirstIdentityWatchdog(() => {')
+		const block = src.slice(at, at + 520)
+		expect(block).toContain("setFirstIdentitySetup('idle')")
+		expect(block).toContain("setShellChatUiState('identity_pending')")
+		expect(block).not.toContain("setFirstIdentitySetup('failed')")
 		expect(src).toContain('watchFirstIdentityFailed({')
 		expect(src).toContain('clearWatchdog: () => clearFirstIdentityWatchdog()')
 	})
