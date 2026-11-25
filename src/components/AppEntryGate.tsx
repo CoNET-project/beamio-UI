@@ -63,7 +63,6 @@ import ResumeNoticeCard from '@/components/ResumeNoticeCard'
 import { CONET_RPC_SECONDARY, CONET_RPC_URL } from '@/config/chainAddresses'
 import { flushQueuedResume, hasPendingCreateRecord, hasQueuedResume, markResumeFired, registerResumeBusyProbe, requestResumeRoute, resumeCreateCheck, type ResumeDeps, type ResumeVerdict } from '@/services/resumeCreate'
 import { pushResumeNotice } from '@/services/resumeNotice'
-import { browserVoiceCallBusyFor } from '@/utils/voiceCallSession'
 import BeamioOnboardingModal from '@/pages/Home/LoadingPage'
 import { isCashTreesNativeWebView } from '@/utils/cashTreesNativeNfc'
 import { setSyncPendingHandler } from '@/services/passcode/syncPendingHandoff'
@@ -545,6 +544,8 @@ export default function AppEntryGate() {
 		primaryUrl: CONET_RPC_URL,
 		secondaryUrl: CONET_RPC_SECONDARY,
 	}
+	// Not a no_key route: goResumeCreate is reached only for a wallet the device already holds (the native entry answered with this wallet, and a
+	// pending create record exists for it), so the shell not-ready guard of the start does not apply. The create page then re-checks the wallet (D2).
 	const goResumeCreate = (eoa: string, tag: string) => {
 		markResumeFired(eoa)
 		publishNativePwaLog('info', '[AppEntryGate] interrupted create: the create page with the locked tag')
@@ -599,11 +600,14 @@ export default function AppEntryGate() {
 	// The busy signals and the idle triggers of the late resume route (D4): never while a call, the settings, the unlock screen, a native flow or the create
 	// page itself is on; a request that has to wait is started on the next idle signal (foreground, route change, the 30 s visible poll).
 	useEffect(() => {
+		let voiceCallModule: typeof import('@/utils/voiceCallSession') | null = null
+		void import('@/utils/voiceCallSession').then((m) => { voiceCallModule = m }, () => undefined)
 		const offs = [
 			registerResumeBusyProbe(() => window.location.pathname.startsWith('/settings')),
 			registerResumeBusyProbe(() => vaultLockedRef.current),
 			registerResumeBusyProbe(() => nativeFlowOpenRef.current),
-			registerResumeBusyProbe(() => browserVoiceCallBusyFor({})),
+			// the call module is loaded on demand (not at import time); until it is loaded the user counts as busy (never start on a doubt)
+			registerResumeBusyProbe(() => (voiceCallModule ? voiceCallModule.browserVoiceCallBusyFor({}) : true)),
 			registerResumeBusyProbe(() => onboardingOpenRef.current),
 		]
 		const flush = () => {
