@@ -25,12 +25,16 @@ const race: {
 	idb: 'empty' | 'key' | 'unknown' | 'locked'
 	walletStateCalls: number
 	reachCalls: number
+	/** only reachNativeWallet (the G1->G2 upgrade attempt) */
+	reachOnly: number
+	/** only the host receiving nativeMnemonicPreread (a recovery read) */
+	prereadCalls: number
 	probeCalls: number
 	answered: boolean
 	wipes: number
 	writes: string[]
 	queryCalls: number
-} = { shell: true, native: { status: 'no_key' }, walletState: 'absent', kPresent: false, caps: ['identity.native-keys.v1', 'identity.kpresent.v1'], eoa: EOA, idb: 'empty', walletStateCalls: 0, reachCalls: 0, probeCalls: 0, answered: true, wipes: 0, writes: [], queryCalls: 0 }
+} = { shell: true, native: { status: 'no_key' }, walletState: 'absent', kPresent: false, caps: ['identity.native-keys.v1', 'identity.kpresent.v1'], eoa: EOA, idb: 'empty', walletStateCalls: 0, reachCalls: 0, reachOnly: 0, prereadCalls: 0, probeCalls: 0, answered: true, wipes: 0, writes: [], queryCalls: 0 }
 // Synthetic: the BIP-39 public test vector (not an account). Its first account is the EOA used by the derivation test below.
 const PAGE_PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
 // Counts every render of the onboarding stand-in: a trajectory that enters onboarding at any moment is a failure (spec 57(6), RM-05..07).
@@ -164,6 +168,7 @@ jest.mock('@/services/nativeWallet', () => ({
 	publicWalletSeed: () => ({ profiles: [], beamio: undefined, isReady: true }),
 	reachNativeWallet: async () => {
 		race.reachCalls += 1
+		race.reachOnly += 1
 		return race.native
 	},
 	rememberNativeEoa: jest.fn(),
@@ -210,6 +215,7 @@ function installNativeHost(): void {
 			if (cmd.type !== 'nativeMnemonicPreread') return
 			// the pre-read is the start-up's native read: it takes the place of the walletStatus read (counted as reachCalls)
 			race.reachCalls += 1
+			race.prereadCalls += 1
 			const answer = prereadReply()
 			mockTrail.arrivals.push(`pre-read-${answer.kind}`) // recorded as the reducer received it (RM-05..07 read these arrivals)
 			const payload = answer.kind === 'valid'
@@ -291,6 +297,8 @@ beforeEach(() => {
 describe('account reset at the gate', () => {
 	beforeEach(() => {
 		race.reachCalls = 0
+		race.reachOnly = 0
+		race.prereadCalls = 0
 		race.answered = true
 		race.shell = true
 		race.native = { status: 'no_key' }
@@ -379,12 +387,16 @@ describe('account reset at the gate', () => {
 	it('ST-02: IDB has a valid mnemonic, native absent: the home on the page account, native not asked for recovery (one upgrade attempt at entry), no onboarding, no retry', async () => {
 		race.idb = 'key'
 		race.reachCalls = 0
+		race.reachOnly = 0
+		race.prereadCalls = 0
 		renderApp()
 		await waitFor(() => expect(publishNativePwaLog).toHaveBeenCalledWith('info', expect.stringContaining('page mnemonic is valid')), { timeout: 3000 })
 		expect(await screen.findByText('HOME_MARK', {}, { timeout: 3000 })).toBeTruthy()
 		// 0.53.51 (DEF-IOS-HOME-1): the local home makes ONE G1->G2 upgrade attempt at entry (reachNativeWallet: walletStatus, then init when g1_uninitialized);
 		// it is not a recovery read: the pre-read stays uncalled, nothing is onboarded, and the beat keeps the later retries. Before: 0, the first try came after 30 s.
-		await waitFor(() => expect(race.reachCalls).toBe(1))
+		await waitFor(() => expect(race.reachOnly).toBe(1))
+		expect(race.prereadCalls).toBe(0) // the upgrade attempt is not a recovery read
+		expect(race.reachCalls).toBe(1) // and nothing else asked the native side
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
 		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
 	})
@@ -410,11 +422,15 @@ describe('account reset at the gate', () => {
 	it('ST-05: both sides hold the wallet: the home on the valid page mnemonic, native not asked, no onboarding, no retry', async () => {
 		race.idb = 'key'
 		race.reachCalls = 0
+		race.reachOnly = 0
+		race.prereadCalls = 0
 		race.native = { status: 'not_ready', notReadyReason: 'g1_uninitialized' }
 		renderApp()
 		expect(await screen.findByText('HOME_MARK', {}, { timeout: 3000 })).toBeTruthy()
 		// 0.53.51 (DEF-IOS-HOME-1): one upgrade attempt at entry (the d83 case: valid page record, native G1); not a recovery read (see ST-02)
-		await waitFor(() => expect(race.reachCalls).toBe(1))
+		await waitFor(() => expect(race.reachOnly).toBe(1))
+		expect(race.prereadCalls).toBe(0)
+		expect(race.reachCalls).toBe(1)
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
 		expect(screen.queryByText(RETRY_TITLE)).toBeNull()
 	})
@@ -742,6 +758,8 @@ describe('Y.163: silent entry, no picker, no popup, data kept (iOS)', () => {
 describe('ST-07: PWA unknown does not ask the native side', () => {
 	beforeEach(() => {
 		race.reachCalls = 0
+		race.reachOnly = 0
+		race.prereadCalls = 0
 		race.queryCalls = 0
 		race.walletStateCalls = 0
 		race.probeCalls = 0
@@ -785,6 +803,8 @@ describe('boot markers and the shell sync (QA only)', () => {
 	beforeEach(() => {
 		process.env.REACT_APP_BEAMIO_BOOT_TRACE = 'true'
 		race.reachCalls = 0
+		race.reachOnly = 0
+		race.prereadCalls = 0
 		race.queryCalls = 0
 		race.walletStateCalls = 0
 		race.answered = true
@@ -844,6 +864,8 @@ describe('boot markers and the shell sync (QA only)', () => {
 describe('walletStatus route without identity.native-keys.v1 ((c), (f))', () => {
 	beforeEach(() => {
 		race.reachCalls = 0
+		race.reachOnly = 0
+		race.prereadCalls = 0
 		race.answered = true
 		race.shell = true
 		race.native = { status: 'no_key' }
@@ -961,6 +983,8 @@ describe('start-up trajectory, record error and pre-read in either order (RM-05,
 	const PREREAD_VALID = { kind: 'valid', eoa: SAMPLE_EOA, phrase: PAGE_PHRASE }
 	beforeEach(() => {
 		race.reachCalls = 0
+		race.reachOnly = 0
+		race.prereadCalls = 0
 		race.answered = true
 		race.shell = true
 		race.native = { status: 'no_key' }
