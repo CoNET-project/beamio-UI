@@ -6,6 +6,7 @@ import { qaSendStage, qaLine } from '@/utils/qaLog'
 import { NATIVE_WALLET_READY_EVENT } from './nativeWallet'
 import { FIRST_IDENTITY_STATUS_ENABLED } from '@/utils/accountCreateRegisterFlag'
 import { createFirstIdentityWatchdog } from './firstIdentityWatchdog'
+import { watchFirstIdentityFailed } from './firstIdentityFailedRecheck'
 import { FIRST_IDENTITY_NO_EVENT_TIMEOUT_MS, FIRST_IDENTITY_STATUS_CAPABILITY, getFirstIdentityStatus, subscribeFirstIdentityStatus, type FirstIdentityStatus } from './firstIdentityStatus'
 import { createFirstIdentityReaction } from './firstIdentityReaction'
 import { createColdStartBackoff } from './coldStartBackoff'
@@ -525,15 +526,30 @@ export function resetShellReentryForTest(): void {
  * firstIdentityStatus (frozen protocol v1 §4; every build since 0.53.52, behind the shell capability identity.first.status.v1): the page shows "setting up", waits, and re-reads identityPublic; it never sends a create command.
  * retry_later waits retryAfterMs (1 s to 5 min) or the page's own ladder, and every retry_later counts against the shell retry cap; at the cap the
  * existing retry-stopped notice takes over. registered re-reads at once. identity_pending shows the pending notice. failed shows a failure that says the next
- * start retries (no button). No event for FIRST_IDENTITY_NO_EVENT_TIMEOUT_MS lands on the same failed notice.
+ * start retries (no button); the SDK latches failed, so while it is shown the page reads identityPublic again (not faster than once a minute) and leaves it when the
+ * identity is ready (firstIdentityFailedRecheck.ts). No event for FIRST_IDENTITY_NO_EVENT_TIMEOUT_MS lands on "identity pending".
  */
 let firstIdentityRetryTimer: ReturnType<typeof setTimeout> | undefined
-/** The no-event watchdog of "setting up" (0.53.52): see firstIdentityWatchdog.ts. At its end the page lands on the failed notice (the next start retries). */
+/** The no-event watchdog of "setting up" (0.53.52): see firstIdentityWatchdog.ts. At its end the page lands on "identity pending". */
 const firstIdentityWatchdog = createFirstIdentityWatchdog(() => {
-	chatBootLog('shell chat: first identity setup: no event within the watchdog; the failed notice (the next start retries)', 'warn')
-	setFirstIdentitySetup('failed')
+	// silence is not a failure (a lock, a missing passcode or another run sends no event): "identity pending", and a later event is still taken
+	chatBootLog('shell chat: first identity setup: no event within the watchdog; the identity is pending', 'warn')
+	setFirstIdentitySetup('idle')
+	setShellChatUiState('identity_pending')
 })
 const clearFirstIdentityWatchdog = (): void => firstIdentityWatchdog.clear()
+// the SDK sends no `registered` after a latched `failed`: re-read identityPublic at a low rate while the failed notice is shown
+watchFirstIdentityFailed({
+	readReady: async () => {
+		const id = await readNativeIdentityPublic()
+		return id.kind === 'ok' && id.pgpReady === true
+	},
+	onReady: () => {
+		setFirstIdentitySetup('idle')
+		startShellChatNow()
+	},
+	log: (m) => chatBootLog(m, 'info'),
+})
 const armFirstIdentityWatchdog = (ms: number): void => firstIdentityWatchdog.arm(ms)
 const startShellChatNow = (): void => {
 	if (!isShellContext() || !chatRetryArgs || initChatInProgress) return

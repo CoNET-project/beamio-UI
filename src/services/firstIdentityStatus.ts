@@ -12,10 +12,12 @@ import { eventPayloadOf, NATIVE_EVENT_NAMES } from './nativeKeyState'
 export const FIRST_IDENTITY_STATUS_CAPABILITY = 'identity.first.status.v1'
 /**
  * The longest the page waits for a firstIdentityStatus event once "setting up" is shown (a declared capability and then silence). Every event restarts it
- * (a retry_later restarts it after its own retryAfterMs). At the end the page lands on the failed notice, which says the next start retries. PROVISIONAL:
- * to be aligned with the event cadence of the iOS and Android SDKs; the tests use the constant, not the number.
+ * (a retry_later restarts it after its own retryAfterMs). At the end the page lands on "identity pending" (not on a failure: the SDK sends no event while the
+ * account is locked, a passcode is not provided, or another registration runs). INITIAL VALUE 5 minutes, from the Android SDK 0.2.33 rhythm file
+ * (sdk-android-first-identity-event-rhythm-0.2.33.md: one whole run is about 2 to 3 minutes, more on a StrongBox device; the file suggests at least 3, advises 5).
+ * Read from code, not measured; to be calibrated with the iOS rhythm and the AVD measurements. The tests use the constant, not the number.
  */
-export const FIRST_IDENTITY_NO_EVENT_TIMEOUT_MS = 90_000
+export const FIRST_IDENTITY_NO_EVENT_TIMEOUT_MS = 300_000
 
 export const FIRST_IDENTITY_STATUS_EVENT = 'firstIdentityStatus'
 export type FirstIdentityState = 'registering' | 'registered' | 'retry_later' | 'identity_pending' | 'failed'
