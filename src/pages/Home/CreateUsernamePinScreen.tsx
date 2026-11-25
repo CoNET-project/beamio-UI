@@ -681,6 +681,9 @@ const CreateUsernamePinScreen = forwardRef<
 			temp: kks.temp,
 			beamioTag: trimmedTag,
 		})
+		// 0.53.48.1: the account is registered but this device could not save the wallet yet. The recovery code page is open; the
+		// onboarding save runs again after it. Say so, so the user keeps the code and does not make a second account.
+		if ('persistFailed' in kks && kks.persistFailed) window.alert(tu('create_account_registered_save_code'))
 	}
 
 	// OB-3 (v10 §九 line 285; §6.2), create-page rule: the retry shows only when the reread is valid or absent and walletStatus is not locked.
