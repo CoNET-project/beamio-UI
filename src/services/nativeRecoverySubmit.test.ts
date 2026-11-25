@@ -9,18 +9,23 @@ import {
 	nativeRecoverySubmit,
 	setRecoveryOriginForTest,
 } from './nativeRecovery'
-import * as transport from './shellRecordTransport'
+import * as channel from '@/utils/beamioShellChannel'
 import * as register from './nativeChatRouteRegister'
 
-jest.mock('./shellRecordTransport', () => ({ ...jest.requireActual('./shellRecordTransport'), sendShellActionCommand: jest.fn() }))
+jest.mock('@/utils/beamioShellChannel', () => ({ ...jest.requireActual('@/utils/beamioShellChannel'), hasBeamioShell: jest.fn(), requestBeamioShell: jest.fn() }))
 jest.mock('./nativeChatRouteRegister', () => ({ ...jest.requireActual('./nativeChatRouteRegister'), probeNativeCapabilities: jest.fn(), nextReqId: () => 41 }))
 jest.mock('@/utils/cashTreesNativePwaLog', () => ({ publishNativePwaLog: jest.fn() }))
 jest.mock('@/utils/cashTreesNativeNfc', () => ({ ...jest.requireActual('@/utils/cashTreesNativeNfc'), getCashTreesNativeNfcHost: () => (globalThis as { __host?: string }).__host ?? 'android' }))
 
-const send = transport.sendShellActionCommand as jest.Mock
+const request = channel.requestBeamioShell as jest.Mock
+const hasShell = channel.hasBeamioShell as jest.Mock
 const probe = register.probeNativeCapabilities as jest.Mock
 const CAP = 'recovery.page-input.v1'
-const withCap = () => probe.mockResolvedValue({ answered: true, capabilities: ['identity.native-keys.v1', CAP] })
+/** Android: shellCapabilities answers the list; every other action answers per test. */
+const ackFor = (submit: unknown, caps: unknown = { ok: true, result: { capabilities: [CAP] } }) =>
+	request.mockImplementation(async (action: string) => (action === 'shellCapabilities' ? caps : submit))
+const withCap = (submit: unknown = { ok: true }) => ackFor(submit)
+const sent = () => request.mock.calls.filter((c) => c[0] !== 'shellCapabilities')
 
 const IOS = 'cashtrees-local://localhost/index.html'
 const ANDROID = 'https://appassets.androidplatform.net/assets/index.html'
@@ -30,7 +35,9 @@ beforeEach(() => {
 	;(globalThis as { __host?: string }).__host = 'android'
 	delete (window as unknown as { __CT_IOS_CAPS__?: unknown }).__CT_IOS_CAPS__
 	delete (window as unknown as { CashTreesIOS?: unknown }).CashTreesIOS
-	send.mockReset()
+	request.mockReset()
+	hasShell.mockReset()
+	hasShell.mockReturnValue(true)
 	probe.mockReset()
 	setRecoveryOriginForTest({ href: IOS, topFrame: true })
 })
@@ -73,82 +80,102 @@ describe('isTrustedRecoveryOrigin', () => {
 	})
 })
 
-describe('hasPageInputRecovery', () => {
-	it('is true only when the shell declared recovery.page-input.v1', async () => {
-		withCap()
+describe('hasPageInputRecovery (Android: shellCapabilities on window.BeamioShell)', () => {
+	it('is true only when the shell answers the capability in its list', async () => {
+		ackFor({ ok: true })
 		expect(await hasPageInputRecovery()).toBe(true)
-		probe.mockResolvedValue({ answered: true, capabilities: ['identity.native-keys.v1'] })
+		expect(request.mock.calls[0]).toEqual(['shellCapabilities', {}, expect.any(Number)])
+		ackFor({ ok: true }, { ok: true, result: { capabilities: ['other'] } })
 		expect(await hasPageInputRecovery()).toBe(false)
-		probe.mockResolvedValue({ answered: false, capabilities: [] })
+		ackFor({ ok: true }, { ok: true, result: { capabilities: [CAP] } })
+		expect(await hasPageInputRecovery()).toBe(true)
+	})
+
+	it('an old shell (unknown_command), a timeout, or no channel is capability missing; no hello is used', async () => {
+		ackFor({ ok: true }, { ok: false, error: 'unknown_command' })
 		expect(await hasPageInputRecovery()).toBe(false)
+		ackFor({ ok: true }, { ok: false, error: 'timeout' })
+		expect(await hasPageInputRecovery()).toBe(false)
+		request.mockReset()
+		hasShell.mockReturnValue(false)
+		expect(await hasPageInputRecovery()).toBe(false)
+		expect(request).not.toHaveBeenCalled()
+		expect(probe).not.toHaveBeenCalled()
 	})
 })
 
-describe('nativeRecoverySubmit', () => {
-	it('sends the code path with exactly its fields, and ok on an ok ack (no result object needed)', async () => {
+describe('nativeRecoverySubmit (Android)', () => {
+	it('sends the code path with exactly its args, and ok on an ok ack', async () => {
 		withCap()
-		send.mockResolvedValue({ kind: 'payload', payload: { type: 'ack', reqId: 41, ok: true } })
 		const out = await nativeRecoverySubmit({ path: 'code', code: 'a1B2c3D4e5F6g7H8i9J0kL' })
 		expect(out).toEqual({ ok: true })
-		expect(send).toHaveBeenCalledTimes(1)
-		expect(send.mock.calls[0][0]).toEqual({ type: 'nativeRecoverySubmit', reqId: 41, path: 'code', code: 'a1B2c3D4e5F6g7H8i9J0kL' })
+		expect(sent()).toHaveLength(1)
+		expect(sent()[0].slice(0, 2)).toEqual(['nativeRecoverySubmit', { path: 'code', code: 'a1B2c3D4e5F6g7H8i9J0kL' }])
 	})
 
-	it('sends the account path with exactly its fields', async () => {
+	it('sends the account path with exactly its args', async () => {
 		withCap()
-		send.mockResolvedValue({ kind: 'payload', payload: { type: 'ack', reqId: 41, ok: true, result: { code: 'accepted' } } })
-		const out = await nativeRecoverySubmit({ path: 'account', name: 'synthtag', password: 'canary-Passw0rd' })
-		expect(out).toEqual({ ok: true })
-		expect(send.mock.calls[0][0]).toEqual({ type: 'nativeRecoverySubmit', reqId: 41, path: 'account', name: 'synthtag', password: 'canary-Passw0rd' })
+		expect(await nativeRecoverySubmit({ path: 'account', name: 'synthtag', password: 'canary-Passw0rd' })).toEqual({ ok: true })
+		expect(sent()[0].slice(0, 2)).toEqual(['nativeRecoverySubmit', { path: 'account', name: 'synthtag', password: 'canary-Passw0rd' }])
 	})
 
 	it('sends nothing without the capability and reports capability_missing (no native page, no not_supported)', async () => {
-		probe.mockResolvedValue({ answered: true, capabilities: ['identity.native-keys.v1'] })
-		const out = await nativeRecoverySubmit({ path: 'code', code: 'x' })
-		expect(out).toEqual({ ok: false, reason: 'capability_missing' })
-		expect(send).not.toHaveBeenCalled()
+		ackFor({ ok: true }, { ok: false, error: 'unknown_command' })
+		expect(await nativeRecoverySubmit({ path: 'code', code: 'x' })).toEqual({ ok: false, reason: 'capability_missing' })
+		expect(sent()).toHaveLength(0)
 	})
 
-	it.each(['https://beamio.ca.evil.com/app/', 'file:///x', 'data:text/html,x'])('sends nothing from %s', async (href) => {
+	it.each(['https://beamio.ca.evil.com/app/', 'file:///x', 'data:text/html,x', 'blob:https://appassets.androidplatform.net/3f8e', 'javascript:void(0)'])('sends nothing from %s (not even the capability question)', async (href) => {
 		withCap()
 		setRecoveryOriginForTest({ href, topFrame: true })
 		expect(await nativeRecoverySubmit({ path: 'code', code: 'x' })).toEqual({ ok: false, reason: 'untrusted_origin' })
-		expect(send).not.toHaveBeenCalled()
+		expect(request).not.toHaveBeenCalled()
 	})
 
 	it('sends nothing from a child frame', async () => {
 		withCap()
 		setRecoveryOriginForTest({ href: IOS, topFrame: false })
 		expect(await nativeRecoverySubmit({ path: 'account', name: 'a', password: 'b' })).toEqual({ ok: false, reason: 'untrusted_origin' })
-		expect(send).not.toHaveBeenCalled()
+		expect(request).not.toHaveBeenCalled()
 	})
 
 	it.each([
-		[{ kind: 'origin_refused' }, 'origin_refused'],
-		[{ kind: 'timeout' }, 'timeout'],
-		[{ kind: 'unavailable' }, 'native_unavailable'],
-		[{ kind: 'none' }, 'native_unavailable'],
-		[{ kind: 'not_supported' }, 'native_unavailable'],
-		[{ kind: 'payload', payload: { type: 'ack', ok: false, error: 'origin_refused' } }, 'origin_refused'],
-		[{ kind: 'payload', payload: { type: 'ack', ok: false, error: 'not_available' } }, 'not_available'],
-		[{ kind: 'payload', payload: { type: 'ack', ok: false, error: 'bad_args' } }, 'bad_args'],
-		[{ kind: 'payload', payload: { type: 'ack', ok: false, error: 'surprise' } }, 'bad_ack'],
-		[{ kind: 'payload', payload: { type: 'ack' } }, 'bad_ack'],
-	])('maps the shell answer %j to %s', async (answer, reason) => {
-		withCap()
-		send.mockResolvedValue(answer)
+		[{ ok: false, error: 'origin_refused' }, 'origin_refused'],
+		[{ ok: false, error: 'not_available' }, 'not_available'],
+		[{ ok: false, error: 'bad_args' }, 'bad_args'],
+		[{ ok: false, error: 'timeout' }, 'timeout'],
+		[{ ok: false, error: 'not_supported' }, 'capability_missing'],
+		[{ ok: false, error: 'bridge_missing' }, 'capability_missing'],
+		[{ ok: false, error: 'surprise' }, 'bad_ack'],
+	])('maps the shell ack %j to %s', async (ack, reason) => {
+		withCap(ack)
 		expect(await nativeRecoverySubmit({ path: 'code', code: 'x' })).toEqual({ ok: false, reason })
 	})
 
-	it('a transport that throws is native_unavailable, and nothing is logged', async () => {
-		withCap()
+	it('only one submit is in flight: a second one is busy and is not sent', async () => {
+		let release: (v: unknown) => void = () => undefined
+		request.mockImplementation((action: string) => (action === 'shellCapabilities' ? Promise.resolve({ ok: true, result: { capabilities: [CAP] } }) : new Promise((r) => { release = r })))
+		const first = nativeRecoverySubmit({ path: 'code', code: 'x' })
+		await new Promise((r) => setTimeout(r, 0))
+		expect(await nativeRecoverySubmit({ path: 'code', code: 'y' })).toEqual({ ok: false, reason: 'busy' })
+		release({ ok: true })
+		expect(await first).toEqual({ ok: true })
+		expect(sent()).toHaveLength(1)
+	})
+
+	it('a channel that throws never logs the input', async () => {
 		const log = jest.spyOn(console, 'log').mockImplementation(() => undefined)
 		const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
 		const err = jest.spyOn(console, 'error').mockImplementation(() => undefined)
 		const { publishNativePwaLog } = jest.requireMock('@/utils/cashTreesNativePwaLog') as { publishNativePwaLog: jest.Mock }
 		publishNativePwaLog.mockClear()
-		send.mockRejectedValue(new Error('canary-Passw0rd'))
-		expect(await nativeRecoverySubmit({ path: 'account', name: 'synthtag', password: 'canary-Passw0rd' })).toEqual({ ok: false, reason: 'native_unavailable' })
+		request.mockImplementation(async (action: string) => {
+			if (action === 'shellCapabilities') return { ok: true, result: { capabilities: [CAP] } }
+			return { ok: false, error: 'canary-Passw0rd' }
+		})
+		const out = await nativeRecoverySubmit({ path: 'account', name: 'synthtag', password: 'canary-Passw0rd' })
+		expect(out).toEqual({ ok: false, reason: 'bad_ack' })
+		expect(JSON.stringify(out)).not.toContain('canary')
 		expect(log).not.toHaveBeenCalled()
 		expect(warn).not.toHaveBeenCalled()
 		expect(err).not.toHaveBeenCalled()
@@ -159,20 +186,20 @@ describe('nativeRecoverySubmit', () => {
 	})
 })
 
-describe('nativeRecoveryCancel', () => {
-	it('sends the bare action (no data) from a trusted origin', async () => {
-		send.mockResolvedValue({ kind: 'payload', payload: { type: 'ack', reqId: 41, ok: true } })
+describe('nativeRecoveryCancel (Android)', () => {
+	it('sends the bare action (no args) from a trusted origin', async () => {
+		request.mockResolvedValue({ ok: true })
 		expect(await nativeRecoveryCancel()).toEqual({ ok: true })
-		expect(send.mock.calls[0][0]).toEqual({ type: 'nativeRecoveryCancel', reqId: 41 })
+		expect(request.mock.calls[0].slice(0, 2)).toEqual(['nativeRecoveryCancel', {}])
 	})
 
-	it('sends nothing from an untrusted origin, and never throws', async () => {
+	it('sends nothing from an untrusted origin, and a refusal is mapped, never thrown', async () => {
 		setRecoveryOriginForTest({ href: 'https://evil.example/', topFrame: true })
 		expect(await nativeRecoveryCancel()).toEqual({ ok: false, reason: 'untrusted_origin' })
-		expect(send).not.toHaveBeenCalled()
+		expect(request).not.toHaveBeenCalled()
 		setRecoveryOriginForTest({ href: IOS, topFrame: true })
-		send.mockRejectedValue(new Error('x'))
-		await expect(nativeRecoveryCancel()).resolves.toEqual({ ok: false, reason: 'native_unavailable' })
+		request.mockResolvedValue({ ok: false, error: 'not_available' })
+		await expect(nativeRecoveryCancel()).resolves.toEqual({ ok: false, reason: 'not_available' })
 	})
 })
 
@@ -201,7 +228,7 @@ describe('iOS adapter (injected capability table, CashTreesIOS actions, cashtree
 		const out = await nativeRecoverySubmit({ path: 'account', name: 'synthtag', password: 'canary-Passw0rd' })
 		expect(out).toEqual({ ok: true })
 		expect(fn).toHaveBeenCalledWith({ path: 'account', name: 'synthtag', password: 'canary-Passw0rd' })
-		expect(send).not.toHaveBeenCalled()
+		expect(request).not.toHaveBeenCalled()
 	})
 
 	it('the code path sends only path and code', async () => {

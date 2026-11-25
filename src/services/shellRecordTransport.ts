@@ -244,16 +244,6 @@ export function sendShellWalletSyncCommand(cmd: Loose, timeoutMs: number = SHELL
 	return sendOverTransport(cmd, timeoutMs, false)
 }
 
-/**
- * 0.53.49: the recovery shell actions (`nativeRecoverySubmit`, `nativeRecoveryCancel`). The top frame only, the same transports and the same
- * page-side origin list as the other window commands, no fallback. An ok reply may carry no result object (the spec of the two actions is
- * pending), so the bare-ok form is accepted. The command is never logged here.
- */
-export function sendShellActionCommand(cmd: Loose, timeoutMs: number = SHELL_RECORD_REPLY_TIMEOUT_MS): Promise<ShellRecordAnswer> {
-	if (!inTrustedTopFrame()) return Promise.resolve({ kind: 'unavailable' })
-	return sendOverTransport(cmd, timeoutMs, true)
-}
-
 /** The page is the top frame of its window (a child frame, e.g. an embedded page, is not trusted for these commands). */
 function inTrustedTopFrame(): boolean {
 	try {

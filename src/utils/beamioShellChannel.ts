@@ -50,6 +50,14 @@ export const BEAMIO_SHELL_ACTIONS = [
 
 export type BeamioShellAction = (typeof BEAMIO_SHELL_ACTIONS)[number]
 
+/**
+ * 0.53.49 (page-input recovery, Android shell 348e941a): three more actions on this channel, kept apart from the 21 above. `nativeRecoverySubmit`
+ * takes exactly {path:"code", code} or {path:"account", name, password}; `nativeRecoveryCancel` takes no args; `shellCapabilities` takes no args and
+ * answers {capabilities:[...]} (an old shell answers unknown_command). No args are logged here or anywhere on the page.
+ */
+export const BEAMIO_SHELL_RECOVERY_ACTIONS = ['nativeRecoverySubmit', 'nativeRecoveryCancel', 'shellCapabilities'] as const
+export type BeamioShellRecoveryAction = (typeof BEAMIO_SHELL_RECOVERY_ACTIONS)[number]
+
 /** The shell's answer. `error` is a code (for example `origin_refused`, `bad_args`, `not_ready`, `not_supported`), never a value. */
 export type BeamioShellAck = { ok: true; result?: unknown } | { ok: false; error: string }
 
@@ -95,7 +103,7 @@ const pending = new Map<number, (ack: BeamioShellAck) => void>()
  * Without `window.BeamioShell` it resolves `not_supported` at once and sends nothing.
  */
 export function requestBeamioShell(
-	action: BeamioShellAction,
+	action: BeamioShellAction | BeamioShellRecoveryAction,
 	args: Record<string, unknown> = {},
 	timeoutMs: number = ACK_TIMEOUT_MS,
 ): Promise<BeamioShellAck> {
@@ -165,14 +173,14 @@ export function installBeamioShellReceiver(): (() => void) | null {
 			return
 		}
 		if (!msg || typeof msg !== 'object') return
-		const m = msg as { type?: unknown; reqId?: unknown; ok?: unknown; result?: unknown; error?: unknown }
+		const m = msg as { type?: unknown; reqId?: unknown; ok?: unknown; result?: unknown; error?: unknown; capabilities?: unknown }
 		if (m.type !== 'ack' || typeof m.reqId !== 'number') return
 		const settle = pending.get(m.reqId)
 		if (!settle) return
 		pending.delete(m.reqId)
 		settle(
 			m.ok === true
-				? { ok: true, result: m.result }
+				? { ok: true, result: m.result !== undefined ? m.result : Array.isArray(m.capabilities) ? { capabilities: m.capabilities } : undefined }
 				: { ok: false, error: typeof m.error === 'string' && m.error ? m.error : 'bad_ack' },
 		)
 	}

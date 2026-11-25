@@ -11,7 +11,8 @@ import { eventPayloadOf, NATIVE_EVENT_NAMES, withoutGlobalNoKeyLock } from './na
 import { beginPrereadRound } from './prereadRound'
 import { nextReqId, probeNativeCapabilities, requestNativeAck } from './nativeChatRouteRegister'
 import { PASSCODE_CAPABILITY } from './passcode/passcodeCommands'
-import { sendShellActionCommand, sendShellWalletSyncCommand, shellRecordTransportKind, type ShellRecordAnswer } from './shellRecordTransport'
+import { sendShellWalletSyncCommand, shellRecordTransportKind } from './shellRecordTransport'
+import { hasBeamioShell, requestBeamioShell, type BeamioShellAck } from '@/utils/beamioShellChannel'
 import { getCashTreesNativeNfcHost } from '@/utils/cashTreesNativeNfc'
 import { parsePasscodeStatus, type NativeWalletState as NativeWalletStateReport } from './accountJudgement'
 import { parseWalletStatusResult } from './accountPresence'
@@ -223,8 +224,6 @@ export async function nativeRecoveryOpen(): Promise<{ ok: true } | { ok: false; 
  * hold a mnemonic and does not write the native key store; the outcome is still the `nativeRecoveryResult` event. Nothing here logs an input.
  * The actions are sent only from a trusted origin in the top frame, and only when the shell declared `recovery.page-input.v1`.
  */
-export const NATIVE_RECOVERY_SUBMIT_COMMAND = 'nativeRecoverySubmit'
-export const NATIVE_RECOVERY_CANCEL_COMMAND = 'nativeRecoveryCancel'
 export const PAGE_INPUT_RECOVERY_CAPABILITY = 'recovery.page-input.v1'
 const SUBMIT_TIMEOUT_MS = 20_000
 
@@ -291,12 +290,16 @@ const isIosShell = (): boolean => getCashTreesNativeNfcHost() === 'ios'
 
 /**
  * The shell declared that the page may enter the recovery credential (`recovery.page-input.v1`). iOS: the injected capability table.
- * Android and the rest: the hello capability list. The platform difference stays in this file (the hello table and the injected table).
+ * Android: the shell action `shellCapabilities` on window.BeamioShell (an old shell answers unknown_command, which is capability_missing; so is
+ * a missing channel). The platform difference stays in this file.
  */
 export async function hasPageInputRecovery(): Promise<boolean> {
 	if (isIosShell()) return iosCapabilityDeclared()
-	const probe = await probeNativeCapabilities()
-	return probe.answered && probe.capabilities.includes(PAGE_INPUT_RECOVERY_CAPABILITY)
+	if (!hasBeamioShell()) return false
+	const ack = await requestBeamioShell('shellCapabilities', {}, SUBMIT_TIMEOUT_MS)
+	if (!ack.ok) return false
+	const caps = (ack.result as { capabilities?: unknown } | undefined)?.capabilities
+	return Array.isArray(caps) && caps.includes(PAGE_INPUT_RECOVERY_CAPABILITY)
 }
 
 export type NativeRecoverySubmitInput = { path: 'code'; code: string } | { path: 'account'; name: string; password: string }
@@ -351,17 +354,7 @@ export async function nativeRecoverySubmit(input: NativeRecoverySubmitInput): Pr
 		if (isIosShell()) {
 			return await iosAction('nativeRecoverySubmit', input.path === 'code' ? { path: 'code', code: input.code } : { path: 'account', name: input.name, password: input.password })
 		}
-		const cmd: Record<string, unknown> =
-			input.path === 'code'
-				? { type: NATIVE_RECOVERY_SUBMIT_COMMAND, reqId: nextReqId(), path: 'code', code: input.code }
-				: { type: NATIVE_RECOVERY_SUBMIT_COMMAND, reqId: nextReqId(), path: 'account', name: input.name, password: input.password }
-		let answer
-		try {
-			answer = await sendShellActionCommand(cmd, SUBMIT_TIMEOUT_MS)
-		} catch {
-			return { ok: false, reason: 'native_unavailable' }
-		}
-		return judgeActionAnswer(answer)
+		return judgeAck(await requestBeamioShell('nativeRecoverySubmit', input.path === 'code' ? { path: 'code', code: input.code } : { path: 'account', name: input.name, password: input.password }, SUBMIT_TIMEOUT_MS))
 	} finally {
 		submitInFlight = false
 	}
@@ -372,20 +365,17 @@ export async function nativeRecoveryCancel(): Promise<NativeRecoverySubmitOutcom
 	if (!isTrustedRecoveryOrigin()) return { ok: false, reason: 'untrusted_origin' }
 	try {
 		if (isIosShell()) return await iosAction('nativeRecoveryCancel', null)
-		const answer = await sendShellActionCommand({ type: NATIVE_RECOVERY_CANCEL_COMMAND, reqId: nextReqId() }, SUBMIT_TIMEOUT_MS)
-		return judgeActionAnswer(answer)
+		return judgeAck(await requestBeamioShell('nativeRecoveryCancel', {}, SUBMIT_TIMEOUT_MS))
 	} catch {
 		return { ok: false, reason: 'native_unavailable' }
 	}
 }
 
-function judgeActionAnswer(answer: ShellRecordAnswer): NativeRecoverySubmitOutcome {
-	if (answer.kind === 'origin_refused') return { ok: false, reason: 'origin_refused' }
-	if (answer.kind !== 'payload') return { ok: false, reason: answer.kind === 'timeout' ? 'timeout' : 'native_unavailable' }
-	const p = answer.payload as { ok?: unknown; error?: unknown }
-	if (p.ok === true) return { ok: true }
-	const error = typeof p.error === 'string' ? p.error : ''
-	return { ok: false, reason: SUBMIT_REFUSALS.has(error) ? error : 'bad_ack' }
+function judgeAck(ack: BeamioShellAck): NativeRecoverySubmitOutcome {
+	if (ack.ok) return { ok: true }
+	if (ack.error === 'timeout') return { ok: false, reason: 'timeout' }
+	if (ack.error === 'not_supported' || ack.error === 'bridge_missing') return { ok: false, reason: 'capability_missing' }
+	return { ok: false, reason: SUBMIT_REFUSALS.has(ack.error) ? ack.error : 'bad_ack' }
 }
 
 /**

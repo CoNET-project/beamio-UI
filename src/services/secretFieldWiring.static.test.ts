@@ -73,6 +73,6 @@ describe('shell recovery path', () => {
 	it('the open command carries only its type and reqId; the credential goes only in the submit action', () => {
 		const native = read('src/services/nativeRecovery.ts')
 		expect(native).toMatch(/requestNativeAck\(\{ type: NATIVE_RECOVERY_OPEN_COMMAND \}/)
-		expect(native).toMatch(/type: NATIVE_RECOVERY_SUBMIT_COMMAND, reqId: nextReqId\(\), path: 'code', code: input\.code/)
+		expect(native).toMatch(/requestBeamioShell\('nativeRecoverySubmit', input\.path === 'code' \? \{ path: 'code', code: input\.code \}/)
 	})
 })

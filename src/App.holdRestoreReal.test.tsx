@@ -157,6 +157,11 @@ jest.mock('@/services/nativeWallet', () => ({
 }))
 jest.mock('@/services/nativeRecovery', () => ({
 	nativeRecoveryOpen: jest.fn(),
+	nativeRecoverySubmit: jest.fn(),
+	nativeRecoveryCancel: jest.fn(),
+	hasPageInputRecovery: async () => true,
+	isTopFrameForRecovery: () => true,
+	isTrustedRecoveryOrigin: () => true,
 	onNativeRecoveryResult: jest.fn(),
 	recoveryOpenErrorKey: () => '',
 	nativeRecoveryCopyKey: () => null,
