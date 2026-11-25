@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { useDaemonContext } from '@/providers/DaemonProvider'
-import { checkStorageWithStatus, checkStorageWithStatusWithTimeout, checkStorageWithTransientRetry, persistPageIdbMnemonic, persistPageIdbPasscodeRecord, readStoredRecordForVerify, sendPendingProfileSync, storeSystemDataAndWait } from '@/services/beamio'
+import { checkStorageWithStatus, checkStorageWithStatusWithTimeout, checkStorageWithTransientRetry, persistPageIdbMnemonic, registrationStateVia, persistPageIdbPasscodeRecord, readStoredRecordForVerify, sendPendingProfileSync, storeSystemDataAndWait } from '@/services/beamio'
 import { allowRestoreWrite, endRestoreWriteWindow, setPageWritePermit, type PageWritePermit } from '@/services/beamio'
 import { checkRecoveredRecord, checkShellReadBack, recoveredPageRecord } from '@/services/recoveredMnemonicRecord'
 import { releaseShellSessionSignerHold, holdShellSessionFromPhrase, loadShellSessionSigner, recordCarriesAccountKey, refreshShellSessionInMemory, shellSessionEoa } from '@/services/shellSessionSigner'
@@ -59,6 +59,11 @@ import { lockChatAccess } from '@/services/passcode/chatAccessGuard'
 import SplashScreen from '@/components/SplashScreen'
 import { EmbeddedPwaUpdateBanner } from '@/components/EmbeddedPwaUpdateBanner'
 import IdentityEntryPrompt from '@/components/IdentityEntryPrompt'
+import ResumeNoticeCard from '@/components/ResumeNoticeCard'
+import { CONET_RPC_SECONDARY, CONET_RPC_URL } from '@/config/chainAddresses'
+import { flushQueuedResume, hasPendingCreateRecord, hasQueuedResume, markResumeFired, registerResumeBusyProbe, requestResumeRoute, resumeCreateCheck, type ResumeDeps, type ResumeVerdict } from '@/services/resumeCreate'
+import { pushResumeNotice } from '@/services/resumeNotice'
+import { browserVoiceCallBusyFor } from '@/utils/voiceCallSession'
 import BeamioOnboardingModal from '@/pages/Home/LoadingPage'
 import { isCashTreesNativeWebView } from '@/utils/cashTreesNativeNfc'
 import { setSyncPendingHandler } from '@/services/passcode/syncPendingHandoff'
@@ -220,6 +225,8 @@ export default function AppEntryGate() {
 	const [requireWalletRecover, setRequireWalletRecover] = useState(false)
 	/** a key without a BeamioTag opens the Create Beamio ID page directly. */
 	const [requireBeamioTagCreate, setRequireBeamioTagCreate] = useState(false)
+	/** 0.53.51: an interrupted onboarding create to resume: the wallet and the tag the create page locks (R2271-DEF-CREATE-RESUME-1). */
+	const [resumeCreate, setResumeCreate] = useState<{ eoa: string; tag: string } | null>(null)
 	const [splashVisible, setSplashVisible] = useState(true)
 	// 门闸是否已判定「可进入主 App」。判定完成前绝不渲染 <Outlet/>（不依赖 Splash 遮挡）。
 	const [gateDecided, setGateDecided] = useState(false)
@@ -487,7 +494,7 @@ export default function AppEntryGate() {
 	}
 
 	// Shell: the native wallet decides. A native wallet enters the app on its public address; the page storage is not read.
-	const applyNativeWallet = (eoa: string) => {
+	const applyNativeWalletCore = (eoa: string) => {
 		localModeRef.current = false
 		const seed = publicWalletSeed(eoa)
 		setCoNET_Data(seed)
@@ -506,7 +513,7 @@ export default function AppEntryGate() {
 	 * the local home on a G1 wallet (the native record exists and is readable; the EOA is for display only). Chat and the
 	 * network features stay unavailable (waiting for init) until the wallet reaches G2.
 	 */
-	const applyLocalWallet = (eoa: string) => {
+	const applyLocalWalletCore = (eoa: string) => {
 		localModeRef.current = true
 		const seed = publicWalletSeed(eoa)
 		setCoNET_Data(seed)
@@ -518,6 +525,109 @@ export default function AppEntryGate() {
 		enterApp()
 		notifyShellEntry('native-wallet-local')
 	}
+
+	// ---- 0.53.51 R2271-DEF-CREATE-RESUME-1: an interrupted onboarding create is resumed with its tag locked --------------------------------
+	// The two entry functions of the shell home (applyNativeWallet, applyLocalWallet) are wrapped: when this device holds a pending create
+	// record for the wallet, the registry decides (resumeCreateCheck: two hosts, chain id, minimum wait) between the create page and the home.
+	// With no record nothing is awaited and the original function runs unchanged.
+	const vaultLockedRef = useRef(false)
+	vaultLockedRef.current = vaultLocked
+	const nativeFlowOpenRef = useRef(false)
+	const onboardingOpenRef = useRef(false)
+	const resumeRecheckTimerRef = useRef<number | undefined>(undefined)
+	/** the wallet whose resume check was uncertain: a check is made again when the page comes back to the foreground */
+	const uncertainResumeEoaRef = useRef<string | null>(null)
+	onboardingOpenRef.current = showBeamioOnboardingModal
+	const resumeDeps: ResumeDeps = {
+		now: () => Date.now(),
+		mono: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
+		read: (url, tag, eoa) => registrationStateVia(url, tag, eoa),
+		primaryUrl: CONET_RPC_URL,
+		secondaryUrl: CONET_RPC_SECONDARY,
+	}
+	const goResumeCreate = (eoa: string, tag: string) => {
+		markResumeFired(eoa)
+		publishNativePwaLog('info', '[AppEntryGate] interrupted create: the create page with the locked tag')
+		setResumeCreate({ eoa, tag })
+		goOnboarding(false, true)
+	}
+	/** A check after the home is shown (the entry was uncertain): the same verdicts, routed through the idle-only event. */
+	const handleLateResumeVerdict = (eoa: string, v: ResumeVerdict) => {
+		if (v.kind !== 'uncertain') uncertainResumeEoaRef.current = null
+		if (v.kind === 'resume') {
+			requestResumeRoute(eoa, v.tag, goResumeCreate)
+		} else if (v.kind === 'registered') {
+			pushResumeNotice('code_not_shown', eoa)
+		} else if (v.kind === 'uncertain') {
+			scheduleResumeRecheck(eoa, v.recheckInMs)
+		}
+	}
+	const scheduleResumeRecheck = (eoa: string, delayMs: number) => {
+		uncertainResumeEoaRef.current = eoa
+		if (resumeRecheckTimerRef.current !== undefined) window.clearTimeout(resumeRecheckTimerRef.current)
+		resumeRecheckTimerRef.current = window.setTimeout(() => {
+			resumeRecheckTimerRef.current = undefined
+			void resumeCreateCheck(eoa, resumeDeps).then((v) => handleLateResumeVerdict(eoa, v), () => scheduleResumeRecheck(eoa, 60_000))
+		}, delayMs)
+	}
+	/** returns true when the resume check owns this entry (it calls `proceed` itself); false: the caller runs its original code at once */
+	const resumeEntry = (eoa: string, proceed: () => void): boolean => {
+		if (!isShellContext()) return false
+		if (!hasPendingCreateRecord(eoa)) return false
+		void resumeCreateCheck(eoa, resumeDeps).then(
+			(v) => {
+				if (v.kind === 'resume') {
+					goResumeCreate(eoa, v.tag)
+					return
+				}
+				if (v.kind === 'registered') pushResumeNotice('code_not_shown', eoa)
+				if (v.kind === 'uncertain') scheduleResumeRecheck(eoa, v.recheckInMs)
+				proceed()
+			},
+			() => proceed(),
+		)
+		return true
+	}
+	const applyNativeWallet = (eoa: string) => {
+		if (resumeEntry(eoa, () => applyNativeWalletCore(eoa))) return
+		applyNativeWalletCore(eoa)
+	}
+	const applyLocalWallet = (eoa: string) => {
+		if (resumeEntry(eoa, () => applyLocalWalletCore(eoa))) return
+		applyLocalWalletCore(eoa)
+	}
+	// The busy signals and the idle triggers of the late resume route (D4): never while a call, the settings, the unlock screen, a native flow or the create
+	// page itself is on; a request that has to wait is started on the next idle signal (foreground, route change, the 30 s visible poll).
+	useEffect(() => {
+		const offs = [
+			registerResumeBusyProbe(() => window.location.pathname.startsWith('/settings')),
+			registerResumeBusyProbe(() => vaultLockedRef.current),
+			registerResumeBusyProbe(() => nativeFlowOpenRef.current),
+			registerResumeBusyProbe(() => browserVoiceCallBusyFor({})),
+			registerResumeBusyProbe(() => onboardingOpenRef.current),
+		]
+		const flush = () => {
+			if (hasQueuedResume()) flushQueuedResume(goResumeCreate)
+		}
+		const onVisible = () => {
+			if (document.visibilityState !== 'visible') return
+			flush()
+			if (uncertainResumeEoaRef.current) scheduleResumeRecheck(uncertainResumeEoaRef.current, 1_000)
+		}
+		const poll = window.setInterval(() => {
+			if (document.visibilityState === 'visible') flush()
+		}, 30_000)
+		document.addEventListener('visibilitychange', onVisible)
+		window.addEventListener('popstate', flush)
+		return () => {
+			offs.forEach((off) => off())
+			window.clearInterval(poll)
+			document.removeEventListener('visibilitychange', onVisible)
+			window.removeEventListener('popstate', flush)
+			if (resumeRecheckTimerRef.current !== undefined) window.clearTimeout(resumeRecheckTimerRef.current)
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [])
 
 	/**
 	 * Native G2 and no page wallet record: the page asks walletCredential once and keeps the sealed blob with the restored mnemonic in its
@@ -1718,6 +1828,7 @@ export default function AppEntryGate() {
 		window.addEventListener(NATIVE_WALLET_ESTABLISHED_EVENT, onNativeWalletEstablished)
 		// Late-arrival case: while a native create or recovery page is open, a late no_key does not cover it with the import route.
 		const onNativeFlowPending = (e: Event) => {
+			nativeFlowOpenRef.current = !!(e as CustomEvent<{ open?: boolean }>).detail?.open
 			if ((e as CustomEvent<{ open?: boolean }>).detail?.open) noKeyCtl.beginNativeFlow()
 			else noKeyCtl.endNativeFlow()
 		}
@@ -1834,6 +1945,7 @@ export default function AppEntryGate() {
 			{/* One retry control at a time (S25 r88: the G1 page showed Try again and Retry): while any start screen of the gate is shown, the identity prompt is not mounted.
 			    The hold page (2026-11-21) shows only the gate's retry, the unlock control when locked, and the restore button below. */}
 			{!storageUnavailable && !(splashVisible && startupRetryOffered) && <IdentityEntryPrompt />}
+			<ResumeNoticeCard />
 			{splashVisible && <SplashScreen />}
 			{/* 0.53.44: the loading page has no Try Again and no Restore Wallet. The
 			    native unlock button stays (it is the unlock, not a startup retry). The start re-reads in the background. */}
@@ -1964,6 +2076,7 @@ export default function AppEntryGate() {
 					requireWalletRecover={requireWalletRecover}
 					openRestoreFromHold={restoreFromHold}
 					requireBeamioTagCreate={requireBeamioTagCreate}
+					resumeCreate={resumeCreate}
 					onNewAccountCreated={() => setWritePermit('new_account_created', 'onboarding: new account created')}
 					onRestoreWriteStart={onRestoreWriteStart}
 					onRestoreWriteEnd={onRestoreWriteEnd}
@@ -1972,6 +2085,7 @@ export default function AppEntryGate() {
 					home={() => {
 						setShowBeamioOnboardingModal(false)
 						setRequireWalletRecover(false)
+						setResumeCreate(null)
 						setRestoreFromHold(false)
 						setSplashVisible(false)
 						// in a shell the bar waits for the App's init to load the account, as on enterApp (no clear here).

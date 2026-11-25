@@ -90,6 +90,10 @@ export type RegisterDeps = {
 	/** the EOA of an existing native wallet, or '' when there is none */
 	existingEoa: () => Promise<string>
 	sleep: (ms: number) => Promise<void>
+	/** 0.53.51: called once, just before the first send of step 3 of a payload (the pending record's `s`). Not called again by the retries. */
+	beforeFirstForward?: () => void
+	/** 0.53.51: called when the server answers 2xx to step 3 (the pending record's `a`), with the wall-clock time in ms. */
+	afterForwardOk?: (atMs: number) => void
 }
 
 export type RegisterOutcome =
@@ -100,7 +104,7 @@ const BACKOFF_MS = [2000, 4000, 8000]
 
 let inFlight = false
 /** The payload of this creation flow, held in memory only (never stored). A retry of the forward uses it as it is. */
-let held: { tag: string; payload: RegisterPayload; recoverCodeBase58: string } | null = null
+let held: { tag: string; payload: RegisterPayload; recoverCodeBase58: string; sentOnce?: boolean } | null = null
 
 export function resetAccountCreateRegisterForTest(): void {
 	inFlight = false
@@ -113,9 +117,23 @@ const norm = (tag: string): string => tag.trim().replace(/^@+/, '').toLowerCase(
 async function forwardHeld(deps: RegisterDeps): Promise<RegisterOutcome | null> {
 	const h = held
 	if (!h) return { ok: false, code: 'failed', retryable: false }
+	// the first send of this payload: the caller records the moment (a held payload that is sent again after a failure has had its first send)
+	if (!h.sentOnce) {
+		h.sentOnce = true
+		try {
+			deps.beforeFirstForward?.()
+		} catch {
+			/* a failed record never stops the registration */
+		}
+	}
 	for (let attempt = 0; attempt <= BACKOFF_MS.length; attempt++) {
 		const r = await deps.forward(h.payload)
 		if (r.kind === 'ok') {
+			try {
+				deps.afterForwardOk?.(Date.now())
+			} catch {
+				/* same */
+			}
 			held = null
 			return { ok: true, wallet: h.payload.wallet, recoverCodeBase58: h.recoverCodeBase58, alreadyRegistered: false }
 		}
@@ -123,7 +141,9 @@ async function forwardHeld(deps: RegisterDeps): Promise<RegisterOutcome | null> 
 			const has = await deps.registryHas(h.tag, h.payload.wallet)
 			if (has === 'yes') {
 				held = null
-				return { ok: true, wallet: h.payload.wallet, recoverCodeBase58: h.recoverCodeBase58, alreadyRegistered: true }
+				// F1 (0.53.51): a 409 means the server did not take THIS payload; the registry keeps the recover record of the earlier registration.
+				// The code of this payload was never registered, so it is not handed on: the no-code already-registered path.
+				return { ok: true, wallet: h.payload.wallet, recoverCodeBase58: null, alreadyRegistered: true }
 			}
 			return { ok: false, code: has === 'unknown' ? 'registry_unknown' : 'post_refused', retryable: has === 'unknown' }
 		}

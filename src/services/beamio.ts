@@ -3831,6 +3831,62 @@ export const restoreWithRedeem = async (recoveryCode: string, pin: string) => {
 /** The account read in three results (see UserInfoLookup). App init uses this one, so a failed read is not taken for "no account". */
 export const getUserInfoLookup = async (keyID: string): Promise<UserInfoLookup> => readUserInfoLookup(beamioAccountSC, keyID)
 
+/**
+ * The registration state of a (tag, wallet) pair, read through ONE named RPC host (0.53.51, resume-create design r3 R5). The gate and the
+ * completion use this one function, and it follows the meaning of step 2 (the tag-to-owner read) plus the account read of the wallet:
+ *  - `registered`: the registry owner of the tag is this wallet, OR this wallet already has an account (whatever its name);
+ *  - `unregistered`: this wallet has no account AND the tag has no owner or another owner (the latter lets step 2 answer tag_taken);
+ *  - `unknown`: any failed, timed out or undecodable read, or a host that is not chain 224422 (a chainId mismatch is never "unregistered").
+ * Two hosts are two reads: this function is called once per host; the caller compares.
+ */
+export type RegistrationState = 'registered' | 'unregistered' | 'unknown'
+export type RegistrationReadDeps = {
+	chainId: (rpcUrl: string) => Promise<string>
+	owner: (rpcUrl: string, tag: string) => Promise<string>
+	lookup: (rpcUrl: string, eoa: string) => Promise<UserInfoLookup>
+}
+const realRegistrationReadDeps: RegistrationReadDeps = {
+	chainId: async (rpcUrl) => String(await withRegistryReadTimeout(conetJsonRpcProvider(rpcUrl).send('eth_chainId', []))),
+	owner: async (rpcUrl, tag) => {
+		const registry = new ethers.Contract(CONET_ACCOUNT_REGISTRY, beamioAccountABI, conetJsonRpcProvider(rpcUrl))
+		try {
+			return String(await withRegistryReadTimeout(registry.getOwnerByAccountName(tag)))
+		} catch (ex) {
+			// a name nobody owns may revert as "not found": that is a valid answer (no owner), not a failed read
+			if (isAccountNotFoundError(ex)) return ethers.ZeroAddress
+			throw ex
+		}
+	},
+	lookup: async (rpcUrl, eoa) => readUserInfoLookup(new ethers.Contract(CONET_ACCOUNT_REGISTRY, beamioAccountABI, conetJsonRpcProvider(rpcUrl)), eoa),
+}
+export const registrationStateVia = async (
+	rpcUrl: string,
+	tag: string,
+	eoa: string,
+	testDeps?: Partial<RegistrationReadDeps>,
+): Promise<RegistrationState> => {
+	// the test seam is honoured only under the test runner (NODE_ENV is fixed at build time)
+	const deps: RegistrationReadDeps = { ...realRegistrationReadDeps, ...(process.env.NODE_ENV === 'test' ? testDeps : undefined) }
+	try {
+		const chain = (await deps.chainId(rpcUrl)).toLowerCase()
+		if (chain !== `0x${CONET_MAINNET_CHAIN_ID.toString(16)}`) return 'unknown'
+		const want = eoa.trim().toLowerCase()
+		const [owner, info] = await Promise.all([
+			deps.owner(rpcUrl, tag.trim().replace(/^@+/, '')).then((v) => ({ ok: true as const, v: v.toLowerCase() }), () => ({ ok: false as const })),
+			deps.lookup(rpcUrl, eoa).then((v) => ({ ok: true as const, v }), () => ({ ok: false as const })),
+		])
+		// positive evidence counts on its own: the tag is owned by this wallet, or the wallet has an account
+		if (owner.ok && owner.v === want) return 'registered'
+		if (info.ok && info.v.status === 'ok') return 'registered'
+		// "unregistered" needs both reads to have answered
+		if (!owner.ok || !info.ok) return 'unknown'
+		if (info.v.status === 'no_account') return 'unregistered'
+		return 'unknown'
+	} catch {
+		return 'unknown'
+	}
+}
+
 export const restoreWithUserPin = async (username: string, pin: string, test = false) => {
 	// Shell: recovery is done by the native recovery engine; the page never restores here.
 	if (isShellContext()) throw new Error('native_recovery_only')

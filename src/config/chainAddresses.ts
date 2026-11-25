@@ -24,6 +24,8 @@ export const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 export const CONET_MAINNET_CHAIN_ID = 224422
 /** CoNET PoS HTTP RPC — 与 deployments/conet-addresses.json `rpcUrl` 同步 */
 export const CONET_RPC_URL = 'https://publicrpc.conet.network'
+/** The second, independent-host read endpoint (a different host, same chain 224422). Used ONLY by the resume-create decision (A condition). */
+export const CONET_RPC_SECONDARY = 'https://rpc1.conet.network'
 export const CONET_BUINT = '0x54ac4672cE75EC5ACebaeF1a7aFC6F49E77Ae9Ae'
 export const BEAMIO_INDEXER_DIAMOND = '0x6113fE738489c0aB64B4606Ce333aD29b44ED0C4'
 /** CoNET ReferralRegistryVaultV1 ERC1967 proxy (Admin → L0 → L1/Merchant). */

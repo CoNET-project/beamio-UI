@@ -64,7 +64,7 @@ describe('shell create: the pending native create', () => {
 
 	it('already_exists completes the registration only for an account the registry holds no tag for; otherwise the entry judgement', () => {
 		const fn = page.slice(page.indexOf('const handleShellCreate'), page.indexOf('const handleCreateWallet'))
-		expect(fn).toMatch(/step\.kind === 'exists' && !\(await canCompleteRegistration\(\)\)[\s\S]{0,200}requestNativeIdentityRetry\(\)/)
-		expect(page).toMatch(/lookup\.status === 'no_account'/)
+		expect(fn).toMatch(/step\.kind === 'exists' && !\(await canCompleteRegistration\(trimmedTag\)\)[\s\S]{0,200}requestNativeIdentityRetry\(\)/)
+		expect(page).toMatch(/registrationStateVia\(CONET_RPC_URL, tag, r\.eoa\)\) === 'unregistered'/)
 	})
 })

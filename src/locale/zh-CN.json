@@ -152,6 +152,8 @@
     "merchant_os_open_failed": "无法打开商户后台，请稍后重试。",
     "create_account_registered_save_code": "您的账号已注册，但本设备暂时未能保存。请先保存恢复码，再继续，不要重复创建账号。",
     "create_account_recover_code_expired": "出于安全，恢复码已在 5 分钟后隐藏。您的账号已创建：请在此继续进入，之后可用 Beamio ID 和密码登录。",
+    "create_account_code_not_shown_notice": "如果您还没有保存恢复码，请记住您的 BeamioTag 和密码。",
+    "create_account_already_registered_keep_password_notice": "您的账户之前其实已经完成登记，请使用您最初设置的密码；刚输入的密码没有生效。",
     "create_account_local_error": "当前无法在本设备上新建账号。",
     "create_account_mnemonic_missing": "本机账户缺少恢复短语，暂无法完成用户名创建，账户与资产不受影响。",
     "create_account_existing_key_required": "暂无法确认本机已有的账户密钥，无法完成用户名创建，账户与资产不受影响。",

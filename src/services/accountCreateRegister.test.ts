@@ -213,3 +213,64 @@ describe('the flow', () => {
 		expect(parseAccountCreateRegisterReply(okReply({ wallet: checksum }), TAG)).toEqual({ ok: false, code: 'bad_response' })
 	})
 })
+
+describe('F1 (0.53.51): a 409 means the server did not take this payload, so this payload\'s recover code is never handed on', () => {
+	const dup = (registryHas: () => Promise<'yes' | 'no' | 'unknown'>) => deps({ forward: async () => ({ kind: 'http', status: 409 }), registryHas })
+
+	it('409 and the registry has the account: ok, alreadyRegistered, and NO recover code (the no-code path)', async () => {
+		const out = await registerNewAccount({ tag: TAG, password: PASSWORD }, dup(async () => 'yes'))
+		expect(out).toEqual({ ok: true, wallet: WALLET, recoverCodeBase58: null, alreadyRegistered: true })
+		expect(JSON.stringify(out)).not.toContain(CODE)
+	})
+
+	it('409 and the registry read fails or is unknown: registry_unknown, retryable, no code, nothing claimed', async () => {
+		const out = await registerNewAccount({ tag: TAG, password: PASSWORD }, dup(async () => 'unknown'))
+		expect(out).toEqual({ ok: false, code: 'registry_unknown', retryable: true })
+		expect(JSON.stringify(out)).not.toContain(CODE)
+	})
+
+	it('409 and the registry does not hold it: post_refused, not retryable, no code', async () => {
+		const out = await registerNewAccount({ tag: TAG, password: PASSWORD }, dup(async () => 'no'))
+		expect(out).toEqual({ ok: false, code: 'post_refused', retryable: false })
+		expect(JSON.stringify(out)).not.toContain(CODE)
+	})
+
+	it('a plain 2xx still returns the code (the code of a registered payload)', async () => {
+		const out = await registerNewAccount({ tag: TAG, password: PASSWORD }, deps())
+		expect(out).toMatchObject({ ok: true, recoverCodeBase58: CODE, alreadyRegistered: false })
+	})
+})
+
+describe('the pending-record hooks (0.53.51): s before the first send of a payload, a at the 2xx', () => {
+	it('beforeFirstForward runs once before the first send, not again by the retries or by a manual retry; afterForwardOk runs at the 2xx only', async () => {
+		const order: string[] = []
+		let fails = 4
+		const d = deps({
+			forward: async () => {
+				order.push('forward')
+				return fails-- > 0 ? { kind: 'http', status: 503 } : { kind: 'ok' }
+			},
+			beforeFirstForward: () => void order.push('before'),
+			afterForwardOk: () => void order.push('after'),
+		})
+		expect((await registerNewAccount({ tag: TAG, password: PASSWORD }, d)).ok).toBe(false)
+		expect(order).toEqual(['before', 'forward', 'forward', 'forward', 'forward'])
+		order.length = 0
+		fails = 0
+		expect((await registerNewAccount({ tag: TAG, password: PASSWORD }, d)).ok).toBe(true)
+		expect(order).toEqual(['forward', 'after'])
+	})
+
+	it('a new payload (after a restart or a new tag) gets its own first-send call', async () => {
+		const before = jest.fn()
+		await registerNewAccount({ tag: TAG, password: PASSWORD }, deps({ beforeFirstForward: before }))
+		resetAccountCreateRegisterForTest()
+		await registerNewAccount({ tag: TAG, password: PASSWORD }, deps({ beforeFirstForward: before }))
+		expect(before).toHaveBeenCalledTimes(2)
+	})
+
+	it('a throwing hook never stops the registration', async () => {
+		const out = await registerNewAccount({ tag: TAG, password: PASSWORD }, deps({ beforeFirstForward: () => { throw new Error('x') }, afterForwardOk: () => { throw new Error('y') } }))
+		expect(out).toMatchObject({ ok: true })
+	})
+})

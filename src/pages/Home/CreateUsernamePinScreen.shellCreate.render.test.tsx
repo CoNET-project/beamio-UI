@@ -17,6 +17,7 @@ jest.mock('@/services/beamio', () => ({
 	LocalCreateError: class extends Error {},
 	CreateRemoteError: class extends Error {},
 	getUserInfoLookup: jest.fn(),
+	registrationStateVia: jest.fn(),
 	postAddUserPayload: jest.fn(),
 	registryHasAccount: jest.fn(),
 }))
@@ -95,6 +96,7 @@ beforeEach(() => {
 	beamio.postAddUserPayload.mockResolvedValue({ kind: 'ok' })
 	beamio.registryHasAccount.mockResolvedValue('no')
 	beamio.getUserInfoLookup.mockResolvedValue({ status: 'no_account' })
+	beamio.registrationStateVia.mockResolvedValue('unregistered')
 	eoaMod.readWalletEoaAddress.mockResolvedValue({ kind: 'address', eoa: WALLET })
 	wallet.reachNativeWallet.mockResolvedValue({ status: 'unlocked' })
 	nr.nativeAccountCreateOpen.mockResolvedValue({ ok: true, page: 'none' })
@@ -253,12 +255,12 @@ describe('an account the device already has (already_exists)', () => {
 		await waitFor(() => expect(nr.nativeAccountCreateOpen).toHaveBeenCalled(), { timeout: 5000 })
 		await act(async () => emitCreate({ code: 'already_exists' }))
 		await waitFor(() => expect(spc.sendAccountCreateRegister).toHaveBeenCalledTimes(1), { timeout: 5000 })
-		expect(beamio.getUserInfoLookup).toHaveBeenCalledWith(WALLET)
+		expect(beamio.registrationStateVia).toHaveBeenCalledWith(expect.any(String), TAG, WALLET)
 		await screen.findByTestId('recover-code')
 	})
 
 	it('the registry already holds an account for it: back to the entry judgement, nothing is registered', async () => {
-		beamio.getUserInfoLookup.mockResolvedValue({ status: 'ok', info: {} })
+		beamio.registrationStateVia.mockResolvedValue('registered')
 		await mount()
 		await press()
 		await waitFor(() => expect(nr.nativeAccountCreateOpen).toHaveBeenCalled(), { timeout: 5000 })
@@ -426,7 +428,9 @@ describe('r3sk 2: the recover code is hidden after 5 minutes of wall-clock time'
 
 describe('r3sk/r3sl 3: the tag of step 1 is the tag of step 2, recorded per wallet', () => {
 	const KEY = 'beamio.pendingCreateTag.v2'
-	const record = () => JSON.parse(localStorage.getItem(KEY) ?? '{}') as Record<string, string>
+	const rawRecord = () => JSON.parse(localStorage.getItem(KEY) ?? '{}') as Record<string, { t: string; s?: number; a?: number }>
+	/** the tags only (the times are checked on their own) */
+	const record = () => Object.fromEntries(Object.entries(rawRecord()).map(([k, v]) => [k, v.t])) as Record<string, string>
 
 	it('step 1 passed: the tag is recorded under the wallet and locked in the field; a failed step 2 retries with the same tag', async () => {
 		beamio.postAddUserPayload.mockResolvedValue({ kind: 'http', status: 503 })
@@ -561,7 +565,15 @@ describe('r3sk/r3sl 3: the tag of step 1 is the tag of step 2, recorded per wall
 				if (entry.includes(TAG)) expect(key).toBe(KEY)
 			}
 		}
-		expect(Object.entries(record())).toEqual([[WALLET, TAG]])
+		// the values of the record are the tag and non-secret times only: { t: string, s?: positive integer, a?: positive integer }
+		const raw = rawRecord()
+		expect(Object.keys(raw)).toEqual([WALLET])
+		expect(Object.keys(raw[WALLET]).every((k) => ['t', 's', 'a'].includes(k))).toBe(true)
+		expect(raw[WALLET].t).toBe(TAG)
+		for (const k of ['s', 'a'] as const) {
+			const v = raw[WALLET][k]
+			if (v !== undefined) expect(Number.isInteger(v) && v > 0).toBe(true)
+		}
 		// URL and history
 		expect(window.location.href).not.toContain(TAG)
 		expect(window.history.state === null || !JSON.stringify(window.history.state).includes(TAG)).toBe(true)

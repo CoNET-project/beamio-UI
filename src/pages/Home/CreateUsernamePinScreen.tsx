@@ -22,7 +22,9 @@ import { notifyNativeWalletReady, reachNativeWallet, rememberNativeEoa } from "@
 import { warmArgon2Worker } from "@/services/argon2WorkerBridge"
 import { realRegisterDeps, registerNewAccount } from '@/services/accountCreateRegister'
 import { hasPageCreate, setSecureScreen } from '@/services/shellPageCreate'
-import { clearPendingCreateTag, readPendingCreateTag, writePendingCreateTag } from '@/services/pendingCreateTag'
+import { clearPendingCreateTag, markPendingForwardAccepted, markPendingForwardSent, readPendingCreateTag, writePendingCreateTag } from '@/services/pendingCreateTag'
+import { pushResumeNotice } from '@/services/resumeNotice'
+import { CONET_RPC_URL } from '@/config/chainAddresses'
 import RecoverCodeNotice from '@/components/RecoverCodeNotice'
 import {
 	Eye,
@@ -109,21 +111,26 @@ const CreateUsernamePinScreen = forwardRef<
 		reuseExistingKey?: boolean,
 		/** an already-bound account: the parent opens the PWA restore page with this tag. */
 		onRequestRestore?: (tag: string) => void,
+		/** 0.53.51: resume of an interrupted create: the wallet and the tag the gate found (the tag is locked, the wallet is checked at step 1) */
+		resumeEoa?: string,
+		resumeTag?: string,
 	}
 >(function CreateUsernamePinScreen(
-	{ close, isRedeemFlow = false, onRequestClose, onCreatingWalletChange, reuseExistingKey = false, onRequestRestore },
+	{ close, isRedeemFlow = false, onRequestClose, onCreatingWalletChange, reuseExistingKey = false, onRequestRestore, resumeEoa, resumeTag },
 	ref
 ) {
 	const { tu } = useTu()
 	/** 0.53.50 (r3sk R-1 a): the tag that passed step 1 is locked for step 2 and, after an interruption, prefilled and locked for the completion. */
-	const [lockedTag, setLockedTag] = useState('')
-	const [beamioName, setBeamioName] = useState("")
-	/** The wallet of this create (step 1): the record of the locked tag is kept and cleared under it. */
-	const createEoaRef = useRef('')
+	const [lockedTag, setLockedTag] = useState(() => (resumeTag ?? '').trim().replace(/^@+/, ''))
+	const [beamioName, setBeamioName] = useState(() => (resumeTag ?? '').trim().replace(/^@+/, ''))
+	/** The wallet of this create (step 1): the record of the locked tag is kept and cleared under it. A resume starts with the wallet the gate found. */
+	const createEoaRef = useRef((resumeEoa ?? '').trim().toLowerCase())
+	/** a resume of an interrupted create (the gate sent the user here with a locked tag) */
+	const resumeEoaLower = (resumeEoa ?? '').trim().toLowerCase()
 	// After an interruption the device already has the wallet: the tag recorded for it is prefilled and locked. No record (another browser,
 	// cleared storage, a wallet that is not readable): nothing is locked and the user types the tag.
 	useEffect(() => {
-		if (!isShellContext()) return
+		if (!isShellContext() || resumeEoaLower) return
 		let alive = true
 		void readWalletEoaAddress()
 			.catch(() => null)
@@ -539,7 +546,17 @@ const CreateUsernamePinScreen = forwardRef<
 	const handleShellRegister = async (tag: string, pwd: string) => {
 		let out
 		try {
-			out = await registerNewAccount({ tag, password: pwd }, await realRegisterDeps())
+			const deps = await realRegisterDeps()
+			const recordEoa = createEoaRef.current
+			// the pending record learns when step 3 is first sent (`s`) and when the server answers 2xx (`a`): non-secret times
+			out = await registerNewAccount(
+				{ tag, password: pwd },
+				{
+					...deps,
+					beforeFirstForward: () => markPendingForwardSent(recordEoa, Date.now()),
+					afterForwardOk: (atMs) => markPendingForwardAccepted(recordEoa, atMs),
+				},
+			)
 		} finally {
 			// the password leaves the page state as soon as the call returns
 			setPassword('')
@@ -559,6 +576,8 @@ const CreateUsernamePinScreen = forwardRef<
 				setShellRecoverCode(out.recoverCodeBase58)
 				return
 			}
+			// r4 N1: the completion page of an interrupted create ended on "already registered": the password just typed did not take effect
+			if (out.alreadyRegistered && resumeEoaLower) pushResumeNotice('already_registered_keep_password', out.wallet)
 			finishShellRegister(out.wallet)
 			return
 		}
@@ -643,13 +662,13 @@ const CreateUsernamePinScreen = forwardRef<
 	 * The device already has an account (already_exists): the registration is completed only for the same account when the registry holds no
 	 * BeamioTag for it (an earlier run ended before addUser). Any other case goes back to the entry judgement.
 	 */
-	const canCompleteRegistration = async (): Promise<boolean> => {
+	const canCompleteRegistration = async (tag: string): Promise<boolean> => {
 		try {
 			const r = await readWalletEoaAddress().catch(() => null)
 			if (!r || r.kind !== 'address') return false
-			const { getUserInfoLookup } = await import('@/services/beamio')
-			const lookup = await getUserInfoLookup(r.eoa)
-			return lookup.status === 'no_account'
+			// 0.53.51: the same registration-state function as the gate (tag owner or wallet account), not the account read alone
+			const { registrationStateVia } = await import('@/services/beamio')
+			return (await registrationStateVia(CONET_RPC_URL, tag, r.eoa)) === 'unregistered'
 		} catch {
 			return false
 		}
@@ -726,6 +745,17 @@ const CreateUsernamePinScreen = forwardRef<
 				const r = await readWalletEoaAddress().catch(() => null)
 				eoa = r && r.kind === 'address' ? r.eoa : ''
 			}
+			// r3 D2: a resume is for the wallet the gate found. The wallet step 1 answered for must be that wallet; otherwise this tag is not used:
+			// no record is written, the lock is dropped and the normal create flow applies (the other wallet's own record stays untouched).
+			if (resumeEoaLower && eoa.toLowerCase() !== resumeEoaLower) {
+				publishNativePwaLog('warn', '[createAccount] resume: the device wallet is not the one the resume was found for; the locked tag is dropped')
+				createEoaRef.current = ''
+				setLockedTag('')
+				setLoading(false)
+				announceNativeFlowPending(false)
+				setCreateError(tu('create_account_try_later'))
+				return
+			}
 			if (eoa) {
 				createEoaRef.current = eoa
 				writePendingCreateTag(eoa, trimmedTag)
@@ -738,7 +768,7 @@ const CreateUsernamePinScreen = forwardRef<
 			announceNativeFlowPending(false)
 			return
 		}
-		if (step.kind === 'exists' && !(await canCompleteRegistration())) {
+		if (step.kind === 'exists' && !(await canCompleteRegistration(trimmedTag))) {
 			// an account the device already has, or the registry holds a tag for it: back to the entry judgement
 			setLoading(false)
 			announceNativeFlowPending(false)

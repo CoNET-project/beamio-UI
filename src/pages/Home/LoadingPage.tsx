@@ -427,6 +427,8 @@ type Props = {
 	bootCoNETData?: encrypt_keys_object | null
 	/** the account holds a key but no completed BeamioTag: open the Create Beamio ID page directly (it reuses the key). */
 	requireBeamioTagCreate?: boolean
+	/** 0.53.51: an interrupted create to resume: the wallet and the tag the create page locks */
+	resumeCreate?: { eoa: string; tag: string } | null
 	/** 0.53.44: the explicit completion of the account creation (CreateUsernamePinScreen). AppEntryGate opens the page write gate here. */
 	onNewAccountCreated?: () => void
 		/** 0.53.44: a restore (recovery or onboarding restore) starts its write: AppEntryGate opens the restore write window. */
@@ -532,7 +534,7 @@ function parseRedeemFromUrl(): { cardAddress: string; redeemCode: string } | nul
 	}
 }
 
-export default function BeamioOnboardingModal({ home, onInitComplete, requireWalletRecover = false, bootResolved = false, bootCoNETData = null, requireBeamioTagCreate = false, onNewAccountCreated, onRestoreWriteStart, onRestoreWriteEnd, openRestoreFromHold = false }: Props) {
+export default function BeamioOnboardingModal({ home, onInitComplete, requireWalletRecover = false, bootResolved = false, bootCoNETData = null, requireBeamioTagCreate = false, resumeCreate = null, onNewAccountCreated, onRestoreWriteStart, onRestoreWriteEnd, openRestoreFromHold = false }: Props) {
 	/** 0.53.44: the restore write runs inside the restore window; AppEntryGate opens the page gate only after its read-back. */
 	const runRestoreWrite = async (temp: encrypt_keys_object | null | undefined, write: () => Promise<unknown>): Promise<void> => {
 		onRestoreWriteStart?.()
@@ -1408,7 +1410,7 @@ export default function BeamioOnboardingModal({ home, onInitComplete, requireWal
 						>
 							
 							{
-								settingsOpen === 'CreateUsernamePinScreen' && <CreateUsernamePinScreen ref={createUsernameRef} isRedeemFlow={!!redeemFromUrl} onRequestRestore={(tag) => { setRestoreFromUrlBeamioTag(tag.trim().replace(/^@+/, '')); setSettingsOpen('RestoreWalletScreen') }} onRequestClose={requireBeamioTagCreate ? undefined : () => setSettingsOpen('')} reuseExistingKey={requireBeamioTagCreate} onCreatingWalletChange={setCreateWalletLoading} close={qr => {
+								settingsOpen === 'CreateUsernamePinScreen' && <CreateUsernamePinScreen ref={createUsernameRef} isRedeemFlow={!!redeemFromUrl} resumeEoa={resumeCreate?.eoa} resumeTag={resumeCreate?.tag} onRequestRestore={(tag) => { setRestoreFromUrlBeamioTag(tag.trim().replace(/^@+/, '')); setSettingsOpen('RestoreWalletScreen') }} onRequestClose={requireBeamioTagCreate ? undefined : () => setSettingsOpen('')} reuseExistingKey={requireBeamioTagCreate} onCreatingWalletChange={setCreateWalletLoading} close={qr => {
 									// 0.53.44: the account creation is complete: the page write gate opens before any onboarding save (persistAndVerifyLocalWallet, init).
 									onNewAccountCreated?.()
 									setQrDataUrl(qr.qrDataUrl)
