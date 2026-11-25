@@ -12,10 +12,10 @@
 import { clearPendingCreateTag, readPendingCreateRecord } from './pendingCreateTag'
 import type { RegistrationState } from './beamio'
 
-/** B1 without `a` (step 3 may have been sent, no 2xx seen): wall-clock minutes since `s`. Named so it can be raised from the server data. */
-export const RESUME_B1_NO_ACK_MS = 5 * 60_000
-/** B1 with `a` (the server answered 2xx; the chain may lag behind a queue): wall-clock minutes since `a`. */
-export const RESUME_B1_WITH_ACK_MS = 30 * 60_000
+/** B1 without `a` (step 3 may have been sent; the request may sit in the server queue with the reply lost): 30 min of wall clock since `s`. */
+export const RESUME_B1_NO_ACK_MS = 30 * 60_000
+/** B1 with `a` (the server said ok:true: only an in-memory queue entry, not a chain write; a restart drops it and a gas-starved payer stalls the queue for days): 24 h since `a`, the upper bound. */
+export const RESUME_B1_WITH_ACK_MS = 24 * 60 * 60_000
 /** B2: two "unregistered" reads in this process, this far apart on the monotonic clock. */
 export const RESUME_B2_READ_GAP_MS = 2 * 60_000
 /** The whole check never holds the entry longer than this. */

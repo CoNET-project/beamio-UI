@@ -1038,6 +1038,7 @@
   "call.upgrade.close": "Close",
   "create_account_invalid_password": "The password does not meet the rules. Please check it and try again.",
   "create_account_recover_code_title": "Save your recovery code",
+  "create_account_recover_code_resumed_note": "If you saved a recovery code before, discard it and use the new recovery code on this page. If signing in with your password fails, use the recovery code.",
   "create_account_recover_code_body": "This code is shown only once. Write it down and keep it safe: it is needed to recover this account.",
   "create_account_recover_code_confirm": "I have saved my recovery code",
   "chat.identity_setting_up.title": "Setting up",

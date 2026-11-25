@@ -3139,7 +3139,9 @@ export const newUser = async (BeamioName: string, recoverData:IAccountRecover[],
 			throw new CreateRemoteError('http', resp.status)
 		}
 
-		await resp.json()
+		// HTTP 200 with {ok:false} (the worker does not copy the master's status) is a server failure, not a created account; a non-JSON body throws into the network branch below
+		const j = (await resp.json()) as { ok?: unknown } | null
+		if (j?.ok !== true) throw new CreateRemoteError('http', 500)
 		return true
 	} catch (err) {
 		if (err instanceof CreateRemoteError) throw err
@@ -3160,6 +3162,10 @@ export const postAddUserPayload = async (body: AddUserBody): Promise<AddUserPost
 	try {
 		const resp = await fetch(storageNewUser, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 		if (!resp.ok) return { kind: 'http', status: resp.status }
+		// The worker forwards without copying the master's status: a master failure reaches the client as HTTP 200 with {ok:false}. Only body.ok === true
+		// is success; ok:false or a missing ok is a server failure (retried as a 5xx, same payload); a body that is not JSON is a network failure.
+		const j = (await resp.json()) as { ok?: unknown } | null
+		if (j?.ok !== true) return { kind: 'http', status: 500 }
 		return { kind: 'ok' }
 	} catch {
 		return { kind: 'network' }

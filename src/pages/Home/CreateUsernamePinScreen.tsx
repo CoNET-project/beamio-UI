@@ -1003,6 +1003,7 @@ const CreateUsernamePinScreen = forwardRef<
 			{shellRecoverCode ? (
 				<RecoverCodeNotice
 					code={shellRecoverCode}
+					resumed={!!resumeEoaLower}
 					onDone={() => {
 						const wallet = registeredWalletRef.current
 						registeredWalletRef.current = ''

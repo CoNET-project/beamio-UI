@@ -70,9 +70,9 @@ describe('no record: nothing is read', () => {
 
 describe('step 3 never sent (no s): condition A alone', () => {
 	beforeEach(() => writePendingCreateTag(E, TAG))
-	it('both hosts unregistered: resume, at the first read', async () => {
+	it('both hosts unregistered: resume at the FIRST read (one read, no wait)', async () => {
 		expect(await resumeCreateCheck(E, deps())).toEqual({ kind: 'resume', tag: TAG })
-		expect(reads.sort()).toEqual(['P', 'S'])
+		expect(reads.sort()).toEqual(['P', 'S']) // exactly one read per host
 	})
 	it.each([
 		['the primary fails', 'unknown', 'unregistered'],
@@ -153,7 +153,7 @@ describe('step 3 may have been sent (s): B1 (wall clock) AND B2 (two reads, mono
 	})
 
 	it('wall clock moved FORWARD while the monotonic clock did not: B1 met, B2 not, so not routed', async () => {
-		nowMs += 6 * MIN
+		nowMs += RESUME_B1_NO_ACK_MS + MIN
 		await resumeCreateCheck(E, deps())
 		nowMs += 6 * MIN // the system time is set forward; performance.now did not move
 		expect(await resumeCreateCheck(E, deps())).toMatchObject({ kind: 'uncertain', why: 'second_read_pending' })
@@ -175,16 +175,38 @@ describe('step 3 may have been sent (s): B1 (wall clock) AND B2 (two reads, mono
 		expect(await resumeCreateCheck(E, deps())).toMatchObject({ kind: 'uncertain', why: 'second_read_pending' })
 	})
 
-	it('with a (the server answered 2xx) B1 is 30 min: 29 min does not route, 31 min does', async () => {
-		markPendingForwardAccepted(E, sentAt())
-		nowMs += 29 * MIN
+	const HOUR = 60 * MIN
+	const boundary = async (afterMs: number) => {
+		// first read after the wait, then a second read 2 min later (B2 met); the verdict of the second read decides
+		nowMs += afterMs
 		await resumeCreateCheck(E, deps())
 		monoMs += RESUME_B2_READ_GAP_MS
-		expect(await resumeCreateCheck(E, deps())).toMatchObject({ kind: 'uncertain', why: 'min_wait' })
-		nowMs += 2 * MIN
-		monoMs += RESUME_B2_READ_GAP_MS
-		expect(await resumeCreateCheck(E, deps())).toEqual({ kind: 'resume', tag: TAG })
-		expect(RESUME_B1_WITH_ACK_MS).toBe(30 * MIN)
+		nowMs += RESUME_B2_READ_GAP_MS
+		return resumeCreateCheck(E, deps())
+	}
+
+	it('without a, B1 is 30 min since s: 29 min does not route, 31 min does', async () => {
+		expect(RESUME_B1_NO_ACK_MS).toBe(30 * MIN)
+		expect(await boundary(27 * MIN)).toMatchObject({ kind: 'uncertain', why: 'min_wait' }) // 27 + 2 = 29 min
+		resetResumeCreateForTest()
+		nowMs = 1_800_000_000_000
+		monoMs = 10_000
+		expect(await boundary(29 * MIN)).toEqual({ kind: 'resume', tag: TAG }) // 29 + 2 = 31 min
+	})
+
+	it('with a (the server said ok:true) B1 is 24 h since a: 23 h does not route, 25 h does', async () => {
+		markPendingForwardAccepted(E, sentAt())
+		expect(RESUME_B1_WITH_ACK_MS).toBe(24 * HOUR)
+		expect(await boundary(23 * HOUR - 2 * MIN)).toMatchObject({ kind: 'uncertain', why: 'min_wait' }) // 23 h
+		resetResumeCreateForTest()
+		nowMs = 1_800_000_000_000
+		monoMs = 10_000
+		expect(await boundary(25 * HOUR - 2 * MIN)).toEqual({ kind: 'resume', tag: TAG }) // 25 h
+	})
+
+	it('with a, the old 30 min and the old 5 min waits do not route', async () => {
+		markPendingForwardAccepted(E, sentAt())
+		expect(await boundary(60 * MIN)).toMatchObject({ kind: 'uncertain', why: 'min_wait' })
 	})
 
 	it('B1 counts from a when there is one (not from the earlier s)', async () => {

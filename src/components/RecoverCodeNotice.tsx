@@ -6,13 +6,14 @@
 import { useState } from 'react'
 import { tu } from '../locale/beamioLocale'
 
-export default function RecoverCodeNotice({ code, onDone }: { code: string; onDone: () => void }) {
+export default function RecoverCodeNotice({ code, onDone, resumed = false }: { code: string; onDone: () => void; resumed?: boolean }) {
 	const [saved, setSaved] = useState(false)
 	return (
 		<div role="dialog" aria-modal="true" data-testid="recover-code-notice" className="fixed inset-0 z-[95] flex items-center justify-center bg-black/50 px-6">
 			<div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl">
 				<h2 className="text-base font-semibold text-slate-900">{tu('create_account_recover_code_title')}</h2>
 				<p className="mt-2 text-sm text-slate-700">{tu('create_account_recover_code_body')}</p>
+				{resumed ? <p data-testid="recover-code-resumed-note" className="mt-2 text-sm font-medium text-slate-800">{tu('create_account_recover_code_resumed_note')}</p> : null}
 				<p
 					data-testid="recover-code"
 					// the shell shows the code to be written down: no select, no copy, no callout, no drag (0.53.50)

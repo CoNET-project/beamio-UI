@@ -302,3 +302,50 @@ describe('N1 and F1: a resume page that ends on "already registered"', () => {
 		}
 	})
 })
+
+describe('0.53.51 resume-note on the recovery code page, and the ok:false forward', () => {
+	it('a resume page that ends on a new code shows the merged note (discard the old code, use this one, use it if the password fails)', async () => {
+		seedRecord()
+		await mount({ resume: RESUME })
+		await press()
+		await created()
+		await screen.findByTestId('recover-code')
+		expect(screen.getByTestId('recover-code-resumed-note').textContent).toBe('create_account_recover_code_resumed_note')
+	})
+
+	it('a resend after an earlier 2xx (the record had a) also shows it, and never says the new password is in force', async () => {
+		localStorage.setItem(KEY, JSON.stringify({ [WALLET]: { t: TAG, s: Date.now() - 60 * 60_000, a: Date.now() - 59 * 60_000 } }))
+		await mount({ resume: RESUME })
+		await press()
+		await created()
+		await screen.findByTestId('recover-code')
+		expect(screen.getByTestId('recover-code-resumed-note')).toBeTruthy()
+		for (const f of ['en', 'zh-CN']) {
+			const j = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, '../../locale', f + '.json'), 'utf8')) as Record<string, string>
+			const note = j.create_account_recover_code_resumed_note
+			expect(note).toBeTruthy()
+			expect(note).not.toMatch(/新密码一定|new password (will|is) (take|in force|effective)/i)
+		}
+	})
+
+	it('the normal (not resumed) page shows no such note', async () => {
+		await mount()
+		await press()
+		await created()
+		await screen.findByTestId('recover-code')
+		expect(screen.queryByTestId('recover-code-resumed-note')).toBeNull()
+	})
+
+	it('HTTP 200 + {ok:false} (the forward reports a server failure): no recover code, a is not written, the record stays', async () => {
+		beamio.postAddUserPayload.mockResolvedValue({ kind: 'http', status: 500 })
+		await mount()
+		await press()
+		await created()
+		await waitFor(() => expect((rec() as { s?: number } | undefined)?.s).toBeGreaterThan(0), { timeout: 5000 })
+		await waitFor(() => expect(beamio.postAddUserPayload.mock.calls.length).toBeGreaterThanOrEqual(3), { timeout: 5000 })
+		expect(screen.queryByTestId('recover-code')).toBeNull()
+		expect((rec() as { a?: number } | undefined)?.a).toBeUndefined()
+		expect(rec()).toBeTruthy()
+		expect(wallet.notifyNativeWalletReady).not.toHaveBeenCalled()
+	})
+})

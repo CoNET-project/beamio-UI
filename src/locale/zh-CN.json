@@ -1038,6 +1038,7 @@
   "call.upgrade.close": "关闭",
   "create_account_invalid_password": "密码不符合规则，请检查后重试。",
   "create_account_recover_code_title": "请保存恢复码",
+  "create_account_recover_code_resumed_note": "如果您之前保存过恢复码，请丢弃它，以本页的新恢复码为准；如果用密码登录失败，请使用恢复码。",
   "create_account_recover_code_body": "这个恢复码只显示一次。请抄写并妥善保存，恢复此账号时需要它。",
   "create_account_recover_code_confirm": "我已保存恢复码",
   "chat.identity_setting_up.title": "正在设置",

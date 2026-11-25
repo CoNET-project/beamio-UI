@@ -237,9 +237,23 @@ describe('newUser failure reasons', () => {
 			await expect(mod.newUser('synthtag', RECOVER, PK)).rejects.toMatchObject({ name: 'CreateRemoteError', kind: 'http', status })
 		}
 	})
-	it('a 2xx answer: true', async () => {
-		;(globalThis as { fetch?: unknown }).fetch = jest.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }))
+	it('HTTP 200 with {ok:true}: true', async () => {
+		;(globalThis as { fetch?: unknown }).fetch = jest.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }))
 		await expect(mod.newUser('synthtag', RECOVER, PK)).resolves.toBe(true)
+	})
+	it('0.53.51: HTTP 200 with {ok:false} (or no ok) is a server failure, never true (the worker does not copy the master status)', async () => {
+		for (const bodyJson of [{ ok: false }, {}, { ok: 'true' }, null]) {
+			;(globalThis as { fetch?: unknown }).fetch = jest.fn(async () => ({ ok: true, status: 200, json: async () => bodyJson }))
+			await expect(mod.newUser('synthtag', RECOVER, PK)).rejects.toMatchObject({ name: 'CreateRemoteError', kind: 'http', status: 500 })
+		}
+	})
+	it('0.53.51: HTTP 200 with a body that is not JSON is a network failure', async () => {
+		;(globalThis as { fetch?: unknown }).fetch = jest.fn(async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token <') } }))
+		await expect(mod.newUser('synthtag', RECOVER, PK)).rejects.toMatchObject({ name: 'CreateRemoteError', kind: 'network' })
+	})
+	it('0.53.51: a 502 keeps its status', async () => {
+		;(globalThis as { fetch?: unknown }).fetch = jest.fn(async () => ({ ok: false, status: 502, json: async () => ({ ok: true }) }))
+		await expect(mod.newUser('synthtag', RECOVER, PK)).rejects.toMatchObject({ name: 'CreateRemoteError', kind: 'http', status: 502 })
 	})
 	it('a local sign failure is still a LocalCreateError (not a remote failure)', async () => {
 		;(globalThis as { fetch?: unknown }).fetch = jest.fn()
