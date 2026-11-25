@@ -276,8 +276,12 @@ describe('the device wallet must be the record wallet before a resume is routed 
 		writePendingCreateTag(E, TAG)
 		expect(await resumeCreateCheck(E, deps({ nativeEoa: async () => ({ kind: 'address', eoa: E.toUpperCase().replace('0X', '0x') }) }))).toEqual({ kind: 'resume', tag: TAG })
 	})
-	it('the record wallet in checksum case, the native answer in lower case: routed', async () => {
-		writePendingCreateTag(MIX, TAG)
+	it('the native answer in checksum (mixed) case, the record wallet in lower case: routed', async () => {
+		writePendingCreateTag(MIX.toLowerCase(), TAG)
+		expect(await resumeCreateCheck(MIX.toLowerCase(), deps({ nativeEoa: async () => ({ kind: 'address', eoa: MIX }) }))).toEqual({ kind: 'resume', tag: TAG })
+	})
+	it('the record wallet asked in mixed case, the native answer in lower case: routed', async () => {
+		writePendingCreateTag(MIX.toLowerCase(), TAG)
 		expect(await resumeCreateCheck(MIX, deps({ nativeEoa: async () => ({ kind: 'address', eoa: MIX.toLowerCase() }) }))).toEqual({ kind: 'resume', tag: TAG })
 	})
 	it('another wallet: not routed (home, record kept)', async () => {
