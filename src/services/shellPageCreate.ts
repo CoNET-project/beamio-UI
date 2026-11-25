@@ -12,7 +12,8 @@ import { hasBeamioShell, requestBeamioShell } from '@/utils/beamioShellChannel'
 import { iosShellAction, isIosShell, isTrustedRecoveryOrigin, shellCapabilityDeclared } from './nativeRecovery'
 
 export const PAGE_CREATE_CAPABILITY = 'account.page-create.v1'
-const REGISTER_TIMEOUT_MS = 120_000
+/** Longer than the shells' own limit (Android answers not_ready after 125 s): the shell's answer arrives first, the page's timeout is only a last resort. */
+const REGISTER_TIMEOUT_MS = 130_000
 const SECURE_SCREEN_TIMEOUT_MS = 10_000
 
 /** The shell declared that the page may create the account (`account.page-create.v1`). */
