@@ -544,6 +544,36 @@ describe('r3sk/r3sl 3: the tag of step 1 is the tag of step 2, recorded per wall
 		expect(localStorage.getItem(KEY)).toBeNull()
 	})
 
+	it('CP-25: the tag is written only into the one per-wallet record: no other storage, no URL, no history state, no log or console line carries it', async () => {
+		const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) => jest.spyOn(console, m).mockImplementation(() => undefined))
+		const { publishNativePwaLog } = jest.requireMock('@/utils/cashTreesNativePwaLog') as { publishNativePwaLog: jest.Mock }
+		const pushSpy = jest.spyOn(window.history, 'pushState')
+		const replaceSpy = jest.spyOn(window.history, 'replaceState')
+		await mount()
+		await press()
+		await created()
+		await screen.findByTestId('recover-code')
+		// storage: the tag is in exactly one entry, the per-wallet record
+		for (const store of [localStorage, sessionStorage]) {
+			for (let i = 0; i < store.length; i++) {
+				const key = store.key(i) as string
+				const entry = `${key}=${store.getItem(key)}`
+				if (entry.includes(TAG)) expect(key).toBe(KEY)
+			}
+		}
+		expect(Object.entries(record())).toEqual([[WALLET, TAG]])
+		// URL and history
+		expect(window.location.href).not.toContain(TAG)
+		expect(window.history.state === null || !JSON.stringify(window.history.state).includes(TAG)).toBe(true)
+		for (const c of [...pushSpy.mock.calls, ...replaceSpy.mock.calls]) expect(JSON.stringify(c)).not.toContain(TAG)
+		// logs and console
+		const seen = JSON.stringify([...spies.flatMap((x) => x.mock.calls), ...publishNativePwaLog.mock.calls])
+		expect(seen).not.toContain(TAG)
+		spies.forEach((x) => x.mockRestore())
+		pushSpy.mockRestore()
+		replaceSpy.mockRestore()
+	})
+
 	it('a step 1 that fails leaves no record and no lock', async () => {
 		nr.nativeAccountCreateOpen.mockResolvedValue({ ok: false, reason: 'not_ready' })
 		await mount()
