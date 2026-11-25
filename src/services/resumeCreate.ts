@@ -39,6 +39,12 @@ export type ResumeDeps = {
 	primaryUrl: string
 	secondaryUrl: string
 	timeoutMs?: number
+	/**
+	 * The device wallet's own address from the trusted window channel (walletEoaAddress: result.eoa; works at G1 and G2). The page record's wallet is what the
+	 * registry is asked about, but only the native wallet's answer says the page account and the native account are the same one. When given, a resume is
+	 * routed only if it answers an address equal to the record's wallet; locked, unavailable, no answer, or another address: not routed (the home, record kept).
+	 */
+	nativeEoa?: () => Promise<{ kind: 'address'; eoa: string } | { kind: 'refused'; code: string } | null>
 }
 
 /** the "unregistered" reads of this process, per wallet (monotonic times); reset by anything that is not a consistent "unregistered" */
@@ -70,6 +76,35 @@ const withTimeout = (p: Promise<RegistrationState>, ms: number): Promise<Registr
 		)
 	})
 
+/** The device wallet must be the record's wallet before a resume is routed. null: confirmed (or no source given); otherwise the uncertain verdict. */
+async function nativeWalletGate(eoa: string, deps: ResumeDeps): Promise<ResumeVerdict | null> {
+	if (!deps.nativeEoa) return null
+	const ms = deps.timeoutMs ?? RESUME_CHECK_TIMEOUT_MS
+	let answer: Awaited<ReturnType<NonNullable<ResumeDeps['nativeEoa']>>> = null
+	try {
+		answer = await new Promise((resolve) => {
+			const t = setTimeout(() => resolve(null), ms)
+			deps.nativeEoa!().then(
+				(v) => {
+					clearTimeout(t)
+					resolve(v)
+				},
+				() => {
+					clearTimeout(t)
+					resolve(null)
+				},
+			)
+		})
+	} catch {
+		answer = null
+	}
+	if (answer && answer.kind === 'address') {
+		if (answer.eoa.trim().toLowerCase() === eoa) return null
+		return { kind: 'uncertain', why: 'native_eoa_mismatch', recheckInMs: RECHECK_MAX_MS }
+	}
+	return { kind: 'uncertain', why: 'native_eoa_unavailable', recheckInMs: RECHECK_MIN_MS * 2 }
+}
+
 export async function resumeCreateCheck(eoaRaw: string, deps: ResumeDeps): Promise<ResumeVerdict> {
 	const eoa = eoaRaw.trim().toLowerCase()
 	const rec = readPendingCreateRecord(eoa)
@@ -89,6 +124,8 @@ export async function resumeCreateCheck(eoaRaw: string, deps: ResumeDeps): Promi
 	}
 	// step 3 never sent (no `s`), or an older record (`s` unknown): condition A alone
 	if (rec.legacy || rec.s === undefined) {
+		const blocked = await nativeWalletGate(eoa, deps)
+		if (blocked) return blocked
 		unregisteredReads.delete(eoa)
 		return { kind: 'resume', tag: rec.tag }
 	}
@@ -107,6 +144,8 @@ export async function resumeCreateCheck(eoaRaw: string, deps: ResumeDeps): Promi
 	const b1Left = b1Need - (now - base)
 	const b2Left = reads.length >= 2 ? RESUME_B2_READ_GAP_MS - (reads[reads.length - 1] - reads[0]) : RESUME_B2_READ_GAP_MS
 	if (b1Left <= 0 && b2Left <= 0) {
+		const blocked = await nativeWalletGate(eoa, deps)
+		if (blocked) return blocked
 		unregisteredReads.delete(eoa)
 		return { kind: 'resume', tag: rec.tag }
 	}

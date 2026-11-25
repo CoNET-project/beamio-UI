@@ -1713,6 +1713,8 @@ export default function AppEntryGate() {
 		read: (url, tag, eoa) => registrationStateVia(url, tag, eoa),
 		primaryUrl: CONET_RPC_URL,
 		secondaryUrl: CONET_RPC_SECONDARY,
+		// the device wallet from the trusted window channel (walletEoaAddress), asked only when a resume would be routed
+		nativeEoa: () => readWalletEoaAddress(),
 	}
 	const goResumeCreate = (eoa: string, tag: string) => {
 		// a resume page that is already open for this wallet is never routed again (the user may be typing in it).

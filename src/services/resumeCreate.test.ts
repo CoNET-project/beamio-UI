@@ -42,6 +42,7 @@ const deps = (over: Partial<ResumeDeps> = {}): ResumeDeps => ({
 	primaryUrl: 'P',
 	secondaryUrl: 'S',
 	timeoutMs: 20,
+	nativeEoa: async () => ({ kind: 'address', eoa: E }), // the device wallet is the record's wallet unless a test says otherwise
 	...over,
 })
 
@@ -262,5 +263,64 @@ describe('the idle-only route event (D4)', () => {
 		clearPendingCreateTag(E)
 		expect(await resumeCreateCheck(E, deps())).toEqual({ kind: 'none' })
 		expect(requestResumeRoute(E, TAG, jest.fn())).toBe('dropped')
+	})
+})
+
+describe('the device wallet must be the record wallet before a resume is routed (walletEoaAddress, trusted window channel)', () => {
+	const MIX = '0x' + 'aB'.repeat(20)
+	const neverCalled = () => {
+		const calls = { n: 0 }
+		return { calls, fn: async () => { calls.n += 1; return { kind: 'address' as const, eoa: E } } }
+	}
+	it('the same wallet (any case): routed, at the first read when step 3 was never sent', async () => {
+		writePendingCreateTag(E, TAG)
+		expect(await resumeCreateCheck(E, deps({ nativeEoa: async () => ({ kind: 'address', eoa: E.toUpperCase().replace('0X', '0x') }) }))).toEqual({ kind: 'resume', tag: TAG })
+	})
+	it('the record wallet in checksum case, the native answer in lower case: routed', async () => {
+		writePendingCreateTag(MIX, TAG)
+		expect(await resumeCreateCheck(MIX, deps({ nativeEoa: async () => ({ kind: 'address', eoa: MIX.toLowerCase() }) }))).toEqual({ kind: 'resume', tag: TAG })
+	})
+	it('another wallet: not routed (home, record kept)', async () => {
+		writePendingCreateTag(E, TAG)
+		const v = await resumeCreateCheck(E, deps({ nativeEoa: async () => ({ kind: 'address', eoa: '0x' + '2'.repeat(40) }) }))
+		expect(v).toMatchObject({ kind: 'uncertain', why: 'native_eoa_mismatch' })
+		expect(readPendingCreateRecord(E)).not.toBeNull()
+	})
+	it.each([
+		['locked', async () => ({ kind: 'refused' as const, code: 'locked' })],
+		['unavailable', async () => ({ kind: 'refused' as const, code: 'unavailable' })],
+		['no_key', async () => ({ kind: 'refused' as const, code: 'no_key' })],
+		['origin_refused', async () => ({ kind: 'refused' as const, code: 'origin_refused' })],
+		['no answer (null)', async () => null],
+		['throws', async () => { throw new Error('x') }],
+		['never answers', () => new Promise<null>(() => undefined)],
+	])('%s: treated as "cannot get the wallet now": not routed, not a mismatch, not "no tag"', async (_n, nativeEoa) => {
+		writePendingCreateTag(E, TAG)
+		const v = await resumeCreateCheck(E, deps({ nativeEoa: nativeEoa as never }))
+		expect(v).toMatchObject({ kind: 'uncertain', why: 'native_eoa_unavailable' })
+		expect(readPendingCreateRecord(E)).not.toBeNull()
+	})
+	it('the B path (step 3 may have been sent) asks it too, only once B is met', async () => {
+		writePendingCreateTag(E, TAG)
+		markPendingForwardSent(E, nowMs)
+		const n = neverCalled()
+		nowMs += RESUME_B1_NO_ACK_MS + MIN
+		await resumeCreateCheck(E, deps({ nativeEoa: n.fn }))
+		expect(n.calls.n).toBe(0) // B2 not met yet: not asked
+		monoMs += RESUME_B2_READ_GAP_MS
+		nowMs += RESUME_B2_READ_GAP_MS
+		expect(await resumeCreateCheck(E, deps({ nativeEoa: n.fn }))).toEqual({ kind: 'resume', tag: TAG })
+		expect(n.calls.n).toBe(1)
+	})
+	it('not asked without a record, and not when the registry says registered or the hosts disagree', async () => {
+		const n = neverCalled()
+		await resumeCreateCheck(E, deps({ nativeEoa: n.fn }))
+		writePendingCreateTag(E, TAG)
+		secondary = 'registered'
+		await resumeCreateCheck(E, deps({ nativeEoa: n.fn }))
+		writePendingCreateTag(E, TAG)
+		secondary = 'unknown'
+		await resumeCreateCheck(E, deps({ nativeEoa: n.fn }))
+		expect(n.calls.n).toBe(0)
 	})
 })

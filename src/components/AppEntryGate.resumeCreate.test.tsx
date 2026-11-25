@@ -35,6 +35,13 @@ jest.mock('@/services/resumeCreate', () => {
 		},
 	}
 })
+jest.mock('@/services/walletEoaAddress', () => ({
+	readWalletEoaAddress: async () => {
+		const g = globalThis as any
+		g.__eoaReads = (g.__eoaReads ?? 0) + 1
+		return g.__eoaAnswer ?? { kind: 'address', eoa: g.__nativeEoa }
+	},
+}), { virtual: true })
 jest.mock('@/utils/voiceCallSession', () => {
 	;(globalThis as any).__voiceLoads = ((globalThis as any).__voiceLoads ?? 0) + 1
 	return { browserVoiceCallBusyFor: () => !!(globalThis as any).__voiceBusy }
@@ -274,6 +281,9 @@ beforeEach(() => {
 	g.__checkCalls = 0
 	g.__checkOverride = undefined
 	g.__reach = 0
+	g.__eoaReads = 0
+	g.__eoaAnswer = undefined
+	g.__nativeEoa = EOA_NATIVE
 	g.__readyEvents = 0
 	g.__reachUnlocked = undefined
 	g.__reachMode = undefined
@@ -743,5 +753,54 @@ describe('R2271-DEF-IOS-HOME-1 loop guard: upgrade success -> wallet-ready -> st
 		expect(g().__readyEvents).toBe(2)
 		expect(g().__runaway).toBeFalsy()
 		spy.mockRestore()
+	})
+})
+
+describe('the real combination: a valid page record (IndexedDB) with the native wallet at G1 (the C-7 site)', () => {
+	const g = () => globalThis as Record<string, any>
+	const onPage = () => !!screen.queryByText(new RegExp(`RESUME ${TAG} ${EOA_LOCAL}`, 'i'))
+	beforeEach(() => {
+		g().__idbPage = pageLocal() // the page record is valid: the start never asks the native side for the pre-read
+		g().__prereadAnswers = []
+		g().__nativeEoa = EOA_LOCAL
+	})
+
+	it('the device wallet equals the page wallet: the walletEoaAddress read happens and the resume is routed', async () => {
+		writePendingCreateTag(EOA_LOCAL, TAG)
+		setReg('unregistered', 'unregistered')
+		renderAt('/settings')
+		await waitFor(() => expect(onPage()).toBe(true), { timeout: 3000 })
+		expect(g().__eoaReads).toBeGreaterThanOrEqual(1)
+		expect(g().__prereadCalls ?? 0).toBe(0)
+		expect(screen.queryByText('SETTINGS-PAGE')).toBeNull()
+	})
+
+	it('the device wallet is another wallet: asked, not routed, home, record kept', async () => {
+		writePendingCreateTag(EOA_LOCAL, TAG)
+		setReg('unregistered', 'unregistered')
+		g().__nativeEoa = EOA_NATIVE
+		renderAt('/settings')
+		await waitFor(() => expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy(), { timeout: 3000 })
+		expect(g().__eoaReads).toBeGreaterThanOrEqual(1)
+		expect(onPage()).toBe(false)
+		expect(readPendingCreateRecord(EOA_LOCAL)).not.toBeNull()
+	})
+
+	it.each([['locked'], ['unavailable'], ['no_key']])('walletEoaAddress answers %s: cannot get the wallet now: home, record kept, not a mismatch, not "no tag"', async (code) => {
+		writePendingCreateTag(EOA_LOCAL, TAG)
+		setReg('unregistered', 'unregistered')
+		g().__eoaAnswer = { kind: 'refused', code }
+		renderAt('/settings')
+		await waitFor(() => expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy(), { timeout: 3000 })
+		expect(onPage()).toBe(false)
+		expect(readPendingCreateRecord(EOA_LOCAL)).not.toBeNull()
+		expect(getResumeNotice()).toBeNull()
+	})
+
+	it('no record: the wallet read is never made (the non-hit path stays as it was)', async () => {
+		setReg('unregistered', 'unregistered')
+		renderAt('/settings')
+		await waitFor(() => expect(screen.getByText('SETTINGS-PAGE')).toBeTruthy(), { timeout: 3000 })
+		expect(g().__eoaReads).toBe(0)
 	})
 })
