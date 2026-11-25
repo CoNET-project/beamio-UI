@@ -15,7 +15,10 @@ describe('chat identity copy keys', () => {
 		// the not_ready failure picks its own keys through a ternary; the other failures keep theirs.
 		expect(src).toContain("'chat.restore_failed.body'")
 		expect(src).toContain("'chat.restore_failed.entry'")
-		expect(src).toMatch(/tu\('chat\.restore_retry\.body'\)/)
+		// 0.53.52: the retry key is kept for a real read failure (the not_ready path), the other failures name their reason (pgpCreateFailureCopyKey)
+		expect(src).toContain("'chat.restore_retry.body'")
+		expect(src).toMatch(/tu\(failedKey\)/)
+		expect(src).toContain('pgpCreateFailureCopyKey(')
 		expect(src).not.toMatch(/tu\('pgp_|tu\(REASON_KEYS/)
 	})
 
