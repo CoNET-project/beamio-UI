@@ -12,14 +12,17 @@ import { join } from 'path'
 const SRC = readFileSync(join(__dirname, 'AppEntryGate.tsx'), 'utf8')
 
 describe('the entries that open the onboarding for "no account" are confirmed by one real native read', () => {
-	it('the confirmation reads the pre-read again, never reuses an earlier answer, and decides by the shell-declared platform (not the user agent)', () => {
+	it('the confirmation reads the pre-read again, never reuses an earlier answer, and branches walletStatus on every shell (not the user agent)', () => {
 		const at = SRC.indexOf('const confirmNoMnemonicOnNative = async')
 		expect(at).toBeGreaterThan(0)
 		const body = SRC.slice(at, at + 4500)
 		expect(body).toContain('queryNativeMnemonicPreread()')
 		expect(body).toContain('validNativeApp(')
-		expect(body).toContain("platform !== 'ios'")
 		expect(body).toContain('queryNativeWalletStatus()')
+		// r11b: iOS no longer bare-proceeds after key_only-only check; same three-way as Android
+		expect(body).not.toContain("if (platform === 'ios' && !prereadUnsupported)")
+		expect(body).not.toContain("if (platform !== 'ios' || prereadUnsupported)")
+		expect(body).toContain("ws.status !== 'no_key'")
 		expect(SRC).not.toMatch(/navigator\.userAgent/)
 	})
 
@@ -32,8 +35,9 @@ describe('the entries that open the onboarding for "no account" are confirmed by
 		expect(guard).toBeLessThan(body.indexOf('queryNativeMnemonicPreread()'))
 		expect(body).toContain("const prereadUnsupported = real.kind === 'unknown' && real.reason === 'unsupported'")
 		expect(body).toContain("if (real.kind !== 'absent' && !prereadUnsupported) {")
-		// the unsupported answer is read through walletStatus whatever platform the shell declares
-		expect(body).toContain("if (platform !== 'ios' || prereadUnsupported) {")
+		// every shell (including iOS with a working pre-read) reads walletStatus after absent/unsupported
+		expect(body).toContain('const ws = await queryNativeWalletStatus()')
+		expect(body).toContain("notReadyReason === 'key_only'")
 		// the other unknowns (not_ready, read_timeout, read_error) keep the wait
 		expect(body).toContain("real.reason === 'read_timeout' ? 'native_read_timeout' : real.reason === 'not_ready' ? 'pre_read_not_ready' : 'record_unreadable'")
 	})
@@ -58,11 +62,13 @@ describe('the entries that open the onboarding for "no account" are confirmed by
 		expect(SRC).toContain('sendPwaEmptySignalIfExplicitEmpty')
 	})
 
-	it('r11: openOnboardingConfirmed emits pwaEmptySignal after confirmed empty (no purge hold)', () => {
+	it('r11: openOnboardingConfirmed emits pwaEmptySignal after confirmed empty (no purge hold); catch never fakes empty', () => {
 		const o = SRC.slice(SRC.indexOf('const openOnboardingConfirmed = async'), SRC.indexOf('const openOnboardingConfirmed = async') + 2200)
 		expect(o).toContain('sendPwaEmptySignalIfExplicitEmpty')
 		expect(o).not.toContain('holdUnlessKeyOnlyPurged')
 		expect(o).not.toContain('purgeKeyOnlyPageRecord')
+		expect(o).not.toContain("sendPwaEmptySignalIfExplicitEmpty({ storageStatus: 'empty' })")
+		expect(o).toContain('Untrusted failure: do not emit empty')
 	})
 
 	it('the only direct goOnboarding(false) calls are the helper itself and the sealed-copy check (pre-read plus walletStatus no_key)', () => {

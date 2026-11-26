@@ -1105,17 +1105,6 @@ export default function AppEntryGate() {
 	}, [])
 
 	/**
-	 * Onboarding confirmation: before an account is opened because no account was found (page absent, native no_key), one real native read decides it. A valid mnemonic is
-	 * the home (the page record is written from it, the sync follows in the background); a ciphertext is the unlock page; a lock waits; an unavailable or
-	 * failed read is unknown (wait and retry, no onboarding, nothing written). Only a read that confirms no valid mnemonic returns 'proceed'. An address, a
-	 * pointer or an old private key alone do not block it. An earlier pre-read answer is never reused: it may predate the record or be folded from an
-	 * unavailable read. 'handled' means the start went elsewhere (home, unlock, wait) and the caller must stop.
-	 *
-	 * Platform (declared by the shell in its hello answer, nativeApp.platform): an iOS pre-read covers the current record and the sealed copy, so the
-	 * pre-read alone confirms. Android (and a shell that declares no valid platform: fail closed) must also read walletStatus, which reads the sealed
-	 * copies: no_key confirms; a wallet there (unlocked, phrase_only) is the home on its address; locked waits for the unlock; any other answer waits.
-	 */
-	/**
 	 * r11: resolve an EOA for key_only local home without inventing accountKey.
 	 * Prefer walletEoaAddress → persisted shell EOA → page profiles[0].keyID.
 	 */
@@ -1144,7 +1133,7 @@ export default function AppEntryGate() {
 	const enterKeyOnlyLocalMode = async (reqId: string): Promise<'handled'> => {
 		const eoa = await resolveKeyOnlyLocalEoa()
 		if (!eoa) {
-			// 待 Grok: key_only with no resolvable EOA — wait rather than inventing an address or onboarding
+			// r11b: key_only with no resolvable EOA — wait / safe local hold; never invent an address, never onboard, never delete.
 			logStartRoute(reqId, 'none_yet')
 			startupWait('native key_only: waiting for the account address (r11 local mode)', 'status_not_no_key')
 			return 'handled'
@@ -1160,7 +1149,7 @@ export default function AppEntryGate() {
 				data: stored.status === 'loaded' ? stored.data : null,
 			})
 		} catch {
-			void sendPwaEmptySignalIfExplicitEmpty({ storageStatus: 'empty' })
+			// Untrusted failure: do not emit empty (keep wait / unavailable semantics).
 		}
 		return 'handled'
 	}
@@ -1172,11 +1161,9 @@ export default function AppEntryGate() {
 	 * pointer or an old private key alone do not block it. An earlier pre-read answer is never reused: it may predate the record or be folded from an
 	 * unavailable read. 'handled' means the start went elsewhere (home, unlock, wait) and the caller must stop.
 	 *
-	 * Platform (declared by the shell in its hello answer, nativeApp.platform): an iOS pre-read covers the current record and the sealed copy, so the
-	 * pre-read alone confirms. Android (and a shell that declares no valid platform: fail closed) must also read walletStatus, which reads the sealed
-	 * copies: no_key confirms; a wallet there (unlocked, phrase_only) is the home on its address; locked waits for the unlock; any other answer waits.
-	 *
-	 * r11: not_ready + key_only → local mode (do not wait for SDK delete → no_key; page never deletes).
+	 * After a confirmed-absent or unsupported pre-read, every shell (iOS and Android) must still read walletStatus. Three-way (r11b / DECISION r11):
+	 * `no_key` → proceed to onboarding; `not_ready` + `key_only` → local mode; any other status (locked, unlocked, phrase_only, other not_ready / unreadable) →
+	 * home / unlock / startupWait — never bare proceed into onboarding.
 	 */
 	const confirmNoMnemonicOnNative = async (reqId: string): Promise<'proceed' | 'handled'> => {
 		// A page with no native bridge (an ordinary browser) has no native record to confirm against: the page store read is the only
@@ -1209,35 +1196,27 @@ export default function AppEntryGate() {
 		}
 		const hello = await probeNativeCapabilities().catch(() => null)
 		const platform = validNativeApp(hello && typeof hello === 'object' ? (hello as { nativeApp?: unknown }).nativeApp : undefined)?.platform ?? null
-		if (platform === 'ios' && !prereadUnsupported) {
-			// r11: key_only is local mode — do not wait for SDK deletion to no_key
-			const ios = await queryNativeWalletStatus()
-			if (ios.status === 'not_ready' && ios.notReadyReason === 'key_only') {
-				return await enterKeyOnlyLocalMode(reqId)
-			}
+		// r11b: iOS with a working pre-read still must branch on walletStatus (same three-way as Android / unsupported shells).
+		const ws = await queryNativeWalletStatus()
+		publishNativePwaLog('info', `[startup] reqId=${reqId} onboarding confirmation platform=${platform ?? 'undeclared'} walletStatus=${ws.status}${ws.status === 'not_ready' && ws.notReadyReason ? ` notReadyReason=${ws.notReadyReason}` : ''}`)
+		if (ws.status === 'not_ready' && ws.notReadyReason === 'key_only') {
+			return await enterKeyOnlyLocalMode(reqId)
 		}
-		if (platform !== 'ios' || prereadUnsupported) {
-			const ws = await queryNativeWalletStatus()
-			publishNativePwaLog('info', `[startup] reqId=${reqId} onboarding confirmation platform=${platform ?? 'undeclared'} walletStatus=${ws.status}`)
-			if (ws.status === 'not_ready' && ws.notReadyReason === 'key_only') {
-				return await enterKeyOnlyLocalMode(reqId)
-			}
-			if (ws.status === 'unlocked' || ws.status === 'phrase_only') {
-				publishNativePwaLog('info', '[AppEntryGate] pre-read absent but walletStatus holds a wallet: the home on its address, not onboarding')
-				applyNativeWallet(ws.eoa)
-				logStartRoute(reqId, 'home')
-				resolveShellChatCapability()
-				return 'handled'
-			}
-			if (ws.status === 'locked') {
-				waitNativeLocked('onboarding confirmation walletStatus locked')
-				return 'handled'
-			}
-			if (ws.status !== 'no_key') {
-				logStartRoute(reqId, 'none_yet')
-				startupWait(`onboarding confirmation walletStatus ${ws.status}: retry, no onboarding`, 'status_not_no_key')
-				return 'handled'
-			}
+		if (ws.status === 'unlocked' || ws.status === 'phrase_only') {
+			publishNativePwaLog('info', '[AppEntryGate] pre-read absent but walletStatus holds a wallet: the home on its address, not onboarding')
+			applyNativeWallet(ws.eoa)
+			logStartRoute(reqId, 'home')
+			resolveShellChatCapability()
+			return 'handled'
+		}
+		if (ws.status === 'locked') {
+			waitNativeLocked('onboarding confirmation walletStatus locked')
+			return 'handled'
+		}
+		if (ws.status !== 'no_key') {
+			logStartRoute(reqId, 'none_yet')
+			startupWait(`onboarding confirmation walletStatus ${ws.status}: retry, no onboarding`, 'status_not_no_key')
+			return 'handled'
 		}
 		return 'proceed'
 	}
@@ -1257,7 +1236,7 @@ export default function AppEntryGate() {
 				data: stored.status === 'loaded' ? stored.data : null,
 			})
 		} catch {
-			void sendPwaEmptySignalIfExplicitEmpty({ storageStatus: 'empty' })
+			// Untrusted failure: do not emit empty (keep wait / unavailable semantics).
 		}
 	}
 
@@ -1522,7 +1501,14 @@ export default function AppEntryGate() {
 			// Unit g (rev 2): passcode_not_provided is a pending sync: it does not hold the landing; the pre-read and the key guards decide.
 			const passcodePending = walletStatusAnswer.status === 'not_ready' && walletStatusAnswer.notReadyReason === 'passcode_not_provided'
 			if (passcodePending) markPasscodePendingSync('pre-read start walletStatus', 'native_passcode_not_provided')
-			const outcome = nativeStartRoute({ pre, walletState: passcode.walletState, hasKey: passcode.hasKey, walletStatus: status, passcodePending })
+			const outcome = nativeStartRoute({
+				pre,
+				walletState: passcode.walletState,
+				hasKey: passcode.hasKey,
+				walletStatus: status,
+				passcodePending,
+				notReadyReason: walletStatusAnswer.status === 'not_ready' ? (walletStatusAnswer.notReadyReason ?? null) : undefined,
+			})
 			// Unit g: a passcode account is reported and the pre-read answers absent: inconsistent. Nothing is onboarded; the wait is in the background.
 			if (passcodePending && pre.kind === 'absent') {
 				publishNativePwaLog('warn', `[AppEntryGate] ${startReasonLine('passcode_preread_inconsistent')}: no onboarding, data kept`)
@@ -1544,10 +1530,15 @@ export default function AppEntryGate() {
 				startupWait('page mnemonic keyid mismatch: hold, not onboarding', 'read_failed')
 				return
 			}
+			if (outcome.route === 'local') {
+				// r11b: nativeStartRoute key_only → address-only local home (page never deletes)
+				await enterKeyOnlyLocalMode(reqId)
+				return
+			}
 			if (outcome.route === 'onboard') {
 				// One real native read confirms the absence before the onboarding opens (shared with every other onboarding entry)
 				if ((await confirmNoMnemonicOnNative(reqId)) === 'handled') return
-				// explicit gate: route === 'onboard' (nativeStartRoute) and the confirmation reads above (native no_key on Android); the key-only purge is inside the helper
+				// explicit gate: route === 'onboard' (nativeStartRoute) plus confirmNoMnemonicOnNative (walletStatus three-way on every shell)
 				await openOnboardingConfirmed('start route onboard', {
 					reqId,
 					alreadyConfirmed: true,

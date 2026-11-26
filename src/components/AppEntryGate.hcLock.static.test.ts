@@ -65,15 +65,20 @@ describe('key_only entry (2026-11-20 start route supersedes the 2026-11-18 pre-r
 		expect(gate.indexOf("if (pre.kind === 'valid') {")).toBeLessThan(onboard)
 	})
 
-	it('nativeStartRoute: key_only (walletStatus not_ready) with a confirmed absent pre-read and no record onboards (class i), data kept; an unknown pre-read is retry', () => {
-		const keyOnly = nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'absent', hasKey: false, walletStatus: 'not_ready' })
-		// class (i): pre-read confirmed absent, no record, no unknown read: walletStatus not_ready (key_only) does not block onboarding
-		expect(keyOnly).toEqual({ route: 'onboard', reason: 'confirmed_absent' })
-		expect(Object.keys(keyOnly).sort()).toEqual(['reason', 'route']) // the route carries no delete or clear instruction: data kept
-		// data kept: the onboard branch of the gate holds no removal, clear or reset call
+	it('nativeStartRoute (r11b): not_ready without key_only → retry; key_only → local; no_key + absent → onboard; unknown pre → retry; gate onboard branch never deletes', () => {
+		expect(nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'absent', hasKey: false, walletStatus: 'not_ready' })).toEqual({
+			route: 'retry',
+			reason: 'status_not_no_key',
+		})
+		expect(nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'absent', hasKey: false, walletStatus: 'not_ready', notReadyReason: 'key_only' })).toEqual({
+			route: 'local',
+			reason: 'key_only',
+		})
 		const at = gate.indexOf("if (outcome.route === 'onboard') {")
 		expect(at).toBeGreaterThan(0)
 		expect(gate.slice(at, gate.indexOf('\n\t\t\t}\n', at))).not.toMatch(/remove|delete|clear|reset|wipe|cleanup/i)
+		expect(gate).toContain("if (outcome.route === 'local')")
+		expect(gate).toContain('enterKeyOnlyLocalMode')
 		expect(nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'absent', hasKey: false, walletStatus: 'no_key' }).route).toBe('onboard')
 		expect(nativeStartRoute({ pre: { kind: 'unknown' }, walletState: 'absent', hasKey: false, walletStatus: 'no_key' }).route).toBe('retry')
 	})

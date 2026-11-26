@@ -16,6 +16,7 @@ export const START_REASON_CODES = {
 	read_failed: 'a native or page read failed or is unreadable; unknown, retry',
 	record_not_ready: 'the native record is not ready; retry',
 	status_not_no_key: 'walletStatus is not no_key (for example not_ready while adoption settles); retry',
+	key_only: 'walletStatus not_ready + key_only: address-only local home; page never deletes',
 	bridge_trust_timeout: 'the native identity is not declared by the bridge-trust deadline; retry',
 	page_read_failed: 'the page copy is unreadable; unknown, retry, nothing restored over the page',
 	sealed_copy_unknown: 'the sealed-copy check is unknown; retry',

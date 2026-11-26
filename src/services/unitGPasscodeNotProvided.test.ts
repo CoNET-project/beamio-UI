@@ -231,12 +231,14 @@ describe('unit g rev 2 (pure): SRP v2 / v291 alignment', () => {
 		expect(nativeStartRoute({ ...base, hasKey: true, passcodePending: true })).toEqual({ route: 'retry', reason: 'key_marker' })
 	})
 
-	it('legacy B: without the passcode state a confirmed absent pre-read with no record onboards (class i, data kept); an unknown pre-read or a present record holds', () => {
+	it('legacy B (r11b): without the passcode state a confirmed absent + no_key onboards; not_ready branches by notReadyReason; unknown pre or present record holds', () => {
 		const base = { pre: { kind: 'absent' }, walletState: 'absent' as const, hasKey: false as const }
 		expect(nativeStartRoute({ ...base, walletStatus: 'no_key' })).toEqual({ route: 'onboard', reason: 'confirmed_absent' })
-		const o = nativeStartRoute({ ...base, walletStatus: 'not_ready' })
-		expect(o).toEqual({ route: 'onboard', reason: 'confirmed_absent' })
-		expect(Object.keys(o).sort()).toEqual(['reason', 'route']) // no delete or clear instruction
+		expect(nativeStartRoute({ ...base, walletStatus: 'not_ready' })).toEqual({ route: 'retry', reason: 'status_not_no_key' })
+		expect(nativeStartRoute({ ...base, walletStatus: 'not_ready', notReadyReason: 'key_only' })).toEqual({
+			route: 'local',
+			reason: 'key_only',
+		})
 		expect(nativeStartRoute({ ...base, pre: { kind: 'unknown' }, walletStatus: 'not_ready' }).route).toBe('retry')
 		expect(nativeStartRoute({ ...base, walletState: 'present' as const, walletStatus: 'not_ready' }).route).toBe('retry')
 	})
