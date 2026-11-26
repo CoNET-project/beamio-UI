@@ -5,7 +5,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { useDaemonContext } from '@/providers/DaemonProvider'
-import { purgeKeyOnlyPageRecord, checkStorageWithStatus, checkStorageWithStatusWithTimeout, checkStorageWithTransientRetry, persistPageIdbMnemonic, registrationStateVia, persistPageIdbPasscodeRecord, readStoredRecordForVerify, sendPendingProfileSync, storeSystemDataAndWait } from '@/services/beamio'
+import { checkStorageWithStatus, checkStorageWithStatusWithTimeout, checkStorageWithTransientRetry, persistPageIdbMnemonic, registrationStateVia, persistPageIdbPasscodeRecord, readStoredRecordForVerify, sendPendingProfileSync, storeSystemDataAndWait } from '@/services/beamio'
+import { sendPwaEmptySignalIfExplicitEmpty } from '@/services/pwaEmptySignal'
 import { allowRestoreWrite, endRestoreWriteWindow, setPageWritePermit, type PageWritePermit } from '@/services/beamio'
 import { checkRecoveredRecord, checkShellReadBack, recoveredPageRecord } from '@/services/recoveredMnemonicRecord'
 import { releaseShellSessionSignerHold, holdShellSessionFromPhrase, loadShellSessionSigner, recordCarriesAccountKey, refreshShellSessionInMemory, shellSessionEoa } from '@/services/shellSessionSigner'
@@ -24,8 +25,7 @@ import { clearFailureRecord, manualRetryVisible, readFailureRecord, recordForFai
 import { getShellSyncState, setShellSyncManualCheck } from '@/services/shellSyncStatus'
 import { needsReread, rereadDecision } from '@/services/manualRetryReread'
 import { queryNativeWalletStatusForPreCheck } from '@/services/syncPreCheckReads'
-import { forgetPersistedShellEoa } from '@/services/shellIdentitySource'
-import { clearPendingCreateTag } from '@/services/pendingCreateTag'
+import { readPersistedShellEoa } from '@/services/shellIdentitySource'
 import { classifyPageKeyState } from '@/services/pageRecordKeyState'
 import { installPasscodeStateWatcher } from '@/services/passcodeStateWatch'
 import { decideNoKeyEntry, readNoKeyFacts } from '@/services/noKeyEntry'
@@ -1115,6 +1115,69 @@ export default function AppEntryGate() {
 	 * pre-read alone confirms. Android (and a shell that declares no valid platform: fail closed) must also read walletStatus, which reads the sealed
 	 * copies: no_key confirms; a wallet there (unlocked, phrase_only) is the home on its address; locked waits for the unlock; any other answer waits.
 	 */
+	/**
+	 * r11: resolve an EOA for key_only local home without inventing accountKey.
+	 * Prefer walletEoaAddress → persisted shell EOA → page profiles[0].keyID.
+	 */
+	const resolveKeyOnlyLocalEoa = async (): Promise<string | null> => {
+		try {
+			const ans = await readWalletEoaAddress()
+			if (ans.kind === 'address' && ans.eoa) return ans.eoa
+		} catch {
+			/* fall through */
+		}
+		const persisted = readPersistedShellEoa()
+		if (persisted && /^0x[0-9a-fA-F]{40}$/i.test(persisted)) return persisted
+		try {
+			const stored = await checkStorageWithTransientRetry()
+			if (stored.status === 'loaded') {
+				const kid = String((stored.data as { profiles?: Array<{ keyID?: string }> } | null)?.profiles?.[0]?.keyID || '').trim()
+				if (/^0x[0-9a-fA-F]{40}$/i.test(kid)) return kid
+			}
+		} catch {
+			/* fall through */
+		}
+		return null
+	}
+
+	/** r11: key_only → local home (no onboarding; page never deletes the native key). */
+	const enterKeyOnlyLocalMode = async (reqId: string): Promise<'handled'> => {
+		const eoa = await resolveKeyOnlyLocalEoa()
+		if (!eoa) {
+			// 待 Grok: key_only with no resolvable EOA — wait rather than inventing an address or onboarding
+			logStartRoute(reqId, 'none_yet')
+			startupWait('native key_only: waiting for the account address (r11 local mode)', 'status_not_no_key')
+			return 'handled'
+		}
+		publishNativePwaLog('info', `[startup] reqId=${reqId} native key_only: local home (r11); page does not delete`)
+		applyLocalWallet(eoa)
+		logStartRoute(reqId, 'home')
+		resolveShellChatCapability()
+		try {
+			const stored = await checkStorageWithTransientRetry()
+			void sendPwaEmptySignalIfExplicitEmpty({
+				storageStatus: stored.status,
+				data: stored.status === 'loaded' ? stored.data : null,
+			})
+		} catch {
+			void sendPwaEmptySignalIfExplicitEmpty({ storageStatus: 'empty' })
+		}
+		return 'handled'
+	}
+
+	/**
+	 * Onboarding confirmation: before an account is opened because no account was found (page absent, native no_key), one real native read decides it. A valid mnemonic is
+	 * the home (the page record is written from it, the sync follows in the background); a ciphertext is the unlock page; a lock waits; an unavailable or
+	 * failed read is unknown (wait and retry, no onboarding, nothing written). Only a read that confirms no valid mnemonic returns 'proceed'. An address, a
+	 * pointer or an old private key alone do not block it. An earlier pre-read answer is never reused: it may predate the record or be folded from an
+	 * unavailable read. 'handled' means the start went elsewhere (home, unlock, wait) and the caller must stop.
+	 *
+	 * Platform (declared by the shell in its hello answer, nativeApp.platform): an iOS pre-read covers the current record and the sealed copy, so the
+	 * pre-read alone confirms. Android (and a shell that declares no valid platform: fail closed) must also read walletStatus, which reads the sealed
+	 * copies: no_key confirms; a wallet there (unlocked, phrase_only) is the home on its address; locked waits for the unlock; any other answer waits.
+	 *
+	 * r11: not_ready + key_only → local mode (do not wait for SDK delete → no_key; page never deletes).
+	 */
 	const confirmNoMnemonicOnNative = async (reqId: string): Promise<'proceed' | 'handled'> => {
 		// A page with no native bridge (an ordinary browser) has no native record to confirm against: the page store read is the only
 		// source, and it already said empty. No native command is sent there.
@@ -1147,17 +1210,18 @@ export default function AppEntryGate() {
 		const hello = await probeNativeCapabilities().catch(() => null)
 		const platform = validNativeApp(hello && typeof hello === 'object' ? (hello as { nativeApp?: unknown }).nativeApp : undefined)?.platform ?? null
 		if (platform === 'ios' && !prereadUnsupported) {
-			// 0.53.52 (owner approval 2026-11-25): the SDK deletes a key-only native record itself; until walletStatus says no_key the page only waits.
+			// r11: key_only is local mode — do not wait for SDK deletion to no_key
 			const ios = await queryNativeWalletStatus()
 			if (ios.status === 'not_ready' && ios.notReadyReason === 'key_only') {
-				logStartRoute(reqId, 'none_yet')
-				startupWait('native key-only record: waiting for the SDK deletion (no_key), no onboarding', 'status_not_no_key')
-				return 'handled'
+				return await enterKeyOnlyLocalMode(reqId)
 			}
 		}
 		if (platform !== 'ios' || prereadUnsupported) {
 			const ws = await queryNativeWalletStatus()
 			publishNativePwaLog('info', `[startup] reqId=${reqId} onboarding confirmation platform=${platform ?? 'undeclared'} walletStatus=${ws.status}`)
+			if (ws.status === 'not_ready' && ws.notReadyReason === 'key_only') {
+				return await enterKeyOnlyLocalMode(reqId)
+			}
 			if (ws.status === 'unlocked' || ws.status === 'phrase_only') {
 				publishNativePwaLog('info', '[AppEntryGate] pre-read absent but walletStatus holds a wallet: the home on its address, not onboarding')
 				applyNativeWallet(ws.eoa)
@@ -1178,41 +1242,23 @@ export default function AppEntryGate() {
 		return 'proceed'
 	}
 
-	/**
-	 * 0.53.52 (owner approval 2026-11-25): THE one place where a key-only page record is silently deleted, called by openOnboardingConfirmed, which every way into
-	 * the onboarding passes after the absence of a mnemonic was confirmed. Compare and delete (purgeKeyOnlyPageRecord): only a plain record with a private key
-	 * and no mnemonic at all goes; a read failure, a lock, a passcode record, a mnemonic of any kind or an unknown shape leaves everything and holds the start (no
-	 * onboarding). A process that has read a valid mnemonic never deletes (sessionSawValidRef). Returns true when the onboarding may open.
-	 */
-	const holdUnlessKeyOnlyPurged = async (reqId: string): Promise<boolean> => {
-		if (sessionSawValidRef.current) return true
-		const purged = await purgeKeyOnlyPageRecord()
-		if (purged.kind === 'unknown' || purged.kind === 'failed') {
-			publishNativePwaLog('warn', `[startup] reqId=${reqId} key-only page record check ${purged.kind}: nothing deleted, no onboarding; the start waits`)
-			logStartRoute(reqId, 'none_yet')
-			startupWait(`key-only page record ${purged.kind}: hold, not onboarding`, 'read_failed')
-			return false
-		}
-		if (purged.kind === 'deleted') {
-			// one line, no secret, no address
-			publishNativePwaLog('info', '[AppEntryGate] a key-only page record was deleted; the onboarding follows')
-			// the leftovers of that wallet: the kept address hint and a pending create record (they would revive the deleted account)
-			if (purged.eoa) {
-				forgetPersistedShellEoa(purged.eoa)
-				clearPendingCreateTag(purged.eoa)
-			}
-		}
-		return true
-	}
-
 	/** The entries that open the onboarding because no account was found (not the create-tag or the recovery entries): confirmed by the one real read first. */
 	const openOnboardingConfirmed = async (where: string, opts?: { reqId?: string; alreadyConfirmed?: boolean; onProceed?: () => void }): Promise<void> => {
 		const reqId = opts?.reqId ?? newStartReqId()
 		publishNativePwaLog('info', `[startup] reqId=${reqId} onboarding requested by ${where}: confirming with one real native read`)
 		if (!opts?.alreadyConfirmed && (await confirmNoMnemonicOnNative(reqId)) === 'handled') return
-		if (!(await holdUnlessKeyOnlyPurged(reqId))) return
 		opts?.onProceed?.()
 		goOnboarding(false)
+		// r11: explicit_empty only after IDB confirms no mnemonic of any form (unreadable/encrypted → no send)
+		try {
+			const stored = await checkStorageWithTransientRetry()
+			void sendPwaEmptySignalIfExplicitEmpty({
+				storageStatus: stored.status,
+				data: stored.status === 'loaded' ? stored.data : null,
+			})
+		} catch {
+			void sendPwaEmptySignalIfExplicitEmpty({ storageStatus: 'empty' })
+		}
 	}
 
 	/** A valid native pre-read answer (the start's, or the one real read before an onboarding): written to the page record, then the home; background sync follows. */
@@ -1348,6 +1394,7 @@ export default function AppEntryGate() {
 		// the passcodeStatus hasKey marker (0.53.39): read with walletState in the judgement below
 		let shellHasKey: boolean | 'not_reported' | 'unknown' = 'not_reported'
 		let shellWalletStatus: NativeWalletStatus = 'unknown'
+		let shellNotReadyReason: string | null | undefined = undefined
 		// the identity capability is probed once per start; a missing capability sends no init and shows neither the lock nor the import page.
 		let identity: IdentityCapabilityState = 'unanswered'
 		let identityDeclared = false
@@ -1528,6 +1575,7 @@ export default function AppEntryGate() {
 			shellWalletState = passcode.walletState
 			shellHasKey = passcode.hasKey
 			shellWalletStatus = status
+			shellNotReadyReason = walletStatusAnswer.status === 'not_ready' ? (walletStatusAnswer.notReadyReason ?? null) : undefined
 			// the legacy route is an old shell with no pre-read: the storage judgement must not treat an absent store as confirmed (storeEmpty)
 			prereadUnsupported = true
 		}
@@ -1564,6 +1612,7 @@ export default function AppEntryGate() {
 				shellHasKey = passcode.hasKey
 				const walletStatusAnswer = await capStatusRead(reqId, queryNativeWalletStatus, { status: 'unknown' })
 				shellWalletStatus = walletStatusAnswer.status as NativeWalletStatus
+				shellNotReadyReason = walletStatusAnswer.status === 'not_ready' ? (walletStatusAnswer.notReadyReason ?? null) : undefined
 				// Unit g (rev 2): walletStatus not_ready with passcode_not_provided is an explicit pending sync (diagnostic native_passcode_not_provided).
 				// Unit g (B): an old shell's old SDK never sends passcode_not_provided, so this legacy route does not reach it. The hold below is unchanged.
 				if (walletStatusAnswer.status === 'not_ready' && walletStatusAnswer.notReadyReason === 'passcode_not_provided') markPasscodePendingSync('walletStatus not_ready (legacy)', 'native_passcode_not_provided')
@@ -1603,9 +1652,19 @@ export default function AppEntryGate() {
 			}
 			const presence = judged.account
 			// a shell not_ready is wait-and-retry: no creation, recovery or import entry (shellNotReadyWait.ts).
-			const notReadyWait = shellNotReadyWaitReason({ isShell: isShellContext(), walletStatus: shellWalletStatus, presence })
+			// r11: not_ready + key_only returns null here → local mode below (do not wait for no_key).
+			const notReadyWait = shellNotReadyWaitReason({
+				isShell: isShellContext(),
+				walletStatus: shellWalletStatus,
+				presence,
+				notReadyReason: shellNotReadyReason,
+			})
 			if (notReadyWait) {
 				startupWait(notReadyWait, 'status_not_no_key')
+				return
+			}
+			if (isShellContext() && shellWalletStatus === 'not_ready' && shellNotReadyReason === 'key_only') {
+				await enterKeyOnlyLocalMode(reqId)
 				return
 			}
 			// Y.85 (c) and Y.89: a shell enters onboarding only when the IndexedDB side and the native side both confirmed none.
@@ -1696,9 +1755,17 @@ export default function AppEntryGate() {
 				'info',
 				`[AppEntryGate] storage hasAccount=${hasAccount} needsRecover=${needsRecover} hasMnemonic=${hasMnemonic}`,
 			)
-			// 0.53.52 (owner approval 2026-11-25): a browser page record holding only a private key is not a valid account: deleted (compare-and-delete), then the onboarding
+			// r11: browser key_only keeps the key (page never deletes); enter home without wiping the page record
 			if (!isShellContext() && classifyPageKeyState(CoNETData as never) === 'key_only') {
-				await openOnboardingConfirmed('browser key-only page record', { alreadyConfirmed: true })
+				const eoa = String((CoNETData as { profiles?: Array<{ keyID?: string }> } | null)?.profiles?.[0]?.keyID || '').trim()
+				if (eoa && /^0x[0-9a-fA-F]{40}$/i.test(eoa)) {
+					setWritePermit('browser_key_only_established', 'browser key-only copy kept (r11)')
+					markWalletEstablished()
+					enterApp()
+					notifyShellEntry('browser_key_only_established')
+					return
+				}
+				startupWait('browser key_only: waiting for the account address (r11)', 'status_not_no_key')
 				return
 			}
 			// A browser key with the recovery phrase and no completed BeamioTag goes straight to the Create Beamio ID page (it reuses the key). A key-only record keeps the existing route (enterApp).

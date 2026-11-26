@@ -106,7 +106,6 @@ jest.mock('@/services/beamio', () => ({
 	postBeamio: async () => true,
 	createOrGetWallet: jest.fn(),
 	resolveSigningPrivateKeyArmor: () => '',
-	purgeKeyOnlyPageRecord: async () => ({ kind: 'absent' }), // 0.53.52: no key-only record in these fixtures (the purge reads the page store); last in the factory
 }))
 jest.mock('@/services/nativeWallet', () => ({
 	NATIVE_WALLET_READY_EVENT: 'beamio:native-wallet-ready',

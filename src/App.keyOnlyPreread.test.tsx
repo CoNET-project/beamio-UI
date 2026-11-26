@@ -1,5 +1,5 @@
 /**
- * Runtime check of the key_only entry: walletStatus not_ready + key_only with the pre-read absent → onboarding,
+ * Runtime check of the key_only entry (r11): walletStatus not_ready + key_only with the pre-read absent → local home,
  * unknown → startup wait, valid → home. Harness copied from App.accountReset.test.tsx. SYNTHETIC values only.
  * ST-02, ST-03, ST-05: the page-level cases of accountResetCases. CP-01 to CP-06: onboardingCompatCases (Y.93), with CP-04 (the
  * legacy shell without identity.native-keys.v1) covered at the tier level in accountReset.test.ts, see the receipt.
@@ -140,7 +140,6 @@ jest.mock('@/services/beamio', () => ({
 	postBeamio: async () => true,
 	createOrGetWallet: jest.fn(),
 	resolveSigningPrivateKeyArmor: () => '',
-	purgeKeyOnlyPageRecord: async () => ({ kind: 'absent' }), // 0.53.52: no key-only record in these fixtures (the purge reads the page store); last, so a spread above cannot override it
 }))
 jest.mock('@/utils/consumerWalletGate', () => ({
 	...jest.requireActual('@/utils/consumerWalletGate'),
@@ -297,35 +296,24 @@ describe('key_only entry: the pre-read decides (runtime)', () => {
 		;(race as { preread?: unknown }).preread = undefined
 	})
 
-	// 0.53.39 tightening (R88): onboarding needs an explicit walletStatus no_key. This case answers not_ready, so the
-	// start waits with the reason status_not_no_key (startup wait, retry offered), and it does not onboard.
-	// 0.53.52 (owner approval 2026-11-25; supersedes v2 PNK-04 dataKept:true): a private key alone is not a valid account. The SDK deletes the native material by
-	// itself; the page waits for walletStatus no_key (the native create is refused while the key is there) and only then opens the onboarding.
-	it('key_only (walletStatus not_ready + key_only) with the pre-read absent: the page waits for the SDK deletion (no onboarding yet, no home); once walletStatus is no_key the onboarding opens', async () => {
+	// r11: not_ready + key_only → local home (page never waits for SDK delete → no_key; never onboards on key_only alone)
+	it('key_only (walletStatus not_ready + key_only) with the pre-read absent: local home (r11); no onboarding', async () => {
 		;(race as { preread?: unknown }).preread = { kind: 'absent' }
 		renderApp()
-		await waitFor(() => expect(publishNativePwaLog).toHaveBeenCalledWith('warn', expect.stringContaining('startup wait')), { timeout: 3000 })
+		expect(await screen.findByText('HOME_MARK', {}, { timeout: 4000 })).toBeTruthy()
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
-		expect(screen.queryByText('HOME_MARK')).toBeNull()
-		// the SDK finished deleting: walletStatus is no_key; the next start round opens the onboarding
-		race.native = { status: 'no_key' }
-		await act(async () => {
-			window.dispatchEvent(new Event('beamio:native-wallet-ready'))
-		})
-		expect(await screen.findByText('ONBOARDING_MARK', {}, { timeout: 4000 })).toBeTruthy()
-		expect(screen.queryByText('HOME_MARK')).toBeNull()
 	})
 
-	it('key_only that the SDK never finishes deleting: the page stays in the startup wait, no onboarding, no create', async () => {
+	it('key_only that the SDK never finishes deleting: local home still (r11); no onboarding, no create', async () => {
 		;(race as { preread?: unknown }).preread = { kind: 'absent' }
 		renderApp()
-		await waitFor(() => expect(publishNativePwaLog).toHaveBeenCalledWith('warn', expect.stringContaining('startup wait')), { timeout: 3000 })
+		expect(await screen.findByText('HOME_MARK', {}, { timeout: 4000 })).toBeTruthy()
 		await act(async () => {
 			window.dispatchEvent(new Event('beamio:native-wallet-ready'))
 		})
-		await new Promise((r) => setTimeout(r, 1200))
+		await new Promise((r) => setTimeout(r, 400))
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
-		expect(screen.queryByText('HOME_MARK')).toBeNull()
+		expect(screen.getByText('HOME_MARK')).toBeTruthy()
 	})
 
 	it('key_only with the pre-read read_error (a read failure, not a confirmed absence): never onboarding, the start re-reads in the background', async () => {
@@ -351,7 +339,7 @@ describe('key_only entry: the pre-read decides (runtime)', () => {
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
 	})
 
-	it('key_only, the pre-read unknown first, then absent on the ready event: the page waits for the SDK deletion; no_key then opens the onboarding', async () => {
+	it('key_only, the pre-read unknown first, then absent on the ready event: local home once absent+key_only (r11)', async () => {
 		;(race as { preread?: unknown }).preread = { kind: 'unknown' }
 		renderApp()
 		await waitFor(() => expect(publishNativePwaLog).toHaveBeenCalledWith('warn', expect.stringContaining('startup wait')), { timeout: 3000 })
@@ -360,14 +348,7 @@ describe('key_only entry: the pre-read decides (runtime)', () => {
 		await act(async () => {
 			window.dispatchEvent(new Event('beamio:native-wallet-ready'))
 		})
-		// still key_only on the native side: waiting, no onboarding
-		await new Promise((r) => setTimeout(r, 800))
+		expect(await screen.findByText('HOME_MARK', {}, { timeout: 4000 })).toBeTruthy()
 		expect(screen.queryByText('ONBOARDING_MARK')).toBeNull()
-		race.native = { status: 'no_key' }
-		await act(async () => {
-			window.dispatchEvent(new Event('beamio:native-wallet-ready'))
-		})
-		expect(await screen.findByText('ONBOARDING_MARK', {}, { timeout: 4000 })).toBeTruthy()
-		expect(screen.queryByText('HOME_MARK')).toBeNull()
 	})
 })

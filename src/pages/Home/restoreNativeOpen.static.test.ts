@@ -89,11 +89,11 @@ describe('restore screen: shell recovery through the PWA page', () => {
 		expect(section).not.toMatch(/console\.|publishNativePwaLog/)
 	})
 
-	it('there is no pwaEmptySignal sender in the non-test source tree (cold start must not add one)', () => {
+	it('r11: pwaEmptySignal sender is wired in non-test source (explicit_empty after confirmed empty IDB)', () => {
 		const { spawnSync } = require('child_process') as typeof import('child_process')
 		const r = spawnSync('git', ['grep', '-n', '-E', "(type|command)\\s*[:=]\\s*['\"]pwaEmptySignal|sendPwaEmptySignal|PWA_EMPTY_SIGNAL", '--', 'src', ':!*.test.ts', ':!*.test.tsx'], { cwd: join(__dirname, '..', '..', '..'), encoding: 'utf8' })
-		expect(r.status).toBe(1) // 1 = no match
-		expect(r.stdout).toBe('')
+		expect(r.status).toBe(0) // matches present
+		expect(r.stdout).toMatch(/pwaEmptySignal|sendPwaEmptySignal|PWA_EMPTY_SIGNAL/)
 	})
 })
 

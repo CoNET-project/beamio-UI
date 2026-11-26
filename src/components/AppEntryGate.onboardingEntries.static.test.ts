@@ -48,26 +48,24 @@ describe('the entries that open the onboarding for "no account" are confirmed by
 		expect(SRC).toContain("if ((await confirmNoMnemonicOnNative(reqId)) === 'handled') return")
 	})
 
-	it('0.53.52: the key-only purge is called from the one helper only, and the start path reaches the onboarding through that helper', () => {
-		expect(SRC.match(/holdUnlessKeyOnlyPurged\(reqId\)/g)?.length).toBe(1) // the one call, in openOnboardingConfirmed
-		expect(SRC).toContain('const holdUnlessKeyOnlyPurged = async')
-		expect(SRC.match(/purgeKeyOnlyPageRecord\(\)/g)?.length).toBe(1)
+	it('r11: page purge helpers are abolished; key_only enters local mode; browser key_only keeps the key', () => {
+		expect(SRC).not.toContain('holdUnlessKeyOnlyPurged')
+		expect(SRC).not.toContain('purgeKeyOnlyPageRecord')
+		expect(SRC).toContain('enterKeyOnlyLocalMode')
+		expect(SRC).toContain("notReadyReason === 'key_only'")
 		expect(SRC).toContain("await openOnboardingConfirmed('start route onboard', {")
-		expect(SRC).toContain("await openOnboardingConfirmed('browser key-only page record'")
+		expect(SRC).toContain("notifyShellEntry('browser_key_only_established')")
+		expect(SRC).toContain('sendPwaEmptySignalIfExplicitEmpty')
 	})
 
-	it('0.53.52: a process that read a valid mnemonic never purges, and every purge verdict other than deleted/absent/not_key_only holds the start', () => {
-		const h = SRC.slice(SRC.indexOf('const holdUnlessKeyOnlyPurged = async'), SRC.indexOf('const openOnboardingConfirmed'))
-		expect(h.indexOf('if (sessionSawValidRef.current) return true')).toBeGreaterThan(-1)
-		expect(h.indexOf('if (sessionSawValidRef.current) return true')).toBeLessThan(h.indexOf('purgeKeyOnlyPageRecord()'))
-		expect(h).toContain("purged.kind === 'unknown' || purged.kind === 'failed'")
-		expect(h).toContain('return false')
-		// the leftovers are cleared only for the wallet that was deleted
-		expect(h).toContain('forgetPersistedShellEoa(purged.eoa)')
-		expect(h).toContain('clearPendingCreateTag(purged.eoa)')
+	it('r11: openOnboardingConfirmed emits pwaEmptySignal after confirmed empty (no purge hold)', () => {
+		const o = SRC.slice(SRC.indexOf('const openOnboardingConfirmed = async'), SRC.indexOf('const openOnboardingConfirmed = async') + 2200)
+		expect(o).toContain('sendPwaEmptySignalIfExplicitEmpty')
+		expect(o).not.toContain('holdUnlessKeyOnlyPurged')
+		expect(o).not.toContain('purgeKeyOnlyPageRecord')
 	})
 
-	it('the only direct goOnboarding(false) calls are the helper itself (the start path goes through it too since 0.53.52, which is where the key-only purge is) and the sealed-copy check (pre-read plus walletStatus no_key)', () => {
+	it('the only direct goOnboarding(false) calls are the helper itself and the sealed-copy check (pre-read plus walletStatus no_key)', () => {
 		const direct: string[] = []
 		let i = SRC.indexOf('goOnboarding(false)')
 		while (i !== -1) {

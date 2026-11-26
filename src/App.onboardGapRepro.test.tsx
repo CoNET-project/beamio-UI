@@ -94,7 +94,6 @@ jest.mock('@/services/walletCredential', () => ({
 jest.mock('@/services/beamio', () => ({
 	...jest.requireActual('@/services/beamio'),
 	...mockCountDeletes(jest.requireActual('@/services/beamio')),
-	purgeKeyOnlyPageRecord: async () => (globalThis as { __purge?: unknown }).__purge ?? { kind: 'absent' }, // 0.53.52: no key-only record unless a test says so (the purge reads the page store)
 	checkStorageWithStatusWithTimeout: async () => mockPage.copy, // 0.53.39: jsdom has no IndexedDB; the page copy is confirmed empty unless the test sets it
 	checkStorage: () => {
 		mockRace.storageCalls += 1
@@ -565,36 +564,21 @@ describe('0.53.44 open points and hold page entry (real App and AppEntryGate)', 
 	})
 })
 
-describe('0.53.52 (supersedes 0.53.44 open point (c)): a browser private-key-only copy is not a valid account: deleted silently, then the onboarding', () => {
+describe('r11: a browser private-key-only copy keeps the key and enters local home (page never deletes)', () => {
 	const keyOnly = () => ({ isReady: true, profiles: [{ keyID: '0x9858effd232b4033e47d90003d41ec34ecaeda94', isPrimary: true, privateKeyArmor: `0x${'11'.repeat(32)}`, chats: [] }], beamio: { accountName: 'synthtag' } })
 	beforeEach(async () => {
 		await new Promise((r) => setTimeout(r, 900))
 		resetScenario()
 		mockOnboarding.props = null
-		;(globalThis as { __purge?: unknown }).__purge = undefined
 		;(globalThis as { __gateShell?: boolean }).__gateShell = false
 		mockRace.storageCalls = 1
 		mockStorageRead.record = keyOnly()
 		mockPage.copy = { status: 'loaded', data: keyOnly() }
 	})
-	afterEach(() => {
-		;(globalThis as { __purge?: unknown }).__purge = undefined
-	})
-	it('the key-only copy was confirmed and deleted: the onboarding opens, the gate never opens on that copy, nothing is saved from it', async () => {
-		;(globalThis as { __purge?: unknown }).__purge = { kind: 'deleted', eoa: '0x9858effd232b4033e47d90003d41ec34ecaeda94' }
+	it('browser key_only with keyID: local home permit, no onboarding, key kept', async () => {
 		renderApp()
-		await waitFor(() => expect(mockOnboarding.props).not.toBeNull(), { timeout: 4000 })
-		expect(jest.requireActual('@/services/beamio').pageWriteGateStatus().permit).not.toBe('browser_key_only_established')
-	})
-	it('the record cannot be read or the delete did not take effect (unknown, failed): hold, no onboarding, no entry, nothing saved', async () => {
-		for (const kind of ['unknown', 'failed']) {
-			mockOnboarding.props = null
-			;(globalThis as { __purge?: unknown }).__purge = { kind }
-			renderApp()
-			await new Promise((r) => setTimeout(r, 1500))
-			expect(mockOnboarding.props).toBeNull()
-			expect(jest.requireActual('@/services/beamio').pageWriteGateStatus().permit).not.toBe('browser_key_only_established')
-			cleanup()
-		}
+		await waitFor(() => expect(jest.requireActual('@/services/beamio').pageWriteGateStatus().permit).toBe('browser_key_only_established'), { timeout: 4000 })
+		expect(mockOnboarding.props).toBeNull()
+		expect(deleteCalls()).toBe(0)
 	})
 })

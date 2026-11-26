@@ -107,7 +107,6 @@ jest.mock('@/services/walletCredential', () => ({
 jest.mock('@/services/beamio', () => ({
 	...jest.requireActual('@/services/beamio'),
 	...mockCountDeletes(jest.requireActual('@/services/beamio')),
-	purgeKeyOnlyPageRecord: async () => ({ kind: 'absent' }), // 0.53.52: no key-only record in these fixtures (the purge reads the page store)
 	checkStorageWithStatusWithTimeout: async () => mockPage.copy, // 0.53.39: jsdom has no IndexedDB; the page copy is confirmed empty unless the test sets it
 	checkStorage: () => {
 		mockRace.storageCalls += 1
