@@ -42,6 +42,17 @@ describe('restore screen: shell recovery through the PWA page', () => {
 		expect(screen).toMatch(/if \(gate\.state !== 'ready'\)/)
 	})
 
+	it('a blocked gate is named for the harness and does not render the unlock form', () => {
+		const at = screen.indexOf("if (gate.state !== 'ready')")
+		const form = screen.indexOf('{title}', at)
+		expect(at).toBeGreaterThan(0)
+		expect(form).toBeGreaterThan(at)
+		const blocked = screen.slice(at, form)
+		expect(blocked).toMatch(/data-restore-gate=\{gate\.state === 'blocked' \? 'blocked' : 'checking'\}/)
+		expect(blocked).toMatch(/data-restore-gate-reason=\{gate\.state === 'blocked' \? \(gate\.reason \?\? 'capability_missing'\) : undefined\}/)
+		expect(blocked).not.toMatch(/unlock_your_beamio_id|use_recovery_code|\{title\}/)
+	})
+
 	it('the shell login path validates, builds the request, clears the password, and only then sends it', () => {
 		const at = screen.indexOf('const handleLoginSubmit = async')
 		const body = screen.slice(at, screen.indexOf('\n\t}\n', at))

@@ -649,10 +649,14 @@ export default function RestoreWalletUnifiedScreen({
 		return (
 			<div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[#f3f4fb] font-[Inter,system-ui,sans-serif] text-[#1a1c1f]">
 				<VerraFloatingNavChrome onBack={onBack} tone="restore" />
-				<div className={`flex min-h-0 flex-1 flex-col items-center gap-5 px-6 ${APP_FLOATING_CHROME_MAIN_TOP_PT}`}>
+				<div
+					className={`flex min-h-0 flex-1 flex-col items-center gap-5 px-6 ${APP_FLOATING_CHROME_MAIN_TOP_PT}`}
+					data-restore-gate={gate.state === 'blocked' ? 'blocked' : 'checking'}
+					data-restore-gate-reason={gate.state === 'blocked' ? (gate.reason ?? 'capability_missing') : undefined}
+				>
 					{gate.state === 'blocked' ? (
 						<>
-							<p className="text-center text-[15px] font-medium text-[#1a1c1f]">{tu(recoveryOpenErrorKey(gate.reason ?? 'capability_missing'))}</p>
+							<p className="text-center text-[15px] font-medium text-[#1a1c1f]" role="alert">{tu(recoveryOpenErrorKey(gate.reason ?? 'capability_missing'))}</p>
 							<AppButton type="button" fullWidth onClick={() => setGateTry((n) => n + 1)} className={primaryButtonClass}>
 								{tu('recovery.native.retry')}
 							</AppButton>
