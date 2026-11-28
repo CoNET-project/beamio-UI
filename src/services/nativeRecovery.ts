@@ -157,9 +157,26 @@ function emit(result: NativeRecoveryResult): void {
 	if (result.code === 'ok' || result.code === 'cancelled') endWatch()
 }
 
+/**
+ * the shell may deliver `nativeRecoveryResult` BEFORE the ack of the open request reaches the page (a fast SDK callback). Either order is accepted: a result whose reqId is the request still
+ * waiting for its ack is HELD (not delivered, not dropped); the ack `ok` releases it through the same filter, any other end of the wait (refusal, timeout, no answer) discards it. A result is therefore delivered only for an open the
+ * shell acknowledged with ok, as before. Held results are capped (the shell sends one per outcome).
+ */
+let pendingRecoveryReqId: number | null = null
+const EARLY_RECOVERY_RESULTS_MAX = 4
+let earlyRecoveryResults: Array<Record<string, unknown>> = []
+
 function onWindowEvent(ev: Event): void {
 	const p = eventPayloadOf(ev)
 	if (!p || p.type !== NATIVE_RECOVERY_RESULT_EVENT) return
+	if (typeof p.reqId === 'number' && pendingRecoveryReqId !== null && p.reqId === pendingRecoveryReqId && p.reqId !== openedRecoveryReqId) {
+		if (earlyRecoveryResults.length < EARLY_RECOVERY_RESULTS_MAX) earlyRecoveryResults.push(p as Record<string, unknown>)
+		return
+	}
+	handleRecoveryResult(p as Record<string, unknown>)
+}
+
+function handleRecoveryResult(p: Record<string, unknown>): void {
 	const code = p.code
 	if (typeof code !== 'string') return
 	// B7: a result with a reqId that is not the open request's is discarded (fail closed).
@@ -207,14 +224,28 @@ export async function nativeRecoveryOpen(): Promise<{ ok: true } | { ok: false; 
 	const probe = await probeNativeCapabilities()
 	if (!probe.answered) return { ok: false, reason: 'native_unavailable' }
 	const reqId = nextReqId()
-	const answer = await requestNativeAck({ type: NATIVE_RECOVERY_OPEN_COMMAND }, OPEN_TIMEOUT_MS, reqId)
-	if (answer.kind !== 'payload') return { ok: false, reason: answer.kind }
+	pendingRecoveryReqId = reqId
+	earlyRecoveryResults = []
+	// the window listener must be up while the ack is awaited: a result that comes first is held (see pendingRecoveryReqId)
+	startListening()
+	let answer: Awaited<ReturnType<typeof requestNativeAck>>
+	try {
+		answer = await requestNativeAck({ type: NATIVE_RECOVERY_OPEN_COMMAND }, OPEN_TIMEOUT_MS, reqId)
+	} finally {
+		if (pendingRecoveryReqId === reqId) pendingRecoveryReqId = null
+	}
+	const held = earlyRecoveryResults
+	earlyRecoveryResults = []
+	if (answer.kind !== 'payload') { stopListeningIfIdle(); return { ok: false, reason: answer.kind } }
 	const p = answer.payload as { type?: unknown; ok?: unknown; error?: unknown }
 	if (p.type === 'ack' && p.ok === true) {
 		openedRecoveryReqId = reqId
 		beginWatch()
+		// results that arrived before the ack are delivered now, in arrival order, through the same filter
+		for (const r of held) handleRecoveryResult(r)
 		return { ok: true }
 	}
+	stopListeningIfIdle()
 	return { ok: false, reason: typeof p.error === 'string' && p.error ? p.error : 'bad_ack' }
 }
 
@@ -451,14 +482,34 @@ export async function nativeAccountCreateOpen(account: string): Promise<NativeAc
 	const probe = await probeNativeCapabilities()
 	if (!probe.answered) return { ok: false, reason: 'native_unavailable' }
 	const reqId = nextReqId()
-	const answer = await withoutGlobalNoKeyLock(() =>
-		requestNativeAck({ type: NATIVE_ACCOUNT_CREATE_OPEN_COMMAND, account }, OPEN_TIMEOUT_MS, reqId),
-	)
+	// a create result that comes BEFORE the ack of this open is held, and released by the ack `ok` (any other end of the wait discards it): either order is accepted
+	pendingCreateReqId = reqId
+	earlyCreateResults = []
+	let answer: Awaited<ReturnType<typeof requestNativeAck>>
+	try {
+		answer = await withoutGlobalNoKeyLock(() =>
+			requestNativeAck({ type: NATIVE_ACCOUNT_CREATE_OPEN_COMMAND, account }, OPEN_TIMEOUT_MS, reqId),
+		)
+	} finally {
+		if (pendingCreateReqId === reqId) pendingCreateReqId = null
+	}
+	const held = earlyCreateResults
+	earlyCreateResults = []
 	if (answer.kind !== 'payload') return { ok: false, reason: answer.kind }
 	const result = parseAccountCreateOpenAck(answer.payload as { type?: unknown; ok?: unknown; error?: unknown; page?: unknown; walletStatus?: unknown })
-	if (result.ok) openedCreateReqId = reqId
+	if (result.ok) {
+		openedCreateReqId = reqId
+		for (const p of held) for (const replay of createReplays) replay(p)
+	}
 	return result
 }
+
+/** The reqId of the create open that still waits for its ack, and the create results that came first (held, capped). */
+let pendingCreateReqId: number | null = null
+const EARLY_CREATE_RESULTS_MAX = 4
+let earlyCreateResults: Array<Record<string, unknown>> = []
+/** One replay function per subscription of `onNativeAccountCreateResult`: the held results go through each one's own accept filter. */
+const createReplays = new Set<(p: Record<string, unknown>) => void>()
 
 /** Test seam and reset: the reqId of the opened create request, or null. */
 export function openedNativeCreateReqId(): number | null {
@@ -481,14 +532,14 @@ export type NativeCreateAccepted =
 	| { code: NativeAccountCreateResultCode; eoa?: string; reason?: WriteFailedReason }
 	| { code: 'shape_violation'; reason: 'ok_code_mismatch' }
 
-/** Fields allowed at the top level of a nested create result (r11 §12.1). */
+/** Fields allowed at the top level of a nested create result. */
 const CREATE_RESULT_TOP_KEYS: ReadonlySet<string> = new Set(['type', 'reqId', 'ok', 'result'])
-/** Fields allowed inside `result`. The three W fields are accepted on ok only and stripped at once (r11 §10). */
+/** Fields allowed inside `result`. The three W fields are accepted on ok only and stripped at once. */
 const CREATE_RESULT_KEYS: ReadonlySet<string> = new Set(['code', 'eoa', 'cleanupPending', 'reason'])
 const CREATE_RESULT_W_KEYS: ReadonlySet<string> = new Set(['privateKeyArmor', 'mnemonicPhrase', 'recoveryWords'])
 
 /**
- * Accepts a nested `nativeAccountCreateResult` payload (r11). Shape: `{type, reqId, ok, result:{code, eoa?, cleanupPending?, W?}}`.
+ * Accepts a nested `nativeAccountCreateResult` payload. Shape: `{type, reqId, ok, result:{code, eoa?, cleanupPending?, W?}}`.
  * - the reqId must be the opened one; top-level keys are limited to type, reqId, ok, result;
  * - inside result: code, eoa, cleanupPending; the W fields only when ok, and they are dropped here (never kept or logged);
  * - `ok` must equal (code === 'ok'); a mismatch is a shape violation (the caller ends the wait and offers a retry);
@@ -809,15 +860,25 @@ export type NativeAccountCreateResultCode = (typeof NATIVE_ACCOUNT_CREATE_RESULT
 /** Subscribes to `nativeAccountCreateResult`. Unknown codes are ignored. Returns the unsubscribe function. */
 export function onNativeAccountCreateResult(listener: (result: NativeCreateAccepted) => void): () => void {
 	if (typeof window === 'undefined') return () => undefined
-	const handler = (ev: Event) => {
-		const p = eventPayloadOf(ev)
-		if (!p || p.type !== NATIVE_ACCOUNT_CREATE_RESULT_EVENT) return
+	const replay = (p: Record<string, unknown>) => {
 		const accepted = acceptNativeCreateResult(p, openedCreateReqId)
 		if (!accepted) return
 		listener(accepted)
 	}
+	createReplays.add(replay)
+	const handler = (ev: Event) => {
+		const p = eventPayloadOf(ev)
+		if (!p || p.type !== NATIVE_ACCOUNT_CREATE_RESULT_EVENT) return
+		// before the ack of the open: held (the first subscription holds it once; the ack releases it to every subscription)
+		if (pendingCreateReqId !== null && p.reqId === pendingCreateReqId && p.reqId !== openedCreateReqId) {
+			if (earlyCreateResults.length < EARLY_CREATE_RESULTS_MAX && !earlyCreateResults.includes(p as Record<string, unknown>)) earlyCreateResults.push(p as Record<string, unknown>)
+			return
+		}
+		replay(p as Record<string, unknown>)
+	}
 	for (const name of NATIVE_EVENT_NAMES) window.addEventListener(name, handler)
 	return () => {
+		createReplays.delete(replay)
 		for (const name of NATIVE_EVENT_NAMES) window.removeEventListener(name, handler)
 	}
 }

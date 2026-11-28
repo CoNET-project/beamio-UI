@@ -55,7 +55,7 @@ async function until(cond: () => boolean, budgetMs: number): Promise<void> {
 	for (let done = 0; done < budgetMs && !cond(); done += 1000) await advance(1000)
 }
 
-const READY_WAIT_MS = 91_000 // longer than the native history-key wait (90 s)
+const READY_WAIT_MS = 16_000 // longer than the iOS history-key wait (15 s)
 
 afterEach(() => {
 	jest.useRealTimers()
@@ -100,6 +100,8 @@ describe('history load answered with sync_failed', () => {
 		answerFor = (cmd) => (cmd.type === 'init' ? { type: 'ready', result: { historyApi: 2 } } : null)
 		const client = createNativeConetChatClient(config())
 		await client.init()
+		// the module announces the history key (its own log), so these cases keep exercising the load itself (an unannounced key gets one repeat of the first load)
+		window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'chatModuleEvent', event: { type: 'event:log', level: 'info', message: '[history] ready genesis=abc' } } }))
 		return client
 	}
 

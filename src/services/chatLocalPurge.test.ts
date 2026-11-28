@@ -177,10 +177,22 @@ describe('runChatLocal (orchestration)', () => {
 		expect(getLive()).toBe(original)
 	})
 
-	it('already purged: no work', async () => {
-		const { deps, calls } = fakeDeps(syntheticProfiles(), { workerState: async () => 'purged' })
-		expect(await runMigrationCore(deps)).toEqual({ ok: true, purged: 0, alreadyPurged: true })
-		expect(calls).toEqual([])
+	it('already purged: no work; a lost purged flag is put back only while the record holds no bodies', async () => {
+		const withBodies = fakeDeps(syntheticProfiles(), { workerState: async () => 'purged' })
+		expect(await runMigrationCore(withBodies.deps)).toEqual({ ok: true, purged: 0, alreadyPurged: true })
+		expect(withBodies.calls).toEqual([]) // a body written back after the flag was lost may be the only copy: with the flag the floor would drop it, so the flag is not restored over it
+		const stripped = fakeDeps(stripChatBodiesFromProfiles(syntheticProfiles()), { workerState: async () => 'purged' })
+		expect(await runMigrationCore(stripped.deps)).toEqual({ ok: true, purged: 0, alreadyPurged: true })
+		expect(stripped.calls).toEqual(['markPurged']) // no strip, no persist, no worker purge; only the flag
+	})
+
+	it('the flag is restored only for the account the library is purged for, and never from an empty profile list', async () => {
+		const marks: string[] = []
+		const clean = stripChatBodiesFromProfiles(syntheticProfiles())
+		await runMigrationCore(fakeDeps(clean, { workerState: async () => 'purged', markPurged: (e) => { marks.push(e) } }).deps)
+		expect(marks).toEqual([EOA])
+		await runMigrationCore(fakeDeps([], { workerState: async () => 'purged', markPurged: (e) => { marks.push('EMPTY:' + e) } }).deps)
+		expect(marks).toEqual([EOA])
 	})
 
 	it('persist fails: rolls back to the original objects and does not purge', async () => {
@@ -230,5 +242,16 @@ describe('runChatLocal (orchestration)', () => {
 		expect(getLive()).toBe(original)
 		expect(countChatMessages(getLive())).toBe(2)
 		expect(calls).not.toContain('markPurged')
+	})
+})
+
+describe('runChatLocalMigration puts a lost purged flag back when the library says purged (wiring)', () => {
+	// eslint-disable-next-line @typescript-eslint/no-var-requires
+	const src = require('fs').readFileSync(require('path').join(__dirname, 'chatLocalMigration.ts'), 'utf8') as string
+	it('the early return for state purged restores the flag first; the flag is never cleared anywhere from the absence of anything', () => {
+		expect(src).toMatch(/if \(state === 'purged'\) \{[\s\S]*?const eoaPurged = profileEoaOf\(profiles\)[\s\S]*?if \(eoaPurged && bodiesLeft === 0\) markChatBodiesPurged\(eoaPurged\)\s*return 'already_purged'\s*\}/)
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
+		const purgeSrc = require('fs').readFileSync(require('path').join(__dirname, 'chatLocalPurge.ts'), 'utf8') as string
+		expect(purgeSrc).not.toMatch(/removeItem\(CHAT_BODIES_PURGED_KEY/)
 	})
 })

@@ -17,6 +17,7 @@ jest.mock('../../services/beamio', () => ({
 	disableWalletVaultPasscode: jest.fn(),
 	walletVaultHasPasscode: jest.fn(),
 	wipeLocalWalletForRestore: jest.fn(),
+	chatDraftDocAdapter: { list: jest.fn(async () => []) },
 }))
 jest.mock('../../utils/cashTreesNativeNfc', () => ({
 	isCashTreesNativeWebView: jest.fn(() => false),
@@ -111,13 +112,17 @@ describe('lock screen (unlock flow)', () => {
 		expect(alert.textContent).not.toContain('io_init')
 	})
 
-	it('forgot passcode: delete stays disabled until the box is ticked', () => {
+	it('forgot passcode: with nothing unsent but the cloud history copy not readable, delete needs the second box too, and nothing more', async () => {
+		jest.requireMock('../../services/beamio').chatDraftDocAdapter.list.mockResolvedValue([]) // the CRA jest config resets mock implementations before each test
 		render(<PasscodeLockScreen onUnlocked={() => undefined} />)
 		fireEvent.click(screen.getByRole('button', { name: 'Forgot passcode?' }))
 		const del = screen.getByRole('button', { name: 'Delete and re-import' }) as HTMLButtonElement
 		expect(del.disabled).toBe(true)
-		fireEvent.click(screen.getByRole('checkbox'))
-		expect(del.disabled).toBe(false)
+		await waitFor(() => expect(screen.getAllByRole('checkbox').length).toBe(2))
+		fireEvent.click(screen.getAllByRole('checkbox')[0]!)
+		expect(del.disabled).toBe(true)
+		fireEvent.click(screen.getAllByRole('checkbox')[1]!)
+		await waitFor(() => expect(del.disabled).toBe(false))
 	})
 })
 

@@ -942,6 +942,16 @@ export class LocalChatStore {
 		})
 	}
 
+	/** how many message rows the library holds (live rows and tombstones). -1 when the library is not open or cannot count. A count only: nothing is read or decrypted. */
+	async countRows(): Promise<number> {
+		if (this.state !== 'open') return -1
+		try {
+			return await this.backend!.countRows()
+		} catch {
+			return -1
+		}
+	}
+
 	async getMigrationState(): Promise<string> {
 		if (this.state !== 'open') return 'none'
 		return (await this.backend!.getMeta('migrationState')) ?? 'none'

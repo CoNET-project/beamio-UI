@@ -99,31 +99,6 @@ export function extractInboundSendId(displayText: unknown): string | null {
 	return null
 }
 
-export function markMessageDeliveredBySendId(
-	chats: chatData[],
-	sendId: string,
-): { chats: chatData[]; updated: boolean } {
-	if (!sendId || !Array.isArray(chats)) return { chats, updated: false }
-	let updated = false
-	const next = chats.map(chat => {
-		if (!chat?.messages?.length) return chat
-		let touched = false
-		const messages = chat.messages.map(m => {
-			if (m.from !== 'me') return m
-			const id = m.sendId || m.id
-			if (id !== sendId) return m
-			if (m.status === 'delivered') return m
-			// a message already read is never taken back to delivered
-			if ((m.status as string) === 'read') return m
-			touched = true
-			updated = true
-			return { ...m, status: 'delivered' as const }
-		})
-		return touched ? { ...chat, messages } : chat
-	})
-	return { chats: next, updated }
-}
-
 type PostOpts = {
 	routerArmoredPublicKey: string
 	privateKeyArmor: string
@@ -244,6 +219,8 @@ export type SendDeliveryReceiptArgs = {
 	) => Promise<boolean>
 	/** Original sender mailbox B route PGP — required for NoPush mailbox work wrap. */
 	senderMailboxRoutePublicKey?: string | null
+	/** the caller keeps its own record of what to send (receiptOutbox.ts): POST even if this page already sent this receipt */
+	resend?: boolean
 }
 
 /** Notify original sender; UI must treat as protocol, not a chat bubble. */
@@ -256,7 +233,7 @@ export async function sendDeliveryReceiptToSender(args: SendDeliveryReceiptArgs)
 		console.warn('[sendDeliveryReceiptToSender] skip: missing sender mailbox route key')
 		return false
 	}
-	if (receiptedSendIds.has(sendId)) return true
+	if (!args.resend && receiptedSendIds.has(sendId)) return true
 	try {
 		const walletAddress = accountEoaFor(privateKeyArmor)
 		// Same builder as the spec vectors (`builders.deliveryReceipt`); deliveredAt in ms.
@@ -315,7 +292,10 @@ export type DualDeliveryReceiptArgs = {
  * Callers that ingest a `beamio_chat_delivery_receipt_v1` must only mailbox-ACK
  * (never call this with a nested receipt sendId as the original message).
  */
-export async function emitDualChatDeliveryReceipts(args: DualDeliveryReceiptArgs): Promise<void> {
+/** what the sender receipt did: sent (the POST was answered ok), failed (it was tried), skipped (no sender key or nodes). The mailbox ACK is not part of it. */
+export type DualReceiptOutcome = { senderReceipt: 'sent' | 'failed' | 'skipped' }
+
+export async function emitDualChatDeliveryReceipts(args: DualDeliveryReceiptArgs): Promise<DualReceiptOutcome> {
 	const {
 		armorHash,
 		sendId,
@@ -328,6 +308,7 @@ export async function emitDualChatDeliveryReceipts(args: DualDeliveryReceiptArgs
 	} = args
 	const hash = (armorHash || '').trim().toLowerCase()
 	const tasks: Promise<boolean>[] = []
+	let senderReceipt: DualReceiptOutcome['senderReceipt'] = 'skipped'
 
 	if (hash && !args.skipMailboxAck && mailboxAck?.routerArmoredPublicKey && canSignAccount(privateKeyArmor)) {
 		const runMailbox = async (): Promise<boolean> => {
@@ -373,6 +354,7 @@ export async function emitDualChatDeliveryReceipts(args: DualDeliveryReceiptArgs
 				senderMailboxRoutePublicKey,
 				sendMessage,
 			}).then(ok => {
+				senderReceipt = ok ? 'sent' : 'failed'
 				if (!ok) console.warn('[emitDualChatDeliveryReceipts] sender receipt failed', sendId)
 				return ok
 			}),
@@ -385,4 +367,5 @@ export async function emitDualChatDeliveryReceipts(args: DualDeliveryReceiptArgs
 	}
 
 	if (tasks.length) await Promise.allSettled(tasks)
+	return { senderReceipt }
 }

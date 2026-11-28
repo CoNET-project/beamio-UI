@@ -52,9 +52,73 @@ export function stripChatBodiesFromProfiles<T>(profiles: T): T {
 	}) as unknown as T
 }
 
-/** Profiles as they are persisted: stripped once this account's bodies were purged. */
+/**
+ * what the persisted account record may hold for this account, judged like the sender's copy is (senderCopy.ts), not by the localStorage flag alone (a SIGKILL drops the flag while the library database stays).
+ *  - `library` the flag is set (the purge ran and was verified): the record keeps NO bodies and the floor does not bring stored bodies back.
+ *  - `guarded` the flag is NOT set but the library says switched / purged, or the browser worker library exists and did not answer within the bound (unknown): NEW bodies are not written into the record,
+ *               and what is ALREADY stored is kept (the floor keeps it). A body that an earlier write put back after the flag was lost may be the only copy of that message; it is removed only after the
+ *               library confirms it has it (not done yet: see the receipt), never on a guess.
+ *  - `record` the library is record-based (none / running / complete), or there is no library on this client (a native shell has none: its migrationState throws "unavailable"), or nothing has been read yet:
+ *               bodies are persisted as before. WITHOUT this rule a shell or a record-based user would lose their chat bodies.
+ * Evidence is per account; it is set by the reads that already happen (migration start, every library decision of the chat page), never cleared from the absence of anything.
+ */
+export type LibraryPersistMode = 'library' | 'guarded' | 'record'
+interface LibraryEvidence { eoa: string; capable: boolean; state: string | null }
+let libraryEvidence: LibraryEvidence | null = null
+/** `capable`: the active client is the browser worker with a library (not a native shell). `state`: its migration state, null when it was asked and did not answer. */
+export function noteLibraryEvidence(input: { eoa: string; capable: boolean; state: string | null }): void {
+	if (!input.eoa) return
+	const eoa = input.eoa.toLowerCase()
+	// an UNKNOWN read (a worker that is slow, a timeout) never overwrites what was known for this account: the last known state stays until a read says otherwise. Without this one slow answer turned a record-based
+	// account into `guarded` (no bodies in the record) and could turn a known library back into unknown.
+	const prev = libraryEvidence
+	if (input.state === null && input.capable && prev && prev.eoa === eoa && prev.capable && prev.state !== null) return
+	libraryEvidence = { eoa, capable: input.capable, state: input.state }
+}
+export function resetLibraryEvidenceForTest(): void {
+	libraryEvidence = null
+}
+export function libraryPersistModeFor(eoa: string): LibraryPersistMode {
+	if (!eoa) return 'record'
+	if (isChatBodiesPurgedFor(eoa)) return 'library'
+	const e = libraryEvidence
+	if (!e || e.eoa !== eoa.toLowerCase() || !e.capable) return 'record'
+	if (e.state === 'switched' || e.state === 'purged' || e.state === null) return 'guarded'
+	return 'record'
+}
+
+/**
+ * (read-only, for the QA hook): WHY `libraryPersistModeFor` answers what it answers. `mode` is the answer of libraryPersistModeFor itself (never recomputed here, so the two cannot disagree); the rest is what the
+ * decision was made from: `flag` (the purged flag of this account is in place), `capable` (the active client is the browser worker with a library; null when there is no evidence for this account), `state` (the library's
+ * migration state word; null = asked and not answered, or no evidence), `evidence` (none: nothing noted yet; other_account: the noted evidence belongs to another account; present; no_account). Reads only; changes nothing.
+ */
+export interface LibraryPersistExplain { mode: LibraryPersistMode; flag: boolean; capable: boolean | null; state: string | null; evidence: 'no_account' | 'none' | 'other_account' | 'present' }
+export function libraryPersistExplain(eoa: string): LibraryPersistExplain {
+	const mode = libraryPersistModeFor(eoa)
+	const e = libraryEvidence
+	const evidence = !eoa ? 'no_account' : !e ? 'none' : e.eoa !== eoa.toLowerCase() ? 'other_account' : 'present'
+	return { mode, flag: isChatBodiesPurgedFor(eoa), capable: evidence === 'present' && e ? e.capable : null, state: evidence === 'present' && e ? e.state : null, evidence }
+}
+
+/**
+ * an EXACT write: the record is written as it is (bodies included) and the chats floor does not bring stored messages back. Only the cleanup of bodies that the library has confirmed
+ * (recordBodyCleanup.ts) uses it, around its one persist; any other write is judged by libraryPersistModeFor.
+ */
+let exactWriteDepth = 0
+export const isExactRecordWrite = (): boolean => exactWriteDepth > 0
+export async function withExactRecordWrite<T>(fn: () => Promise<T>): Promise<T> {
+	exactWriteDepth += 1
+	try {
+		return await fn()
+	} finally {
+		exactWriteDepth -= 1
+	}
+}
+
+/** Profiles as they are persisted: no bodies in `library` and `guarded` mode (libraryPersistModeFor), except in an exact write. The input is never mutated. */
 export function profilesForPersist<T>(profiles: T): T {
-	return isChatBodiesPurgedFor(profileEoaOf(profiles)) ? stripChatBodiesFromProfiles(profiles) : profiles
+	if (exactWriteDepth > 0) return profiles
+	return libraryPersistModeFor(profileEoaOf(profiles)) !== 'record' ? stripChatBodiesFromProfiles(profiles) : profiles
 }
 
 /** Number of chat messages still held in profiles (0 after ). */

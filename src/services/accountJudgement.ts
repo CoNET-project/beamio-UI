@@ -151,7 +151,7 @@ export const judgeShellFromNative = (input: {
 	}
 	if (input.walletState !== 'not_reported') return judgeShell(input.idb, input.walletState)
 	// the old native walletStatus reports an unlocked or locked wallet that carries an EOA.
-	// LK-P6 (r11, Y.117): a locked G2 is the passcode lock, not an entry: the unlock branch. Only unlocked enters on the native account.
+	// LK-P6 : a locked G2 is the passcode lock, not an entry: the unlock branch. Only unlocked enters on the native account.
 	if (input.walletStatus === 'locked') return { account: 'undetermined', action: 'unlock' }
 	if (input.walletStatus === 'unlocked') return { account: 'has_account', action: 'enter' }
 	// ( /): nothing valid on either side: undetermined, never absent.
@@ -223,7 +223,7 @@ export const nativeNoKeyRoute = (pre: { kind: 'valid' } | { kind: 'absent' } | {
  * lock is the passcode page; an old shell without the pre-read command goes to the shell's own legacy judgement (nothing waits); every
  * other unknown is a retry with a redacted reason code. Input values are the answers as the gate reads them; no material is involved.
  */
-export type NativeStartRoute = 'restore' | 'native_locked' | 'onboard' | 'retry' | 'legacy'
+export type NativeStartRoute = 'restore' | 'native_locked' | 'onboard' | 'retry' | 'legacy' | 'local'
 export interface NativeStartOutcome {
 	route: NativeStartRoute
 	/** A redacted reason code for the log and the retry state. */
@@ -236,6 +236,8 @@ export const nativeStartRoute = (input: {
 	walletStatus: string
 	/** Unit g (rev 2): walletStatus not_ready with passcode_not_provided: a pending sync, not a hold. Key and record guards above still apply. */
 	passcodePending?: boolean
+	/** When walletStatus is `not_ready`, the closed-set reason from the native answer. */
+	notReadyReason?: string | null
 }): NativeStartOutcome => {
 	if (input.pre.kind === 'valid') return { route: 'restore', reason: 'pre_valid' }
 	// 0.53.39 (rule 2026-11-20): a native lock with no PWA mnemonic is a retry state with an unlock entry; never onboarding.
@@ -245,18 +247,23 @@ export const nativeStartRoute = (input: {
 	if (input.pre.kind === 'cipher') return { route: 'native_locked', reason: 'native_locked' }
 	// an old shell that does not know the pre-read command: the legacy judgement (its hasKey and walletStatus rules still apply there)
 	if (input.pre.kind === 'unknown' && input.pre.reason === 'unsupported') return { route: 'legacy', reason: 'pre_read_unsupported' }
-	// 规则：IDB 确认为空且 preread confirmed_missing 时，即使 kPresent 或 key_only 也进入 onboarding；读取未知或出错仍后台重读。
 	const readUnknown = input.walletState === 'unknown' || input.walletState === 'timeout' || input.hasKey === 'unknown' || input.walletStatus === 'unknown' || input.walletStatus === 'timeout' || input.walletStatus === 'unavailable'
-	// Three classes of evidence (project rule 2026-11-22): (i) every source says there is no valid mnemonic: onboarding, data kept. A key or an address
-	// alone is not a mnemonic: hasKey true, key_only and walletStatus not_ready do not block it. The key-only shapes the shells report (measured): Android hasKey true with
-	// no walletState field (not_reported), iOS walletState absent with hasKey false; walletStatus no_key and pre-read absent on both. Both are class (i): the
-	// pre-read already says no mnemonic. (ii) a real ciphertext
-	// record on any side is the unlock page (above, and passcodePending below). (iii) a read failure, or two evidences that contradict each other, keeps
-	// the data and waits. Contradiction needs concrete evidence of a mnemonic or a ciphertext (a cipher or locked pre-read, a passcode already set, a valid
-	// page mnemonic: all decided earlier). Here the only such evidence the answers can carry is a record that is present while hasKey is not true (PRR-06):
-	// a present record that reports no key marker cannot be the key-only shape, and the pre-read cannot read it. Never a confirmed absence.
+	// Three classes of evidence: (i) every source says there is no valid mnemonic (`no_key` + absent pre): onboarding.
+	// (ii) a real ciphertext record on any side is the unlock page (above, and passcodePending below). (iii) a read failure, or two evidences that
+	// contradict each other, keeps the data and waits. walletStatus `not_ready` is never class (i) onboard — branch on notReadyReason:
+	// `key_only` → local mode; any other not_ready → retry / startupWait.
 	const recordPresentWithoutKey = input.walletState === 'present' && input.hasKey !== true
-	if (input.pre.kind === 'absent' && input.passcodePending !== true && !readUnknown && !recordPresentWithoutKey) return { route: 'onboard', reason: 'confirmed_absent' }
+	if (input.pre.kind === 'absent' && input.passcodePending !== true && !readUnknown && !recordPresentWithoutKey) {
+		if (input.walletStatus === 'not_ready') {
+			if (input.notReadyReason === 'key_only') return { route: 'local', reason: 'key_only' }
+			return { route: 'retry', reason: 'status_not_no_key' }
+		}
+		if (input.walletStatus === 'no_key' || input.walletStatus === undefined || input.walletStatus === '') {
+			return { route: 'onboard', reason: 'confirmed_absent' }
+		}
+		// Other definite statuses with absent pre (unlocked / phrase_only / locked should have been decided earlier; fail closed).
+		return { route: 'retry', reason: 'status_not_no_key' }
+	}
 	if (input.hasKey === true) return { route: 'retry', reason: 'key_marker' }
 	if (input.pre.kind === 'unknown') return { route: 'retry', reason: 'pre_unknown' }
 	// Unit g: a passcode account exists when any source reports passcode_not_provided. It is never a confirmed absence,
@@ -268,6 +275,10 @@ export const nativeStartRoute = (input: {
 		return { route: 'retry', reason: 'read_failed' }
 	}
 	if (input.walletState !== 'absent' && input.walletState !== 'not_reported') return { route: 'retry', reason: 'record_not_ready' }
+	if (input.walletStatus === 'not_ready') {
+		if (input.notReadyReason === 'key_only') return { route: 'local', reason: 'key_only' }
+		return { route: 'retry', reason: 'status_not_no_key' }
+	}
 	if (input.walletStatus !== 'no_key') {
 		return { route: 'retry', reason: input.walletStatus === 'unknown' || input.walletStatus === 'timeout' || input.walletStatus === 'unavailable' ? 'read_failed' : 'status_not_no_key' }
 	}

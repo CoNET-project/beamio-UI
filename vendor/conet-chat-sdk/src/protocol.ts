@@ -302,6 +302,8 @@ export interface HistoryAppendCommand {
 	type: 'historyAppend'
 	reqId: number
 	entry: Omit<HistoryEntry, 'seq'>
+	/** QA hook builds only: makes ONE step of this append's remote commit fail (upload / pointer / timeout). Absent in every other build. */
+	qaRemoteFault?: 'upload' | 'pointer' | 'timeout'
 }
 /** Local library commands. Results are plain JSON: items carry no media bytes. */
 export interface HistoryLocalOpenCommand {

@@ -10,6 +10,18 @@ export async function openPgpFingerprintOfArmor(armor: string): Promise<string> 
 	return key.getFingerprint().toLowerCase()
 }
 
+/**
+ * the OpenPGP fingerprint (lowercase hex) of the key that actually ENCRYPTS to this public key: the encryption subkey that OpenPGP selects (`getEncryptionKey`),
+ * or the primary key when it has no encryption subkey. The AddressPGP record's `userPgpKeyID` is the key ID of this subkey (measured on the chain: it is not the
+ * primary key's ID), so the first-contact chain trust (chainPgpTrust.ts) compares the record's id with this value, while the pinned/compared fingerprint stays the primary
+ * key's (`openPgpFingerprintOfArmor`).
+ */
+export async function openPgpEncryptionKeyFingerprintOfArmor(armor: string): Promise<string> {
+	const key = await readKey({ armoredKey: armor.trim() })
+	const enc = await key.getEncryptionKey()
+	return enc.getFingerprint().toLowerCase()
+}
+
 /** The fingerprint as the user compares it: groups of four characters, in upper case. */
 export function formatFingerprintForCompare(fingerprint: string): string {
 	return (fingerprint.toUpperCase().match(/.{1,4}/g) ?? []).join(' ')

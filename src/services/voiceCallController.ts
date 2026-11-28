@@ -226,9 +226,10 @@ export async function resolvePeerVoiceMaterialAsync(
 	const row = (chats || []).find((chat) => (chat.address || '').trim().toLowerCase() === want)
 	try {
 		const { lookupRecipientRecord } = await import('@/services/chat')
-		const { resolveTrustedRoute } = await import('@/utils/recipientPublicKey')
+		const { resolveTrustedRoute, recordFirstPinFor } = await import('@/utils/recipientPublicKey')
 		const trust = await resolveTrustedRoute({ address: addr, chatData: row?.chatData }, lookupRecipientRecord)
 		if (!trust.ok) return empty
+		recordFirstPinFor(addr, trust) // a call is a use of the chain-trusted key; the first pinned value is recorded
 		return { peerPgp: trust.publicArmored, peerRoute: trust.routersArmoreds }
 	} catch {
 		return empty

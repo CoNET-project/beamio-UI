@@ -1,19 +1,24 @@
 import { recordPgpUpgradeState, subscribePgpUpgradeState } from './pgpUpgradeState'
 import { readStoredKeyFingerprint } from '@/utils/pgpFingerprint'
 import { sharedOfferGate } from '@/services/routeOfferGate'
-import { setTrustDecisionObserver, resolveTrustedRoute } from '@/utils/recipientPublicKey'
+import { setTrustDecisionObserver, resolveTrustedRoute, setFirstPinRecorder, type FirstPinned } from '@/utils/recipientPublicKey'
+import { nextPeerChatData, applyPeerRouteToRows, FIRST_PIN_APPLIED_EVENT } from '@/services/peerRouteRecord'
+import { createChainIdGuard } from '@/services/chainIdGuard'
 import { qaSendStage, qaLine } from '@/utils/qaLog'
 import { NATIVE_WALLET_READY_EVENT } from './nativeWallet'
 import { FIRST_IDENTITY_STATUS_ENABLED } from '@/utils/accountCreateRegisterFlag'
-import { getFirstIdentityStatus, subscribeFirstIdentityStatus, type FirstIdentityStatus } from './firstIdentityStatus'
+import { createFirstIdentityWatchdog } from './firstIdentityWatchdog'
+import { watchFirstIdentityFailed } from './firstIdentityFailedRecheck'
+import { FIRST_IDENTITY_NO_EVENT_TIMEOUT_MS, FIRST_IDENTITY_STATUS_CAPABILITY, getFirstIdentityStatus, subscribeFirstIdentityStatus, type FirstIdentityStatus } from './firstIdentityStatus'
 import { createFirstIdentityReaction } from './firstIdentityReaction'
 import { createColdStartBackoff } from './coldStartBackoff'
 import { notifyPgpMigrateEvent } from './pgpMigrationRunner'
-import { getCachedHello } from './nativeChatRouteRegister'
+import { getCachedHello, probeNativeCapabilities } from './nativeChatRouteRegister'
 import { setFirstIdentitySetup } from './shellFirstIdentitySetup'
 import { diagnosticCode } from './diagnosticCodes'
 import { abortAfter, BOOT_REQUEST_TIMEOUT_MS } from '@/utils/bootTimeout'
 import {generateKey, readKey, createMessage, enums, encrypt} from 'openpgp'
+import { armorDigest, armorMatchesRecipient, classifySendAnswer, type SendArmorContext, type SendReceipt } from './sendAnswer'
 import {
 	ensureNativePushBoundForWallet,
 } from '@/utils/cashTreesPushBind'
@@ -61,13 +66,15 @@ import { evaluateNativePgpRestore, restoreNativePgp } from '@/services/nativePgp
 import { nativeChatRouteRegister } from '@/services/nativeChatRouteRegister'
 import { submitBrowserChatRouteRegister, submitNativeChatRouteRegister, type RouteRegisterOutcome } from '@/services/chatRouteRegister'
 import { ensureShellChatState, isShellContext, onShellChatCapabilityResolved, shellChatBlockedNow } from '@/services/shellChatCapability'
-import { setShellChatUiState } from '@/services/shellChatUiState'
+import { getShellChatUiState, setShellChatUiState } from '@/services/shellChatUiState'
+import { setShellChatLive } from '@/services/shellChatLive'
 import { setShellPgpTemporary, setShellPgpTemporaryStopped } from '@/services/shellPgpTemporary'
 import { accountAddressOf } from '@/services/shellProfile'
 import { accountEoaFor } from '@/services/gossipAckSign'
 import { nativeMailboxProbeSign, type MailboxProbeCommand } from '@/services/nativeMailboxProbe'
 import { probeHasSigner, signMailboxProbe } from '@/services/mailboxProbeSigning'
 import { signAccountMessageFor } from '@/services/nativeSigning'
+import { qaTransportFaultGate } from '@/services/qaTransportFault'
 
 function chatBootLog(message: string, level: 'info' | 'warn' | 'error' = 'info'): void {
 	publishNativePwaLog(level, `[Chat] ${message}`)
@@ -188,9 +195,35 @@ export const getKeysFromCoNETPGPSC = async (walletAddress: string) => {
 export type { RecipientLookup }
 
 /** AddressPGP record of a wallet: ok / no_record / network_error, exclusive. The rules are in recipientRecord.ts. */
-export const lookupRecipientRecord = async (walletAddress: string): Promise<RecipientLookup> => {
+/**
+ * (single trusted RPC): the chain the RPC says it is on is checked at run time (eth_chainId) before a record is read, and the ACTUAL chain id goes into the record's
+ * source. The answer is kept per endpoint for the session and is dropped on an endpoint change and on any failed read (chainIdGuard.ts).
+ */
+const rpcEndpointOf = (): string => {
+	try {
+		const conn = (conetDepinProvider as unknown as { _getConnection?: () => { url?: string } })._getConnection?.()
+		return String(conn?.url ?? mainChain_rpc)
+	} catch {
+		return String(mainChain_rpc)
+	}
+}
+export const pgpChainIdGuard = createChainIdGuard({
+	expected: CONET_MAINNET_CHAIN_ID,
+	endpoint: rpcEndpointOf,
+	read: () => (conetDepinProvider as unknown as { send: (m: string, p: unknown[]) => Promise<unknown> }).send('eth_chainId', []),
+})
+
+export const lookupRecipientRecord = async (walletAddress: string, opts?: { freshChain?: boolean }): Promise<RecipientLookup> => {
 	if (!ethers.isAddress(walletAddress)) return { status: 'network_error', reason: 'invalid_address' }
 	const contract = contracts.constPgpManager
+	// the expected chain first: a chain that is another one, or a chain id that cannot be read, leaves the contact unavailable (held, nothing sent)
+	// a first contact (freshChain) asks the RPC for its chain id again for this lookup; the answer then serves the session cache as before
+	if (opts?.freshChain) pgpChainIdGuard.invalidate()
+	const chain = await pgpChainIdGuard.check()
+	if (!chain.ok) {
+		chatBootLog(`recipient lookup: ${chain.reason}`, 'warn')
+		return { status: 'network_error', reason: chain.reason }
+	}
 	const lookup = await readRecipientRecord(
 		() => {
 			const pgp = new ethers.Contract(contract.address, contract.abi, conetDepinProvider)
@@ -201,7 +234,16 @@ export const lookupRecipientRecord = async (walletAddress: string): Promise<Reci
 		fromBase64,
 	)
 	if (lookup.status === 'internal_error') chatBootLog(`recipient lookup internal error: ${lookup.reason}`, 'warn')
-	if (lookup.status === 'ok') rememberRecipientRoute(lookup.publicArmored, lookup.routersArmoreds)
+	// a fetch network TypeError is a network failure; the wording KEY (a fixed vocabulary, never the message) shows which engine wording a shell produced
+	if (lookup.status === 'network_error' && lookup.reason.startsWith('fetch_typeerror:')) chatBootLog(`recipient lookup: network failure (${lookup.reason})`, 'warn')
+	// any failed read drops the kept chain id: an old answer is not reused after a failure
+	if (lookup.status === 'network_error' || lookup.status === 'internal_error') pgpChainIdGuard.noteReadFailure()
+	if (lookup.status === 'ok') {
+		rememberRecipientRoute(lookup.publicArmored, lookup.routersArmoreds)
+		// Where the record came from, as this reader knows it (never from the record): the contract that answered, its chain, and the address asked for.
+		// The first-contact trust (chainPgpTrust.ts) accepts only the whitelisted contract; a build that points elsewhere is held, not trusted.
+		return { ...lookup, source: { chainId: chain.chainId, contract: contract.address, queriedAddress: walletAddress } }
+	}
 	return lookup
 }
 
@@ -245,6 +287,53 @@ const storedChatRowOf = (address: string): (typeof CoNET_Data extends { profiles
 	const chats = CoNET_Data?.profiles?.[0]?.chats
 	return a && Array.isArray(chats) ? chats.find((c) => String(c?.address ?? '').toLowerCase() === a) : undefined
 }
+
+/**
+ * the first pinned fingerprint for a KNOWN contact, from a path that is not the chat text send. Timing: the chat text send pins AFTER a delivered send; these
+ * paths pin when the trust decision lets them use the key, because their send is made by ten different callers with no common success signal. The pinned key is exactly the
+ * key the decision allowed, and a pin can only make a later key change a fingerprint_changed hold (the safe direction), so a payment or call that never goes out leaves a pin on a
+ * key that passed the chain rule, never a wrong one. Paths: payment, group, gift, receipt, call (the text send pins through the chat page). Only a contact that already has a stored row is written (a stranger never gets a row from a payment); a row that already holds a verified value is
+ * left alone. The write waits for the save, the receipt route is offered again after it, and the outcome is logged as a word only (no address, no key).
+ */
+export type FirstPinOutcome = 'saved' | 'no_row' | 'already_verified' | 'not_saved'
+export const pinFirstFingerprintOfKnownContact = async (address: string, pinned: FirstPinned): Promise<FirstPinOutcome> => {
+	const addr = String(address ?? '').trim()
+	let outcome: FirstPinOutcome = 'not_saved'
+	try {
+		const stored = CoNET_Data
+		const rows = Array.isArray(stored?.profiles?.[0]?.chats) ? stored!.profiles![0].chats! : []
+		const row = rows.find((c) => String((c as { address?: string })?.address ?? '').toLowerCase() === addr.toLowerCase())
+		if (!stored?.profiles?.length || !row) outcome = 'no_row'
+		else if (readStoredKeyFingerprint((row as unknown as { chatData?: { verifiedFingerprint?: string } }).chatData?.verifiedFingerprint)) outcome = 'already_verified'
+		else {
+			const next = nextPeerChatData((row as unknown as { chatData?: Parameters<typeof nextPeerChatData>[0] }).chatData ?? null, pinned, true)
+			const { rows: written, changed } = applyPeerRouteToRows(rows as never[], addr, next, true)
+			if (changed) {
+				const profiles = [...stored.profiles]
+				profiles[0] = { ...profiles[0], chats: written as never }
+				stored.profiles = profiles
+				setCoNET_Data(stored)
+				outcome = (await storeSystemDataAndWait()) ? 'saved' : 'not_saved'
+			}
+		}
+	} catch {
+		outcome = 'not_saved'
+	}
+	chatBootLog(`first pin (non-text path): ${outcome}`, outcome === 'not_saved' ? 'warn' : 'info')
+	if (outcome === 'saved') {
+		// the page's own profile state gets the same pin, so a later write from that state cannot drop it
+		try {
+			if (typeof window !== 'undefined' && typeof CustomEvent === 'function') window.dispatchEvent(new CustomEvent(FIRST_PIN_APPLIED_EVENT, { detail: { address: addr, pinned } }))
+		} catch {
+			// the stored record already holds the pin
+		}
+		void offerContactRoute(addr, { force: true })
+	}
+	return outcome
+}
+setFirstPinRecorder((address, pinned) => {
+	void pinFirstFingerprintOfKnownContact(address, pinned)
+})
 
 /** True when the address has a row in the page's chat list (the receipt route is offered to known contacts only, never to a stranger). */
 export const isKnownChatContact = (address: string): boolean => {
@@ -475,8 +564,31 @@ export const onShellChatStarted = (cb: () => void): (() => void) => {
 	}
 }
 
+/**
+ * a wallet-ready event that comes while a start is running is not lost. That start may have read the identity before the
+ * event's cause (the native wallet became ready, a restore finished), so it can end not_ready/no_key and leave the next try to the retry ladder (1 s to 8 s; Android testing showed
+ * `another start is running` and a further 2 to 8 s wait). The event is remembered (one flag, no count) and, when the running start ends without
+ * `started`, one more start runs at once. It is not debounced again (the start that just ended already spent the debounce) and not doubled
+ * (the flag is one bit). The retry ladder and every per-account guard of the start are unchanged.
+ */
+let walletReadyWhileRunning = false
+const runQueuedWalletReady = (): void => {
+	if (!walletReadyWhileRunning) return
+	walletReadyWhileRunning = false
+	if (!isShellContext() || !chatRetryArgs || lastShellStartResult === 'started') return
+	lastWalletReadyAskAt = Date.now()
+	chatBootLog('shell chat: the native wallet became ready while a start ran; one start now (queued event)', 'info')
+	const [setProfiles, setAllNodes, setGossip, , newMessage] = chatRetryArgs
+	void initChat(setProfiles, setAllNodes, setGossip, false, newMessage)
+}
+
 export function restartShellChatAfterWalletReady(): 'started' | 'skipped' {
-	if (!isShellContext() || !chatRetryArgs || initChatInProgress) return 'skipped'
+	if (!isShellContext() || !chatRetryArgs) return 'skipped'
+	if (initChatInProgress) {
+		walletReadyWhileRunning = true
+		chatBootLog('shell chat: the native wallet is ready while a start runs; the event is queued', 'info')
+		return 'skipped'
+	}
 	if (lastShellStartResult === 'started') return 'skipped'
 	const nowMs = Date.now()
 	if (nowMs - lastWalletReadyAskAt < REASK_DEBOUNCE_MS) return 'skipped'
@@ -515,17 +627,42 @@ export function restartShellChatAfterMigrationRetry(): 'started' | 'skipped' {
 /** Test hook: a cold start of this module's re-entry state. */
 export function resetShellReentryForTest(): void {
 	lastWalletReadyAskAt = 0
+	walletReadyWhileRunning = false
+	registeredShortRetriesLeft = 0
 	lastSendAskAt = 0
 	lastShellStartResult = ''
 	evaluateEntered = false
 	upgradeRetryTriggered = false
 }
 /**
- * firstIdentityStatus (QA builds, frozen protocol v1 §4): the page shows "setting up", waits, and re-reads identityPublic; it never sends a create command.
+ * firstIdentityStatus (frozen protocol v1 §4; every build since 0.53.52, behind the shell capability identity.first.status.v1): the page shows "setting up", waits, and re-reads identityPublic; it never sends a create command.
  * retry_later waits retryAfterMs (1 s to 5 min) or the page's own ladder, and every retry_later counts against the shell retry cap; at the cap the
- * existing retry-stopped notice takes over. registered re-reads at once. identity_pending shows the pending notice. failed shows a failure, no retry.
+ * existing retry-stopped notice takes over. registered re-reads at once. identity_pending shows the pending notice. failed shows a failure that says the next
+ * start retries (no button); the SDK latches failed, so while it is shown the page reads identityPublic again (not faster than once a minute) and leaves it when the
+ * identity is ready (firstIdentityFailedRecheck.ts). No event for FIRST_IDENTITY_NO_EVENT_TIMEOUT_MS lands on "identity pending".
  */
 let firstIdentityRetryTimer: ReturnType<typeof setTimeout> | undefined
+/** The no-event watchdog of "setting up" (0.53.52): see firstIdentityWatchdog.ts. At its end the page lands on "identity pending". */
+const firstIdentityWatchdog = createFirstIdentityWatchdog(() => {
+	// silence is not a failure (a lock, a missing passcode or another run sends no event): "identity pending", and a later event is still taken
+	chatBootLog('shell chat: first identity setup: no event within the watchdog; the identity is pending', 'warn')
+	setFirstIdentitySetup('idle')
+	setShellChatUiState('identity_pending', 'first_identity_watchdog')
+})
+const clearFirstIdentityWatchdog = (): void => firstIdentityWatchdog.clear()
+// the SDK sends no `registered` after a latched `failed`: re-read identityPublic at a low rate while the failed notice is shown
+watchFirstIdentityFailed({
+	readReady: async () => {
+		const id = await readNativeIdentityPublic()
+		return id.kind === 'ok' && id.pgpReady === true
+	},
+	onReady: () => {
+		setFirstIdentitySetup('idle')
+		startShellChatNow()
+	},
+	log: (m) => chatBootLog(m, 'info'),
+})
+const armFirstIdentityWatchdog = (ms: number): void => firstIdentityWatchdog.arm(ms)
 const startShellChatNow = (): void => {
 	if (!isShellContext() || !chatRetryArgs || initChatInProgress) return
 	const [setProfiles, setAllNodes, setGossip, , newMessage] = chatRetryArgs
@@ -547,11 +684,18 @@ const reactToFirstIdentity = createFirstIdentityReaction({
 	},
 	hasTimer: () => firstIdentityRetryTimer !== undefined,
 	startNow: startShellChatNow,
-	showPending: () => setShellChatUiState('identity_pending'),
+	showPending: () => setShellChatUiState('identity_pending', 'first_identity_event'),
 	retryExhausted: () => setShellRetryExhausted(true),
+	setWatchdog: (ms) => armFirstIdentityWatchdog(ms),
+	clearWatchdog: () => clearFirstIdentityWatchdog(),
 	log: (m) => chatBootLog(m, 'info'),
 })
+/** short retries of an identityPublic not_ready right after the first identity registered (see the retry in shellChatStartDeps). */
+const REGISTERED_SHORT_RETRY_MS = 300
+const REGISTERED_SHORT_RETRIES = 3
+let registeredShortRetriesLeft = 0
 export const applyFirstIdentityStatus = (s: FirstIdentityStatus): void => {
+	if (s.state === 'registered') registeredShortRetriesLeft = REGISTERED_SHORT_RETRIES
 	reactToFirstIdentity(s)
 	// a registered first identity is also an event that asks the migration again
 	if (s.state === 'registered') notifyPgpMigrateEvent('first_identity_done')
@@ -602,10 +746,20 @@ const shellChatStartDeps = (ctx: {
 	},
 	restorePgp: () => restoreNativePgp(shellAccountKeyOrEmpty()),
 	showPgpFailure: (code) => setPgpRestoreFailure(code, null),
-	showChatUnavailable: () => setShellChatUiState('chat_unavailable'),
-	showIdentityPending: () => setShellChatUiState('identity_pending'),
+	showChatUnavailable: () => setShellChatUiState('chat_unavailable', 'start_chat_unavailable'),
+	showIdentityPending: () => setShellChatUiState('identity_pending', 'start_identity_pending'),
+	// see ShellChatStartDeps.markChatUiReady. Only a resolved native-chat capability puts the state back; a shell without the capability stays unavailable.
+	markChatUiReady: async () => {
+		if (getShellChatUiState() === 'native_chat') return
+		if ((await ensureShellChatState()) === 'native_chat') setShellChatUiState('native_chat', 'identity_ready')
+	},
 	setPgpTemporary: (value: boolean) => setShellPgpTemporary(value),
 	setFirstIdentitySetup: FIRST_IDENTITY_STATUS_ENABLED ? (value: boolean) => setFirstIdentitySetup(value ? 'setting_up' : 'idle') : undefined,
+	firstIdentityStatusDeclared: async () => {
+		const probe = await probeNativeCapabilities()
+		return !!probe.answered && probe.capabilities.includes(FIRST_IDENTITY_STATUS_CAPABILITY)
+	},
+	armFirstIdentityWatchdog: () => armFirstIdentityWatchdog(FIRST_IDENTITY_NO_EVENT_TIMEOUT_MS),
 	getNodes: async () => (await getCoNETNodesOrThrow()) as unknown as Array<{ domain: string; armoredPublicKey?: string }>,
 	setAllNodes: (n) => {
 		// The native chat module chooses its own voice relay from this list, as the browser path does.
@@ -653,6 +807,16 @@ const shellChatStartDeps = (ctx: {
 			return
 		}
 		if (kind === 'not_ready') {
+			// the start that the first identity's `registered` triggered can read identityPublic a few ms before the native public snapshot is refreshed (Android:
+			// read at +7 ms, refreshed at +13 ms) and get not_ready. The first reads after `registered` retry after 300 ms, not after the 1 to 2 s ladder step. At most
+			// REGISTERED_SHORT_RETRIES of them; then the ladder goes on as before (and is not advanced by them).
+			if (registeredShortRetriesLeft > 0) {
+				registeredShortRetriesLeft -= 1
+				chatBootLog(`shell chat: the identity read was not ready right after the first identity registered; short retry in ${REGISTERED_SHORT_RETRY_MS} ms (${registeredShortRetriesLeft} left)`, 'info')
+				clearChatRetry(false)
+				scheduleChatRetry(reason, args, REGISTERED_SHORT_RETRY_MS)
+				return
+			}
 			const step = coldStartBackoff.next('identityPublic')
 			if (step.kind === 'wait') {
 				chatBootLog(`identityPublic not_ready: attempt ${step.attempt} in ${step.delayMs} ms, ${step.elapsedMs} ms since the first`, 'warn')
@@ -687,10 +851,15 @@ export const initChat = async (setProfiles: (val: profile[]) => void, setAllNode
 	// a shell takes the flag before the first await (the gossip decision and the shell state read): no second start can pass that window.
 	if (!isShellContext()) return initChatBody(setProfiles, setAllNodes, setGossip, gossip, newMessage)
 	initChatInProgress = true
+	// a shell start remembers its arguments from the first moment. Before this, only a RETRY or a stop kept them, so a start that ended with no_key (the restore
+	// session: the page restored, but the native wallet got the phrase only at the first /home) left none, and the wallet-ready re-ask, the first-identity `registered` start and
+	// the migration re-ask all returned silently ("!chatRetryArgs"): chat stayed on "Loading conversations…" until a cold start.
+	chatRetryArgs = [setProfiles, setAllNodes, setGossip, false, newMessage]
 	try {
 		await initChatBody(setProfiles, setAllNodes, setGossip, gossip, newMessage)
 	} finally {
 		initChatInProgress = false
+		runQueuedWalletReady()
 	}
 }
 
@@ -731,7 +900,11 @@ const initChatBody = async (setProfiles: (val: profile[]) => void, setAllNodes: 
 			const result = await startShellChatFromNativeIdentity(shellChatStartDeps({ setProfiles, setAllNodes, setGossip, newMessage }))
 			chatBootLog(`shell chat start: ${result}`)
 			lastShellStartResult = result
+			// a started chat is live (shellChatLive.ts); any other end of a start is not
+			setShellChatLive(result === 'started')
+			if (result === 'started') setShellChatUiState('native_chat', 'start_started')
 			if (result === 'started') {
+				registeredShortRetriesLeft = 0
 				coldStartBackoff.reset('identityPublic')
 				coldStartBackoff.reset('pgpRestoreEvaluate')
 				setFirstIdentitySetup('idle')
@@ -818,7 +991,12 @@ const initChatBody = async (setProfiles: (val: profile[]) => void, setAllNodes: 
 			profile.chatManager = chatManager
 			routes = pgpData.routes || chatManager.router || ''
 		}
-
+		if (!chatManager) {
+			setGossip(false)
+			return
+		}
+		// Const binding so async closures keep a definite IChat (TS loses let narrowing).
+		const activeChat = chatManager
 
 		// ✅ 如果没有 routes，从链上/SC 找；再不行就随机注册一个
 		//	寻找链上信息
@@ -828,9 +1006,9 @@ const initChatBody = async (setProfiles: (val: profile[]) => void, setAllNodes: 
 		// mailbox and never registers. Only a successful read that shows no record,
 		// another key or no route registers the local key, on the mailbox the
 		// account already has; a random mailbox is only for a new account.
-		const localKeyID = await getPublicKeyArmoredKeyID(chatManager.pgpKey.publicKey || '').catch(() => '')
+		const localKeyID = await getPublicKeyArmoredKeyID(activeChat.pgpKey.publicKey || '').catch(() => '')
 		const ownChain = await readOwnChatChain(rr, profile.privateKeyArmor)
-		const pgpState = classifyOwnPgp({ read: ownChain.read, localKeyID, hasLocalKey: !!chatManager?.pgpKey?.privateKey })
+		const pgpState = classifyOwnPgp({ read: ownChain.read, localKeyID, hasLocalKey: !!activeChat.pgpKey?.privateKey })
 		if (pgpState.kind === 'failure') {
 			setPgpRestoreFailure(pgpState.code, snapshotOfRead(ownChain.read))
 			chatBootLog(`initChat stopped: ${pgpState.code}; no registration, no new key, no retry`, 'warn')
@@ -838,7 +1016,7 @@ const initChatBody = async (setProfiles: (val: profile[]) => void, setAllNodes: 
 			return
 		}
 		setPgpRestoreFailure(null)
-		const currentMailbox = resolveCurrentMailbox(chatManager.router || '', allNodes || [], null)
+		const currentMailbox = resolveCurrentMailbox(activeChat.router || '', allNodes || [], null)
 		const plan = planOwnChatRoute({
 			read: ownChain.read,
 			localKeyID,
@@ -865,7 +1043,7 @@ const initChatBody = async (setProfiles: (val: profile[]) => void, setAllNodes: 
 			setGossip(false)
 			scheduleChatRetry('own chain record unreadable', ownRouteRetryArgs)
 			return
-		} else if (!isShellContext() && (isFirstOpenRefused(ownWallet) || !firstOpenRegisterAllowed(firstOpenDecisionNow({ read: ownChain.read, publicArmored: ownChain.publicArmored, pending: readPendingChatKey(profile) !== null, localChatKeyComplete: isPgpKeyComplete(chatManager.pgpKey), localChatKeyAutoGenerated: isAutoGeneratedChatKey(chatManager.pgpKey) })))) {
+		} else if (!isShellContext() && (isFirstOpenRefused(ownWallet) || !firstOpenRegisterAllowed(firstOpenDecisionNow({ read: ownChain.read, publicArmored: ownChain.publicArmored, pending: readPendingChatKey(profile) !== null, localChatKeyComplete: isPgpKeyComplete(activeChat.pgpKey), localChatKeyAutoGenerated: isAutoGeneratedChatKey(activeChat.pgpKey) })))) {
 			// a browser account registers by itself only when the first identity is confirmed (firstOpenPolicy.ts).
 			// A failed read, a record, or a restore failure waits or keeps the protection. A shell is native and never takes this path.
 			chatBootLog('own mailbox: first identity not confirmed for this account; no registration now', 'warn')
@@ -907,13 +1085,13 @@ const initChatBody = async (setProfiles: (val: profile[]) => void, setAllNodes: 
 				routes = target.routeArmor
 				let registered: boolean
 				if (isShellContext()) {
-					registered = await regiestChatRouteNative(localKeyID || chatManager.pgpKey.keyID, chatManager.pgpKey.publicKey, target.routeKeyID)
+					registered = await regiestChatRouteNative(localKeyID || activeChat.pgpKey.keyID, activeChat.pgpKey.publicKey, target.routeKeyID)
 				} else {
 					// one registration per wallet at a time (tabs included); the chain is read again first, and only a definite absent answer sends.
 					// A busy lock is not a failure (no backoff); a 4xx is a permanent refusal for this wallet (R80 M3).
 					const firstOpenSend = await registerUnderFirstOpenLock(ownWallet, {
 						lookup: () => lookupRecipientRecord(ownWallet),
-						send: async () => classifyRegisterSend(await regiestChatRouteOutcome(profile.privateKeyArmor, chatManager.pgpKey.publicKey, localKeyID || chatManager.pgpKey.keyID, chatManager.pgpKey.privateKey, target.routeKeyID)),
+						send: async () => classifyRegisterSend(await regiestChatRouteOutcome(profile.privateKeyArmor, activeChat.pgpKey.publicKey, localKeyID || activeChat.pgpKey.keyID, activeChat.pgpKey.privateKey, target.routeKeyID)),
 					})
 					if (firstOpenSend === 'refused') markFirstOpenRefused(ownWallet)
 					if (firstOpenSend === 'busy') {
@@ -976,12 +1154,12 @@ const initChatBody = async (setProfiles: (val: profile[]) => void, setAllNodes: 
 
 		//	链上route信息
 		if (routes) {
-			chatManager.router = routes
+			activeChat.router = routes
 		}
 
 
 
-		profile.chatManager = chatManager
+		profile.chatManager = activeChat
 		temp.profiles[0] = profile
 		setProfiles(profiles)
 		setCoNET_Data(temp)
@@ -1001,13 +1179,13 @@ const initChatBody = async (setProfiles: (val: profile[]) => void, setAllNodes: 
 			return
 		}
 	
-		chatBootLog(`connectToGossipNode starting (route=${routeIdForLog(chatManager.router, allNodes)} confirmed=${routeConfirmed})`)
+		chatBootLog(`connectToGossipNode starting (route=${routeIdForLog(activeChat.router, allNodes)} confirmed=${routeConfirmed})`)
 		const started = await connectToGossipNode(
-			chatManager.router,
+			activeChat.router,
 			profile.privateKeyArmor,
 			allNodes,
-			process.env.REACT_APP_SHELL_BUILD === 'true' ? '' : chatManager.pgpKey.privateKey,
-			chatManager.pgpKey.publicKey ?? '',
+			process.env.REACT_APP_SHELL_BUILD === 'true' ? '' : activeChat.pgpKey.privateKey,
+			activeChat.pgpKey.publicKey ?? '',
 			newMessage,
 		)
 		if (!started && getPgpRestoreFailure()) {
@@ -1021,7 +1199,7 @@ const initChatBody = async (setProfiles: (val: profile[]) => void, setAllNodes: 
 		} else {
 			clearChatRetry(true)
 			if (!routeConfirmed) {
-				startOwnRouteRecheck(chatManager.router, profile.privateKeyArmor, localKeyID, allNodes, ownRouteRetryArgs)
+				startOwnRouteRecheck(activeChat.router, profile.privateKeyArmor, localKeyID, allNodes, ownRouteRetryArgs)
 			}
 		}
 	} catch (error) {
@@ -1793,6 +1971,7 @@ export function getGossipDeliveryAckContext(): {
 }
 
 const clearGossipListenSession = (reason: string) => {
+	setShellChatLive(false)
 	if (currentGossipAbortController) {
 		try {
 			currentGossipAbortController.abort(reason)
@@ -1851,6 +2030,8 @@ export const pauseGossipListenOnBackground = (
 	// True unload: no background retries; the next foreground resume restarts chat.
 	clearChatRetry(false)
 	chatRetryArgs = null
+	walletReadyWhileRunning = false
+	registeredShortRetriesLeft = 0
 	// Native shells: pause the module's listen (it stays up while a call rings
 	// or is up) instead of destroying it.
 	if (pauseNativeChatListen()) {
@@ -2253,12 +2434,15 @@ export const createInboundChatSession = async (
 	}
 }
 
+export { classifySendAnswer, armorMatchesRecipient } from './sendAnswer'
+export type { SendReceipt, SendArmorContext } from './sendAnswer'
+
 export const sendMessage = async (
 	pgpPublic: string,
 	text: string,
 	privateKeyArmor: string,
 	entryNodes: nodeInfo[],
-	opts?: { beamioNoPush?: boolean; mailboxRoutePublicKey?: string; recipientRouteArmored?: string },
+	opts?: { beamioNoPush?: boolean; mailboxRoutePublicKey?: string; recipientRouteArmored?: string; armor?: SendArmorContext; onReceipt?: (receipt: SendReceipt) => void },
 ): Promise<boolean> => {
 	// unit e: the UI lock refuses the send before signing or any bridge request.
 	if (chatAccessRefused('send')) {
@@ -2293,10 +2477,17 @@ export const sendMessage = async (
 	// Native shell: only the native daemon sends (signs, encrypts, wraps to the
 	// mailbox, posts one entry at a time). It waits up to 10 s for the daemon.
 	if (isCashTreesNativeWebView()) {
+		// IFACE-native-send-v1: the queue's armor context (the stored armor, the way to persist a new one), the recipient-key check for reuse and the receipt callback go down with the send, exactly as in the browser
+		// branch below; this branch no longer returns before the armor logic (the stored armor is the one that is posted again)
 		return sendChatViaNativeDaemon(
 			{ address: '', userPublicKeyArmored: pgpPublic, routerArmoredPublicKey: recipientRoute },
 			text,
-			opts?.beamioNoPush ? { beamioNoPush: true } : undefined,
+			{
+				...(opts?.beamioNoPush ? { beamioNoPush: true } : {}),
+				armor: opts?.armor,
+				matchesRecipient: (armor) => armorMatchesRecipient(armor, pgpPublic),
+				onReceipt: opts?.onReceipt,
+			},
 		)
 	}
 
@@ -2309,26 +2500,44 @@ export const sendMessage = async (
 		signMessage
 	}
 
-	let encryptObj: any
-	try {
-		encryptObj = {
-			message: await withChatTimeout(createMessage({
-				text: Buffer.from(JSON.stringify(message)).toString("base64")
-			}), 15_000, 'Chat message preparation'),
-			encryptionKeys: await withChatTimeout(readKey({ armoredKey: pgpPublic }), 15_000, 'Chat recipient-key parsing'),
-			config: { preferredCompressionAlgorithm: enums.compression.zlib }
+	let postData = ''
+	let postDigest = ''
+	const storedArmor = opts?.armor?.armor
+	if (storedArmor && (await armorMatchesRecipient(storedArmor, pgpPublic))) {
+		// the same sendId again: the armor of the first attempt, byte for byte (the mailbox de-duplicates identical armor; a second encryption would be a second ciphertext)
+		postData = storedArmor
+		postDigest = armorDigest(postData)
+	} else {
+		let encryptObj: any
+		try {
+			encryptObj = {
+				message: await withChatTimeout(createMessage({
+					text: Buffer.from(JSON.stringify(message)).toString("base64")
+				}), 15_000, 'Chat message preparation'),
+				encryptionKeys: await withChatTimeout(readKey({ armoredKey: pgpPublic }), 15_000, 'Chat recipient-key parsing'),
+				config: { preferredCompressionAlgorithm: enums.compression.zlib }
+			}
+		} catch (ex: any) {
+			console.error(`[sendMessage] createMessage/readKey Error! ${diagnosticCode(ex?.message)}`)
+			return false
 		}
-	} catch (ex: any) {
-		console.error(`[sendMessage] createMessage/readKey Error! ${diagnosticCode(ex?.message)}`)
-		return false
-	}
-
-	let postData: string
-	try {
-		postData = await withChatTimeout(encrypt(encryptObj), 20_000, 'Chat message encryption')
-	} catch (ex: any) {
-		console.error(`[sendMessage] encrypt Error! ${diagnosticCode(ex?.message)}`)
-		return false
+		try {
+			postData = await withChatTimeout(encrypt(encryptObj), 20_000, 'Chat message encryption')
+			// the digest of the inner armor: the mailbox stores exactly this text (the wrap below is peeled by the mailbox node), and a bound receipt echoes its keccak256
+			postDigest = armorDigest(postData)
+		} catch (ex: any) {
+			console.error(`[sendMessage] encrypt Error! ${diagnosticCode(ex?.message)}`)
+			return false
+		}
+		if (opts?.armor) {
+			// the armor is stored BEFORE the first request leaves: after a crash the retry finds it. No stored copy -> nothing is sent.
+			try {
+				await opts.armor.record(postData, postDigest)
+			} catch {
+				console.error('[sendMessage] armor could not be stored; not sent')
+				return false
+			}
+		}
 	}
 
 	// Always wrap to the recipient's mailbox B: the entry sees only B's route
@@ -2345,6 +2554,11 @@ export const sendMessage = async (
 		return false
 	}
 	const body = JSON.stringify({ data: postData })
+	// hook variant only (qaTransportFault.ts, "模拟传输故障"): this page's own request fails in a controlled way, before any node is picked; the armor is already stored, the rest is the normal path
+	if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && (await qaTransportFaultGate(SEND_ATTEMPT_TIMEOUT_MS))) {
+		console.warn('[sendMessage] simulated transport fault')
+		return false
+	}
 	const tried = new Set<string>()
 	const started = Date.now()
 	// One entry at a time; the next only after a clear failure (network error or
@@ -2368,12 +2582,15 @@ export const sendMessage = async (
 				markGossipNodeBad(node.domain)
 				continue
 			}
-			const answer = await res.text().catch(() => '')
-			if (/"ok"\s*:\s*false/.test(answer)) {
-				console.warn(`[sendMessage] ${url} → ok:false`)
+			// a body that cannot be read is NOT an empty body: it is an unknown answer, this attempt failed
+			const answer = await res.text().then((t) => t, () => null)
+			const verdict = classifySendAnswer(answer, postDigest)
+			if (verdict === 'reject') {
+				console.warn(`[sendMessage] ${url} → answer is not a receipt for this message`)
 				continue
 			}
 			markGossipNodeHealthy(node.domain)
+			opts?.onReceipt?.({ kind: verdict, digest: postDigest })
 			return true
 		} catch (ex: any) {
 			// Chrome often labels bare network / missing-ACAO failures as CORS
@@ -2432,102 +2649,7 @@ export const checkSign = (message: string, signMess: string, signWallet: string)
 
 
 /** Prefer sendId so two messages in the same ms (e.g. gift note + merchantGift card) never collapse. */
-const stableChatMessageId = (m: ChatMessage | null | undefined, fallbackTs?: number): string => {
-	if (m?.id?.startsWith('tmp_')) return String(m.id)
-	const sendId = typeof m?.sendId === 'string' ? m.sendId.trim() : ''
-	if (sendId) return sendId
-	if (typeof m?.id === 'string' && m.id.trim()) return m.id.trim()
-	const created = Number(m?.createdAt)
-	if (Number.isFinite(created)) return String(created)
-	if (Number.isFinite(Number(fallbackTs))) return String(fallbackTs)
-	return `msg_${Math.random().toString(16).slice(2)}`
-}
-
-export const makeMessage = (
-	data: ChatMessage[],
-	newChatText: string,
-	timestamp: number,
-	from: "me" | "them",
-	status?: "sending" | "sent" | "delivered" | "failed" | "route_unconfirmed" | "fingerprint_changed" | "first_fetch_pending",
-	/** Inbound only: the claimed wallet when it differs from the recovered signer. */
-	/** Inbound only: the text passed the voice ingestion gate (a stored voice signal may drive call state; no key is stored). */
-	meta?: { claimedFrom?: string; voiceVerified?: boolean },
-) => {
-	// 1) Normalize existing rows — never rewrite sendId-backed ids to createdAt alone
-	// (that dropped merchantGift when a note shared the same millisecond).
-	const normalized = (data || []).map((m) => {
-		if (m?.id?.startsWith('tmp_')) return m
-		const id = stableChatMessageId(m)
-		return { ...m, id }
-	})
-
-	const seen = new Set<string>()
-	const result: ChatMessage[] = []
-
-	for (const m of normalized) {
-		if (!m) continue
-		const key = stableChatMessageId(m)
-		if (!key || seen.has(key)) continue
-		seen.add(key)
-		result.push({ ...m, id: key })
-	}
-
-	// 2) Merge the inbound payload (JSON card / sendId text / plain text)
-	const resultLenBefore = result.length
-	const ts = Number(timestamp)
-	const text = (newChatText || '').trim()
-	try {
-		const card: ChatMessage = JSON.parse(text)
-		const dedupKey = stableChatMessageId(card, ts)
-		if (seen.has(dedupKey)) {
-			// duplicate push — keep existing
-		} else if (card.paymentCard) {
-			card.from = 'them'
-			card.id = dedupKey
-			if (card.createdAt == null) card.createdAt = ts
-			seen.add(dedupKey)
-			result.push(card)
-		} else if (card.reply) {
-			card.from = 'them'
-			card.id = dedupKey
-			if (card.createdAt == null) card.createdAt = ts
-			seen.add(dedupKey)
-			result.push(card)
-		} else if (card.sendId != null) {
-			card.from = 'them'
-			card.id = dedupKey
-			if (card.createdAt == null) card.createdAt = ts
-			seen.add(dedupKey)
-			result.push(card)
-		} else throw new Error('')
-	} catch {
-		if (text && Number.isFinite(ts)) {
-			const incomingId = String(ts)
-			if (!seen.has(incomingId)) {
-				seen.add(incomingId)
-				result.push({
-					id: incomingId,
-					from,
-					text,
-					createdAt: ts,
-					status: status ?? (from === 'me' ? 'sent' : 'sent'),
-				})
-			}
-		}
-	}
-
-	// Flag only the row this call added (never an older message).
-	if (meta?.claimedFrom && result.length > resultLenBefore) {
-		const added = result[result.length - 1]
-		if (added && added.from === 'them') added.claimedFrom = meta.claimedFrom
-	}
-	if (meta?.voiceVerified && result.length > resultLenBefore) {
-		const added = result[result.length - 1]
-		if (added && added.from === 'them') (added as ChatMessage & { voiceVerified?: boolean }).voiceVerified = true
-	}
-	result.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
-	return result
-}
+export { makeMessage } from './chatMessageMerge'
 
 export function emitReactionAsNewMessage (amount: number, currency: ICurrency, title: string,usdcAmount: number, cashcodeUrl: string ) {	//(targetMessageId: string, reaction: ReactionKey) {
 	// const reactionLabel = REACTIONS.find(r => r.key === reaction)?.label || "👍"

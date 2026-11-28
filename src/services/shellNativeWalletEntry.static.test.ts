@@ -47,13 +47,14 @@ describe('shell wallet entry on the native wallet', () => {
 	})
 
 	it('a native recovery success signals the app instead of reloading the page', () => {
-		const r = read('pages/Home/RestoreWalletUnifiedScreen.tsx')
-		// residual: the listener is kept in a named constant so its cleanup can end the pending native flow.
-		const start = r.indexOf("const offRecovery = onNativeRecoveryResult(({ code, eoa, cooldownSec }) => {")
+		const screenCode = read('pages/Home/RestoreWalletUnifiedScreen.tsx').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+		expect(screenCode).not.toMatch(/onNativeRecoveryResult|reachNativeWallet|notifyNativeWalletReady/)
+		const g = read('components/AppEntryGate.tsx')
+		const start = g.indexOf("return onNativeRecoveryResult(({ code, eoa }) => {")
 		expect(start).toBeGreaterThan(-1)
-		const block = r.slice(start, start + 1600)
-		expect(block).toContain('reachNativeWallet()')
-		expect(block).toContain('notifyNativeWalletReady(initialBeamioTag, eoa)')
+		const block = g.slice(start, start + 1400)
+		expect(block).toContain('announceNativeWalletEstablished()')
+		expect(block).toContain("void reachNativeWallet().then(() => notifyNativeWalletReady(''))")
 		expect(block).not.toContain('window.location.reload()')
 	})
 

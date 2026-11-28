@@ -11,8 +11,9 @@ import { loadOwnPgpPublicMaterial, shellPgpForServerRequest } from './ownPgpPubl
 import { completePendingServerSync, enqueuePendingServerSync, ensurePendingServerSync, pendingServerSyncGeneration, type FlushOutcome } from './pendingServerSync'
 import { diagnosticCode } from './diagnosticCodes'
 import { qaLine, qaErrorCode, qaErrorName, qaPersistStage, qaPersistStageNow } from '@/utils/qaLog'
-import { isChatBodiesPurgedFor } from './chatLocalPurge'
-import { keepStoredChats, keepMemoryChats, withoutPeerArmorForShell, countPeerArmorRows, CHATS_FLOOR_REFUSED } from './chatsFloor'
+import { isExactRecordWrite, libraryPersistModeFor } from './chatLocalPurge'
+import { isChatAuxDocId, resetPrefixes, wipeChatAuxDocs } from './chatAuxDocs'
+import { keepStoredChats, keepMemoryChats, withoutPeerArmorForShell, countPeerArmorRows, planBrowserWrite, CHATS_FLOOR_REFUSED } from './chatsFloor'
 import { fallbackStartOutcome, nativeRecordFallbackOf, noteShellRecordFallback, OLD_SHELL_UPGRADE_REASON, type ShellRecordFallbackReason } from './shellRecordFallback'
 import { buildShellRecordWriteCommand, shellRecordAsWalletRecord, shellRecordRead, shellRecordWrite, prepareShellFreshWrite, validatedCopyAccount } from './shellRecordStore'
 import { isUntrustedSourceAnswer, shellStorageErrorReason } from './shellStoreWait'
@@ -34,6 +35,7 @@ import {
   openWalletForStartup,
   passcodeEnabled,
   readPlainForVerify,
+  readPlainForFloor,
   resetWalletSession,
   setWalletPasscode,
   unlockWalletPasscode,
@@ -116,6 +118,9 @@ import { recoverAllowed, recoverSourceOf } from '@/services/accountJudgement'
 import { reuseKeepsKey } from '@/services/reuseKeepsKey'
 import { isLocallyCreatedAccount, markLocallyCreatedAccount } from '@/services/localAccountCreation'
 import { stripPeerChatPrivateArmored } from '@/utils/peerChatPrivateArmored'
+import { runPersistSerial } from '@/services/persistSerial'
+import { commitDurable, flushContract } from '@/services/durableCommit'
+import { requestControlledReload } from '@/services/chatWriteLock'
 
 export type x402Response = {
 	timestamp: string
@@ -1154,8 +1159,8 @@ export function emitWalletEvent(event: string, payload?: any) {
 }
 
 const createKeyHDWallets = (secretPhrase: string | null) => {
-  // Shell: the page never creates or derives an account key; the native layer does.
-  if (isShellContext()) return null;
+  // home-bridge-deferred-sdk: PWA owns Create / Restore key material (even in shell).
+  // Native Chat SDK still init only after /home pwaWalletSync handoff.
   try {
     if (!secretPhrase) return ethers.Wallet.createRandom();
 
@@ -1185,8 +1190,6 @@ export const ensureProfilePrivateKeyArmorFromMnemonic = (
   }
   const phrase = typeof data.mnemonicPhrase === 'string' ? data.mnemonicPhrase.trim() : ''
   if (!phrase) return data
-  // Shell: the page never derives an account key from a mnemonic; the native layer holds the keys.
-  if (isShellContext()) return data
   const acc = createKeyHDWallets(phrase)
   if (!acc) return data
   const keyID = p0.keyID?.trim() ?? ''
@@ -1269,8 +1272,7 @@ const duplicateAPI = `${apiv4_endpoint}duplicate`
 // }
 
 export const createOrGetWallet = async (secretPhrase: string | null, initAccount = false, referrals = '', ChannelPartners = '' ) => {
-	// Shell: the page never creates or derives an account key here; its callers (create, backup restore) are native in a shell.
-	if (isShellContext()) return null
+	// home-bridge-deferred-sdk: PWA may create/derive the account key in shell; handoff to native is deferred to /home.
 	const hasIncomingMnemonic = typeof secretPhrase === 'string' && secretPhrase.length > 0
 	// Restore / 临时券钱包：不依赖本地库；私密模式 IndexedDB 读可能永久挂起。
 	if (!hasIncomingMnemonic && !initAccount) {
@@ -1347,7 +1349,8 @@ export const createOrGetWallet = async (secretPhrase: string | null, initAccount
 
 	if (tmpData === null) {
 			setTimeout(() => {
-				return window.location.reload()
+				// a reload the app asks for is held while a chat write is in progress (chatWriteLock.ts)
+				return requestControlledReload()
 			}, 5000)
 		return null
 	}
@@ -1545,7 +1548,8 @@ const persistPageIdbCopy = async (written: encrypt_keys_object): Promise<void> =
 const floorOptionsFor = (record: unknown): { keepMessages: boolean } => {
   const first = Array.isArray((record as { profiles?: unknown })?.profiles) ? ((record as { profiles: Array<{ keyID?: unknown }> }).profiles[0]) : undefined
   const eoa = typeof first?.keyID === 'string' ? first.keyID : ''
-  return { keepMessages: !isChatBodiesPurgedFor(eoa) }
+  // only a verified purge (the flag) clears stored bodies; a guess (library state without the flag, or unknown) keeps what is on disk (chatLocalPurge.ts libraryPersistModeFor)
+  return { keepMessages: !isExactRecordWrite() && libraryPersistModeFor(eoa) !== 'library' }
 }
 
 export const persistInitRecord = async (temp: encrypt_keys_object): Promise<void> => {
@@ -1619,8 +1623,10 @@ const persistInitRecordBrowser = async (temp: encrypt_keys_object): Promise<void
   // 0.53.39 (independent review item 2): the browser write goes through the same guarded writer as the shell (read, refuse a loss or an
   // unknown read, then write). The backup copy is taken only after the write was accepted, so a refused record is never cached.
   // the chats floor on the browser path too: the stored rows are kept; an unreadable stored record leaves the copy as it is (the writer's own guard reads it)
-  const storedPlain = await readPlainForVerify(walletStores()).catch(() => null)
-  const floored = keepStoredChats(temp, storedPlain, floorOptionsFor(temp))
+  // absent / loaded / unreadable are kept apart. A stored record that exists but cannot be read now is never written over (the memory copy stays; the caller sees a failed write and retries).
+  const plan = planBrowserWrite(await readPlainForFloor(walletStores()))
+  if (plan.action === 'refuse') throw new Error(plan.code)
+  const floored = keepStoredChats(temp, plan.floorFrom, floorOptionsFor(temp))
   const record = (await wrapForDisk(walletStores(), floored as unknown as Loose)) as Loose
   await writeInitObject(record)
   qaRecordCounts('saved', floored)
@@ -1749,7 +1755,11 @@ export const lockWalletVaultOnLogout = async (): Promise<boolean> => {
 }
 
 /** Explicit reset for "forgot passcode": deletes the local wallet copy so the user can re-import with the recovery phrase. */
-export const wipeLocalWalletForRestore = async (): Promise<void> => {
+export const wipeLocalWalletForRestore = async (options?: { includeUnsent?: boolean }): Promise<void> => {
+  // the receipt and delivered documents of the chat page go first (chatAuxDocs.ts wipeChatAuxDocs; the draft and queue documents are a separate data decision, see that file). A failure throws BEFORE the
+  // wallet record is touched, so a failed reset leaves the wallet as it was and the caller shows "reset failed".
+  // The unsent classes (queue, draft) go only when the caller says the user confirmed it (PasscodeLockScreen: the count, the effect, a checkbox); without that flag they are never touched here.
+  await wipeChatAuxDocs({ list: (prefix) => listDocIds(prefix), remove: (docId) => removeChatAuxDoc(docId) }, resetPrefixes(options?.includeUnsent === true))
   // Wallet documents only. The device key (IndexedDB 'beamio-vault-v1') is kept: it holds no user data and survives
   // clearing the cache and the local library (implementation note).
   for (const id of ['init', 'meta']) await removeDocIfExists(id)
@@ -2574,12 +2584,16 @@ export const storeSystemData = async () => {
     }
     let stored = false
     try {
-      const temp = { ...CoNET_Data }
-      // Boundary: the PWA keeps its own account record in its store in a shell, as before.
-      if (temp.profiles) temp.profiles = profilesForPersist(ensureFlatProfiles(temp.profiles))
-      if ((CoNET_Data as any)?.cardRedeems) (temp as any).cardRedeems = (CoNET_Data as any).cardRedeems
-      await persistInitRecord(temp)
-      stored = true
+      // one write at a time, the snapshot taken when its turn begins (persistSerial.ts)
+      stored = await runPersistSerial(async () => {
+        if (!CoNET_Data) return false // nothing was written: not reported as stored
+        const temp = { ...CoNET_Data }
+        // Boundary: the PWA keeps its own account record in its store in a shell, as before.
+        if (temp.profiles) temp.profiles = profilesForPersist(ensureFlatProfiles(temp.profiles))
+        if ((CoNET_Data as any)?.cardRedeems) (temp as any).cardRedeems = (CoNET_Data as any).cardRedeems
+        await persistInitRecord(temp)
+        return true
+      })
     } catch (ex) {
       if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', `not_saved reason=${ex instanceof Error && ex.message === CHATS_FLOOR_REFUSED ? 'chats_floor' : 'write_failed'} code=${qaErrorCode(ex)} name=${qaErrorName(ex)} stage=${qaPersistStageNow()}`)
       console.warn(`[storeSystemData] Error:`, ex)
@@ -2637,35 +2651,89 @@ export const storeSystemDataAndWait = (): Promise<boolean> =>
     void storeSystemData()
   })
 
-/** 立即将当前 CoNET_Data 写入存储（用于 cardRedeems 等需马上落盘的数据），并取消待执行的 storeSystemData 定时器 */
-export const flushStoreSystemData = async () => {
-  if (storeSystemDataTimer) {
-    clearTimeout(storeSystemDataTimer)
-    storeSystemDataTimer = null
-  }
-  // The cancelled timer's waiters ride on this write.
-  const waiters = takeStoreSystemDataWaiters()
-  if (!consultPageWriteGate('closed_at_flush')) {
-    waiters.forEach((done) => done(false))
-    return
-  }
-  if (!CoNET_Data) {
-    waiters.forEach((done) => done(false))
-    return
-  }
-  try {
-    const temp = { ...CoNET_Data }
-    if (temp.profiles) temp.profiles = profilesForPersist(ensureFlatProfiles(temp.profiles))
-    if ((CoNET_Data as any)?.cardRedeems) (temp as any).cardRedeems = (CoNET_Data as any).cardRedeems
-    // Drop any in-flight checkStorage so the next read sees this write.
-    checkStorageInFlight = null
-    await persistInitRecord(temp)
-  } catch (ex) {
-    waiters.forEach((done) => done(false))
-    throw ex
-  }
-  waiters.forEach((done) => done(true))
+/**
+ * the commit of a message the user just received (the mailbox is told only after it): written at once instead of after the debounce (storeSystemDataAndWait waits for a
+ * write that every later storeSystemData call pushes back), and resolved when it has landed (true) or failed (false).
+ */
+export const storeSystemDataNow = (): Promise<boolean> =>
+  new Promise<boolean>((resolve) => {
+    storeSystemDataWaiters.push(resolve)
+    void flushStoreSystemData().catch(() => undefined)
+  })
+
+/**
+ * the documents of the chat draft (chatDraftStore.ts) and of the send queue (sendQueue.ts, one document per sendId, listed by prefix). Their own small documents in the page database, never the account document. A write goes through the same durable helper as the other
+ * documents; a closed page write gate refuses it with an error (never silently). Reading and removing do not need the gate.
+ */
+const listDocIds = async (prefix: string): Promise<string[]> => {
+  await idbBlobCompatReady()
+  const database = PouchDB(localDatabaseName, { auto_compaction: true })
+  const result = await database.allDocs({ startkey: prefix, endkey: `${prefix}\ufff0` })
+  return result.rows.map((row: { id: string }) => row.id)
 }
+
+/** Removes one chat draft / queue / receipt / delivered document (chatAuxDocs.ts). It refuses every other id: the account record `init` is removed only by the explicit passcode reset (shellStartupPaths pins that). */
+const removeChatAuxDoc = async (docId: string): Promise<void> => {
+  if (!isChatAuxDocId(docId)) throw new Error('not_a_chat_aux_doc')
+  await idbBlobCompatReady()
+  const database = PouchDB(localDatabaseName, { auto_compaction: true })
+  try {
+    const doc = await database.get(docId, { latest: true })
+    await database.remove(doc)
+  } catch (ex: any) {
+    if (!isPouchMissingDocError(ex)) throw ex
+  }
+}
+
+export const chatDraftDocAdapter = {
+  list: (prefix: string): Promise<string[]> => listDocIds(prefix),
+  read: (docId: string): Promise<string | null> => readDocTitle(docId),
+  put: async (docId: string, text: string): Promise<void> => {
+    if (!consultPageWriteGate('closed_at_draft')) throw new Error('persist_gate_closed')
+    await putDocDurable(docId, text)
+  },
+  remove: (docId: string): Promise<void> => removeChatAuxDoc(docId),
+}
+
+/** 立即将当前 CoNET_Data 写入存储（用于 cardRedeems 等需马上落盘的数据），并取消待执行的 storeSystemData 定时器 */
+/** see durableCommit.ts (the outcome of one immediate write, with the three failure kinds). */
+export type { DurableCommit } from '@/services/durableCommit'
+
+const commitDurableReal = () =>
+  commitDurable({
+    cancelPendingTimer: () => {
+      if (storeSystemDataTimer) {
+        clearTimeout(storeSystemDataTimer)
+        storeSystemDataTimer = null
+      }
+    },
+    // The cancelled timer's waiters ride on this write.
+    takeWaiters: takeStoreSystemDataWaiters,
+    gateOpen: () => consultPageWriteGate('closed_at_flush'),
+    hasRecord: () => !!CoNET_Data,
+    // one write at a time, the snapshot taken when its turn begins (persistSerial.ts)
+    runSerial: runPersistSerial,
+    writeSnapshot: async () => {
+      // the record can be gone by the time the turn comes: nothing was written, and that is reported as such (never as a write that landed)
+      if (!CoNET_Data) return false
+      const temp = { ...CoNET_Data }
+      if (temp.profiles) temp.profiles = profilesForPersist(ensureFlatProfiles(temp.profiles))
+      if ((CoNET_Data as any)?.cardRedeems) (temp as any).cardRedeems = (CoNET_Data as any).cardRedeems
+      // Drop any in-flight checkStorage so the next read sees this write.
+      checkStorageInFlight = null
+      await persistInitRecord(temp)
+      return true
+    },
+  })
+
+/** The chat's immediate write: says which of the four outcomes happened (DurableCommit). Never throws. */
+export const commitForChat = async () => (await commitDurableReal()).result
+
+/**
+ * Writes at once. Resolves true when the record has landed; false when the write gate refused it or there is no record (before or inside the turn); throws when the write
+ * failed (as before). The other callers keep this contract (durableCommit.ts flushContract).
+ */
+export const flushStoreSystemData = async (): Promise<boolean> => flushContract(await commitDurableReal())
 
 /**
  * Flush mnemonic + privateKeyArmor + beamio.accountName to IndexedDB `"conet"`,
@@ -3779,8 +3847,7 @@ export type RestoreRedeemResult =
 	| { kind: 'unknown'; reason: string }
 
 export const restoreWithRedeemDetailed = async (recoveryCode: string, pin: string): Promise<RestoreRedeemResult> => {
-	// Shell: recovery is done by the native recovery engine; the page never restores here.
-	if (isShellContext()) throw new Error('native_recovery_only')
+	// home-bridge-deferred-sdk: PWA restores with the recovery code even in shell; nativeRecoverySubmit is not used.
 	const hash = ethers.solidityPackedKeccak256(['string'], [recoveryCode])
 
 	let hashedImg: string
@@ -3894,8 +3961,7 @@ export const registrationStateVia = async (
 }
 
 export const restoreWithUserPin = async (username: string, pin: string, test = false) => {
-	// Shell: recovery is done by the native recovery engine; the page never restores here.
-	if (isShellContext()) throw new Error('native_recovery_only')
+	// home-bridge-deferred-sdk: PWA restores with Tag+password even in shell; nativeRecoverySubmit is not used.
 	try {
 		const accountName = username.trim()
 		if (!accountName) return false

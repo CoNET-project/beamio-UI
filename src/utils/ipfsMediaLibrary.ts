@@ -1,3 +1,4 @@
+import { safeResourceUrl } from '@/utils/retiredHost'
 import {
   IPFS_GET_FRAGMENT_BASE,
   LOCAL_LIBRARY_READ_TIMEOUT_MS,
@@ -220,7 +221,8 @@ export async function resolveIpfsMediaRecord(
 }
 
 export async function resolveIpfsMediaUrlToObjectUrl(url: string): Promise<string> {
-  const trimmed = String(url || '').trim()
+  // the blocked host first: every later fallback returns this value
+  const trimmed = safeResourceUrl(String(url || '').trim())
   if (!trimmed) return ''
   if (trimmed.startsWith('blob:') || trimmed.startsWith('data:')) return trimmed
   const hash = parseFragmentHashFromUrl(trimmed)

@@ -75,8 +75,9 @@ class ChatHistoryBridge implements BeamioChatHistory {
 		return this.client.request<void>({ type: 'historyLoad', reqId: 0, options })
 	}
 
-	append(entry: Omit<HistoryEntry, 'seq'>): Promise<void> {
-		return this.client.request<void>({ type: 'historyAppend', reqId: 0, entry })
+	append(entry: Omit<HistoryEntry, 'seq'>, opts?: { qaRemoteFault?: 'upload' | 'pointer' | 'timeout' }): Promise<void> {
+		// the worker appends one record at a time (about 9 s each), so a queue of a few records needs more than the 20 s default; the page's own wait (120 s, inboundDurable.ts) is the one that decides, this stays above it
+		return this.client.request<void>({ type: 'historyAppend', reqId: 0, entry, ...(process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && opts?.qaRemoteFault ? { qaRemoteFault: opts.qaRemoteFault } : {}) }, 125_000)
 	}
 
 	read(options?: HistoryReadOptions): Promise<HistoryEntry[]> {

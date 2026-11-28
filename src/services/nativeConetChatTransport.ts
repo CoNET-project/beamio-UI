@@ -18,6 +18,7 @@
  */
 
 import { nextChatTransportReqId } from './reqIdSpaces'
+import { assumedReadyDelayMs, nativeSessionReadySince, noteNativeSessionReady } from './nativeSessionReady'
 import { qaLine } from '@/utils/qaLog'
 import { ethers } from 'ethers'
 import { noteBridgeCommand } from '@/utils/qaBridgeCounter'
@@ -65,6 +66,7 @@ import type {
 	SendMessageOptions,
 	Unsubscribe,
 } from '@conet.project/chat-sdk'
+import { NATIVE_SEND_SCHEMA, assertArmorSendCommand, parseNativeSendAnswer, type NativeSendAnswer } from './nativeSendProtocol'
 
 type ListenerBag<K extends ChatEventName> = Set<ChatEventListener<K>>
 
@@ -125,6 +127,17 @@ export type NativeChatBridge = {
 	 * when the module does not answer `hello` (modules before protocol v1).
 	 */
 	legacyHistory?: boolean
+	/**
+	 * iOS (0.53.58): the module answers an init for an account whose session is already ready as idempotent and does not log
+	 * `[history] ready` again, so a later client of this page does not wait for that log (nativeSessionReady.ts). Android derives its
+	 * history key from page signatures after a full init and keeps waiting for the log.
+	 */
+	idempotentInitKeepsHistoryKey?: boolean
+	/**
+	 * how long a load or read waits for the history key log before it goes anyway. iOS derives the key natively in milliseconds, so a wait that long only hides a lost
+	 * log (the one-shot init, a VoIP-started session): 15 s. Without the field: 90 s (Android derives it from page signatures).
+	 */
+	historyReadyWaitMs?: number
 }
 
 /**
@@ -140,10 +153,14 @@ const HELLO_TIMEOUT_MS = 180_000
 
 const LEGACY_FEATURES: ChatDaemonFeatures = negotiateChatDaemon(null)
 
+/** iOS: see NativeChatBridge.historyReadyWaitMs */
+const IOS_HISTORY_READY_WAIT_MS = 15_000
 const IOS_NATIVE_CHAT_BRIDGE: NativeChatBridge = {
 	label: 'ios native chat',
 	eventName: 'cashtreesios',
 	legacyHistory: true,
+	idempotentInitKeepsHistoryKey: true,
+	historyReadyWaitMs: IOS_HISTORY_READY_WAIT_MS,
 	postCommand(cmd) {
 		noteBridgeCommand('chatModule', cmd.type)
 		const ios = (window as Window & {
@@ -167,9 +184,13 @@ const IOS_NATIVE_CHAT_BRIDGE: NativeChatBridge = {
 
 /** How long load/append wait for the native history key (two PWA signatures) before trying anyway. */
 const HISTORY_READY_WAIT_MS = 90_000
+/** one repeat of the first load when the key was taken as ready without its log, or the wait ran out (a load before the key exists is dropped without an answer) */
+const HISTORY_ASSUMED_REPEAT_MS = 8_000
 /** A native restore downloads every fragment; iOS 0.1.4 does it one by one. */
 const HISTORY_LOAD_TIMEOUT_MS = 300_000
 /** An append uploads a fragment + the index, then relays the head pointer. */
+/** the page's own capability (init payload `pageCapabilities`): inbound `ackInbound` only after `historyAppend` ok */
+export const ACK_AFTER_APPEND_CAPABILITY = 'ackAfterAppend.v1'
 const HISTORY_APPEND_TIMEOUT_MS = 120_000
 /** iOS 0.1.4 answers a load with only `tailCount` entries: ask for all of them. */
 const LEGACY_HISTORY_LOAD_ALL = 1_000_000
@@ -233,6 +254,11 @@ class NativeHistoryBridge implements BeamioChatHistory {
 	private bufferListeners = new Set<(batch: HistoryBufferEvent) => void>()
 	private readyState: 'pending' | 'ready' | 'failed' = 'pending'
 	private readyWaiters = new Set<() => void>()
+	private assumeTimer: ReturnType<typeof setTimeout> | null = null
+	/** how the key became ready, for the log and for the one repeat: the module's log, the page's assumption, or the wait that ran out */
+	private readyBy: 'log' | 'assumed' | 'timeout' | null = null
+	private repeatTimer: ReturnType<typeof setTimeout> | null = null
+	private repeatDone = false
 	private loadsInFlight = new Map<string, Promise<void>>()
 	private legacyLoads = 0
 	private legacySynced = false
@@ -241,7 +267,8 @@ class NativeHistoryBridge implements BeamioChatHistory {
 	private syncFailedRetries = 0
 	private syncFailedTimer: ReturnType<typeof setTimeout> | null = null
 	private corpus = new Map<string, HistoryEntry>()
-	private appendQueue: Array<{ entry: Omit<HistoryEntry, 'seq'>; done: () => void }> = []
+	/** (ack after append): `done` = the append is confirmed (or already held), `fail` = it was not saved (queue full, failed, session gone): the page's ACK rests on which one is called */
+	private appendQueue: Array<{ entry: Omit<HistoryEntry, 'seq'>; done: () => void; fail: (reason: string) => void }> = []
 	/** Legacy loads and appends run one at a time, so a load's pointer rewrite is told apart. */
 	private lane: Promise<unknown> = Promise.resolve()
 
@@ -250,6 +277,7 @@ class NativeHistoryBridge implements BeamioChatHistory {
 	constructor(
 		private readonly client: NativeConetChatClientImpl,
 		private readonly legacyShell: boolean,
+		private readonly readyWaitMs: number = HISTORY_READY_WAIT_MS,
 	) {
 		this.legacy = legacyShell
 	}
@@ -272,7 +300,10 @@ class NativeHistoryBridge implements BeamioChatHistory {
 
 	/** Native log line → history key readiness. */
 	_noteLog(message: string): void {
-		if (/\[history\] ready\b/.test(message)) this.setReady('ready')
+		if (/\[history\] ready\b/.test(message)) {
+			if (this.readyState === 'pending') this.readyBy = 'log'
+			this.setReady('ready')
+		}
 		else if (/\[history\] (prepare failed|domain sign failed|selfSign failed|keccak master failed|hkdf failed)/.test(message)) {
 			this.setReady('failed')
 		}
@@ -280,6 +311,10 @@ class NativeHistoryBridge implements BeamioChatHistory {
 
 	/** A new native session (init) derives the key again. */
 	_resetSession(): void {
+		this.clearAssume()
+		this.clearRepeat()
+		this.repeatDone = false
+		this.readyBy = null
 		this.readyState = 'pending'
 		this.legacySynced = false
 		this.legacyRetries = 0
@@ -287,10 +322,39 @@ class NativeHistoryBridge implements BeamioChatHistory {
 		this.clearRetry()
 	}
 
+	/**
+	 * The module's session for this account was made ready earlier by this page (nativeSessionReady.ts): the native module answers this
+	 * init as idempotent and does not log `[history] ready` again, so the log is not awaited. After the settle time the key is taken as
+	 * ready, unless the log or a failure came first. A real failure still reaches the page as a failed load (unchanged).
+	 */
+	_assumeReadyAfter(delayMs: number): void {
+		if (this.readyState !== 'pending') return
+		this.clearAssume()
+		this.assumeTimer = setTimeout(() => {
+			this.assumeTimer = null
+			if (this.readyState !== 'pending') return
+			this.client.log('info', '[chatHistory] native history key taken as ready: this page made the module session ready earlier, its ready log is not repeated')
+			this.readyBy = 'assumed'
+			this.setReady('ready')
+		}, delayMs)
+	}
+
+	private clearRepeat(): void {
+		if (this.repeatTimer) clearTimeout(this.repeatTimer)
+		this.repeatTimer = null
+	}
+
+	private clearAssume(): void {
+		if (this.assumeTimer) clearTimeout(this.assumeTimer)
+		this.assumeTimer = null
+	}
+
 	_destroy(): void {
+		this.clearAssume()
+		this.clearRepeat()
 		this.clearRetry()
 		this.setReady('failed')
-		for (const item of this.appendQueue.splice(0)) item.done()
+		for (const item of this.appendQueue.splice(0)) item.fail('history_session_closed')
 	}
 
 	private setReady(state: 'ready' | 'failed'): void {
@@ -302,17 +366,30 @@ class NativeHistoryBridge implements BeamioChatHistory {
 
 	private waitReady(): Promise<boolean> {
 		if (this.readyState !== 'pending') return Promise.resolve(this.readyState === 'ready')
+		const startedAt = Date.now()
+		this.client.log('info', `[chatHistory] waiting for the history key: limit=${this.readyWaitMs} ms`)
 		return new Promise<boolean>((resolve) => {
 			const wake = () => {
 				clearTimeout(timer)
 				this.readyWaiters.delete(wake)
+				this.client.log('info', `[chatHistory] history key wait ended: state=${this.readyState} by=${this.readyBy ?? 'none'} ms=${Date.now() - startedAt}`)
 				resolve(this.readyState === 'ready')
 			}
 			const timer = setTimeout(() => {
 				this.readyWaiters.delete(wake)
-				this.client.log('warn', '[chatHistory] native history key not confirmed — trying anyway')
+				this.readyBy = 'timeout'
+				this.client.log('warn', `[chatHistory] native history key not confirmed after ${Date.now() - startedAt} ms — trying anyway`)
+				// iOS (an explicit short limit): the wait has been paid once; later calls of this session go at once instead of waiting again (the one repeat of the first load relies on it).
+				// Android keeps its 90 s rule unchanged.
+				if (this.readyWaitMs !== HISTORY_READY_WAIT_MS && this.readyState === 'pending') {
+					this.readyState = 'ready'
+					for (const other of [...this.readyWaiters]) other()
+					this.readyWaiters.clear()
+					resolve(true)
+					return
+				}
 				resolve(false)
-			}, HISTORY_READY_WAIT_MS)
+			}, this.readyWaitMs)
 			this.readyWaiters.add(wake)
 		})
 	}
@@ -336,6 +413,7 @@ class NativeHistoryBridge implements BeamioChatHistory {
 		if (running) return running
 		const run = this.waitReady()
 			.then(() => (this.legacy ? this.loadLegacy(options) : this.loadNative(options)))
+			.then(() => this.scheduleAssumedRepeat(options))
 			.finally(() => {
 				if (this.loadsInFlight.get(key) === run) this.loadsInFlight.delete(key)
 			})
@@ -343,10 +421,27 @@ class NativeHistoryBridge implements BeamioChatHistory {
 		return run
 	}
 
+	/**
+	 * A load that went out when the key was not confirmed by the module's own log (taken as ready by the page, or the wait ran out) may have been dropped by the module without an
+	 * answer (the module declines a load before its key exists). One repeat, a few seconds later, once per session; a load is idempotent (the module syncs from the chain head and
+	 * the page merges by sendId), so a repeat after a load that did work only costs a read.
+	 */
+	private scheduleAssumedRepeat(options?: HistoryLoadOptions): void {
+		if (this.legacy || this.repeatDone || this.readyBy === 'log' || this.readyBy === null || this.repeatTimer) return
+		this.repeatDone = true
+		this.repeatTimer = setTimeout(() => {
+			this.repeatTimer = null
+			this.client.log('info', `[chatHistory] one repeat of the first history.load (the key was ${this.readyBy === 'assumed' ? 'taken as ready' : 'not confirmed'}, not announced)`)
+			void this.load(options).catch(() => undefined)
+		}, HISTORY_ASSUMED_REPEAT_MS)
+	}
+
 	private async loadNative(options?: HistoryLoadOptions): Promise<void> {
 		this.client.log('info', '[chatHistory] native history.load → on-chain pointer / IPFS index')
+		const startedAt = Date.now()
 		try {
 			await this.client.request<void>({ type: 'historyLoad', reqId: 0, options }, HISTORY_LOAD_TIMEOUT_MS)
+			this.client.log('info', `[chatHistory] native history.load answered ms=${Date.now() - startedAt}`)
 			this.syncFailedRetries = 0
 		} catch (ex) {
 			// sync_failed (syncState=error) is retryable: never "synced" and never "no history". The load still rejects (the caller logs it);
@@ -428,9 +523,9 @@ class NativeHistoryBridge implements BeamioChatHistory {
 			return
 		}
 		if (entry.sendId && this.corpus.has(`send:${entry.sendId}`)) return Promise.resolve()
-		return new Promise<void>((resolve) => {
-			if (this.appendQueue.length >= LEGACY_APPEND_QUEUE_MAX) this.appendQueue.shift()?.done()
-			this.appendQueue.push({ entry, done: resolve })
+		return new Promise<void>((resolve, reject) => {
+			if (this.appendQueue.length >= LEGACY_APPEND_QUEUE_MAX) this.appendQueue.shift()?.fail('history_append_queue_full') // the dropped one is NOT saved: it rejects (its ACK must not follow)
+			this.appendQueue.push({ entry, done: resolve, fail: (reason) => reject(new Error(reason)) })
 			if (this.legacySynced) this.flushAppendQueue()
 			else if (!this.loadsInFlight.size && !this.legacyRetryTimer) void this.load().catch(() => undefined)
 		})
@@ -442,14 +537,14 @@ class NativeHistoryBridge implements BeamioChatHistory {
 			void this.inLane(async () => {
 				const { entry } = item
 				try {
-					if (entry.sendId && this.corpus.has(`send:${entry.sendId}`)) return
+					if (entry.sendId && this.corpus.has(`send:${entry.sendId}`)) { item.done(); return } // already held: confirmed
 					await this.client.request<unknown>({ type: 'historyAppend', reqId: 0, entry }, HISTORY_APPEND_TIMEOUT_MS)
 					const stored: HistoryEntry = { ...entry, peer: entry.peer.toLowerCase(), seq: this.corpus.size }
 					this.corpus.set(historyEntryKey(stored), stored)
+					item.done()
 				} catch (ex) {
 					this.client.log('warn', `[chatHistory] native history.append failed: ${(ex as Error)?.message ?? String(ex)}`)
-				} finally {
-					item.done()
+					item.fail(String((ex as Error)?.message ?? 'history_append_failed').slice(0, 80)) // the old code resolved here: a failed append looked like a saved one
 				}
 			})
 		}
@@ -458,8 +553,11 @@ class NativeHistoryBridge implements BeamioChatHistory {
 	async read(options?: HistoryReadOptions): Promise<HistoryEntry[]> {
 		await this.waitReady()
 		if (!this.legacy) {
+			const startedAt = Date.now()
 			const result = await this.client.request<unknown>({ type: 'historyRead', reqId: 0, options }, 60_000)
-			return normalizeHistoryEntries(result) ?? []
+			const entries = normalizeHistoryEntries(result) ?? []
+			this.client.log('info', `[chatHistory] native history.read entries=${entries.length} ms=${Date.now() - startedAt}`)
+			return entries
 		}
 		const pending = [...this.loadsInFlight.values()]
 		if (pending.length) await Promise.allSettled(pending)
@@ -556,7 +654,7 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 		private readonly config: NativeChatConfig,
 		private readonly bridge: NativeChatBridge,
 	) {
-		this.historyBridge = new NativeHistoryBridge(this, bridge.legacyHistory === true)
+		this.historyBridge = new NativeHistoryBridge(this, bridge.legacyHistory === true, bridge.historyReadyWaitMs ?? HISTORY_READY_WAIT_MS)
 	}
 
 	get history(): BeamioChatHistory {
@@ -621,6 +719,9 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 	async runInit(identityOnly: boolean): Promise<void> {
 		if (this.destroyed) throw new Error('native chat client destroyed')
 		this.historyBridge._resetSession()
+		// an earlier init of this page already made this account's module session ready (the one-shot cold-start init, a chat restart):
+		// this init will be answered idempotent and the ready log will not come again
+		const earlierReadyAt = this.bridge.idempotentInitKeepsHistoryKey ? nativeSessionReadySince(this.bridge.label, this.config.identity.eoaAddress) : null
 		this.attachNativeListener()
 		this.features = LEGACY_FEATURES
 		this.helloRaw = null
@@ -669,9 +770,14 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 			// the mailbox ACK itself at store time and keeps the armor until `ackInbound`. The old meaning (the module holds the mailbox
 			// ACK until `ackInbound`) is withdrawn. Older SDKs ignore the field.
 			...(this.helloOffered.includes('inbound.deferAck') ? { deferAck: true } : {}),
+			// the page declares that it sends `ackInbound` only AFTER `historyAppend` returned ok for every inbound message that is written to history (no sendId needed), and not at all on a failure or
+			// a timeout (it asks again). The shell reads the name in the init payload. A shell that does not know the field ignores it (like deferAck).
+			pageCapabilities: [ACK_AFTER_APPEND_CAPABILITY],
 		}
 			assertCapabilityPayload(payload, 'init')
 		const ready = await this.request<{ historyApi?: unknown } | undefined>({ type: 'init', reqId: 0, payload }, 180_000)
+		noteNativeSessionReady(this.bridge.label, this.config.identity.eoaAddress)
+		if (!identityOnly && earlierReadyAt !== null) this.historyBridge._assumeReadyAfter(assumedReadyDelayMs(earlierReadyAt))
 		// `identity.provision`: the native daemon stores the public fields only; its key is already in Keychain / Keystore. It is
 		// sent after init succeeds: in G1 (key present, not yet init) the shell refuses provisionIdentity with not_ready (spec
 		// gate-state), so it can only be accepted once the session is ready (G2)..
@@ -780,6 +886,30 @@ class NativeConetChatClientImpl implements BeamioChatClient {
 			throw new Error('native send: not delivered to any entry')
 		}
 		return { sendId }
+	}
+
+	/**
+	 * IFACE-native-send-v1 (`send.armorReuse.v1`): the native layer signs and encrypts and answers with the inner armor BEFORE anything is posted (armorReady). The page stores it, and only then calls `sendArmored`.
+	 * The sendId is the application's (the one inside the payload); the armor and its digest are echoed back and checked. Nothing here is cached by the page.
+	 */
+	async sendPrepare(to: ChatRoute, payload: string, sendId: string): Promise<{ sendId: string; armor: string; armorDigest: string }> {
+		const out = await this.requestWithGeneration((g) => withInboundGeneration({ type: 'sendPrepare', schema: NATIVE_SEND_SCHEMA, to, payload, sendId }, g), 60_000)
+		if (!out.ok) throw new Error(out.reason)
+		const r = out.result as { sendId?: unknown; armor?: unknown; armorDigest?: unknown } | null
+		if (!r || typeof r.sendId !== 'string' || typeof r.armor !== 'string' || typeof r.armorDigest !== 'string') throw new Error('native prepare: not an armorReady answer')
+		return { sendId: r.sendId, armor: r.armor, armorDigest: r.armorDigest }
+	}
+
+	/** IFACE-native-send-v1: the send with the stored armor (the native layer signs and encrypts nothing). Resolves the parsed answer, or null when the ack is not an answer of the interface. */
+	async sendArmored(to: ChatRoute, payload: string, input: { sendId: string; armor: string; armorDigest: string; beamioNoPush?: boolean }): Promise<NativeSendAnswer | null> {
+		// IFACE v1.2: the command carries a non-empty armor string or is not built at all (JSON.stringify would drop an `undefined` armor and the shell would take the OLD path)
+		assertArmorSendCommand({ sendId: input.sendId, armor: input.armor, armorDigest: input.armorDigest })
+		const out = await this.requestWithGeneration(
+			(g) => withInboundGeneration({ type: 'send', schema: NATIVE_SEND_SCHEMA, to, payload, sendId: input.sendId, armor: input.armor, armorDigest: input.armorDigest, beamioNoPush: input.beamioNoPush }, g),
+			60_000,
+		)
+		if (!out.ok) throw new Error(out.reason)
+		return parseNativeSendAnswer(out.result)
 	}
 
 	async queryPresence(contacts: ChatRoute[]): Promise<Record<string, boolean>> {

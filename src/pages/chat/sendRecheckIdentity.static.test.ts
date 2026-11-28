@@ -22,8 +22,10 @@ describe('send in a shell without entry nodes (S-02, S-03, S-07)', () => {
 	})
 	it('the wait asks for one start (single flight) and the nodes arriving send it without a second tap (S-02, S-03)', () => {
 		expect(chat).toContain('askShellChatStartForSend()')
-		expect(chat).toMatch(/useEffect\(\(\) => \{\s*if \(!allNodes\?\.length \|\| nodeWaitSendsRef\.current\.size === 0\) return/)
-		expect(chat).toContain('deliverTextRef.current(id, w.wire, w.t0)')
+		// the wait is nodeWait.ts (createNodeWaiter); the page asks the shell start through askStart, and the arrival of the nodes releases the waiters without a second tap
+		expect(chat).toContain('askStart: () => askShellChatStartForSend()')
+		expect(chat).toMatch(/if \(!allNodes\?\.length\) return[\s\S]{0,260}?nodeWaiterRef\.current\?\.nodesArrived\(\)/)
+		expect(chat).toContain('return deliverTextRef.current(id, wire, t0)')
 	})
 	it('the window is 180 s and ends as a retryable not-sent with the content kept (S-04)', () => {
 		expect(chat).toContain('SEND_NODE_WAIT_WINDOW_MS = 180_000')
@@ -70,14 +72,17 @@ describe('reactions, cancel and file sends (the same rule)', () => {
 describe('the quote draft (browser behaviour as before)', () => {
 	it('is cleared only once the send is accepted: not before the no-nodes check', () => {
 		const at = sendBody.indexOf('if (!allNodes?.length) {')
-		const before = sendBody.slice(0, at)
+		// a send whose record could not be written (persist_failed) leaves the draft too: the message is in the list as failed with its quote and Retry (outgoingSend.ts); that is the only
+		// place before the no-nodes check that clears it, and it runs only after the write has failed
+		const before = sendBody.slice(0, at).replace(/onPersistFailed: \(\) => \{\s*setReplyTo\(null\)\s*markSendPersistFailed\(tempId\)\s*\},/, '')
 		expect(before).not.toContain('setReplyTo(null)')
 		// a shell that waits for the chat start has accepted the send; a browser without nodes fails and keeps the draft
 		const waitBranch = sendBody.slice(at, sendBody.indexOf('waitSendForNodes('))
 		expect(waitBranch).toContain('setReplyTo(null)')
 		const browserFail = sendBody.slice(sendBody.indexOf('waitSendForNodes('), sendBody.indexOf('await deliverText('))
 		expect(browserFail.indexOf('"failed"')).toBeGreaterThan(0)
-		expect(browserFail.slice(0, browserFail.indexOf('return\n\t\t}'))).not.toContain('setReplyTo(null)')
+		//
+		expect(browserFail.slice(0, browserFail.search(/return\n\t+\}/))).not.toContain('setReplyTo(null)')
 		expect(sendBody.slice(sendBody.indexOf('await deliverText(') - 160, sendBody.indexOf('await deliverText('))).toContain('setReplyTo(null)')
 	})
 })

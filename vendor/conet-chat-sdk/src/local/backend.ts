@@ -30,6 +30,8 @@ export interface LocalBackend {
 	/** All rows of one conversation, ascending by K. */
 	scanAsc(convBlind: string): Promise<LocalMsgRow[]>
 	listConvBlinds(): Promise<string[]>
+	/** number of message rows in the library (live rows and tombstones), without reading or decrypting any of them */
+	countRows(): Promise<number>
 	countPending(): Promise<number>
 	getLayout(convBlind: string, stableId: string, widthBucket: number, orientation: string, fontBucket: number, layoutVersion: number): Promise<LocalLayoutRow | null>
 	scanAllLayouts(): Promise<LocalLayoutRow[]>
@@ -134,6 +136,13 @@ export class MemoryBackend implements LocalBackend {
 	async listConvBlinds(): Promise<string[]> {
 		this.assertOpen()
 		return [...this.conv.keys()]
+	}
+
+	async countRows(): Promise<number> {
+		this.assertOpen()
+		let n = 0
+		for (const rows of this.conv.values()) n += rows.length
+		return n
 	}
 
 	async countPending(): Promise<number> {

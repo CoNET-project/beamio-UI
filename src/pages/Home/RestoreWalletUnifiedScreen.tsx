@@ -6,21 +6,9 @@ import { onWalletEvent, restoreWithRedeemDetailed, restoreWithUserPin } from '@/
 import { isRecoveryCodeFormat } from '@/services/recoveryCodeFormat'
 import { isShellContext } from '@/services/shellContext'
 import {
-	hasPageInputRecovery,
 	isTopFrameForRecovery,
 	isTrustedRecoveryOrigin,
-	nativeRecoveryCancel,
-	nativeRecoveryCopyKey,
-	nativeRecoveryOpen,
-	nativeRecoverySubmit,
-	onNativeRecoveryResult,
-	recoveryOpenErrorKey,
-	type NativeRecoverySubmitInput,
 } from '@/services/nativeRecovery'
-import { notifyNativeWalletReady, rememberNativeEoa, reachNativeWallet } from '@/services/nativeWallet'
-import { announceNativeWalletEstablished } from '@/services/nativeWalletEstablished'
-import { announceNativeFlowPending } from '@/services/nativeFlowPending'
-import { markImportSwitchFailed } from '@/services/shellIdentityClosed'
 import { secretFieldProps } from '@/utils/secretInputGuard'
 import { warmArgon2Worker } from '@/services/argon2WorkerBridge'
 import RecoveryQrScanPanel from './RecoveryQrScanPanel'
@@ -42,11 +30,18 @@ import { useTu } from '@/locale/beamioLocale'
 /** Three screens: Unlock (ID & password) → Use Recovery Code → Scan Recovery QR. */
 type RestoreTab = 'login' | 'recovery' | 'scan'
 const APP_LOGO_SRC = `${process.env.PUBLIC_URL ?? ''}/logo192.png`
-/** Align step chrome with CreateUsernamePinScreen passport loading. */
+/**
+ * Align step chrome with CreateUsernamePinScreen passport loading.
+ * two phases that follow the real work (no timer, no fixed delay), the same for the password path and the recovery code path:
+ *   0 = key derivation / vault decryption (restoreWithUserPin or restoreWithRedeemDetailed is running);
+ *   1 = wallet restore and verified local persistence (onRestore → init → persistAndVerifyLocalWallet is running).
+ * Phase 1 starts only when phase 0's work has returned a usable wallet. A failure leaves the progress and shows the form it came from.
+ */
 const RESTORE_LOADING_STEPS = [
-	{ id: 0, titleKey: 'restoring_wallet', descKey: 'decrypting_your_secure_vault' },
+	{ id: 0, titleKey: 'decrypting_your_secure_vault', descKey: '' },
+	{ id: 1, titleKey: 'restoring_wallet', descKey: '' },
 ] as const
-const RESTORE_STEP_DURATION_MS = 2000
+type RestorePhase = 0 | 1
 
 function scanRecoveryQrWithIosBridge() {
 	const native = getCashTreesNativeNfcBridge()
@@ -124,27 +119,19 @@ export default function RestoreWalletUnifiedScreen({
 	const [recoveryLoading, setRecoveryLoading] = useState(false)
 	const [recoveryError, setRecoveryError] = useState('')
 	const [peekRecovery, setPeekRecovery] = useState(false)
+	/** Latest recovery-tab state for the prefill effect (read through a ref so the effect deps stay unchanged). */
+	const recoveryBusyRef = useRef(false)
+	recoveryBusyRef.current = recoveryLoading || recoveryCode.trim().length > 0
 	/**
-	 * 0.53.49 (plan A, P1): a shell shows the same three screens as the browser. The page does not decrypt in a shell: the credential goes to the
-	 * native recovery engine (nativeRecoverySubmit) and the page state is cleared as soon as the request is built, whatever the outcome.
+	 * home-bridge-deferred-sdk: shell uses the same PWA restore path as the browser
+	 * (restoreWithUserPin / restoreWithRedeemDetailed). nativeRecoverySubmit = 0.
+	 * Mnemonic reaches the shell only after You’re all set → /home pwaWalletSync.
 	 */
 	const shell = isShellContext()
 	const activeTab: RestoreTab = tab
-	/** The shell recovery session is open (nativeRecoveryOpen answered ok) until ok or cancelled. */
-	const sessionOpenRef = useRef(false)
-	/** The wait for the engine's result after the shell accepted a submit; never longer than RESULT_WAIT_TIMEOUT_MS. */
-	const resultTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-	const clearResultTimer = () => {
-		if (resultTimerRef.current !== null) {
-			clearTimeout(resultTimerRef.current)
-			resultTimerRef.current = null
-		}
-	}
-	/** Gate: top frame and trusted origin always, plus the shell capability in a shell. A blocked page shows an error and a retry. */
+	/** Gate: top frame + trusted origin in shell. No native recovery capability required. */
 	const [gate, setGate] = useState<{ state: 'checking' | 'ready' | 'blocked'; reason?: string }>({ state: shell ? 'checking' : 'ready' })
 	const [gateTry, setGateTry] = useState(0)
-	/** Seconds left of a native backoff; submit is refused while it runs. */
-	const [cooldownLeft, setCooldownLeft] = useState(0)
 
 	// —— Login —
 	const [username, setUsername] = useState(prefillTag)
@@ -152,7 +139,7 @@ export default function RestoreWalletUnifiedScreen({
 	const [peekPin, setPeekPin] = useState(false)
 	const [loginLoading, setLoginLoading] = useState(false)
 	const [loginError, setLoginError] = useState('')
-	const [restoreStep, setRestoreStep] = useState(0)
+	const [restoreStep, setRestoreStep] = useState<RestorePhase>(0)
 
 	useEffect(() => {
 		if (initialRecoveryCode) {
@@ -166,9 +153,8 @@ export default function RestoreWalletUnifiedScreen({
 		warmArgon2Worker()
 	}, [])
 
-	// Gate check: an embedding frame is refused everywhere; a shell also needs a trusted origin and the shell's declared capability.
+	// Gate: embedding frame refused; shell needs trusted origin only (PWA owns decrypt — no native capability gate).
 	useEffect(() => {
-		let live = true
 		if (!isTopFrameForRecovery()) {
 			setGate({ state: 'blocked', reason: 'untrusted_origin' })
 			return
@@ -181,17 +167,7 @@ export default function RestoreWalletUnifiedScreen({
 			setGate({ state: 'blocked', reason: 'untrusted_origin' })
 			return
 		}
-		setGate({ state: 'checking' })
-		void hasPageInputRecovery()
-			.then((ok) => {
-				if (live) setGate(ok ? { state: 'ready' } : { state: 'blocked', reason: 'capability_missing' })
-			})
-			.catch(() => {
-				if (live) setGate({ state: 'blocked', reason: 'capability_missing' })
-			})
-		return () => {
-			live = false
-		}
+		setGate({ state: 'ready' })
 	}, [shell, gateTry])
 
 	// A hidden page masks both secret fields again.
@@ -206,109 +182,18 @@ export default function RestoreWalletUnifiedScreen({
 		return () => document.removeEventListener('visibilitychange', onVisibility)
 	}, [])
 
-	useEffect(() => {
-		if (cooldownLeft <= 0) return
-		const timer = window.setTimeout(() => setCooldownLeft((n) => Math.max(0, n - 1)), 1000)
-		return () => window.clearTimeout(timer)
-	}, [cooldownLeft])
-
 	const showError = (message: string) => {
 		setLoginError(message)
 		setRecoveryError(message)
 	}
 
-	// Shell: the recovery outcome comes as an event (nativeRecoveryResult), with a short code and nothing secret.
-	useEffect(() => {
-		if (!shell) return
-		const offRecovery = onNativeRecoveryResult(({ code, eoa, cooldownSec }) => {
-			clearResultTimer()
-			setLoginLoading(false)
-			setRecoveryLoading(false)
-			if (code === 'cancelled') {
-				sessionOpenRef.current = false
-				announceNativeFlowPending(false)
-				return
-			}
-			// a switch that closed the identity module makes the next closed notice an import ("retry import").
-			if (code === 'clear_failed' || code === 'unregister_refused') markImportSwitchFailed()
-			if (code === 'ok') {
-				sessionOpenRef.current = false
-				// No reload. The key is native but not initialized (G1): reach G2, then the app enters.
-				// the wallet is established now, synchronously (the gate refuses a late no_key).
-				announceNativeWalletEstablished()
-				rememberNativeEoa(eoa)
-				// The entry gate reads the native state and decides: G2 enters the app; G1 shows the same notice as a cold start.
-				void reachNativeWallet().then(() => notifyNativeWalletReady(initialBeamioTag, eoa))
-				return
-			}
-			// Every other code keeps the session open for a retry; the page shows PWA copy for it (never a native page).
-			const seconds = code === 'backoff' && typeof cooldownSec === 'number' && cooldownSec > 0 ? Math.ceil(cooldownSec) : 0
-			if (seconds > 0) setCooldownLeft(seconds)
-			const copyKey = nativeRecoveryCopyKey(code)
-			showError(tu(copyKey ?? 'something_went_wrong_while_restoring_your_wallet', seconds > 0 ? { seconds } : undefined))
-		})
-		return () => {
-			offRecovery()
-			clearResultTimer()
-			announceNativeFlowPending(false)
-			// leaving with a session open ends it as cancelled (idempotent)
-			if (sessionOpenRef.current) {
-				sessionOpenRef.current = false
-				void nativeRecoveryCancel()
-			}
-		}
-	}, [shell, initialBeamioTag])
-
-	/** Shell: opens the session on the first submit, then hands the credential to the engine. Returns true when the shell accepted it. */
-	const shellSubmit = async (payload: NativeRecoverySubmitInput): Promise<boolean> => {
-		if (!sessionOpenRef.current) {
-			const out = await nativeRecoveryOpen()
-			if (!out.ok) {
-				showError(tu(recoveryOpenErrorKey(out.reason)))
-				return false
-			}
-			sessionOpenRef.current = true
-			// the recovery session is open until ok or cancel: the entry gate must not cover this page.
-			announceNativeFlowPending(true)
-		}
-		const sent = await nativeRecoverySubmit(payload)
-		if (!sent.ok) {
-			// the engine session is gone: open a new one on the next try
-			if (sent.reason === 'not_available') sessionOpenRef.current = false
-			showError(tu(recoveryOpenErrorKey(sent.reason)))
-			return false
-		}
-		// The shell accepted the request: the result must come as an event. If it never does, the page does not stay on the loading screen.
-		clearResultTimer()
-		resultTimerRef.current = setTimeout(() => {
-			resultTimerRef.current = null
-			if (!sessionOpenRef.current) return
-			setLoginLoading(false)
-			setRecoveryLoading(false)
-			// end the engine session as cancelled; the next submit opens a new one. The form state was cleared when the request was built.
-			sessionOpenRef.current = false
-			void nativeRecoveryCancel()
-			showError(tu('something_went_wrong_while_restoring_your_wallet'))
-		}, RESULT_WAIT_TIMEOUT_MS)
-		return true
-	}
-
-	useEffect(() => {
-		if (!loginLoading) {
-			setRestoreStep(0)
-			return
-		}
-		setRestoreStep(0)
-		const advance = () => setRestoreStep((prev) => Math.min(prev + 1, RESTORE_LOADING_STEPS.length - 1))
-		const timer = window.setTimeout(advance, RESTORE_STEP_DURATION_MS)
-		return () => window.clearTimeout(timer)
-	}, [loginLoading])
-
 	useEffect(() => {
 		const tag = normalizeBeamioTagInput(initialBeamioTag)
 		if (!tag) return
 		setUsername(tag)
-		if (!initialRecoveryCode) setTab('login')
+		// the restore path itself makes initialBeamioTag appear mid-submit (init stores the recovered tag).
+		// Never pull the user off the recovery tab while it is submitting or holds a code (one-frame Unlock flash).
+		if (!initialRecoveryCode && !recoveryBusyRef.current) setTab('login')
 	}, [initialBeamioTag, initialRecoveryCode])
 
 	useEffect(() => {
@@ -345,6 +230,7 @@ export default function RestoreWalletUnifiedScreen({
 
 	const handleLoginSubmit = async (e: FormEvent) => {
 		e.preventDefault()
+		if (loginLoading || recoveryLoading) return
 		setLoginError('')
 		const trimmed = formatBeamioName()
 		if (!trimmed) return
@@ -353,20 +239,8 @@ export default function RestoreWalletUnifiedScreen({
 			setLoginError(tu('password_must_be_at_least_6_characters'))
 			return
 		}
-		// Shell: the native engine restores. The request is built, the page state is cleared at once, then it is sent.
-		if (shell) {
-			if (cooldownLeft > 0) {
-				setLoginError(tu('recovery.native.backoff', { seconds: cooldownLeft }))
-				return
-			}
-			const payload: NativeRecoverySubmitInput = { path: 'account', name: trimmed, password }
-			setPin('')
-			setPeekPin(false)
-			setLoginLoading(true)
-			const sent = await shellSubmit(payload)
-			if (!sent) setLoginLoading(false)
-			return
-		}
+		// home-bridge-deferred-sdk: PWA restores with Tag+password even in shell (nativeRecoverySubmit = 0).
+		setRestoreStep(0)
 		setLoginLoading(true)
 		try {
 			const canRestore = await restoreWithUserPin(trimmed, password)
@@ -383,6 +257,7 @@ export default function RestoreWalletUnifiedScreen({
 				return
 			}
 
+			setRestoreStep(1)
 			await onRestore({
 				temp: canRestore,
 				beamioTag: beamioProfile.accountName || trimmed,
@@ -396,32 +271,16 @@ export default function RestoreWalletUnifiedScreen({
 
 	const handleRecoverySubmit = async (e: FormEvent) => {
 		e.preventDefault()
+		if (loginLoading || recoveryLoading) return
 		setRecoveryError('')
 		if (!recoveryCode.trim()) {
 			setRecoveryError(tu('please_enter_your_recovery_code'))
 			return
 		}
-		// Shell: only the recovery code format goes to the engine; the request is built and the page state is cleared at once.
-		if (shell) {
-			const code = recoveryCode.trim()
-			if (/^http/i.test(code) || !isRecoveryCodeFormat(code)) {
-				setRecoveryError(tu('invalid_recovery_code_format'))
-				return
-			}
-			if (cooldownLeft > 0) {
-				setRecoveryError(tu('recovery.native.backoff', { seconds: cooldownLeft }))
-				return
-			}
-			const payload: NativeRecoverySubmitInput = { path: 'code', code }
-			setRecoveryCode('')
-			setPeekRecovery(false)
-			setRecoveryLoading(true)
-			const sent = await shellSubmit(payload)
-			if (!sent) setRecoveryLoading(false)
-			return
-		}
+		setRestoreStep(0)
 		setRecoveryLoading(true)
 		try {
+			// home-bridge-deferred-sdk: PWA restores with the recovery code even in shell (nativeRecoverySubmit = 0).
 			// 2026-11-17: only a wrong code says "invalid"; a failed chain read or a derivation failure is not reported as a wrong code.
 			const outcome = await restoreWithRedeemDetailed(recoveryCode, '')
 			if (outcome.kind === 'invalid_code') {
@@ -433,6 +292,7 @@ export default function RestoreWalletUnifiedScreen({
 				return
 			}
 			const canRestore = outcome.temp
+			setRestoreStep(1)
 			await onRestore({
 				temp: canRestore,
 				beamioTag: canRestore?.beamio?.accountName || '',
@@ -478,7 +338,7 @@ export default function RestoreWalletUnifiedScreen({
 	const iosNativeScan =
 		!shell && getCashTreesNativeNfcHost() === 'ios' && typeof getCashTreesNativeNfcBridge()?.scanRecoveryQr === 'function'
 
-	if (loginLoading) {
+	if (loginLoading || recoveryLoading) {
 		return (
 			<div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[#f9f9ff] font-[Inter,system-ui,sans-serif] text-[#151c27]">
 				<style>{`
@@ -632,15 +492,10 @@ export default function RestoreWalletUnifiedScreen({
 			setRecoveryError('')
 			return
 		}
-			if (tab === 'recovery') {
+		if (tab === 'recovery') {
 			setTab('login')
 			setRecoveryError('')
 			return
-		}
-		clearResultTimer()
-		if (sessionOpenRef.current) {
-			sessionOpenRef.current = false
-			void nativeRecoveryCancel()
 		}
 		onClose()
 	}
@@ -649,10 +504,16 @@ export default function RestoreWalletUnifiedScreen({
 		return (
 			<div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[#f3f4fb] font-[Inter,system-ui,sans-serif] text-[#1a1c1f]">
 				<VerraFloatingNavChrome onBack={onBack} tone="restore" />
-				<div className={`flex min-h-0 flex-1 flex-col items-center gap-5 px-6 ${APP_FLOATING_CHROME_MAIN_TOP_PT}`}>
+				<div
+					className={`flex min-h-0 flex-1 flex-col items-center gap-5 px-6 ${APP_FLOATING_CHROME_MAIN_TOP_PT}`}
+					data-restore-gate={gate.state === 'blocked' ? 'blocked' : 'checking'}
+					data-restore-gate-reason={gate.state === 'blocked' ? (gate.reason ?? 'capability_missing') : undefined}
+				>
 					{gate.state === 'blocked' ? (
 						<>
-							<p className="text-center text-[15px] font-medium text-[#1a1c1f]">{tu(recoveryOpenErrorKey(gate.reason ?? 'capability_missing'))}</p>
+							<p className="text-center text-[15px] font-medium text-[#1a1c1f]" role="alert">
+								{tu(gate.reason === 'untrusted_origin' ? 'recovery.native.untrusted_origin' : 'something_went_wrong_while_restoring_your_wallet')}
+							</p>
 							<AppButton type="button" fullWidth onClick={() => setGateTry((n) => n + 1)} className={primaryButtonClass}>
 								{tu('recovery.native.retry')}
 							</AppButton>

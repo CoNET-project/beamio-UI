@@ -1,6 +1,8 @@
 import { resolveRecipientForSend } from '@/utils/recipientPublicKey'
 import { lookupRecipientRecord } from '@/services/chat'
 import { useEffect, useMemo, useState } from 'react'
+import { whilePending } from '@/services/pendingSends'
+import { CoNET_Data } from '@/utils/globals'
 import { Check, Loader2, Users } from 'lucide-react'
 import { chatComposerAutofillProps } from '@/utils/chatComposerAutofill'
 import { useVisualViewportFrame } from '@/hooks/useVisualViewportFrame'
@@ -133,7 +135,8 @@ export default function GroupChatScreen({ chats, ownEoa, onClose }: Props) {
 			const memberEoas = open.roster.members.map((member) => member.eoa)
 			const { routes, missing } = await resolveRoutes(chats, memberEoas)
 			if (missing.length) throw new Error(missingText(missing))
-			const result = await sendGroupChatMessage(open.roster.groupId, draft, routes)
+			// counted as unsent while it is on its way (group messages have no queue in this release)
+			const result = await whilePending(String(CoNET_Data?.profiles?.[0]?.keyID || ''), 'group', () => sendGroupChatMessage(open.roster.groupId, draft, routes))
 			setDraft('')
 			if (result.failedRecipients > 0) {
 				setNotice(`Sent to ${result.acceptedRecipients}. ${result.failedRecipients} did not receive this message.`)

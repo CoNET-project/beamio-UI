@@ -96,6 +96,8 @@ interface Region {
 		lastReadTs?: number
 		/** the one-time verification prompt was dismissed or completed for this contact. */
 		verifyPromptSeen?: boolean
+		/** sendIds of the messages the user REMOVED on purpose (a failed bubble sent to the input for editing). Merges of rows (the writer's row, an inbound batch, the persisted floor) are unions and cannot express a deletion; the merges drop every message named here and keep the set growing (never shrinking). Bounded (the newest are kept). */
+		removedSendIds?: string[]
 	}
   
   interface profile extends keyPair {
@@ -776,6 +778,8 @@ type ChatMessage = {
 	sentViaUnconfirmedRoute?: boolean
 	/** Local only: the fixed code of a send that was not made (for example recipient_key_unavailable). */
 	sendError?: string
+	/** Local only: when the latest send attempt of this message began (the first send or a retry). A stored `sending` message whose attempt began before this page load has no send in flight. */
+	sendAttemptAt?: number
 	/**
 	 * Local only. The wallet the envelope claimed (`from`) when it differs from
 	 * the signer recovered from `signMessage`. The signer is the sender; the UI

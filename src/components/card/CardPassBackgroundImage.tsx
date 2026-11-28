@@ -1,3 +1,4 @@
+import { safeResourceUrl } from '@/utils/retiredHost'
 import { IpfsImg } from '@/components/IpfsImg'
 import React from 'react'
 
@@ -31,12 +32,12 @@ export function CardPassBackgroundImage({
 				<>
 					<div
 						className="absolute inset-x-0 top-0 h-1/2 scale-110 bg-cover bg-top bg-no-repeat blur-xl"
-						style={{ backgroundImage: `url("${src}")` }}
+						style={{ backgroundImage: `url("${safeResourceUrl(src)}")` }}
 						aria-hidden
 					/>
 					<div
 						className="absolute inset-x-0 bottom-0 h-1/2 scale-110 bg-cover bg-bottom bg-no-repeat blur-xl"
-						style={{ backgroundImage: `url("${src}")` }}
+						style={{ backgroundImage: `url("${safeResourceUrl(src)}")` }}
 						aria-hidden
 					/>
 				</>
@@ -44,12 +45,12 @@ export function CardPassBackgroundImage({
 				<>
 					<div
 						className="absolute inset-y-0 left-0 w-1/2 scale-110 bg-cover bg-left bg-no-repeat blur-xl"
-						style={{ backgroundImage: `url("${src}")` }}
+						style={{ backgroundImage: `url("${safeResourceUrl(src)}")` }}
 						aria-hidden
 					/>
 					<div
 						className="absolute inset-y-0 right-0 w-1/2 scale-110 bg-cover bg-right bg-no-repeat blur-xl"
-						style={{ backgroundImage: `url("${src}")` }}
+						style={{ backgroundImage: `url("${safeResourceUrl(src)}")` }}
 						aria-hidden
 					/>
 				</>

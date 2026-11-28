@@ -14,12 +14,22 @@ jest.mock('../services/shellContext', () => ({ isShellContext: jest.fn() }))
 jest.mock('../services/nativeIdentityPublic', () => ({ shellAccountKeyOrEmpty: () => 'synthetic-account-key' }))
 jest.mock('../services/nativePgpRestore', () => ({ nativeGenerateNewPgpKey: jest.fn() }))
 jest.mock('../services/chat', () => ({ regeneratePgpKeyByUser: jest.fn() }))
+// 0.53.52: the click path is closed in the shipped build (PGP_IDENTITY_CREATE_ENABLED false); a test opens it explicitly
+jest.mock('../utils/pgpIdentityCreateFlag', () => ({
+	get PGP_IDENTITY_CREATE_ENABLED() {
+		return (globalThis as { __createOpen?: boolean }).__createOpen === true
+	},
+}))
+const openClickPath = (on: boolean) => {
+	;(globalThis as { __createOpen?: boolean }).__createOpen = on
+}
 
 const isShell = isShellContext as jest.MockedFunction<typeof isShellContext>
 const nativeGen = nativeGenerateNewPgpKey as jest.MockedFunction<typeof nativeGenerateNewPgpKey>
 const browserGen = regeneratePgpKeyByUser as jest.MockedFunction<typeof regeneratePgpKeyByUser>
 
 beforeEach(() => {
+	openClickPath(false)
 	isShell.mockReset()
 	nativeGen.mockReset()
 	browserGen.mockReset()
@@ -49,6 +59,7 @@ describe('class 4 (not_ready) shows its body only', () => {
 
 describe('pgp_verify_failed (native challenge-signature gate): "restore failed" with the user-click entry, nothing automatic', () => {
 	it('shows chat.restore_failed.body and the generate entry (chat.restore_generate.entry) when eligible; the click is the only generate', async () => {
+		openClickPath(true)
 		isShell.mockReturnValue(true)
 		grantPgpCreateEligibility('synthetic-account-key')
 		render(<PgpRestoreFailedNotice code="pgp_verify_failed" />)
@@ -68,6 +79,7 @@ describe('pgp_verify_failed (native challenge-signature gate): "restore failed" 
 
 describe('the not_supported defence stays, for the other classes that have a button', () => {
 	it('shell: a not_supported answer shows the placeholder copy, hides the button, and does not retry', async () => {
+		openClickPath(true)
 		isShell.mockReturnValue(true)
 		grantPgpCreateEligibility('synthetic-account-key')
 		nativeGen.mockResolvedValue({ ok: false, reason: 'not_supported' })
@@ -77,13 +89,15 @@ describe('the not_supported defence stays, for the other classes that have a but
 		expect(screen.queryByRole('button')).toBeNull()
 		expect(nativeGen).toHaveBeenCalledTimes(1)
 	})
-	it('shell: any other refusal keeps the retry line and the button', async () => {
+	it('shell: any other refusal shows its own line (not "Can\'t read…") and keeps the button', async () => {
+		openClickPath(true)
 		isShell.mockReturnValue(true)
 		grantPgpCreateEligibility('synthetic-account-key')
 		nativeGen.mockResolvedValue({ ok: false, reason: 'pending_exists' })
 		render(<PgpRestoreFailedNotice code="pgp_backup_missing" />)
 		fireEvent.click(screen.getByRole('button'))
-		expect(await screen.findByText('chat.restore_retry.body')).toBeTruthy()
+		expect(await screen.findByText('chat.create_refused.body')).toBeTruthy()
+		expect(screen.queryByText('chat.restore_retry.body')).toBeNull()
 		expect(screen.queryByText('chat.replace_not_supported')).toBeNull()
 		expect(screen.getByRole('button')).toBeTruthy()
 	})
@@ -102,5 +116,48 @@ describe('the answer outcome (pure)', () => {
 		revokePgpCreateEligibility('synthetic-account-key')
 		render(<PgpRestoreFailedNotice code="pgp_backup_missing" />)
 		expect(screen.queryByRole('button')).toBeNull()
+	})
+})
+
+describe('0.53.52: the click path is closed in the shipped build', () => {
+	it('shell, eligible, PGP_IDENTITY_CREATE_ENABLED false: no button (no click that sends nothing), nothing is sent', () => {
+		openClickPath(false)
+		isShell.mockReturnValue(true)
+		grantPgpCreateEligibility('synthetic-account-key')
+		render(<PgpRestoreFailedNotice code="pgp_backup_missing" />)
+		expect(screen.getByText('chat.restore_failed.body')).toBeTruthy()
+		expect(screen.queryByRole('button')).toBeNull()
+		expect(nativeGen).not.toHaveBeenCalled()
+	})
+})
+
+describe('0.53.52: the failure line names its reason', () => {
+	const cases: Array<[string, string]> = [
+		['native_unavailable', 'chat.create_unavailable.body'],
+		['timeout', 'chat.create_timeout.body'],
+		['locked', 'chat.create_locked.body'],
+		['origin_refused', 'chat.create_refused.body'],
+	]
+	it.each(cases)('reason %s shows %s, never "Can\'t read your Chat identity"', async (reason, key) => {
+		openClickPath(true)
+		isShell.mockReturnValue(true)
+		grantPgpCreateEligibility('synthetic-account-key')
+		nativeGen.mockResolvedValue({ ok: false, reason })
+		render(<PgpRestoreFailedNotice code="pgp_backup_missing" />)
+		fireEvent.click(screen.getByRole('button'))
+		expect(await screen.findByText(key)).toBeTruthy()
+		expect(screen.queryByText('chat.restore_retry.body')).toBeNull()
+	})
+	it.each(['not_enabled', 'not_eligible', 'no_account'])('reason %s shows no failure line at all', async (reason) => {
+		openClickPath(true)
+		isShell.mockReturnValue(true)
+		grantPgpCreateEligibility('synthetic-account-key')
+		nativeGen.mockResolvedValue({ ok: false, reason })
+		render(<PgpRestoreFailedNotice code="pgp_backup_missing" />)
+		fireEvent.click(screen.getByRole('button'))
+		await waitFor(() => expect(nativeGen).toHaveBeenCalledTimes(1))
+		await new Promise((r) => setTimeout(r, 20))
+		expect(screen.queryByRole('alert')).toBeNull()
+		expect(screen.queryByText('chat.restore_retry.body')).toBeNull()
 	})
 })

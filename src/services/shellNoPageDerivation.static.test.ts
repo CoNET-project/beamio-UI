@@ -1,7 +1,8 @@
 /**
  * @jest-environment node
  *
- * in a shell the page derives no account key from a mnemonic (the native layer holds keys). Reads the source.
+ * home-bridge-deferred-sdk: ensureProfilePrivateKeyArmorFromMnemonic may derive in shell
+ * (PWA owns account keys). Chat/PGP still refused separately until post-handoff SDK init.
  */
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -10,12 +11,10 @@ const src = readFileSync(join(__dirname, '..', '..', 'src', 'services', 'beamio.
 const fn = src.indexOf('export const ensureProfilePrivateKeyArmorFromMnemonic = (')
 const body = src.slice(fn, src.indexOf('const getDuplicateOwnership', fn))
 
-describe('no page key derivation in a shell', () => {
-	it('the shell guard comes before the mnemonic derivation', () => {
-		const guard = body.indexOf('if (isShellContext()) return data')
-		const derive = body.indexOf('createKeyHDWallets(phrase)')
+describe('ensureProfilePrivateKeyArmorFromMnemonic (home-bridge)', () => {
+	it('derives from mnemonic without a shell early-return guard', () => {
 		expect(fn).toBeGreaterThan(0)
-		expect(guard).toBeGreaterThan(0)
-		expect(derive).toBeGreaterThan(guard)
+		expect(body).toContain('createKeyHDWallets(phrase)')
+		expect(body).not.toContain('if (isShellContext()) return data')
 	})
 })

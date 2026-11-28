@@ -3,7 +3,6 @@
  */
 /** The contact route table handed to the native module (delivered receipts). SYNTHETIC addresses and armor. */
 import { createRouteTable, routeEligibility, readKeyOfDecision, applyRouteEligibility, ROUTE_TABLE_MAX_ENTRIES, ROUTE_ARMOR_MAX_BYTES, ROUTE_SYNC_DEBOUNCE_MS, ROUTE_SYNC_RETRY_MS, type RouteEntry } from './nativeRouteTable'
-import { markMessageDeliveredBySendId } from '../utils/chatDeliveryReceipt'
 
 const ARMOR = '-----BEGIN PGP PUBLIC KEY BLOCK-----\nSYNTHETIC\n-----END PGP PUBLIC KEY BLOCK-----'
 const addr = (n: number) => '0x' + n.toString(16).padStart(40, '0')
@@ -94,22 +93,6 @@ describe('route table', () => {
 		expect(h.table.size()).toBe(0)
 		h.table.resend()
 		expect(h.timers.filter((t) => t.live)).toHaveLength(0)
-	})
-})
-
-describe('the sender side: a receipt marks Delivered', () => {
-	const chat = (status: string) => ({ address: addr(9), messages: [{ id: 'a', sendId: 'S1', from: 'me', status }, { id: 'b', sendId: 'S2', from: 'them', status: 'sent' }] }) as never
-	it('marks the message by sendId; a repeat is idempotent; an unknown sendId is ignored', () => {
-		const first = markMessageDeliveredBySendId([chat('sent')], 'S1')
-		expect(first.updated).toBe(true)
-		expect((first.chats[0] as { messages: Array<{ status: string }> }).messages[0].status).toBe('delivered')
-		const again = markMessageDeliveredBySendId(first.chats, 'S1')
-		expect(again.updated).toBe(false)
-		expect(markMessageDeliveredBySendId([chat('sent')], 'UNKNOWN').updated).toBe(false)
-	})
-	it('a message from the other side is never marked, and a read message is not taken back to delivered', () => {
-		expect(markMessageDeliveredBySendId([chat('sent')], 'S2').updated).toBe(false)
-		expect(markMessageDeliveredBySendId([chat('read')], 'S1').updated).toBe(false)
 	})
 })
 

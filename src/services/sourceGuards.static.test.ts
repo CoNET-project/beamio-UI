@@ -38,13 +38,11 @@ describe('source guards', () => {
 		expect(read('src/App.tsx')).toContain('withoutPeerPublicArmor(updatedChatData)')
 	})
 
-	it('the create page sends the account and handles already_bound (recovery) and lookup_unavailable (retry, no creation)', () => {
+	it('the create page no longer sends a native account-create open (the PWA creates the account itself); the command constant stays in the native bridge file only', () => {
 		const page = read('src/pages/Home/CreateUsernamePinScreen.tsx')
-		expect(page).toContain('nativeAccountCreateOpen(trimmedTag)')
-		expect(page).toContain("code === 'already_bound'")
-		expect(page).toContain("code === 'lookup_unavailable'")
-		expect(page).toContain("opened.reason === 'already_bound'")
-		expect(page).toContain("opened.reason === 'lookup_unavailable'")
+		expect(page).not.toContain('nativeAccountCreateOpen')
+		expect(page).not.toContain('onNativeAccountCreateResult')
+		expect(page).toContain('createRecover(trimmedTag, pwd')
 		const cmd = read('src/services/nativeRecovery.ts')
 		expect(cmd).toContain('{ type: NATIVE_ACCOUNT_CREATE_OPEN_COMMAND, account }')
 	})

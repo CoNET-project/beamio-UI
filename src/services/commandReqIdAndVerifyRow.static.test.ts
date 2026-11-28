@@ -80,7 +80,7 @@ describe('persistInitRecord drops the peer armor and keeps the stored rows (shel
 	})
 	it('the browser writer keeps the stored rows as well', () => {
 		const browser = beamio.slice(beamio.indexOf('const persistInitRecordBrowser'), beamio.indexOf('const walletStores = ('))
-		expect(browser).toContain('keepStoredChats(temp, storedPlain, floorOptionsFor(temp))')
+		expect(browser).toContain('keepStoredChats(temp, plan.floorFrom, floorOptionsFor(temp))')
 	})
 	it('the failure line names chats_floor', () => {
 		expect(beamio).toContain("reason=${ex instanceof Error && ex.message === CHATS_FLOOR_REFUSED ? 'chats_floor' : 'write_failed'}")

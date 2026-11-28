@@ -42,11 +42,9 @@ describe('the screens other than the chat page refuse a held key (resolveRecipie
 })
 
 describe('non-text sends in the chat page keep their message with the held status', () => {
-	it('voice, file, reaction, cancel and paid receipt use settleSendStatus', () => {
+	it('reaction, cancel and paid receipt use settleSendStatus (file and voice are queue items: chatMediaSend.ts)', () => {
 		const s = text('pages/chat/chat.tsx')
-		expect(s.match(/settleSendStatus\(/g)?.length ?? 0).toBeGreaterThanOrEqual(6)
-		expect(s).toContain('const voiceStatus = settleSendStatus(')
-		expect(s).toContain('const fileStatus = settleSendStatus(')
+		expect(s.match(/settleSendStatus\(/g)?.length ?? 0).toBeGreaterThanOrEqual(4)
 		expect(s).toContain('const cancelStatus = settleSendStatus(')
 		expect(s).toContain('const paidStatus = settleSendStatus(')
 	})

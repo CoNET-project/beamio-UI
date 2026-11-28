@@ -48,13 +48,20 @@ let lastUploadedCipher = ''
 
 /** storageFragment POSTs are counted into the active scenario and their body is kept as the uploaded cipher. */
 const realFetch = globalThis.fetch
+/** what the storage stub holds, by content hash: an upload is read back by its hash */
+const savedFragments = new Map<string, string>()
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 	const url = String(input)
 	if (url.includes('/storageFragment') && init?.method === 'POST') {
 		active.storageWrites += 1
 		lastUploadedCipher = (JSON.parse(String(init.body)) as { image: string }).image
+		savedFragments.set(ethers.keccak256(ethers.toUtf8Bytes(lastUploadedCipher)), lastUploadedCipher)
 	}
-	return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+	if (url.includes('/getFragment?')) {
+		const body = savedFragments.get(new URL(url).searchParams.get('hash') ?? '')
+		return new Response(body ?? '', { status: body === undefined ? 404 : 200 })
+	}
+	return new Response(url.includes('/setChatIndexPointer') ? '{"success":true}' : '{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
 }) as typeof fetch
 
 function makeStore(persistence: Map<string, unknown>, net: Net, onchain: Chain) {

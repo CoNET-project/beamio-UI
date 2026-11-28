@@ -1,6 +1,7 @@
 const TerserPlugin = require('terser-webpack-plugin');
 const webpack = require('webpack');
 const path = require('path');
+const fs = require('fs');
 
 function ForceAsyncSplitPlugin() {}
 ForceAsyncSplitPlugin.prototype.apply = function (compiler) {
@@ -102,6 +103,15 @@ module.exports = {
                 'process.env.REACT_APP_NEW_ACCOUNT_REGISTRATION': JSON.stringify(process.env.REACT_APP_NEW_ACCOUNT_REGISTRATION === 'true' ? 'true' : 'false'),
                 // QA-only bridge command counter (utils/qaBridgeCounter.ts): a build-time constant, so every other build folds the counter away.
                 'process.env.REACT_APP_QA_BRIDGE_COUNTER': JSON.stringify(process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true' ? 'true' : 'false'),
+                // QA-only receipt-order hook (utils/qaAckOrder.ts): a build-time constant, so every other build folds the hook, its global name and its text away.
+                'process.env.REACT_APP_QA_ACK_ORDER_HOOK': JSON.stringify(process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' ? 'true' : 'false'),
+            }));
+            // reproducibility: ethers and openpgp are peer dependencies of the chat SDK. A clean install (npm ci in vendor/conet-chat-sdk, then the app) puts a SECOND copy of each under
+            // vendor/conet-chat-sdk/node_modules, and the SDK's imports would then bundle a second ethers and a second openpgp (+0.58 MB in the entry, and two copies whose classes do not
+            // match each other). The development machine hid this because the SDK's node_modules/ethers and /openpgp were symlinks to the app's copies. So an import of these two packages that
+            // comes from the SDK is resolved from the app's own directory, exactly like the app's own imports: one copy, whatever the install layout is.
+            webpackConfig.plugins.push(new webpack.NormalModuleReplacementPlugin(/^(ethers|openpgp)(\/.*)?$/, (resource) => {
+                if (/[\\/]conet-chat-sdk[\\/]/.test(String(resource.context || ''))) resource.context = __dirname
             }));
             webpackConfig.plugins.forEach((plugin) => {
                 const name = plugin && plugin.constructor && plugin.constructor.name
@@ -111,6 +121,22 @@ module.exports = {
                 const extra = [/conet-chat-sdk[\\/]dist[\\/]worker/]
                 plugin.options.exclude = Array.isArray(prev) ? prev.concat(extra) : prev ? [prev].concat(extra) : extra
             })
+
+            // SDK pin: the app's node_modules can be a link to a SHARED install whose @conet.project/chat-sdk points at ANOTHER worktree's SDK (it did: SilentPassUI/node_modules ->
+            // home-bridge-deferred-sdk/vendor). A build must use THIS worktree's vendor/conet-chat-sdk, whatever node_modules holds. The two import specifiers the app uses are aliased to its dist, the build FAILS if that
+            // dist is missing (it is produced by `npm --prefix vendor/conet-chat-sdk run build`, prebuild:react), and CRA's ModuleScopePlugin is told that this one directory outside src/ is allowed.
+            const sdkDir = path.resolve(__dirname, 'vendor', 'conet-chat-sdk');
+            const sdkIndex = path.join(sdkDir, 'dist', 'index.js');
+            const sdkWorker = path.join(sdkDir, 'dist', 'worker', 'entry.js');
+            if (!fs.existsSync(sdkIndex) || !fs.existsSync(sdkWorker)) {
+                throw new Error('[Build] the pinned chat SDK dist is missing: ' + sdkDir + '/dist (run: npm --prefix vendor/conet-chat-sdk run build)');
+            }
+            webpackConfig.resolve.alias = { ...(webpackConfig.resolve.alias || {}), '@conet.project/chat-sdk$': sdkIndex, '@conet.project/chat-sdk/worker': sdkWorker };
+            webpackConfig.resolve.plugins = (webpackConfig.resolve.plugins || []).map((plugin) => {
+                if (!plugin || !plugin.constructor || plugin.constructor.name !== 'ModuleScopePlugin') return plugin;
+                return new plugin.constructor(plugin.appSrcs, [...(plugin.allowedFiles || []), path.join(sdkDir, 'package.json')]);
+            });
+            process.stderr.write('[Build] chat SDK pinned to ' + sdkDir + '\n');
 
             // CRA puts source-map-loader on a top-level rule, not inside oneOf.
             // Missing maps under hoisted node_modules (bs58 → base-x) fail the compile.

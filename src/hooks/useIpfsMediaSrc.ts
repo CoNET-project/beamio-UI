@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { safeResourceUrl } from '@/utils/retiredHost'
 import {
   LOCAL_LIBRARY_READ_TIMEOUT_MS,
   parseFragmentHashFromUrl,
@@ -32,6 +33,8 @@ export function useIpfsMediaSrc(
   options: UseIpfsMediaSrcOptions = {},
 ): string {
   const streamFirst = options.streamFirst === true
+  // an address on the blocked host is rewritten or refused before anything else looks at it (retiredHost.ts)
+  src = src ? safeResourceUrl(String(src).trim()) : src
   const [mediaSrc, setMediaSrc] = useState(() => {
     const trimmed = String(src || '').trim()
     if (!trimmed) return ''

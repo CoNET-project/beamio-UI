@@ -136,7 +136,7 @@ describe('the chat wiring of the first open (source check: chat.ts)', () => {
 	})
 
 	it('the register branch is gated by the decision and sends through the per-wallet lock with a fresh read', () => {
-		expect(chat).toMatch(/isFirstOpenRefused\(ownWallet\) \|\| !firstOpenRegisterAllowed\(firstOpenDecisionNow\(\{ read: ownChain\.read, publicArmored: ownChain\.publicArmored, pending: readPendingChatKey\(profile\) !== null, localChatKeyComplete: isPgpKeyComplete\(chatManager\.pgpKey\)/)
+		expect(chat).toMatch(/isFirstOpenRefused\(ownWallet\) \|\| !firstOpenRegisterAllowed\(firstOpenDecisionNow\(\{ read: ownChain\.read, publicArmored: ownChain\.publicArmored, pending: readPendingChatKey\(profile\) !== null, localChatKeyComplete: isPgpKeyComplete\(activeChat\.pgpKey\)/)
 		expect(chat).toMatch(/const firstOpenSend = await registerUnderFirstOpenLock\(ownWallet, \{/)
 		expect(chat).toMatch(/firstOpenSend === 'busy'/)
 		expect(chat).toMatch(/if \(firstOpenSend === 'refused'\) markFirstOpenRefused\(ownWallet\)/)

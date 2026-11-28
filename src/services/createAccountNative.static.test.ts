@@ -37,19 +37,18 @@ describe('new account in a shell: native create, typed local errors (S25)', () =
 		expect(createBody.match(/logRecoverStep\(/g)?.length ?? 0).toBeGreaterThanOrEqual(3)
 	})
 
-	it('a shell creates the account natively; the page never runs createRecover (which generates a key) in a shell', () => {
-		// 0.53.50: the shell branch of handleCreateWallet hands over to handleShellCreate (native create first), and createRecover is after it
-		const shellBranch = screen.indexOf('await handleShellCreate(trimmedTag, pwd)')
-		const nativeOpen = screen.indexOf('await nativeAccountCreateOpen(trimmedTag)', screen.indexOf('const handleShellCreate'))
-		const pageCreate = screen.indexOf('kks = await createRecover(trimmedTag, pwd, { mustReuseKey: reuseExistingKey })')
-		expect(shellBranch).toBeGreaterThan(0)
-		expect(nativeOpen).toBeGreaterThan(0)
-		expect(nativeOpen).toBeLessThan(shellBranch)
-		expect(pageCreate).toBeGreaterThan(shellBranch)
+	it('a shell creates the account in the page: create goes only through createRecover, the native create is gone from the create screen', () => {
+		const create = screen.slice(screen.indexOf('const handleCreateWallet'))
+		const beforePageCreate = create.slice(0, create.indexOf('kks = await createRecover(trimmedTag, pwd, { mustReuseKey: reuseExistingKey })'))
+		expect(create).toContain('kks = await createRecover(trimmedTag, pwd, { mustReuseKey: reuseExistingKey })')
+		expect(beforePageCreate.length).toBeGreaterThan(0)
+		expect(beforePageCreate).not.toMatch(/isShellContext\(\)|handleShellCreate\(|nativeAccountCreateOpen\(/)
+		// the shell create, its register step, its failure copy and the result listener are deleted, not just unreferenced
+		for (const gone of ['handleShellCreate', 'handleShellRegister', 'showShellOpenFailure', 'nativeAccountCreateOpen', 'onNativeAccountCreateResult']) expect(screen).not.toContain(gone)
 		expect(screen).not.toContain('recoveryCreateOpen')
-		expect(screen).toContain("'create_account_native_unavailable'")
-		expect(screen).toContain("tu('create_account_try_later')")
-		expect(screen).toContain('onNativeAccountCreateResult(')
+		expect(screen.match(/createRecover\(/g) ?? []).toHaveLength(1)
+		// the comment of the decision stays where the branch used to be
+		expect(create).toContain('first /home pwaWalletSync')
 	})
 
 	it('a local failure shows the local copy, not the network copy', () => {

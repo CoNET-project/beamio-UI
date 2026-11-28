@@ -31,7 +31,13 @@ export type MigrationResult = { ok: true; purged: number; alreadyPurged: boolean
 
 export async function runMigrationCore(deps: MigrationDeps): Promise<MigrationResult> {
 	let state = await deps.workerState()
-	if (state === 'purged') return { ok: true, purged: 0, alreadyPurged: true }
+	if (state === 'purged') {
+		// the flag is a cache of this state, written after the purge and not durable at a kill. Every start that sees `purged`
+		// puts it back, so profilesForPersist (strip bodies) and the floor (keepMessages) agree with the library again. Never the other way round: the flag's absence says nothing about the library.
+		const eoaPurged = profileEoaOf(deps.liveProfiles())
+		if (eoaPurged && countChatMessages(deps.liveProfiles()) === 0) deps.markPurged(eoaPurged) // only while no body is left in memory (see chatLocalMigration.ts)
+		return { ok: true, purged: 0, alreadyPurged: true }
+	}
 	if (state === 'complete') {
 		//  read-back has passed (state complete).  switches the UI to the library.
 		if (!(await deps.workerSwitch())) return { ok: false, reason: 'switch_refused' }

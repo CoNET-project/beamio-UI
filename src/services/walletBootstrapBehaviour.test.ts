@@ -195,10 +195,19 @@ describe('native webview start route (0.53.39)', () => {
 		})
 	})
 
-	it('absent pre-read with walletStatus not_ready (class i, 441f9ea4 / 8ca9299e; R88 superseded): onboarding, data kept; an unreadable status is a read_failed retry', () => {
-		const o = nativeStartRoute({ ...base, pre: { kind: 'absent' }, walletStatus: 'not_ready' })
-		expect(o).toEqual({ route: 'onboard', reason: 'confirmed_absent' })
-		expect(Object.keys(o).sort()).toEqual(['reason', 'route'])
+	it('absent pre-read with walletStatus not_ready: branches on notReadyReason — key_only → local; other not_ready → retry; unavailable → read_failed', () => {
+		expect(nativeStartRoute({ ...base, pre: { kind: 'absent' }, walletStatus: 'not_ready' })).toEqual({
+			route: 'retry',
+			reason: 'status_not_no_key',
+		})
+		expect(nativeStartRoute({ ...base, pre: { kind: 'absent' }, walletStatus: 'not_ready', notReadyReason: 'key_only' })).toEqual({
+			route: 'local',
+			reason: 'key_only',
+		})
+		expect(nativeStartRoute({ ...base, pre: { kind: 'absent' }, walletStatus: 'not_ready', notReadyReason: 'unreadable' })).toEqual({
+			route: 'retry',
+			reason: 'status_not_no_key',
+		})
 		expect(nativeStartRoute({ ...base, pre: { kind: 'absent' }, walletStatus: 'unavailable' })).toEqual({ route: 'retry', reason: 'read_failed' })
 	})
 })
@@ -245,10 +254,13 @@ describe('native lock under the project rule (2026-11-20)', () => {
 		expect(judgeShellFromNative({ idb: 'absent', walletState: 'locked', walletStatus: 'locked' }).action).toBe('unlock')
 		expect(judgeShellFromNative({ idb: 'absent', walletState: 'locked', walletStatus: 'locked' }).account).toBe('undetermined')
 	})
-	it('the native status not_ready while the PWA is missing and the pre-read confirms absent (class i): onboarding, data kept; an unknown pre-read is a retry', () => {
+	it('the native status not_ready while the PWA is missing and the pre-read confirms absent: retry / local by notReadyReason; an unknown pre-read is a retry', () => {
 		const o = nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'absent', hasKey: false, walletStatus: 'not_ready' })
-		expect(o.route).toBe('onboard')
-		expect(Object.keys(o).sort()).toEqual(['reason', 'route'])
+		expect(o).toEqual({ route: 'retry', reason: 'status_not_no_key' })
+		expect(nativeStartRoute({ pre: { kind: 'absent' }, walletState: 'absent', hasKey: false, walletStatus: 'not_ready', notReadyReason: 'key_only' })).toEqual({
+			route: 'local',
+			reason: 'key_only',
+		})
 		expect(nativeStartRoute({ pre: { kind: 'unknown' }, walletState: 'absent', hasKey: false, walletStatus: 'not_ready' }).route).toBe('retry')
 	})
 })
@@ -271,10 +283,14 @@ describe('fresh-install fixtures: iOS (SDK a2767b6, read-only derivation)', () =
 describe('fresh-install fixtures: Android (SDK 866dec70, read-only derivation)', () => {
 	// passcodeStatus before the settle: no walletState field (reported as not_reported), hasKey false
 	const ANDROID_BEFORE_SETTLE = { walletState: 'not_reported' as const, hasKey: false as const }
-	it('not_ready phase: pre-read absent, walletStatus not_ready, no record (class i): onboarding, data kept; an unknown pre-read in the same phase is a retry', () => {
+	it('not_ready phase: pre-read absent, walletStatus not_ready, no record: retry unless key_only → local; an unknown pre-read in the same phase is a retry', () => {
 		expect(nativeStartRoute({ ...ANDROID_BEFORE_SETTLE, pre: { kind: 'absent' }, walletStatus: 'not_ready' })).toEqual({
-			route: 'onboard',
-			reason: 'confirmed_absent',
+			route: 'retry',
+			reason: 'status_not_no_key',
+		})
+		expect(nativeStartRoute({ ...ANDROID_BEFORE_SETTLE, pre: { kind: 'absent' }, walletStatus: 'not_ready', notReadyReason: 'key_only' })).toEqual({
+			route: 'local',
+			reason: 'key_only',
 		})
 		expect(nativeStartRoute({ ...ANDROID_BEFORE_SETTLE, pre: { kind: 'unknown' }, walletStatus: 'not_ready' }).route).toBe('retry')
 	})

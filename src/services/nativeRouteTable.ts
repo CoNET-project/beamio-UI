@@ -104,7 +104,7 @@ export type RouteTable = ReturnType<typeof createRouteTable>
  * gate uses), never from whichever copy of the contact the caller happened to hold:
  * - the contact has no row, or no key could be read now (network or internal error), or the stored copy could not be read: 'keep' (nothing changes, nothing new is offered);
  * - the chain definitively has no consistent valid key (no record, an invalid key): 'remove';
- * - a key was read and the stored copy has no verified fingerprint, or it differs from the key just read: 'remove';
+ * - a key was read and the stored copy has no verified fingerprint: 'remove', unless the read was trusted from the chain (chainTrusted): 'offer'; or it differs from the key just read: 'remove';
  * - a key was read and the stored verified fingerprint equals it: 'offer'.
  */
 export type RouteEligibility = 'offer' | 'keep' | 'remove'
@@ -116,12 +116,17 @@ export function routeEligibility(input: {
 	storedReadable?: boolean
 	/** true: the chain definitively has no consistent valid key (no record, an invalid key): the contact is removed. */
 	definitiveNoKey?: boolean
+	/**
+	 * true: the decision for this read was a first-contact key trusted from the chain (chainPgpTrust.ts: whitelisted contract, this contact's address, key id
+	 * equal to the fingerprint in use). With no stored verified value this is offered, exactly as the send is allowed (one rule for send and receipt route).
+	 */
+	chainTrusted?: boolean
 }): RouteEligibility {
 	if (!input.rowKnown) return 'keep'
 	if (input.definitiveNoKey && !input.freshFingerprint) return 'remove'
 	if (!input.freshFingerprint) return 'keep'
 	if (input.storedReadable === false) return 'keep'
-	if (!input.storedVerified) return 'remove'
+	if (!input.storedVerified) return input.chainTrusted ? 'offer' : 'remove'
 	return input.storedVerified === input.freshFingerprint ? 'offer' : 'remove'
 }
 

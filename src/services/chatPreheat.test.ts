@@ -2,7 +2,7 @@
  * SDK chat preheat (sdk-roles-chat-preheat.v1). The worker start and the tail completion are stubs at the boundary (the worker and
  * IPFS are not loaded under jest); the preheat module is the real code. SYNTHETIC values only.
  */
-import { startChatPreheat, awaitChatPreheat, chatPreheatState, resetChatPreheatForTest } from './chatPreheat'
+import { startChatPreheat, awaitChatPreheat, chatPreheatState, resetChatPreheatForTest, isMigratedState, resolveLibraryState, unknownStateRetryOf, MAX_UNKNOWN_STATE_RETRIES } from './chatPreheat'
 
 const PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
 const CHAT_TEXT = 'synthetic chat body 9f3a'
@@ -117,5 +117,64 @@ describe('logs carry status codes and timing only (SDR-11)', () => {
 		expect(captured).not.toContain(PHRASE)
 		expect(captured).not.toContain('abandon')
 		expect(captured).not.toContain(CHAT_TEXT)
+	})
+})
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+// G1-b: the library read does not wait for the whole preheat
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+import { PREHEAT_JOIN_MAX_MS, awaitBounded, preheatWaitPlan } from './chatPreheat'
+
+describe('G1-b: preheatWaitPlan and awaitBounded', () => {
+	it('a library that already answers (switched, purged) is read at once: no wait at all', () => {
+		for (const s of ['switched', 'purged']) expect(preheatWaitPlan(s)).toEqual({ wait: false, boundMs: 0 })
+	})
+	it('every other state (not answered yet, none, running, complete) joins the preheat for at most 3 s', () => {
+		expect(PREHEAT_JOIN_MAX_MS).toBe(3000)
+		for (const s of [null, 'none', 'running', 'complete']) expect(preheatWaitPlan(s)).toEqual({ wait: true, boundMs: 3000 })
+	})
+	it('awaitBounded: a preheat that never completes is left after the bound (false); one that completes in time hands over its answer; a rejection is false', async () => {
+		jest.useFakeTimers()
+		try {
+			let settled: boolean | null = null
+			const never = new Promise<boolean>(() => undefined)
+			void awaitBounded(never, 3000).then((v) => { settled = v })
+			jest.advanceTimersByTime(2999)
+			await Promise.resolve()
+			expect(settled).toBeNull()
+			jest.advanceTimersByTime(2)
+			await Promise.resolve()
+			expect(settled).toBe(false)
+			await expect(awaitBounded(Promise.resolve(true), 3000)).resolves.toBe(true)
+			await expect(awaitBounded(Promise.reject(new Error('x')), 3000)).resolves.toBe(false)
+		} finally {
+			jest.useRealTimers()
+		}
+	})
+	it('freeze blocker 1: state first null (unknown) then switched: the state after the wait is the one `migrated` is computed from', () => {
+		const before: string | null = null
+		const after: string | null = 'switched'
+		expect(isMigratedState(before)).toBe(false) // computed from the state before the wait the library page would not be merged
+		const resolved = resolveLibraryState(before, after)
+		expect(resolved).toBe('switched')
+		expect(isMigratedState(resolved)).toBe(true)
+	})
+	it('a known state is never replaced by an unknown one; purged counts as migrated, none/running/complete/null do not', () => {
+		expect(resolveLibraryState('switched', null)).toBe('switched')
+		expect(resolveLibraryState('running', 'complete')).toBe('complete')
+		expect(resolveLibraryState(null, null)).toBeNull()
+		expect(isMigratedState('purged')).toBe(true)
+		for (const s of [null, 'none', 'running', 'complete']) expect(isMigratedState(s)).toBe(false)
+	})
+	it('still unknown with a local library page: ask again, at most MAX_UNKNOWN_STATE_RETRIES times; a known state, or a non-local page, never retries', () => {
+		expect(unknownStateRetryOf({ state: null, pageLocal: true, retries: 0 })).toBe(true)
+		expect(unknownStateRetryOf({ state: null, pageLocal: true, retries: MAX_UNKNOWN_STATE_RETRIES - 1 })).toBe(true)
+		expect(unknownStateRetryOf({ state: null, pageLocal: true, retries: MAX_UNKNOWN_STATE_RETRIES })).toBe(false)
+		expect(unknownStateRetryOf({ state: null, pageLocal: false, retries: 0 })).toBe(false)
+		expect(unknownStateRetryOf({ state: 'switched', pageLocal: true, retries: 0 })).toBe(false)
+	})
+	it('the 90 s bound of the tail waiter is NOT lowered', () => {
+		const bridge = require('fs').readFileSync(require('path').join(__dirname, 'chatWorkerBridge.ts'), 'utf8') as string
+		expect(bridge).toMatch(/const HISTORY_TAIL_TIMEOUT_MS = 90_000/)
 	})
 })

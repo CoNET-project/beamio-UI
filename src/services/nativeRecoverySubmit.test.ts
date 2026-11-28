@@ -7,6 +7,7 @@ import {
 	isTrustedRecoveryOrigin,
 	nativeRecoveryCancel,
 	nativeRecoverySubmit,
+	onNativeRecoveryResult,
 	setRecoveryOriginForTest,
 } from './nativeRecovery'
 import * as channel from '@/utils/beamioShellChannel'
@@ -183,6 +184,37 @@ describe('nativeRecoverySubmit (Android)', () => {
 		log.mockRestore()
 		warn.mockRestore()
 		err.mockRestore()
+	})
+})
+
+describe('the page-input submit and its result event, either order', () => {
+	const emit = (event: Record<string, unknown>) => window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'chatModuleEvent', event } }))
+	it('a result that reaches the page BEFORE the ack of the submit is delivered at once (the result path does not wait for the ack); the submit then resolves ok; a second submit meanwhile is busy', async () => {
+		setRecoveryOriginForTest({ href: ANDROID, topFrame: true })
+		let release: (v: unknown) => void = () => undefined
+		request.mockImplementation((action: string) => (action === 'shellCapabilities' ? Promise.resolve({ ok: true, result: { capabilities: [CAP] } }) : new Promise((r) => { release = r })))
+		const got: string[] = []
+		const off = onNativeRecoveryResult((r) => got.push(r.code))
+		const first = nativeRecoverySubmit({ path: 'code', code: 'x'.repeat(10) })
+		await new Promise((r) => setTimeout(r, 0))
+		emit({ type: 'nativeRecoveryResult', code: 'bad_pin' }) // the shell's result comes first
+		expect(got).toEqual(['bad_pin'])
+		await expect(nativeRecoverySubmit({ path: 'code', code: 'y'.repeat(10) })).resolves.toEqual({ ok: false, reason: 'busy' })
+		release({ ok: true }) // the ack comes after the result
+		await expect(first).resolves.toEqual({ ok: true })
+		expect(got).toEqual(['bad_pin']) // not delivered twice, not lost
+		off()
+		release = () => undefined
+	})
+	it('ack first, result after: the same single delivery', async () => {
+		setRecoveryOriginForTest({ href: ANDROID, topFrame: true })
+		withCap({ ok: true })
+		const got: string[] = []
+		const off = onNativeRecoveryResult((r) => got.push(r.code))
+		await expect(nativeRecoverySubmit({ path: 'code', code: 'x'.repeat(10) })).resolves.toEqual({ ok: true })
+		emit({ type: 'nativeRecoveryResult', code: 'bad_pin' })
+		expect(got).toEqual(['bad_pin'])
+		off()
 	})
 })
 

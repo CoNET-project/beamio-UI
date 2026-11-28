@@ -8,8 +8,10 @@
  * The chain call is injected, so the rules are tested without a provider.
  */
 
+import type { RecordSource } from '../utils/chainPgpTrust'
+
 export type RecipientLookup =
-	| { status: 'ok'; publicArmored: string; routersArmoreds: string; routePgpKeyID?: string; userPgpKeyID?: string }
+	| { status: 'ok'; publicArmored: string; routersArmoreds: string; routePgpKeyID?: string; userPgpKeyID?: string; source?: RecordSource }
 	| { status: 'no_record' }
 	| { status: 'network_error'; reason: string }
 	/** A programming or build fault (a missing ABI function, a TypeError): not a network read result, never retried as one. */
@@ -26,8 +28,43 @@ export class RecipientInternalError extends Error {
 	}
 }
 
-/** A fault in our own code (not an RPC or network failure): TypeError, ReferenceError, or a RecipientInternalError. Matched by name across realms. */
+/**
+ * the browser's own failure to reach the network is a TypeError (the fetch API rejects with TypeError for every network-level failure; the MESSAGE is
+ * implementation-defined). It is a network failure, not a fault in our code: the contact is held, retried automatically, and the user gets Retry (the safe direction).
+ * The class is TypeError AND a known engine wording; a TypeError with any other message (undefined access, a missing function, a bad argument) stays a programming error and is
+ * still reported as internal_error. Wordings, as measured or documented:
+ *  - Chrome: "Failed to fetch" (closed port, DNS failure, CORS block, bad scheme alike)
+ *  - Node/undici (measured, v22): "fetch failed"
+ *  - Safari / WKWebView (the iOS shell): "Load failed" (also older "The network connection was lost.", "The Internet connection appears to be offline."): documented, NOT measured here
+ *  - Firefox: "NetworkError when attempting to fetch resource.": documented, NOT measured here
+ * The wording KEY (never the text) is logged when a lookup is classified this way, so a device capture shows which wording a shell produced.
+ */
+const FETCH_WORDINGS: ReadonlyArray<readonly [string, RegExp]> = [
+	['failed_to_fetch', /^failed to fetch$/i],
+	['load_failed', /^load failed$/i],
+	['networkerror', /^networkerror when attempting to fetch resource\.?$/i],
+	['fetch_failed', /^fetch failed$/i],
+	['connection_lost', /^the network connection was lost\.?$/i],
+	['offline', /^the internet connection appears to be offline\.?$/i],
+	// more WKWebView / Android WebView network wordings (documented, NOT measured here); each is a failure to reach the network, never a fault in our code
+	['timed_out', /^the request timed out\.?$/i],
+	['host_not_found', /^a server with the specified hostname could not be found\.?$/i],
+	['no_connect', /^could not connect to the server\.?$/i],
+	['cancelled', /^cancell?ed$/i],
+	['request_failed', /^network request failed$/i],
+]
+export const fetchTypeErrorWording = (ex: unknown): string | null => {
+	if (typeof ex !== 'object' || ex === null) return null
+	if (String((ex as { name?: unknown }).name ?? '') !== 'TypeError') return null
+	const message = String((ex as { message?: unknown }).message ?? '').trim()
+	for (const [key, re] of FETCH_WORDINGS) if (re.test(message)) return key
+	return null
+}
+export const isFetchNetworkTypeError = (ex: unknown): boolean => fetchTypeErrorWording(ex) !== null
+
+/** A fault in our own code (not an RPC or network failure): TypeError, ReferenceError, or a RecipientInternalError. Matched by name across realms. A fetch network TypeError is not one (isFetchNetworkTypeError). */
 export const isProgrammingError = (ex: unknown): boolean => {
+	if (isFetchNetworkTypeError(ex)) return false
 	const name = typeof ex === 'object' && ex !== null ? String((ex as { name?: unknown }).name ?? '') : ''
 	return name === 'TypeError' || name === 'ReferenceError' || name === 'RecipientInternalError'
 }
@@ -71,6 +108,8 @@ export async function readRecipientRecord(
 		if (isProgrammingError(ex)) {
 			return { status: 'internal_error', reason: ex instanceof RecipientInternalError ? ex.reason : String((ex as { name?: unknown }).name) }
 		}
+		const wording = fetchTypeErrorWording(ex)
+		if (wording) return { status: 'network_error', reason: `fetch_typeerror:${wording}` }
 		return { status: 'network_error', reason: ex instanceof Error ? ex.message.slice(0, 80) : 'rpc' }
 	}
 	if (!info || typeof info !== 'object') return { status: 'network_error', reason: 'empty_answer' }

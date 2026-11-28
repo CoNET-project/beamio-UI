@@ -13,7 +13,10 @@ describe('first identity entry', () => {
 	it('the entry uses the native generate call, and the retry copy is the one shown when it is not done', () => {
 		const src = read('components/PgpFirstIdentityNotice.tsx')
 		expect(src).toMatch(/nativeGenerateNewPgpKey\(shellAccountKeyOrEmpty\(\)\)/)
-		expect(src).toMatch(/tu\('chat\.restore_retry\.body'\)/)
+		// 0.53.52: the failure line names its reason (pgpCreateFailureCopyKey); "Can't read…" is not the line for a create that did not happen
+		expect(src).toMatch(/pgpCreateFailureCopyKey\(result\.reason\)/)
+		expect(src).not.toMatch(/tu\('chat\.restore_retry\.body'\)/)
+		expect(src).toMatch(/PGP_IDENTITY_CREATE_ENABLED && pgpCreateEligible/)
 		expect(src).toMatch(/tu\('chat\.first_identity\.entry'\)/)
 		expect(src).not.toMatch(/pgp_restore_failed|chat\.restore_failed/)
 	})

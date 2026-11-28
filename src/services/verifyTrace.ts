@@ -14,6 +14,7 @@ export type VerifyTraceEvent =
 	| 'pinned-send'
 	| 'trust-readback'
 	| 'trust-gate'
+	| 'first-pin'
 
 export interface VerifyTraceRecord {
 	event: VerifyTraceEvent

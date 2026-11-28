@@ -5,7 +5,8 @@
  * - a contact is OFFERED only when that stored fingerprint equals the key just read; it is REMOVED when a key was read and the stored fingerprint is missing or
  *   differs, and also when the chain definitively has no consistent valid key (no record, an invalid key); it is KEPT as it is (never newly offered)
  *   when no key could be read (network error, internal error), when the stored copy cannot be read, or when the contact has no row.
- * - the contact offer never reads the network for a contact the stored copy shows as unverified.
+ * - an unverified contact is read once per gate window (never removed first, so a repeated offer cannot flap the route); the read's decision offers it only for a key
+ *   trusted from the chain (chainPgpTrust.ts) and removes it for any other key.
  */
 import { routeEligibility, readKeyOfDecision, type RouteEligibility } from './nativeRouteTable'
 import type { OfferGate } from './routeOfferGate'
@@ -13,7 +14,7 @@ import type { OfferGate } from './routeOfferGate'
 export type StoredTrust = { readable: boolean; hasRow: boolean; verified?: string }
 
 export type TrustDecisionLike =
-	| { ok: true; fingerprint?: string; publicArmored: string; routersArmoreds: string }
+	| { ok: true; fingerprint?: string; publicArmored: string; routersArmoreds: string; firstPin?: boolean }
 	| { ok: false; code: string; held?: { fingerprint?: string; publicArmored: string; routersArmoreds: string } }
 
 export type RouteTrustDeps = {
@@ -53,6 +54,7 @@ export function createReceiptRouteTrust(deps: RouteTrustDeps) {
 				storedReadable: stored.readable,
 				freshFingerprint: key?.fingerprint,
 				definitiveNoKey: definitive,
+				chainTrusted: decision.ok && decision.firstPin === true,
 			})
 			const did = deps.apply(address, eligibility, key)
 			if (QA_LOG) deps.log?.(`route decision src=${src} code=${code} elig=${eligibility} row=${mem.hasRow ? 1 : 0}${stored.hasRow ? 1 : 0} mv=${mem.verified ? 1 : 0} sv=${stored.verified ? 1 : 0} rd=${stored.readable ? 1 : 0} fp=${key?.fingerprint ? 1 : 0} did=${did} a=${address.slice(0, 8).toLowerCase()}`)
@@ -70,11 +72,11 @@ export function createReceiptRouteTrust(deps: RouteTrustDeps) {
 				if (QA_LOG) deps.log?.('route offer src=offer elig=keep rd=0')
 				return
 			}
-			if (!stored.verified) {
-				const did = deps.apply(address, 'remove', undefined)
-				if (QA_LOG) deps.log?.(`route decision src=offer_nosv code=none elig=remove row=${mem.hasRow ? 1 : 0}${stored.hasRow ? 1 : 0} mv=${mem.verified ? 1 : 0} sv=0 rd=1 fp=0 did=${did} a=${address.slice(0, 8).toLowerCase()}`)
-				return
-			}
+			// no immediate 'remove' for a contact whose stored copy has no verified value. The read decides (observe: a chain-trusted key is offered,
+			// any other key removes it, a failed read keeps what was there). While the offer gate skips the read (it spaces reads of one contact by 3 minutes), the
+			// previous judgement stays: a route is not removed before the new read answers
+			// (true, false, true) for a chain-trusted contact that only receives.
+			if (!stored.verified && QA_LOG) deps.log?.(`route offer src=offer_nosv elig=read row=${mem.hasRow ? 1 : 0}${stored.hasRow ? 1 : 0} a=${address.slice(0, 8).toLowerCase()}`)
 			await deps.gate.run(address, () => deps.readKey(address), opts?.force === true)
 		},
 	}

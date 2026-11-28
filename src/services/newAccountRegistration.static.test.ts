@@ -36,17 +36,13 @@ describe('the password stays in one call', () => {
 		for (const c of calls) expect(c).not.toMatch(/\$\{[^}]*(?<!Len)[^}]*\}/.source && /\$\{(input\.)?password\}/)
 		expect(reg).not.toMatch(/noteBridgeCommand|localStorage|sessionStorage|indexedDB|storeSystemData/)
 	})
-	it('the create page clears the password as soon as the call returns and hands over before the old create path', () => {
+	it('the create page runs createRecover directly: no shell register step and no shell create hand-over is left on the page', () => {
 		const page = src('pages/Home/CreateUsernamePinScreen.tsx')
-		const fn = page.slice(page.indexOf('const handleShellRegister'), page.indexOf('const handleShellCreate'))
-		expect(fn).toMatch(/finally \{[^}]*setPassword\(''\)/)
+		for (const gone of ['handleShellRegister', 'handleShellCreate', 'showShellOpenFailure']) expect(page).not.toContain(gone)
 		const create = page.slice(page.indexOf('const handleCreateWallet'))
-		expect(create.indexOf('await handleShellCreate(trimmedTag, pwd)')).toBeGreaterThan(0)
-		expect(create.indexOf('await handleShellCreate(trimmedTag, pwd)')).toBeLessThan(create.indexOf('kks = await createRecover('))
-		const shell = page.slice(page.indexOf('const handleShellCreate'), page.indexOf('const handleCreateWallet'))
-		// the normal path registers after step 1 (the last register call); the resume branch (the device already holds the key) registers with no step 1, and sits before the open
-		expect(shell.indexOf('await nativeAccountCreateOpen(trimmedTag)')).toBeLessThan(shell.lastIndexOf('await handleShellRegister(trimmedTag, pwd)'))
-		expect(shell.indexOf('if (resumeEoaLower) {')).toBeLessThan(shell.indexOf('await nativeAccountCreateOpen(trimmedTag)'))
+		expect(create.indexOf('kks = await createRecover(')).toBeGreaterThan(0)
+		expect(create.slice(0, create.indexOf('kks = await createRecover('))).not.toMatch(/handleShellCreate\(|handleShellRegister\(|isShellContext\(\)/)
+		expect(create).not.toMatch(/handleShellCreate\(|nativeAccountCreateOpen\(/)
 	})
 	it('0.53.50: the password field of the shell is shown always (the page collects it like the browser)', () => {
 		const page = src('pages/Home/CreateUsernamePinScreen.tsx')

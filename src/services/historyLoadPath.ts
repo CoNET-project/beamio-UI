@@ -53,7 +53,7 @@ export function createHistoryLoadPath<O>(deps: HistoryLoadPathDeps<O>): HistoryL
 			return deps.gate.request(effective, () => deps.runLoad(opts))
 		},
 		deliverBuffer(batch, forward) {
-			deps.gate.noteDelivered(Array.isArray(batch?.entries) ? batch.entries.length : 0)
+			deps.gate.noteDelivered(Array.isArray(batch?.entries) ? batch!.entries.length : 0)
 			forward(batch)
 		},
 		pending() {

@@ -7,9 +7,12 @@
  */
 import {
 	NATIVE_RECOVERY_LOCAL_CANCEL_MS,
+	NATIVE_ACCOUNT_CREATE_OPEN_COMMAND,
 	NATIVE_RECOVERY_OPEN_COMMAND,
 	NATIVE_RECOVERY_RESULT_CODES,
+	nativeAccountCreateOpen,
 	nativeRecoveryOpen,
+	onNativeAccountCreateResult,
 	onNativeRecoveryResult,
 	recoveryOpenErrorKey,
 } from './nativeRecovery'
@@ -224,5 +227,132 @@ describe('B7 reqId filter', () => {
 		emitRaw({ type: 'nativeRecoveryResult', code: 'not_found' })
 		expect(got).toEqual([{ code: 'not_found' }])
 		off()
+	})
+})
+
+/** A shell that sends the RESULT event first and the ack after it, or the other way round. */
+function installOrderedShell(openCommand: string, results: (reqId: number) => Array<Record<string, unknown>>, ack: Record<string, unknown>, order: 'result_first' | 'ack_first'): void {
+	w.CashTreesIOS = {
+		chatModuleCommand: (p: { command: Sent }) => {
+			const cmd = p.command
+			sent.push(cmd)
+			const send = (payload: Record<string, unknown>, delay: number) =>
+				setTimeout(() => window.dispatchEvent(new CustomEvent('cashtreesios', { detail: { action: 'chatModuleEvent', event: payload } })), delay)
+			if (cmd.type === 'hello') send({ type: 'ack', reqId: cmd.reqId, ok: true, result: { capabilities: [] } }, 0)
+			else if (cmd.type === openCommand) {
+				const reqId = cmd.reqId as number
+				const resultDelay = order === 'result_first' ? 0 : 5
+				const ackDelay = order === 'result_first' ? 5 : 0
+				for (const r of results(reqId)) send(r, resultDelay)
+				send({ ...ack, reqId }, ackDelay)
+			}
+		},
+	}
+}
+
+describe('the result may reach the page before the ack, either order is accepted', () => {
+	afterEach(() => {
+		jest.useRealTimers()
+	})
+	const eoa = '0x' + 'ab'.repeat(20)
+
+	it('recovery: a non-ok result BEFORE the ack is delivered once, when the ack ok arrives (same as the other order)', async () => {
+		for (const order of ['result_first', 'ack_first'] as const) {
+			jest.useFakeTimers()
+			installOrderedShell(NATIVE_RECOVERY_OPEN_COMMAND, (reqId) => [{ type: 'nativeRecoveryResult', reqId, code: 'bad_pin' }], { type: 'ack', ok: true }, order)
+			const got: unknown[] = []
+			const off = onNativeRecoveryResult((r) => got.push(r))
+			await expect(settle(nativeRecoveryOpen())).resolves.toEqual({ ok: true })
+			jest.advanceTimersByTime(20)
+			expect(got).toEqual([{ code: 'bad_pin' }])
+			off()
+			jest.useRealTimers()
+		}
+	})
+
+	it('recovery: an ok result before the ack is delivered with the address, and the 10-minute local cancel does not fire afterwards', async () => {
+		jest.useFakeTimers()
+		installOrderedShell(NATIVE_RECOVERY_OPEN_COMMAND, (reqId) => [{ type: 'nativeRecoveryResult', reqId, code: 'ok', eoa }], { type: 'ack', ok: true }, 'result_first')
+		const got: unknown[] = []
+		const off = onNativeRecoveryResult((r) => got.push(r))
+		await expect(settle(nativeRecoveryOpen())).resolves.toEqual({ ok: true })
+		jest.advanceTimersByTime(NATIVE_RECOVERY_LOCAL_CANCEL_MS * 2)
+		expect(got).toEqual([{ code: 'ok', eoa }])
+		off()
+	})
+
+	it('recovery: a result before a REFUSED ack is discarded (a result is delivered only for an open the shell acknowledged with ok); a result with another reqId before the ack is never delivered', async () => {
+		jest.useFakeTimers()
+		installOrderedShell(NATIVE_RECOVERY_OPEN_COMMAND, (reqId) => [{ type: 'nativeRecoveryResult', reqId, code: 'ok', eoa }], { type: 'ack', ok: false, error: 'not_available' }, 'result_first')
+		const got: unknown[] = []
+		const off = onNativeRecoveryResult((r) => got.push(r))
+		await expect(settle(nativeRecoveryOpen())).resolves.toEqual({ ok: false, reason: 'not_available' })
+		jest.advanceTimersByTime(20)
+		expect(got).toEqual([])
+		installOrderedShell(NATIVE_RECOVERY_OPEN_COMMAND, (reqId) => [{ type: 'nativeRecoveryResult', reqId: reqId + 777, code: 'bad_pin' }], { type: 'ack', ok: true }, 'result_first')
+		await settle(nativeRecoveryOpen())
+		jest.advanceTimersByTime(20)
+		expect(got).toEqual([])
+		off()
+	})
+
+	it('account create: a result BEFORE the ack is delivered when the ack ok arrives, in either order; before a refused ack it is discarded', async () => {
+		const eoaCreate = '0x' + 'cd'.repeat(20)
+		const result = (reqId: number) => ({ type: 'nativeAccountCreateResult', reqId, ok: true, result: { code: 'ok', eoa: eoaCreate } })
+		for (const order of ['result_first', 'ack_first'] as const) {
+			jest.useFakeTimers()
+			installOrderedShell(NATIVE_ACCOUNT_CREATE_OPEN_COMMAND, (reqId) => [result(reqId)], { type: 'ack', ok: true, page: 'opened' }, order)
+			const got: unknown[] = []
+			const off = onNativeAccountCreateResult((r) => got.push(r))
+			await expect(settle(nativeAccountCreateOpen('someone'))).resolves.toMatchObject({ ok: true })
+			jest.advanceTimersByTime(20)
+			expect(got).toEqual([{ code: 'ok', eoa: eoaCreate }])
+			off()
+			jest.useRealTimers()
+		}
+		jest.useFakeTimers()
+		installOrderedShell(NATIVE_ACCOUNT_CREATE_OPEN_COMMAND, (reqId) => [result(reqId)], { type: 'ack', ok: false, error: 'not_available' }, 'result_first')
+		const refused: unknown[] = []
+		const off = onNativeAccountCreateResult((r) => refused.push(r))
+		await settle(nativeAccountCreateOpen('someone'))
+		jest.advanceTimersByTime(20)
+		expect(refused).toEqual([])
+		off()
+	})
+
+	it('the hold is wired in the source: a pending reqId is set before the ack wait, held results are released only after the ack ok', () => {
+		const fs = require('fs') as typeof import('fs')
+		const src = fs.readFileSync(require('path').join(__dirname, 'nativeRecovery.ts'), 'utf8')
+		expect(src.indexOf('pendingRecoveryReqId = reqId')).toBeLessThan(src.indexOf('await requestNativeAck({ type: NATIVE_RECOVERY_OPEN_COMMAND }'))
+		expect(src.indexOf('for (const r of held) handleRecoveryResult(r)')).toBeGreaterThan(src.indexOf('openedRecoveryReqId = reqId\n\t\tbeginWatch()'))
+		expect(src).toMatch(/openedCreateReqId = reqId\s*\n\s*for \(const p of held\) for \(const replay of createReplays\) replay\(p\)/)
+	})
+})
+
+describe('late events and the passive subscription: no extra navigation', () => {
+	it('a result that arrives after the subscription ended reaches nobody', () => {
+		const got: string[] = []
+		const off = onNativeRecoveryResult((r) => got.push(r.code))
+		emitResult({ type: 'nativeRecoveryResult', code: 'bad_pin' })
+		off()
+		emitResult({ type: 'nativeRecoveryResult', code: 'ok', eoa: '0x' + 'ab'.repeat(20) })
+		emitResult({ type: 'nativeRecoveryResult', code: 'bad_pin' })
+		expect(got).toEqual(['bad_pin'])
+	})
+	it('an ok is delivered once: the subscriber is removed by it, so a late duplicate ok brings no second navigation', () => {
+		const got: string[] = []
+		const off = onNativeRecoveryResult((r) => got.push(r.code))
+		emitResult({ type: 'nativeRecoveryResult', code: 'ok', eoa: '0x' + 'ab'.repeat(20) })
+		emitResult({ type: 'nativeRecoveryResult', code: 'ok', eoa: '0x' + 'ab'.repeat(20) })
+		expect(got).toEqual(['ok'])
+		off()
+	})
+	it('the entry gate subscribes only while the native recovery exit is on screen, and its cleanup is the unsubscribe (a late event after the exit is gone cannot navigate)', () => {
+		const fs = require('fs') as typeof import('fs')
+		const gate = fs.readFileSync(require('path').join(__dirname, '../components/AppEntryGate.tsx'), 'utf8')
+		expect(gate).toMatch(/if \(storageUnavailable !== 'native_recovery_needed'\) return\s*\n\s*return onNativeRecoveryResult\(\(\{ code, eoa \}\) => \{/)
+		expect(gate).toMatch(/\}\)\s*\}, \[storageUnavailable\]\)/)
+		// the ok branch ends the exit first (setStorageUnavailable(null)) and then asks for the wallet once
+		expect(gate).toMatch(/setStorageUnavailable\(null\)\s*\n\s*void reachNativeWallet\(\)\.then\(\(\) => notifyNativeWalletReady\(''\)\)\s*\n\s*return/)
 	})
 })

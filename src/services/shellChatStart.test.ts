@@ -243,29 +243,66 @@ describe('pgpReadyKnown false: pgpReady false is unknown, not "no key"', () => {
 	})
 })
 
-describe('a confirmed first identity (QA builds: the SDK sets it up)', () => {
+describe('a confirmed first identity (0.53.52: the SDK sets it up, behind identity.first.status.v1)', () => {
 	const NO_PGP2: NativeIdentityPublic = { kind: 'ok', eoa: EOA, accountKey: `${EOA}:default`, pgpReady: false }
 	const first = { kind: 'evaluated' as const, state: 'first_identity' as const, failureCode: null, offerEntry: true, legacy: 'ABSENT' as const, chain: 'unregistered' as const }
-
-	it('with the setup dependency: "setting up", no create entry, no eligibility, no restore, no retry loop', async () => {
-		resetShellChatStartLoopGuard()
-		const setFirstIdentitySetup = jest.fn()
-		const restorePgp = jest.fn(async (): Promise<PgpRestoreOutcome> => ({ ok: true }))
-		const { deps, calls } = fakeDeps(NO_PGP2, { evaluatePgp: async () => first, restorePgp, setFirstIdentitySetup })
-		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_first_identity')
-		expect(setFirstIdentitySetup).toHaveBeenCalledWith(true)
+	const noClickPath = (calls: Record<string, unknown[]>) => {
+		// the page never offers a create entry and never sends a command for a first identity
 		expect((calls.setFirstIdentity ?? []).some((a) => (a as unknown[])[0] === true)).toBe(false)
-		expect(restorePgp).not.toHaveBeenCalled()
-		expect(calls.retry).toBeUndefined()
 		const { pgpCreateEligible } = require('./pgpIdentityEligibility') as typeof import('./pgpIdentityEligibility')
 		expect(pgpCreateEligible(`${EOA}:default`)).toBe(false)
+	}
+
+	it('capability declared: "setting up", the watchdog is armed, no create entry, no eligibility, no restore, no retry loop', async () => {
+		resetShellChatStartLoopGuard()
+		const setFirstIdentitySetup = jest.fn()
+		const armFirstIdentityWatchdog = jest.fn()
+		const restorePgp = jest.fn(async (): Promise<PgpRestoreOutcome> => ({ ok: true }))
+		const { deps, calls } = fakeDeps(NO_PGP2, { evaluatePgp: async () => first, restorePgp, setFirstIdentitySetup, firstIdentityStatusDeclared: async () => true, armFirstIdentityWatchdog })
+		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_first_identity')
+		expect(setFirstIdentitySetup).toHaveBeenCalledWith(true)
+		expect(armFirstIdentityWatchdog).toHaveBeenCalledTimes(1)
+		expect(restorePgp).not.toHaveBeenCalled()
+		expect(calls.retry).toBeUndefined()
+		expect(calls.showIdentityPending).toBeUndefined()
+		noClickPath(calls)
 	})
 
-	it('reverse: without the dependency (production builds) the existing first-identity entry is unchanged', async () => {
+	it('capability NOT declared (an old shell with the new page): "identity pending", no "setting up", no watchdog, no button, no command', async () => {
 		resetShellChatStartLoopGuard()
-		const { deps, calls } = fakeDeps(NO_PGP2, { evaluatePgp: async () => first })
-		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_first_identity')
-		expect((calls.setFirstIdentity ?? []).some((a) => (a as unknown[])[0] === true)).toBe(true)
+		const setFirstIdentitySetup = jest.fn()
+		const armFirstIdentityWatchdog = jest.fn()
+		const restorePgp = jest.fn(async (): Promise<PgpRestoreOutcome> => ({ ok: true }))
+		const { deps, calls } = fakeDeps(NO_PGP2, { evaluatePgp: async () => first, restorePgp, setFirstIdentitySetup, firstIdentityStatusDeclared: async () => false, armFirstIdentityWatchdog })
+		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_identity_pending')
+		expect(calls.showIdentityPending).toEqual([[]])
+		expect(setFirstIdentitySetup).not.toHaveBeenCalled()
+		expect(armFirstIdentityWatchdog).not.toHaveBeenCalled()
+		expect(restorePgp).not.toHaveBeenCalled()
+		expect(calls.retry).toBeUndefined()
+		noClickPath(calls)
+	})
+
+	it('the capability probe fails or the dependency is missing: treated as not declared (identity pending), never "setting up"', async () => {
+		resetShellChatStartLoopGuard()
+		const setFirstIdentitySetup = jest.fn()
+		const failing = fakeDeps(NO_PGP2, { evaluatePgp: async () => first, setFirstIdentitySetup, firstIdentityStatusDeclared: async () => { throw new Error('probe') } })
+		await expect(startShellChatFromNativeIdentity(failing.deps)).resolves.toBe('pgp_identity_pending')
+		const missing = fakeDeps(NO_PGP2, { evaluatePgp: async () => first, setFirstIdentitySetup })
+		await expect(startShellChatFromNativeIdentity(missing.deps)).resolves.toBe('pgp_identity_pending')
+		const noSetup = fakeDeps(NO_PGP2, { evaluatePgp: async () => first, firstIdentityStatusDeclared: async () => true })
+		await expect(startShellChatFromNativeIdentity(noSetup.deps)).resolves.toBe('pgp_identity_pending')
+		expect(setFirstIdentitySetup).not.toHaveBeenCalled()
+	})
+
+	it('a first identity that is not confirmed (legacy PRESENT, chain registered, a field missing) never reaches "setting up", even with the capability', async () => {
+		resetShellChatStartLoopGuard()
+		const setFirstIdentitySetup = jest.fn()
+		for (const c of [{ legacy: 'PRESENT', chain: 'unregistered' }, { legacy: 'ABSENT', chain: 'registered' }, { legacy: undefined, chain: 'unregistered' }, { legacy: 'ABSENT', chain: undefined }]) {
+			const { deps } = fakeDeps(NO_PGP2, { evaluatePgp: async () => ({ ...first, ...c } as never), setFirstIdentitySetup, firstIdentityStatusDeclared: async () => true })
+			await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_identity_pending')
+		}
+		expect(setFirstIdentitySetup).not.toHaveBeenCalled()
 	})
 })
 
@@ -315,14 +352,14 @@ describe('pgpReady false: the state is read by pgpRestoreEvaluate; a restore run
 		expect(restorePgp).not.toHaveBeenCalled()
 	})
 
-	it('first identity confirmed (legacy ABSENT, chain unregistered): no restore, no retry, no failure prompt (the user creates it from the entry)', async () => {
+	it('first identity confirmed (legacy ABSENT, chain unregistered), no capability dependency: identity pending, no create entry, no restore, no retry, no failure prompt', async () => {
 		const restorePgp = jest.fn(async (): Promise<PgpRestoreOutcome> => ({ ok: true }))
 		const { deps, calls } = fakeDeps(NO_PGP, {
 			evaluatePgp: async () => ({ kind: 'evaluated', state: 'first_identity', failureCode: null, offerEntry: true, legacy: 'ABSENT', chain: 'unregistered' }),
 			restorePgp,
 		})
-		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_first_identity')
-		expect(calls.setFirstIdentity[calls.setFirstIdentity.length - 1]).toEqual([true])
+		await expect(startShellChatFromNativeIdentity(deps)).resolves.toBe('pgp_identity_pending')
+		expect(calls.setFirstIdentity[calls.setFirstIdentity.length - 1]).toEqual([false])
 		expect(restorePgp).not.toHaveBeenCalled()
 		expect(calls.showPgpFailure).toBeUndefined()
 		expect(calls.retry).toBeUndefined()

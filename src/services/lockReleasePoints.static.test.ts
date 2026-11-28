@@ -1,5 +1,5 @@
 /**
- * r11 locked release points (plan §一, LK-P1…LK-P10): a locked wallet never releases the gate, the entry decision, the
+ * locked release points (plan §一, LK-P1…LK-P10): a locked wallet never releases the gate, the entry decision, the
  * create-screen readiness, or the retry. Only unlocked does. Static: the source is read, nothing is run. Synthetic only.
  */
 import { readFileSync } from 'fs'
@@ -29,6 +29,6 @@ describe('LK-P1…LK-P10: no release point accepts locked (only unlocked)', () =
 	})
 	it('LK-P9, LK-P10: the create screen notifies readiness on unlocked only', () => {
 		expect(create).not.toMatch(/st\.status === 'locked' \|\| st\.status === 'unlocked'/)
-		expect(create.match(/st\.status === 'unlocked'/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
+		expect(create.match(/st\.status === 'unlocked'/g)?.length ?? 0).toBeGreaterThanOrEqual(1)
 	})
 });

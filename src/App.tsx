@@ -1,3 +1,5 @@
+import { emitDeliveryReceipt } from '@/services/deliveryReceiptBus'
+import { markDeliveredFrom, mergeBatchIntoCurrent, mergeOwnRowIntoCurrent, mergePhoneCalls, pickCurrentProfiles } from '@/services/chatRowMerge'
 import { isBeamioWebHostname } from '@/utils/beamioWebHost'
 import { qaLine } from '@/utils/qaLog'
 import { shellChatBlockedText } from '@/services/shellChatCapability'
@@ -34,14 +36,17 @@ import Browser from "@/pages/Browser"
 import { initChat, recoverChatSigner, createInboundChatSession, makeMessage, sendMessage, resumeGossipListenOnForeground, pauseGossipListenOnBackground, prepareGossipListenResume, getGossipDeliveryAckContext, getKeysFromCoNETPGPSC, lookupRecipientRecord, emptySearchResultForAddress, rememberRecipientRoute } from "@/services/chat"
 import {
 	parseChatDeliveryReceiptV1,
-	markMessageDeliveredBySendId,
 	extractInboundSendId,
 	emitDualChatDeliveryReceipts,
+	sendDeliveryReceiptToSender,
 	postMailboxDeliveryAck,
 } from "@/utils/chatDeliveryReceipt"
+import { HistoryArchiveUnsupportedNotice } from "@/components/HistoryArchiveUnsupportedNotice"
+import { createReceiptOutbox, noteRedeliveredLine, type ReceiptOutbox, type ReceiptOutboxEntry } from "@/services/receiptOutbox"
 import { ensureNativePushBoundForWallet, ensurePushDeviceTokenListener } from "@/utils/cashTreesPushBind"
-import { mirrorChatMessageToHistory } from "@/services/chatHistoryMirror"
-import { runChatLocalMigration } from "@/services/chatLocalMigration"
+import { mirrorChatMessageToHistory, mirrorChatMessageToHistoryAck } from "@/services/chatHistoryMirror"
+import { libraryHoldsForMode } from "@/services/senderCopy"
+import { refreshEvidenceOnWorkerReady, runChatLocalMigration } from "@/services/chatLocalMigration"
 import { unlockChatLocalWallet } from "@/services/chatLocalWallet"
 import { onShellChatStarted, offerContactRoute } from '@/services/chat'
 import { createColdStartBackoff } from '@/services/coldStartBackoff'
@@ -49,9 +54,13 @@ import { setHistoryListStatus } from '@/services/historyListStatus'
 import { shellPublicEoaOrEmpty, onShellPublicEoaChange } from '@/services/nativeIdentityPublic'
 import { nativeRoutes } from "@/services/chatWorkerBridge"
 import { nativeReceiptPath } from "@/services/receiptCapability"
-import { awaitWorkerHistoryTail, onHistoryBuffer, loadWorkerHistory, resumeNativeChatListen, onWorkerReady, readDecryptedChatHistory, boundAccountOfActiveClient, setCurrentAccountGetter, captureInboundAckTarget, releaseInboundLines, inboundAckIsBrowser, inboundArmorHashesOf, isInboundLineMarked } from "@/services/chatWorkerBridge"
+import { awaitWorkerHistoryTail, onHistoryBuffer, loadWorkerHistory, resumeNativeChatListen, onWorkerReady, readDecryptedChatHistory, boundAccountOfActiveClient, setCurrentAccountGetter, captureInboundAckTarget, nativeAckAfterAppendActive, releaseInboundLines, inboundAckIsBrowser, inboundArmorHashesOf, isInboundLineMarked } from "@/services/chatWorkerBridge"
 import { settleInboundBatch } from "@/services/inboundBatchSettle"
-import { recordInboundLine, recordDroppedLine, recordRejectedLine, newInboundLists, classifyInboundLine, parseInboundLine, settleInputOf } from "@/services/inboundRowRecord"
+import { createQueueStore } from "@/services/sendQueue"
+import { createReceiptStore, persistBatchReceipts, persistReceiptEvidence } from "@/services/receiptEvidence"
+import { docTaggerFor, mayUseChatDocs, queueCodecFor } from "@/services/sendQueueCodec"
+import { createHeldLineTracker, createUnreadableTracker } from "@/services/receiptHold"
+import { recordInboundLine, recordDroppedLine, recordRejectedLine, newInboundLists, classifyInboundLine, parseInboundLine, settleInputOf, routeArrivedLine, unparseableDropLogLine } from "@/services/inboundRowRecord"
 import { recordInboundDedupeMarkers, forgetInboundDedupeMarkers } from "@/utils/inboundDedupeStore"
 import { dropTakenInboundLines } from "@/utils/inboundLineQueue"
 import type { HistoryEntry } from "@conet.project/chat-sdk"
@@ -61,7 +70,8 @@ import { shouldApplyBufferBatch, gossipStartDecision, accountChangeAction } from
 import { accountEoaFor } from '@/services/gossipAckSign'
 import { createCorpusReadScheduler, type CorpusReadScheduler } from '@/services/historyCorpusRead'
 import { isRemovedNfcLinkUrl } from '@/services/nfcLinkRemoved'
-import { checkStorage, storeSystemData, storeSystemDataAndWait, runAutoBUnitFreeClaimIfEligible, ensureProfilePrivateKeyArmorFromMnemonic, bootstrapProfileLocaleCurrencyIfUnset, mergeLocalLocaleLanguageOntoChainProfile } from "@/services/beamio"
+import { beginChatWrite, isChatWriting, deferWhileWriting } from '@/services/chatWriteLock'
+import { checkStorage, storeSystemData, storeSystemDataAndWait, storeSystemDataNow, runAutoBUnitFreeClaimIfEligible, ensureProfilePrivateKeyArmorFromMnemonic, bootstrapProfileLocaleCurrencyIfUnset, mergeLocalLocaleLanguageOntoChainProfile } from "@/services/beamio"
 import { hasLocalPlaintextMnemonic } from "@/utils/consumerWalletGate"
 import { keyOnlyEntryDecision } from "@/utils/keyOnlyEntry"
 import { setShellInitPending } from "@/services/shellInitPending"
@@ -114,7 +124,16 @@ import GenesisL1EvangelistManagePage from '@/pages/BountyBoard/GenesisL1Evangeli
 import { AcrossTheNetworkRoute } from '@/pages/BountyBoard/NetworkContributionRewardsPage'
 import StripePaymentReturnPage from '@/pages/Vouchers/StripePaymentReturnPage'
 import RenderActionPage from '@/renderAction'
-import { getUserInfoLookup } from "@/services/beamio"
+import { getUserInfoLookup, chatDraftDocAdapter } from "@/services/beamio"
+import { qaEvent, qaRegisterProbe } from '@/utils/qaAckOrder'
+import { qaOwnerEoaOf, qaSetPlainCacheOwner } from '@/utils/qaPlainCache'
+import { qaSkipAppHistoryOn } from '@/utils/qaSkipAppHistory'
+import { libraryPersistExplain, libraryPersistModeFor, profileEoaOf } from '@/services/chatLocalPurge'
+import { inboundMirrorFor } from '@/services/inboundMirror'
+import { appendFailureOf } from '@/services/historyAppendAck'
+import { planReplayAcks } from '@/services/inboundReplay'
+import { rxNote } from '@/services/receiveCounters'
+import { queueDocPrefix } from '@/services/sendQueue'
 import { loadUserInfoWithBackoff } from "@/services/userInfoLoad"
 import { ACCOUNT_INFO_RETRY_EVENT, setAccountInfoUnavailable } from "@/services/accountInfoUnavailable"
 import { AccountInfoUnavailableNotice } from "@/components/AccountInfoUnavailableNotice"
@@ -195,6 +214,16 @@ function ChatAddressDeepLinkRedirect() {
 	useEffect(() => installNativeCallHangupWatcher((payload) => {
 		handleRegisteredNativeCallHangup(payload)
 	}) ?? undefined, [])
+	// QA build only (utils/qaAckOrder.ts, compile-time switch): the read-only state export reads the account's chats and the queue documents (ids only); folded away in every other build
+	useEffect(() => {
+		if (process.env.REACT_APP_QA_ACK_ORDER_HOOK !== 'true') return undefined
+		qaRegisterProbe('chats', () => (CoNET_Data?.profiles?.[0]?.chats ?? []) as unknown as Array<{ address?: string; messages?: Array<Record<string, unknown>> }>)
+		qaRegisterProbe('docs', async () => chatDraftDocAdapter.list(queueDocPrefix(String(CoNET_Data?.profiles?.[0]?.keyID || ''))))
+		qaSetPlainCacheOwner(() => qaOwnerEoaOf([boundAccountOfActiveClient(), CoNET_Data?.profiles?.[0]?.keyID]))
+		// the account-level persistence rule, judged for the SAME account key the record write uses (the keyID, lower case: profileEoaOf), so it is the answer the next debounced write would act on
+		qaRegisterProbe('persist', () => libraryPersistExplain(profileEoaOf((CoNET_Data?.profiles ?? []) as unknown[])))
+		return () => { qaRegisterProbe('chats', null); qaRegisterProbe('docs', null); qaRegisterProbe('persist', null); qaSetPlainCacheOwner(null) }
+	}, [])
 	const redirectedRef = useRef(false)
 
 	useEffect(() => {
@@ -215,8 +244,9 @@ function ChatAddressDeepLinkRedirect() {
 	return null
 }
 
-/** The signature check of addNewMessage, for a replayed line (the same rule: the sender's own signature, or the inner text claimed by `from`). */
-function inboundSignatureValid(msg: message): boolean {
+/** The signature check of addNewMessage, for a replayed line (the same rule: the sender's own signature, or the inner text claimed by `from`): the signer and the text it signed, or null. */
+function inboundSignerOf(msg: message): { signer: string; displayText: unknown } | null {
+	let displayText: unknown = msg.text
 	const claimedFrom = String(msg.from || '').trim().toLowerCase()
 	let sign = recoverChatSigner(msg.text as string, msg.signMessage as string)
 	if (sign !== claimedFrom && typeof msg.text === 'string') {
@@ -224,11 +254,14 @@ function inboundSignatureValid(msg: message): boolean {
 			const inner = JSON.parse(msg.text) as { text?: string }
 			if (typeof inner?.text === 'string') {
 				const innerSigner = recoverChatSigner(inner.text, msg.signMessage as string)
-				if (innerSigner && innerSigner === claimedFrom) sign = innerSigner
+				if (innerSigner && innerSigner === claimedFrom) {
+					sign = innerSigner
+					displayText = inner.text
+				}
 			}
 		} catch {}
 	}
-	return !!sign && ethers.isAddress(sign)
+	return sign && ethers.isAddress(sign) ? { signer: sign, displayText } : null
 }
 
 function AppShell() {
@@ -372,6 +405,9 @@ function AppShell() {
   const runningRef = useRef(false)
   const pendingQueueRef = useRef<string[]>([])
   const processedIdsRef = useRef<Set<string>>(new Set())
+  // the streaks of unreadable queue documents (per sendId) and the back-off of held receipt lines; page memory only
+  const receiptUnreadableRef = useRef(createUnreadableTracker())
+  const heldLinesRef = useRef(createHeldLineTracker())
   /** Keys of inbound lines that produced a chat row in this page session (only these get a row-backed ACK on a replay). */
   const storedRowKeysRef = useRef<Set<string>>(new Set())
   const setChartsRef = useRef(setCharts)
@@ -1839,7 +1875,24 @@ function AppShell() {
 			onBatch: (peers, count) => publishNativePwaLog('info', `[historyRestore] batch peers=${peers} entries=${count}`),
 			log: (line) => console.info(line),
 		})
-		const applyEntries = (entries: HistoryEntry[]) => applier.enqueue(entries)
+		// the history overlay (entries merged into the chats) is not applied while a chat write is in progress: the entries are kept, the requests are merged, and
+		// one merge runs when the last writer has released (chatWriteLock.ts)
+		const heldHistoryEntries: HistoryEntry[] = []
+		const applyHeldHistory = () => {
+			const batch = heldHistoryEntries.splice(0)
+			if (batch.length) applier.enqueue(batch)
+		}
+		const applyEntries = (entries: HistoryEntry[]) => {
+			// hook variant only (QA control round, default OFF): the App-level history restore is skipped, so the first copy can only come from the library read
+			// (the compile-time test is written inline so DefinePlugin folds it and a production bundle drops the branch, the import and the event name: the const QA_ACK_ORDER_HOOK is not folded across modules)
+			if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && qaSkipAppHistoryOn()) { qaEvent('app_history_skipped'); return }
+			if (isChatWriting()) {
+				heldHistoryEntries.push(...entries)
+				deferWhileWriting('history-overlay', applyHeldHistory)
+				return
+			}
+			applier.enqueue(entries)
+		}
 		// the inbound lines of a client bound to another account are not delivered while this account is current.
 		setCurrentAccountGetter(() => historyAccountNow())
 		const unsub = onHistoryBuffer((batch, boundEoa) => {
@@ -1862,6 +1915,58 @@ function AppShell() {
 	// the account of the history is the same source as the owner (accountEoaFor), not the keyID.
 	const historyEoa = historyAccountOf(profiles?.[0])
 	const prevHistoryEoaRef = useRef('')
+	// The recipient's pending delivery receipts (receiptOutbox.ts): recorded per account and sent again until one send succeeds. Browser page only: a shell's native module sends its own receipts.
+	const receiptOutboxRef = useRef<{ account: string; outbox: ReceiptOutbox } | null>(null)
+	const receiptNodesRef = useRef<nodeInfo[]>([])
+	receiptNodesRef.current = allNodes ?? []
+	/** one attempt: false for a failed post AND for a skip (no key, no entry nodes, the sender's key or route not verified yet) */
+	const sendPendingReceipt = useCallback(async (account: string, entry: ReceiptOutboxEntry): Promise<boolean> => {
+		const profile = CoNET_Data?.profiles?.[0]
+		const pk = profile?.privateKeyArmor
+		const ackCtx = getGossipDeliveryAckContext()
+		const nodes = receiptNodesRef.current.length ? receiptNodesRef.current : ackCtx?.entryNodes || []
+		if (!pk || nativeReceiptPath() || !nodes.length || historyAccountNow() !== account) return false
+		const row = (Array.isArray(profile?.chats) ? profile!.chats! : []).find((c) => String(c.address || '').toLowerCase() === entry.to)
+		let chatData = row?.chatData
+		if (!chatData?.publicArmored?.trim() || !chatData?.routersArmoreds?.trim()) {
+			const keys = await getKeysFromCoNETPGPSC(entry.to).catch(() => null)
+			if (keys) chatData = { ...(chatData ?? {}), publicArmored: chatData?.publicArmored || keys.publicArmored || '', routersArmoreds: chatData?.routersArmoreds || keys.routersArmoreds || '' } as typeof chatData
+		}
+		// the receipt is encrypted to the sender's key, so it goes only to the sender's verified key and route
+		const to = await resolveRecipientForSend({ address: entry.to, chatData }, lookupRecipientRecord)
+		if (!to.ok || historyAccountNow() !== account) return false
+		return sendDeliveryReceiptToSender({ resend: true, senderPublicArmored: to.publicArmored, senderMailboxRoutePublicKey: to.routersArmoreds, privateKeyArmor: pk, entryNodes: nodes, sendId: entry.sendId, sendMessage })
+	}, [historyAccountNow])
+	/** the outbox of the CURRENT account, made when first needed; the one of another account is stopped first. null: not the browser page, or no key yet. */
+	const receiptOutboxFor = useCallback((): ReceiptOutbox | null => {
+		const account = historyAccountNow()
+		const held = receiptOutboxRef.current
+		if (held && held.account === account) return held.outbox
+		held?.outbox.dispose()
+		receiptOutboxRef.current = null
+		if (!account || nativeReceiptPath() || isShellContext()) return null
+		const outbox = createReceiptOutbox({ eoa: account, privateKey: CoNET_Data?.profiles?.[0]?.privateKeyArmor, nativeShell: false, doc: chatDraftDocAdapter, alive: () => historyAccountNow() === account, send: (entry) => sendPendingReceipt(account, entry) })
+		if (!outbox) return null
+		receiptOutboxRef.current = { account, outbox }
+		void outbox.load()
+		return outbox
+	}, [historyAccountNow, sendPendingReceipt])
+	// start-up and account change: load the account's pending receipts; network back / page visible / entry nodes ready: try sooner (within the outbox's pacing). Leaving the account stops its retries first.
+	useEffect(() => {
+		if (!historyEoa) return
+		const kick = () => receiptOutboxFor()?.kick()
+		const onVisible = () => { if (document.visibilityState === 'visible') kick() }
+		kick()
+		window.addEventListener('online', kick)
+		document.addEventListener('visibilitychange', onVisible)
+		return () => {
+			window.removeEventListener('online', kick)
+			document.removeEventListener('visibilitychange', onVisible)
+			receiptOutboxRef.current?.outbox.dispose()
+			receiptOutboxRef.current = null
+		}
+	}, [historyEoa, receiptOutboxFor])
+	useEffect(() => { if (allNodes?.length) receiptOutboxRef.current?.outbox.kick() }, [allNodes])
 	useEffect(() => {
 		if (!historyEoa) return
 		void loadWorkerHistory(undefined, 'historyEoa_change')
@@ -1886,7 +1991,7 @@ function AppShell() {
 	// the full corpus read (historyCorpusRead.ts). It runs once per account, key and worker client: at mount with a key, when the key
 	// arrives later, after a restore or a re-import, and when the worker is ready. A load or a buffer batch does not run it.
 	const [workerEpoch, setWorkerEpoch] = useState(0)
-	useEffect(() => onWorkerReady(() => setWorkerEpoch((n) => n + 1)), [])
+	useEffect(() => onWorkerReady(() => { setWorkerEpoch((n) => n + 1); if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaEvent('chat_worker_ready'); void refreshEvidenceOnWorkerReady() }), [])
 	const corpusReadRef = useRef<CorpusReadScheduler | null>(null)
 	if (!corpusReadRef.current) {
 		corpusReadRef.current = createCorpusReadScheduler({
@@ -1903,7 +2008,8 @@ function AppShell() {
 			// "loading" until the read settles. The browser keeps its rules.
 			backoff: isShellContext() ? createColdStartBackoff() : undefined,
 			onStatus: isShellContext() ? setHistoryListStatus : undefined,
-			log: (line) => console.info(line),
+			// also to the native log (a production build strips console.info): each corpus read, its entries and its settle reach a device capture
+			log: (line) => publishNativePwaLog('info', line),
 		})
 	}
 	const historyKeyPresent = !!(profiles?.[0]?.privateKeyArmor || '').trim()
@@ -1919,13 +2025,15 @@ function AppShell() {
 		const account = corpusAccountOf(profiles?.[0])
 		// Shell: ready means the account exists and the native chat client is ready and bound to it (the page holds no key). Browser: the page key.
 		const keyReady = isShellContext() ? !!account && boundAccountOfActiveClient() === account : !!resolveSigningPrivateKeyArmor(profiles?.[0])
-		if (isShellContext() && process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') {
-			// QA only, booleans and integers: why the full history read has no account or no ready client (once per distinct state)
+		if (isShellContext()) {
+			// booleans and integers only (no address, key or content): why the full history read has no account or no ready client (once per distinct state).
+			// also in a build without the QA counter, and to the native log: the conversation list stays on "Loading conversations…" until this read settles.
 			const nativeKnown = !!shellPublicEoaOrEmpty()
 			const keyIdOk = typeof profiles?.[0]?.keyID === 'string' && profiles[0].keyID.trim() !== ''
 			const line = `history gate account=${account ? 1 : 0} native=${nativeKnown ? 1 : 0} keyid=${keyIdOk ? 1 : 0} bound=${boundAccountOfActiveClient() === account && account ? 1 : 0} epoch=${workerEpoch + shellStartedTick}`
 			if (line !== lastHistoryGateLogRef.current) {
 				lastHistoryGateLogRef.current = line
+				publishNativePwaLog('info', `[history] gate ${line.replace(/^history gate /, '')}`)
 				if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[persist]', line)
 			}
 		}
@@ -1990,10 +2098,12 @@ function AppShell() {
 			: nextMessages
 
 		// 更新该会话的 messages，并写回 profile.chats
-		const chats = [...profile.chats]
-		const idx = chats.findIndex((c) => c.address.toLowerCase() === chatData.address.toLowerCase())
+		// the row is merged into the CURRENT chats (CoNET_Data), not put over them from this function's older copy (messages kept, higher status kept)
+		const pickedForReply = pickCurrentProfiles(CoNET_Data, profiles)
+		const baseChats = Array.isArray(pickedForReply.profiles[0]?.chats) ? pickedForReply.profiles[0].chats : profile.chats
+		const idx = baseChats.findIndex((c: chatData) => c.address.toLowerCase() === chatData.address.toLowerCase())
 		if (idx < 0) return
-		chats[idx] = { ...chatData, messages: storedMessages }
+		const chats = baseChats.map((c: chatData, i: number) => (i === idx ? (mergeOwnRowIntoCurrent(c as unknown as Record<string, unknown>, { ...chatData, messages: storedMessages } as unknown as Record<string, unknown>) as unknown as chatData) : c))
 		profile.chats = chats
 
 		const temp = CoNET_Data
@@ -2007,7 +2117,7 @@ function AppShell() {
 			// a relay that does not accept the reply is shown on the reply (failed, with a code), not dropped.
 			const sent = await sendMessage(recipient.publicArmored, text, profile.privateKeyArmor, allNodes)
 			if (!sent) {
-				const latest = [...(profile.chats || [])]
+				const latest = [...((CoNET_Data?.profiles?.[0]?.chats as chatData[] | undefined) ?? profile.chats ?? [])]
 				const at = latest.findIndex((c) => c.address.toLowerCase() === chatData.address.toLowerCase())
 				const msgs: ChatMessage[] = at >= 0 ? latest[at].messages || [] : []
 				if (at >= 0 && msgs.length) {
@@ -2123,26 +2233,32 @@ function AppShell() {
 				const uniqLines: string[] = []
 		for (const raw of lines) {
 			const key = raw.trim()
-			// A repeated copy in this batch has the same armor hash as its first copy, which decides the ACK.
-			if (!key || seenRaw.has(key)) continue
+			// A repeated copy in this batch has the same armor hash as its first copy, which decides the ACK. A whitespace-only frame is kept: it does not parse, so it is dropped and ACKed below.
+			if (!raw || seenRaw.has(key)) continue
 			seenRaw.add(key)
 			uniqLines.push(raw)
 		}
 
 		const profile = profiles[0]
 		const chats: chatData[] = Array.isArray(profile.chats) ? [...profile.chats] : []
+		// this batch's own start snapshot. The batch never writes its snapshot back: at the end only what it changed is merged into the CURRENT record (mergeBatchIntoCurrent).
+		const startChats: chatData[] = [...chats]
+		const startPhoneCalls = profile.phoneCalls
+		const batchDelivered: Array<{ sendId: string; from: string; line: string }> = []
 		const chatsToAutoReply: chatData[] = []
 		// Calls whose end is in this same batch (a cold start replays the whole
 		// native inbox at once): their offer must not ring the shell again.
 		const voiceCallsEndedInBatch = voiceCallHandlesEndedInBatch(uniqLines, recoverChatSigner)
 		noteVoiceCallsEnded(voiceCallsEndedInBatch)
 
+		const unparseableLines: string[] = []
+
 		for (const raw of uniqLines) {
 			try {
-			// The first decision, before any signature check: text that is not JSON is dropped (marker, then ACK);
+			// The first decision, before any signature check: text that is not JSON is dropped;
 			// JSON that cannot be a signed chat line is rejected (no marker, no ACK).
 			const line = classifyInboundLine(raw)
-			if (line.kind === 'unparseable') { recordDroppedLine(inboundLists, raw); continue }
+			if (line.kind === 'unparseable') { recordDroppedLine(inboundLists, raw); unparseableLines.push(raw); continue }
 			if (line.kind === 'rejected') {
 				recordRejectedLine(inboundLists, raw)
 				const rejectedKey = getMsgKey(raw)
@@ -2535,7 +2651,12 @@ function AppShell() {
 			const deliveryReceipt = parseChatDeliveryReceiptV1(displayText)
 			if (deliveryReceipt) {
 				recordDroppedLine(inboundLists, raw)
-				const applied = markMessageDeliveredBySendId(chats, deliveryReceipt.sendId)
+				// the receipt is an event first (the open conversation's send queue settles the item at once); the merge below only marks the stored copy
+				emitDeliveryReceipt(deliveryReceipt.sendId, signAddr)
+				if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') rxNote('ra', deliveryReceipt.sendId) // hook variant only: a receipt ARRIVED here (not a receipt sent)
+				// only the chat of the receipt's sender is marked (never every chat that has this sendId); the same mark is applied to the CURRENT chats at the commit, so a snapshot that does not contain the message cannot lose it
+				batchDelivered.push({ sendId: deliveryReceipt.sendId, from: signAddr, line: raw })
+				const applied = markDeliveredFrom(chats as unknown as Record<string, unknown>[], deliveryReceipt.sendId, signAddr) as unknown as { chats: chatData[]; updated: boolean }
 				if (applied.updated) {
 					for (let i = 0; i < chats.length; i++) chats[i] = applied.chats[i]
 				}
@@ -2632,7 +2753,8 @@ function AppShell() {
 				const isNew = nowLen > wasLen
 
 				// ✅ 只有“对方发来的 & timestamp 比 lastReadTs 新” 才算未读
-				const shouldIncUnread = isNew && msg.timestamp > lastReadTs
+				if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && !isNew) rxNote('dd', extractInboundSendId(displayText) || '') // hook variant only: the row of this message already existed
+			const shouldIncUnread = isNew && msg.timestamp > lastReadTs
 
 				const unreadNext = shouldIncUnread
 				? (Number(chat.unreadCount || 0) + 1)
@@ -2649,18 +2771,31 @@ function AppShell() {
 			// The line is recorded only after its row write has succeeded: a throw in the mirror or the write leaves it unrecorded.
 			recordInboundLine(inboundLists, raw, isNew, {
 				// Mirror the newly-ingested inbound message into encrypted history (fresh-device recovery).
-				mirror: isNew
-					? () => {
-						const inboundSendIdForMirror = extractInboundSendId(displayText)
-						const addedInbound =
-							nextMessages.find(m =>
-								inboundSendIdForMirror
-									? m.sendId === inboundSendIdForMirror
-									: String(m.createdAt) === String(msg.timestamp),
-							) || null
-						mirrorChatMessageToHistory(nextChat.address, addedInbound || undefined, 'in')
+				// asked for a duplicate copy too (inboundMirror.ts decides what a duplicate does: in the browser its ACK waits for its append like a new row's does)
+				mirror: (rowIsNew) => {
+					const inboundSendIdForMirror = extractInboundSendId(displayText)
+					const addedInbound =
+						nextMessages.find(m =>
+							inboundSendIdForMirror
+								? m.sendId === inboundSendIdForMirror
+								: String(m.createdAt) === String(msg.timestamp),
+						) || null
+					const mirrorEoa = profileEoaOf((CoNET_Data?.profiles ?? []) as unknown[])
+					// hook variant only: what the mode decision saw at this moment, as a short code: mode (r/g/l), row found (0/1), evidence (n none / p present / o other account), new row (0/1)
+					if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') {
+						const why = libraryPersistExplain(mirrorEoa)
+						qaEvent('mirror_mode', inboundSendIdForMirror || undefined, `${why.mode.slice(0, 1)}${addedInbound ? 1 : 0}${why.evidence.slice(0, 1)}${rowIsNew ? 1 : 0}`)
 					}
-					: undefined,
+					// + (browser): EVERY message line's append is started and its mailbox ACK waits for the worker's confirmation, whatever the persistence mode reads, now or later; a line whose row cannot be
+					// found is not ACKed (inboundMirror.ts, inboundBatchSettle.ts)
+					// browser page: the pending delivery receipt of this message is on disk BEFORE its mailbox ACK (receiptOutbox.ts); asked for a redelivered copy too, so a record lost to a kill is made again
+					const receiptSendId = inboundSendIdForMirror && !nativeReceiptPath() ? inboundSendIdForMirror : ''
+					const receiptTo = String(signAddr || '').toLowerCase()
+					const receiptRecorded = receiptSendId && receiptTo ? async (): Promise<boolean> => { const outbox = receiptOutboxFor(); return outbox ? outbox.add(receiptSendId, receiptTo) : !inboundAckIsBrowser() } : undefined
+					// the same message under a new envelope (a row this page already has): its receipt goes again too
+					if (!rowIsNew && receiptSendId && receiptTo) void receiptOutboxFor()?.redelivered(receiptSendId, receiptTo, true)
+					return inboundMirrorFor({ alsoRequire: receiptRecorded, browser: inboundAckIsBrowser(), nativeAckAfterAppend: nativeAckAfterAppendActive(), isNew: rowIsNew, peer: nextChat.address, msgKey: getMsgKey(raw) || undefined, added: addedInbound, ack: mirrorChatMessageToHistoryAck, failureOf: appendFailureOf, fireAndForget: mirrorChatMessageToHistory, onUnmirrored: () => { if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaEvent('mirror_none', inboundSendIdForMirror || undefined) } })
+				},
 				// ✅ 放回 chats（不可变）
 				write: () => {
 					if (idx === 0 && chats[0].address.toLowerCase() === nextChat.address.toLowerCase()) {
@@ -2692,10 +2827,14 @@ function AppShell() {
 				const ackCtx = getGossipDeliveryAckContext()
 				const pk = profile.privateKeyArmor
 				// A shell: the native module sends the delivered receipt (it is given the sender's route by setRoutes); never from this page code, whatever key the profile holds.
+				if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && nativeReceiptPath()) rxNote('rn', inboundSendId || '') // hook variant only: the native module sends this receipt, the page cannot count it
 				if (nativeReceiptPath() && isNew) {
 					const sender = String(nextChat.address || '').toLowerCase()
 					if (sender) void offerContactRoute(sender)
 				}
+				// browser page: the receipt is recorded as pending FIRST (before any read or request) and sent by the outbox until it succeeds
+				const receiptOutbox = inboundSendId && !nativeReceiptPath() ? receiptOutboxFor() : null
+				if (receiptOutbox && inboundSendId) void receiptOutbox.add(inboundSendId, signAddr) // normally already recorded by the line's mirror above
 				if (pk && !nativeReceiptPath()) {
 					void (async () => {
 						let senderPgp = nextChat.chatData?.publicArmored || ''
@@ -2725,11 +2864,13 @@ function AppShell() {
 						// the sender receipt is encrypted to the sender's key, so it goes only to the sender's verified key and route. A held key is not sent to.
 						const receiptSender = await resolveRecipientForSend({ address: nextChat.address, chatData: nextChat.chatData }, lookupRecipientRecord)
 						if (!receiptSender.ok) publishNativePwaLog('info', `[AppShell] sender receipt not sent (${receiptSender.code})`)
-						await emitDualChatDeliveryReceipts({
+						if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') rxNote(receiptSender.ok ? 're' : 'rk', inboundSendId || '') // hook variant only: attempted, or skipped for an unverified key / route
+						const sentReceipt = await emitDualChatDeliveryReceipts({
 							// Browser: the mailbox ACK follows the store commit (batch ACK); the sender receipt is still sent here.
 							skipMailboxAck: inboundAckIsBrowser(),
 							armorHash,
-							sendId: inboundSendId,
+							// the outbox sends the sender's receipt; without one (no outbox) it is sent here, once, as before
+							sendId: receiptOutbox ? null : inboundSendId,
 							privateKeyArmor: pk,
 							entryNodes: allNodes?.length ? allNodes : ackCtx?.entryNodes || [],
 							mailboxAck: ackCtx
@@ -2743,6 +2884,7 @@ function AppShell() {
 							senderMailboxRoutePublicKey: receiptSender.ok ? receiptSender.routersArmoreds : null,
 							sendMessage,
 						})
+						if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && receiptSender.ok) rxNote(sentReceipt.senderReceipt === 'sent' ? 'ro' : 'rf', inboundSendId || '') // hook variant only: what the receipt POST answered
 					})()
 				}
 			}
@@ -2755,22 +2897,44 @@ function AppShell() {
 			}
 		}
 
-		profile.chats = chats
+		// counts and hash tails only; asked now, before the settle step releases the lines
+		if (unparseableLines.length) publishNativePwaLog('warn', `[inboundAck] ${unparseableDropLogLine(unparseableLines.length, inboundArmorHashesOf(unparseableLines))}`)
+
 		// A replayed offer above may have added a ringing row for a call the shell
 		// already ended (its outcome can arrive while this batch is still running).
 		const settledCallRows = closeSettledIncomingCalls(profile.phoneCalls)
 		if (settledCallRows) profile.phoneCalls = settledCallRows
 
-		// ✅ 关键：setProfiles 必须不可变更新（复制 profile + 复制 profiles 数组）
-		setProfiles([...profiles])
-		temp.profiles = profiles
-		setCoNET_Data(temp)
+		// merge into the CURRENT record, not over it. CoNET_Data is mutated synchronously by every writer (the conversation's storageData, other batches), so it is the newest copy; the snapshot
+		// `profiles` of this batch may be older than it (the effect closure, or the next batch of the same burst). Only the rows and fields the batch changed, and the receipts of the batch, are applied.
+		const pickedNow = pickCurrentProfiles(CoNET_Data, profiles)
+		const sameAccountNow = pickedNow.isCurrent
+		const currentTemp = sameAccountNow ? CoNET_Data : temp
+		const currentProfiles: profile[] = pickedNow.profiles
+		const current0 = currentProfiles[0] ?? profile
+		const mergedChats = sameAccountNow
+			? (mergeBatchIntoCurrent({ currentChats: (Array.isArray(current0.chats) ? current0.chats : []) as unknown as Record<string, unknown>[], startChats: startChats as unknown as Record<string, unknown>[], batchChats: chats as unknown as Record<string, unknown>[], delivered: batchDelivered }) as unknown as chatData[])
+			: chats
+		const mergedCalls = sameAccountNow ? mergePhoneCalls(current0.phoneCalls, startPhoneCalls, profile.phoneCalls) : profile.phoneCalls
+		const nextProfile: profile = { ...current0, chats: mergedChats, ...(mergedCalls !== undefined ? { phoneCalls: mergedCalls as PhoneCallRecord[] } : {}) }
+		const nextProfiles = currentProfiles.slice()
+		nextProfiles[0] = nextProfile
+		profile.chats = mergedChats // the code below reads the batch's profile object
+		setProfiles(nextProfiles)
+		temp.profiles = nextProfiles
+		if (currentTemp && currentTemp !== temp) currentTemp.profiles = nextProfiles
+		setCoNET_Data(currentTemp ?? temp)
 		// storeSystemData() only schedules the write (200 ms debounce, and a frozen background WebView runs it even later).
 		// The ACK waits for that commit: a failed commit sends no ACK and keeps the lines pending. Native: `ackInbound`only for lines
 		// with a row in the store, sent on the next frame after the commit. A crash before that keeps the armor in the
 		// native inbox, which replays it. An early return above leaves the lines unconfirmed too.
 		// Store step: the ACK target is captured now; native ackInbound is sent only for rows, and only after the commit.
 		const ackTarget = captureInboundAckTarget()
+		// the write lock is held from the change of the message list (this batch began under processQueue's lock) until the commit has landed or failed
+		const endCommitLock = beginChatWrite()
+		// the account this batch is stored for (its receipts are bound to it)
+		const batchAccount = String((profile as { keyID?: string }).keyID || '').toLowerCase()
+		const stillTheBatchAccount = (): boolean => !!batchAccount && String((CoNET_Data as { profiles?: Array<{ keyID?: string }> } | undefined)?.profiles?.[0]?.keyID || '').toLowerCase() === batchAccount
 		void settleInboundBatch(settleInputOf(inboundLists), {
 			target: {
 				...ackTarget,
@@ -2778,13 +2942,51 @@ function AppShell() {
 				ackDisplayed: (hashes) => requestAnimationFrame(() => ackTarget.ackDisplayed(hashes)),
 			},
 			hashesOf: inboundArmorHashesOf,
+			// the delivery receipts of this batch are written to their own documents before any dedupe marker and before the commit (receiptEvidence.ts); only for a sendId whose queue document is on disk
+			persistReceipts: batchDelivered.length
+				? async () => persistBatchReceipts({ receiptLines: batchDelivered.map((b) => b.line), stillTheBatchAccount, step: async () => {
+					const receiptLines = batchDelivered.map((b) => b.line)
+					const eoaNow = String((CoNET_Data as { profiles?: Array<{ keyID?: string }> } | undefined)?.profiles?.[0]?.keyID || '').toLowerCase()
+					// a batch that carries receipts but has no account to bind them to is NOT "nothing to write": every receipt line is held, not ACKed, and comes again
+					if (!eoaNow) return { heldLines: receiptLines }
+					const armorNow = (CoNET_Data as { profiles?: Array<{ privateKeyArmor?: string }> } | undefined)?.profiles?.[0]?.privateKeyArmor
+					const codecNow = queueCodecFor(armorNow)
+					const tagsNow = docTaggerFor(armorNow, eoaNow)
+					const queueStore = createQueueStore({ eoa: eoaNow, doc: chatDraftDocAdapter, codec: codecNow })
+					// a browser without its key armor writes nothing (and reads nothing) with the keyless tagger: its receipt lines are held until the key is there
+					const step = await persistReceiptEvidence({
+						receipts: batchDelivered,
+						queueDoc: (sid) => queueStore.inspect(sid),
+						store: createReceiptStore({ eoa: eoaNow, doc: chatDraftDocAdapter, codec: codecNow, tags: tagsNow }),
+						canReadSealed: mayUseChatDocs(tagsNow, isShellContext()),
+						unreadable: receiptUnreadableRef.current,
+					})
+					const heldLines = step.held.map((h) => h.line as string)
+					const heldSet = new Set(heldLines)
+					for (const line of receiptLines) if (!heldSet.has(line)) heldLinesRef.current.clear(line) // a line that is no longer held starts its back-off again next time
+					return { heldLines }
+				} })
+				: undefined,
+			// a held receipt line is forgotten by the page (so the mailbox's redelivery is processed again, not taken as handled) and put into the normal path again with a back-off (receiptHold.ts)
+			onHeld: (lines) => {
+				for (const line of lines) {
+					const key = getMsgKey(line)
+					if (key) processedIdsRef.current.delete(key)
+					// another account is current: the line is not fed back (it would be handled as that account's); it is not ACKed, so its own mailbox delivers it again
+					if (!stillTheBatchAccount()) continue
+					const plan = heldLinesRef.current.hold(line)
+					window.setTimeout(() => setChartsRef.current((prev: string[]) => [...prev, line]), plan.delayMs)
+				}
+			},
 			markHashes: recordInboundDedupeMarkers,
 			unmarkHashes: forgetInboundDedupeMarkers,
-			commit: storeSystemDataAndWait,
+			commit: storeSystemDataNow,
 			release: releaseInboundLines,
-		})
+			// the wait for the history append stops when the page's account is no longer the one this batch was stored for (no ACK then: the mailbox redelivers on the next listen)
+			durableOptions: { onAbandoned: (m) => { if (m.msgKey) { processedIdsRef.current.delete(m.msgKey); storedRowKeysRef.current.delete(m.msgKey) } }, log: (message) => publishNativePwaLog('warn', `[inboundAck] ${message}`), alive: ((eoaAtBatch) => () => profileEoaOf((CoNET_Data?.profiles ?? []) as unknown[]) === eoaAtBatch)(profileEoaOf((CoNET_Data?.profiles ?? []) as unknown[])) },
+		}).then(() => undefined, () => undefined).finally(endCommitLock)
 		// Calls the caller ended in this batch: did they ring here? (missed vs cancelled)
-		askShellWhichIncomingCallsRang(profile.phoneCalls)
+		askShellWhichIncomingCallsRang(nextProfile.phoneCalls)
 
 		// ✅ 聆听进入的新 message 后自动回复
 		if (onAutoReply && chatsToAutoReply.length > 0) {
@@ -3156,23 +3358,43 @@ function AppShell() {
 				const replayDrops: string[] = []
 				for (const raw of batch) {
 					const key = getMsgKey(raw)
-					if (isInboundLineMarked(raw) || !key || processedIdsRef.current.has(key)) {
+					if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && key) rxNote('arr', key) // hook variant only: this line reached the batch
+					const route = routeArrivedLine(raw, { key, marked: isInboundLineMarked(raw), seen: !!key && processedIdsRef.current.has(key) })
+					// a frame that does not parse goes into the batch itself, first arrival or redelivery: addNewMessage records it as a DROPPED line of the same settle step as the batch's
+					// message rows (the shared-hash exclusion applies), and it makes no row. It has no message key, so nothing is added to processedIdsRef.
+					if (route === 'drop_unparseable') {
+						toProcess.push(raw)
+						continue
+					}
+					if (route === 'already_handled') {
+						if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && key) rxNote('dd', key) // hook variant only: already handled (page set or marker): a second arrival of the same line
 						// A replay is verified again: a frame that is not an object, has no text or no signature, or fails its signature is
-						// never ACKed, whatever its key. Text that is not JSON stays a dropped frame.
+						// never ACKed, whatever its key.
 						const replayed = classifyInboundLine(raw)
-						if (replayed.kind === 'rejected') continue
-						if (replayed.kind === 'signed' && !inboundSignatureValid(replayed.message as unknown as message)) continue
+						if (replayed.kind !== 'signed') continue
+						const replaySigner = inboundSignerOf(replayed.message as unknown as message)
+						if (!replaySigner) continue
+						// the sender sent this message again (it may never have got the receipt): send the receipt again (receiptOutbox.ts redelivered)
+						noteRedeliveredLine(nativeReceiptPath() ? null : receiptOutboxFor(), replaySigner.signer, extractInboundSendId(replaySigner.displayText), profiles?.[0]?.chats)
 						;(key && storedRowKeysRef.current.has(key) ? replayRows : replayDrops).push(raw)
 						continue
 					}
-					processedIdsRef.current.add(key)
+					processedIdsRef.current.add(key as string)
 					toProcess.push(raw)
 				}
 				const confirmAlreadyHandled = () => {
 					if (!replayRows.length && !replayDrops.length) return
 					const ackTarget = captureInboundAckTarget()
-					// Replays: a line with a row in this session gets its row ACK after the commit; any other line is dropped (no native ACK).
-					void settleInboundBatch({ rowLines: replayRows, dropLines: replayDrops }, {
+					// in the browser a replayed line is ACKed only when it already carries a dedupe marker (written after a confirmed append, or for a dropped line); the others are held and the mailbox sends them again.
+					// A native shell keeps the old split: a line with a row in this session is a row, any other line is dropped (no native ACK).
+					const replayPlan = planReplayAcks({ browser: ackTarget.browser, rows: replayRows, drops: replayDrops, hasMarker: isInboundLineMarked })
+					if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') {
+						for (const l of replayPlan.confirmed) qaEvent('replay_ack', undefined, `h${String(inboundArmorHashesOf([l])[0] ?? '').toLowerCase().replace(/[^0-9a-f]/g, '').slice(-8)}`)
+						for (const l of replayPlan.held) qaEvent('replay_held', undefined, `h${String(inboundArmorHashesOf([l])[0] ?? '').toLowerCase().replace(/[^0-9a-f]/g, '').slice(-8)}`)
+					}
+					if (!replayPlan.rowLines.length && !replayPlan.dropLines.length) return
+					const endReplayLock = beginChatWrite()
+					void settleInboundBatch({ rowLines: replayPlan.rowLines, dropLines: replayPlan.dropLines }, {
 						target: {
 							...ackTarget,
 							ackDisplayed: (hashes) => requestAnimationFrame(() => ackTarget.ackDisplayed(hashes)),
@@ -3180,9 +3402,9 @@ function AppShell() {
 						hashesOf: inboundArmorHashesOf,
 						markHashes: recordInboundDedupeMarkers,
 						unmarkHashes: forgetInboundDedupeMarkers,
-						commit: storeSystemDataAndWait,
+						commit: storeSystemDataNow,
 						release: releaseInboundLines,
-					})
+					}).then(() => undefined, () => undefined).finally(endReplayLock)
 				}
 				if (toProcess.length === 0) {
 					confirmAlreadyHandled()
@@ -3192,6 +3414,9 @@ function AppShell() {
 				}
 
 				confirmAlreadyHandled() // handled copies in a mixed batch are ACKed too
+				// the lock is taken before the batch changes the message list and is released by the commit (addNewMessage) or, on an early return, here
+				const endBatchLock = beginChatWrite()
+				try {
 				await addNewMessage(toProcess, profiles, temp, setProfiles, async (chatData) => {
 					const p0 = profiles?.[0]
 					if (!p0?.privateKeyArmor) return
@@ -3222,6 +3447,9 @@ function AppShell() {
 					}
 					await autoReplayMessage(text, chatData)
 				})
+				} finally {
+					endBatchLock()
+				}
 				// After this batch is stored, so a duplicate is never ACKed before its first copy.
 				confirmAlreadyHandled()
 			} finally {
@@ -3238,6 +3466,7 @@ function AppShell() {
 			style={{ backgroundColor: '#000414' }}
 		>
 			<AccountInfoUnavailableNotice />
+			<HistoryArchiveUnsupportedNotice />
 			<div ref={bodyRef} className="overscroll-none flex-1 min-h-0 flex flex-col">
 				<div className="flex-1 min-h-0 flex flex-col">
 				<Routes>

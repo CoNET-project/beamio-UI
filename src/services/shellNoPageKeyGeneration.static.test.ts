@@ -1,50 +1,76 @@
 /**
  * @jest-environment node
  *
- * The shell never generates or derives an account or PGP private key in the page. Each entry point must
- * refuse before any generation or derivation. Reads the sources, so a removed guard fails.
+ * home-bridge-deferred-sdk: PWA owns Create / Restore key material even in shell.
+ * Early Chat / PGP SDK generation stays refused until after /home handoff (native SDK).
+ * Agent detached keys still refuse in shell.
  */
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
 const read = (rel: string) => readFileSync(join(__dirname, '..', '..', 'src', rel), 'utf8')
 
-/** The head of the named function (up to the first derivation) must contain the shell refusal. */
 function headOf(src: string, decl: RegExp, size = 1200): string {
 	const m = decl.exec(src)
 	expect(m).not.toBeNull()
 	return src.slice(m!.index, m!.index + size)
 }
 
-describe('no page key generation or derivation in a shell', () => {
+describe('home-bridge-deferred-sdk key ownership', () => {
 	const beamio = read('services/beamio.ts')
 	const chat = read('services/chat.ts')
 	const agent = read('utils/agentBusinessWorkspace.ts')
+	const createScreen = read('pages/Home/CreateUsernamePinScreen.tsx')
+	const restoreScreen = read('pages/Home/RestoreWalletUnifiedScreen.tsx')
+	const handoff = read('services/homeBridgeHandoff.ts')
 
-	it('createKeyHDWallets refuses (no random key, no derivation)', () => {
-		expect(headOf(beamio, /const createKeyHDWallets = \(/)).toContain('isShellContext()')
+	it('createKeyHDWallets no longer refuses shell (PWA owns Create)', () => {
+		const h = headOf(beamio, /const createKeyHDWallets = \(/)
+		expect(h).toContain('home-bridge-deferred-sdk')
+		expect(h).not.toMatch(/if \(isShellContext\(\)\) return null/)
 	})
-	it('createOrGetWallet refuses', () => {
-		expect(headOf(beamio, /export const createOrGetWallet = async/)).toContain('isShellContext()')
+	it('createOrGetWallet no longer refuses shell', () => {
+		const h = headOf(beamio, /export const createOrGetWallet = async/)
+		expect(h).toContain('home-bridge-deferred-sdk')
+		expect(h).not.toMatch(/if \(isShellContext\(\)\) return null/)
 	})
-	it('createDetachedRecoverAccount refuses before its random key', () => {
+	it('restoreWithUserPin no longer throws native_recovery_only', () => {
+		const h = headOf(beamio, /export const restoreWithUserPin = async/)
+		expect(h).toContain('home-bridge-deferred-sdk')
+		expect(h).not.toContain("native_recovery_only")
+	})
+	it('restoreWithRedeemDetailed no longer throws native_recovery_only', () => {
+		const h = headOf(beamio, /export const restoreWithRedeemDetailed = async/)
+		expect(h).toContain('home-bridge-deferred-sdk')
+		expect(h).not.toContain("native_recovery_only")
+	})
+	it('createDetachedRecoverAccount still refuses before its random key', () => {
 		const h = headOf(beamio, /export const createDetachedRecoverAccount = async/)
 		expect(h.indexOf('isShellContext()')).toBeLessThan(h.indexOf('ethers.Wallet.createRandom()') < 0 ? 1e9 : h.indexOf('ethers.Wallet.createRandom()'))
 	})
-	it('restoreWithUserPin refuses before any derivation', () => {
-		expect(headOf(beamio, /export const restoreWithUserPin = async/)).toContain('isShellContext()')
-	})
-	it('unlockDetachedRecoverPrivateKey refuses before any derivation', () => {
+	it('unlockDetachedRecoverPrivateKey still refuses before any derivation', () => {
 		expect(headOf(beamio, /export const unlockDetachedRecoverPrivateKey = async/)).toContain('isShellContext()')
-	})
-	it('ensureProfilePrivateKeyArmorFromMnemonic refuses before the derivation', () => {
-		expect(headOf(beamio, /export const ensureProfilePrivateKeyArmorFromMnemonic = \(/)).toContain('isShellContext()')
 	})
 	it('createAgentTempAccount refuses before any tag or key', () => {
 		expect(headOf(agent, /export async function createAgentTempAccount\(/)).toContain('isShellContext()')
 	})
-	it('initBeamioPGPKeys and generatePgpKey refuse before generating a PGP key', () => {
+	it('initBeamioPGPKeys and generatePgpKey refuse before generating a PGP key (early SDK = 0)', () => {
 		expect(headOf(chat, /const initBeamioPGPKeys = async/)).toContain('isShellContext()')
 		expect(headOf(chat, /const generatePgpKey = async/)).toContain('isShellContext()')
+	})
+	it('Create screen uses createRecover (not handleShellCreate call site)', () => {
+		expect(createScreen).toContain('home-bridge-deferred-sdk: PWA owns Create')
+		expect(createScreen).toMatch(/kks = await createRecover\(/)
+		expect(createScreen).not.toMatch(/await handleShellCreate\(/)
+	})
+	it('Restore screen does not call nativeRecoverySubmit', () => {
+		expect(restoreScreen).toContain('nativeRecoverySubmit = 0')
+		expect(restoreScreen).not.toMatch(/nativeRecoverySubmit\(/)
+		expect(restoreScreen).not.toMatch(/nativeRecoveryOpen\(/)
+	})
+	it('homeBridgeHandoff module seals or plaintext-syncs once', () => {
+		expect(handoff).toContain('runColdStartHomeHandoffOnce')
+		expect(handoff).toContain('setPendingHomeMnemonicHandoff')
+		expect(handoff).toContain('sendPwaWalletSync')
 	})
 })

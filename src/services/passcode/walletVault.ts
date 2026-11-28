@@ -616,6 +616,25 @@ export async function wrapForDisk(stores: WalletStores, plain: Loose): Promise<L
 	return wrapForPersist(stores, plain)
 }
 
+/**
+ * the stored record as the chats floor needs it, with the THREE answers kept apart (readPlainForVerify turns the last two into the same null):
+ *  absent there is no stored record (the first write of a new account)
+ *  loaded the stored record, opened
+ *  unreadable a record exists (or cannot be told) but cannot be opened now: a locked passcode session, a failed read, a record that does not open. A writer must NOT write on top of it.
+ */
+export type FloorRead = { status: 'absent' } | { status: 'loaded'; data: Loose } | { status: 'unreadable'; reason: string }
+export async function readPlainForFloor(stores: WalletStores): Promise<FloorRead> {
+	let init: Loose | null
+	try {
+		init = await probeRead(stores)
+	} catch (ex) {
+		return { status: 'unreadable', reason: (ex as { message?: string })?.message ? 'read_threw' : 'read_failed' }
+	}
+	if (!init) return { status: 'absent' }
+	const res = await openWalletForStartup(stores, init)
+	return res.status === 'loaded' ? { status: 'loaded', data: res.data } : { status: 'unreadable', reason: res.status === 'locked' ? 'locked' : res.reason }
+}
+
 /** Plain data for a read-back check: decrypts the stored blob if the session allows it. */
 export async function readPlainForVerify(stores: WalletStores): Promise<Loose | null> {
 	const init = await probeRead(stores)

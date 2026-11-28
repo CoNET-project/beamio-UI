@@ -10,27 +10,6 @@ const SRC = join(__dirname, '..')
 const text = (f: string) => readFileSync(join(SRC, f), 'utf8')
 
 describe('the account-create ack rules on the create screen', () => {
-	it('G1 and G2 show the unavailable copy and do not set a cooldown', () => {
-		const s = text('pages/Home/CreateUsernamePinScreen.tsx')
-		expect(s).toContain("if (opened.walletStatus === 'G1' || opened.walletStatus === 'G2') {")
-		expect(s).toContain("setCreateError(tu('create_account_unavailable'))")
-	})
-
-	it('G0 waits 15 s before a manual retry, and three in a row show the terminal copy', () => {
-		const s = text('pages/Home/CreateUsernamePinScreen.tsx')
-		expect(s).toContain('createCooldownUntilRef.current = Date.now() + 15_000')
-		expect(s).toContain('if (Date.now() < createCooldownUntilRef.current) {')
-		expect(s).toContain("tu('create_account_unavailable_terminal')")
-		expect(s).toMatch(/g0NotAvailableCountRef\.current >= 3/)
-	})
-
-	it('0.53.50: the create is headless: any accepted open (the page value is not used) starts the wait and the page waits for the result event before step 2', () => {
-		const s = text('pages/Home/CreateUsernamePinScreen.tsx')
-		const fn = s.slice(s.indexOf('const handleShellCreate'), s.indexOf('const handleCreateWallet'))
-		expect(fn).not.toContain('opened.page')
-		expect(fn.indexOf('startNativeWait()')).toBeGreaterThan(fn.indexOf('await nativeAccountCreateOpen(trimmedTag)'))
-		expect(fn.indexOf('const step = await stepDone')).toBeGreaterThan(fn.indexOf('startNativeWait()'))
-	})
 
 	it('the open call is not repeated with the same reqId: each call is a new open, and there is no automatic retry', () => {
 		const s = text('services/nativeRecovery.ts')

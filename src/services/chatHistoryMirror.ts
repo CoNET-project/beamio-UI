@@ -13,7 +13,7 @@
  * direction, so restore is fully symmetric for both inbound and outbound.
  */
 import type { HistoryEntry } from '@conet.project/chat-sdk'
-import { appendWorkerHistory } from './chatWorkerBridge'
+import { appendWorkerHistory, appendWorkerHistoryAck } from './chatWorkerBridge'
 
 /**
  * `voiceVerified` is a local marker written only by the chat ingestion gate (v70 §77). It never travels in history: a history
@@ -61,6 +61,41 @@ export const mirrorChatMessageToHistory = (
 		sendId: msg.sendId,
 		body,
 	})
+}
+
+/**
+ * the same mirror, awaited: resolves true only when the worker ACKed the append (the library holds the message), false when it did not or the message is skipped. A copy that is mirrored with a
+ * status other than `sent` for a local `tmp_` id is skipped by the rule above, so callers pass the settled copy (status `sent`).
+ */
+export const mirrorChatMessageToHistoryAck = async (peerEoa: string | undefined, msg: ChatMessage | undefined, dir: 'in' | 'out'): Promise<boolean> => {
+	const peer = (peerEoa || '').toLowerCase()
+	if (!peer || !msg) return false
+	const clean = withoutLocalVoiceMarker(msg)
+	if (clean.id && clean.id.startsWith('tmp_') && clean.status !== 'sent') return false
+	const ts = Number(clean.createdAt)
+	let body = ''
+	try {
+		body = JSON.stringify(clean)
+	} catch {
+		return false
+	}
+	if (!body) return false
+	return appendWorkerHistoryAck({ peer, dir, ts: Number.isFinite(ts) ? ts : Date.now(), sendId: clean.sendId, body })
+}
+
+/**
+ * a message held at first contact and released by "Verify and send" (retryHeldSend) settles as sent here, not in deliverText.
+ * It is mirrored exactly like deliverText's success (dir 'out'). `statusBefore` is the status before this settle: a message that was
+ * already 'sent' is not mirrored again. Returns whether a mirror was issued. Nothing but the message object goes to the worker; no log line.
+ */
+export const mirrorVerifiedHeldSend = (
+	peerEoa: string | undefined,
+	settled: ChatMessage | undefined,
+	statusBefore: string | undefined,
+): boolean => {
+	if (!settled || settled.status !== 'sent' || statusBefore === 'sent') return false
+	mirrorChatMessageToHistory(peerEoa, settled, 'out')
+	return true
 }
 
 /**

@@ -2,6 +2,7 @@
  * BeamioTag Worker entry — IndexedDB serverDB + Tag 60s + Merchant 5min ticks.
  */
 import '../../utils/webSocketGuard'  // WebSocket refusal (project rule): first, before any module that may use it
+import '../../utils/retiredHostGuardBoot'
 
 import type { BeamioTagWorkerInbound, BeamioTagWorkerOutbound } from './protocol'
 import {

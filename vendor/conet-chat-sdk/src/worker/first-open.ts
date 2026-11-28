@@ -30,10 +30,14 @@ import {
 import { chooseFirstOpenMailbox } from '../firstOpenRoute.js'
 import type { FirstOpenRequest, FirstOpenResult } from '../protocol.js'
 
-/** The AddressPGP reads the first open needs (view calls; `getEncryptedPrivateKey` reads msg.sender, so it carries the account). */
+/**
+ * The AddressPGP reads the first open needs (view calls; `getEncryptedPrivateKey` reads msg.sender, so it carries the account).
+ * `nodeKeyExists` is required by `isRecorded`. Without that fragment ethers throws before `POST /api/regiestChatRoute`, and the page only sees `pending_confirm`.
+ */
 export const PGP_MANAGER_FIRST_OPEN_ABI = [
 	'function searchKey(address) view returns (string userPgpKeyID, string userPublicKeyArmored, string routePgpKeyID, string routePublicKeyArmored, bool routeOnline)',
 	'function getEncryptedPrivateKey() view returns (string)',
+	'function nodeKeyExists(bytes32) view returns (bool)',
 ] as const
 
 export type ChainRecordRead = { lookup: { status: 'ok' | 'no_record' | 'network_error'; publicArmored?: string; routersArmoreds?: string; routePgpKeyID?: string; userPgpKeyID?: string }; blob: 'present' | 'missing' | 'unknown' }

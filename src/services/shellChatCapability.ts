@@ -18,6 +18,7 @@ import { tu } from '@/locale/beamioLocale'
 import { notifyIdentityEntryBlocked } from './identityEntryPrompt'
 import { decideShellState, type UiState } from './shellChatState'
 import { getShellChatUiState, setShellChatUiState } from './shellChatUiState'
+import { isShellChatLive } from './shellChatLive'
 
 export { isShellContext }
 
@@ -28,6 +29,8 @@ export function shellChatBlocked(input: { shell: boolean; state: UiState }): boo
 
 /** Synchronous check for identity paths. Fails closed in a shell until the capability answer is recorded. */
 export function shellChatBlockedNow(): boolean {
+	// a live native chat proves the capability and the identity; a notice state left behind is healed here, before the check, so a press is never refused by it
+	if (isShellChatLive() && isShellContext() && getShellChatUiState() !== 'native_chat') setShellChatUiState('native_chat', 'healed_live_chat')
 	const blocked = shellChatBlocked({ shell: isShellContext(), state: getShellChatUiState() })
 	// the one guard every identity entry calls: a blocked check after a tap raises the shared prompt
 	if (blocked) notifyIdentityEntryBlocked()
@@ -79,7 +82,7 @@ function hookLateHello(): void {
 		if (!shellBuild && !bridge) return
 		const state = resolveShellChatState({ buildKind: shellBuild ? 'shell' : 'web', bridge, caps: r.capabilities })
 		setNativeIdentityCapability(identityCapabilityFrom(r))
-		setShellChatUiState(state)
+		setShellChatUiState(state, 'late_hello')
 		pending = Promise.resolve(state)
 		for (const cb of [...resolvedListeners]) cb(state)
 	})
@@ -94,15 +97,16 @@ export function ensureShellChatState(): Promise<UiState> {
 	const shellBuild = isShellBuildKind()
 	const bridge = isCashTreesNativeWebView()
 	if (!shellBuild && !bridge) {
-		setShellChatUiState('browser_chat')
+		setShellChatUiState('browser_chat', 'ensure_browser')
 		return Promise.resolve('browser_chat')
 	}
 	hookLateHello()
-	setShellChatUiState('chat_unavailable')
+	// asking again never closes a chat state that an earlier answer already opened (an unanswered re-ask is not evidence that the capability is gone)
+	if (getShellChatUiState() !== 'native_chat') setShellChatUiState('chat_unavailable', 'ensure_first_ask')
 	const attempt = (async (): Promise<UiState> => {
 		const probe = bridge ? await probeNativeCapabilities() : { answered: false, capabilities: [] as string[] }
 		const state = resolveShellChatState({ buildKind: shellBuild ? 'shell' : 'web', bridge, caps: probe.capabilities })
-		setShellChatUiState(state)
+		if (probe.answered || bridge === false || getShellChatUiState() !== 'native_chat') setShellChatUiState(state, 'ensure_probe')
 		// Keep the answer for the page load only when the shell answered, or when there is no bridge to ask.
 		if (!bridge || probe.answered) return state
 		pending = null

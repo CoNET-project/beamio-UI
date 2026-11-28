@@ -10,6 +10,8 @@
 // To learn more about the benefits of this model and instructions on how to
 // opt-in, read https://cra.link/PWA
 
+import { requestControlledReload } from './services/chatWriteLock';
+
 const isLocalhost = Boolean(
   window.location.hostname === 'localhost' ||
     // [::1] is the IPv6 localhost address.
@@ -111,7 +113,8 @@ function checkValidServiceWorker(swUrl, config) {
         // No service worker found. Probably a different app. Reload the page.
         navigator.serviceWorker.ready.then((registration) => {
           registration.unregister().then(() => {
-            window.location.reload();
+            // a reload the app asks for is held while a chat write is in progress (chatWriteLock.ts)
+            requestControlledReload();
           });
         });
       } else {

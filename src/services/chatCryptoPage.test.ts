@@ -125,7 +125,8 @@ describe('Y.81 gate and real history signal on the chat page (R45 blockers)', ()
 		expect(chat).not.toContain('localHistoryReadable: true, localHistoryEmpty: false }))')
 		expect(chat).toContain('useEffect(() => () => { chatCryptoDecryptGate.enabled = false }, [])')
 		expect(chat).toContain('localHistoryReadable: localHistorySignal.localHistoryReadable')
-		expect(chat).toContain('setLocalHistoryRead(historyReadOf(await readLocalChatHistory(address, viewport)))')
+		expect(chat).toContain('const readResult = historyReadOf(await readLocalChatHistory(address, viewport))')
+		expect(chat).toContain('if (!cancelled) setLocalHistoryRead(readResult)')
 	})
 
 	it('R48: a not_read history is read again once the client is ready: 1 s steps, up to 10, then no further judgement', () => {
@@ -162,7 +163,8 @@ describe('Y.81 and Y.102: the page history read result, and every private-key de
 	})
 
 	it('the page feeds its own read result, and a failed read is unreadable', () => {
-		expect(chat).toContain('setLocalHistoryRead(historyReadOf(await readLocalChatHistory(address, viewport)))')
+		expect(chat).toContain('const readResult = historyReadOf(await readLocalChatHistory(address, viewport))')
+		expect(chat).toContain('if (!cancelled) setLocalHistoryRead(readResult)')
 		expect(chat).toContain('localHistoryReadable: localHistorySignal.localHistoryReadable')
 		expect(chat).not.toContain('localHistoryReadable: true, localHistoryEmpty: false }))')
 	})

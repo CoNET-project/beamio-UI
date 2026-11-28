@@ -3,7 +3,7 @@
  * must not be lost: the init runs again and the bar and its search show, and the chat starts once. Real App and entry gate; the native
  * bridge, the storage and the chat start are stubs. SYNTHETIC values only.
  */
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 // A callable, constructible, property-returning stub for the worker modules (their methods are called at start-up).
 const mockDeepStub = (): any => new Proxy(function () {}, { get: (_t, k) => (k === 'then' || k === Symbol.toPrimitive ? undefined : k === '__esModule' ? true : mockDeepStub()), apply: () => mockDeepStub(), construct: () => mockDeepStub() })
@@ -564,25 +564,21 @@ describe('0.53.44 open points and hold page entry (real App and AppEntryGate)', 
 	})
 })
 
-describe('0.53.44 open point (c): browser key-only copy of an established account', () => {
+describe('a browser private-key-only copy keeps the key and enters local home (page never deletes)', () => {
+	const keyOnly = () => ({ isReady: true, profiles: [{ keyID: '0x9858effd232b4033e47d90003d41ec34ecaeda94', isPrimary: true, privateKeyArmor: `0x${'11'.repeat(32)}`, chats: [] }], beamio: { accountName: 'synthtag' } })
 	beforeEach(async () => {
 		await new Promise((r) => setTimeout(r, 900))
 		resetScenario()
 		mockOnboarding.props = null
-	})
-	it('open point (c) positive: a browser key-only copy (not in hold, not a recovery) enters and opens the gate; its save reaches the store', async () => {
 		;(globalThis as { __gateShell?: boolean }).__gateShell = false
 		mockRace.storageCalls = 1
-		const keyOnly = { isReady: true, profiles: [{ keyID: '0x9858effd232b4033e47d90003d41ec34ecaeda94', isPrimary: true, privateKeyArmor: `0x${'11'.repeat(32)}`, chats: [] }], beamio: { accountName: 'synthtag' } }
-		mockStorageRead.record = keyOnly
-		mockPage.copy = { status: 'loaded', data: keyOnly }
+		mockStorageRead.record = keyOnly()
+		mockPage.copy = { status: 'loaded', data: keyOnly() }
+	})
+	it('browser key_only with keyID: local home permit, no onboarding, key kept', async () => {
 		renderApp()
 		await waitFor(() => expect(jest.requireActual('@/services/beamio').pageWriteGateStatus().permit).toBe('browser_key_only_established'), { timeout: 4000 })
-		await new Promise((r) => setTimeout(r, 300))
-		const before = mockWrites.n
-		await require('@/services/beamio').storeSystemData()
-		await new Promise((r) => setTimeout(r, 300))
-		expect(mockWrites.n).toBe(before + 1)
 		expect(mockOnboarding.props).toBeNull()
+		expect(deleteCalls()).toBe(0)
 	})
 })

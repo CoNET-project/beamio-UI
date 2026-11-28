@@ -1,3 +1,4 @@
+import { safeResourceUrl } from '@/utils/retiredHost'
 import { IpfsImg } from '@/components/IpfsImg';
 import { useObjectImgSrc } from '@/components/card/useObjectImgSrc'
 import React, { useCallback, useEffect, useRef, useState } from 'react'
@@ -363,12 +364,12 @@ function CouponBannerImage({ src }: { src: string }) {
 		<div className="absolute inset-0 overflow-hidden">
 			<div
 				className="absolute inset-y-0 left-0 w-1/2 scale-110 bg-cover bg-left bg-no-repeat blur-xl"
-				style={{ backgroundImage: `url("${displaySrc}")` }}
+				style={{ backgroundImage: `url("${safeResourceUrl(displaySrc)}")` }}
 				aria-hidden
 			/>
 			<div
 				className="absolute inset-y-0 right-0 w-1/2 scale-110 bg-cover bg-right bg-no-repeat blur-xl"
-				style={{ backgroundImage: `url("${displaySrc}")` }}
+				style={{ backgroundImage: `url("${safeResourceUrl(displaySrc)}")` }}
 				aria-hidden
 			/>
 			<img

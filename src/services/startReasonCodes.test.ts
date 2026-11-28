@@ -18,6 +18,7 @@ describe('start reason codes (one table, redacted)', () => {
 			nativeStartRoute({ ...base, pre: { kind: 'absent' }, walletState: 'unknown' as const }),
 			nativeStartRoute({ ...base, pre: { kind: 'absent' }, walletState: 'not_ready' as const }),
 			nativeStartRoute({ ...base, pre: { kind: 'absent' }, walletStatus: 'not_ready' }),
+			nativeStartRoute({ ...base, pre: { kind: 'absent' }, walletStatus: 'not_ready', notReadyReason: 'key_only' }),
 			nativeStartRoute({ ...base, pre: { kind: 'absent' } }),
 		]
 		for (const c of cases) expect(isStartReasonCode(c.reason)).toBe(true)

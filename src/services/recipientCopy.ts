@@ -15,10 +15,27 @@ export function chatHeldBannerText(code: string): string {
 	return tu('chat.held.unavailable.banner')
 }
 
-/** The detail under a message that was not sent (the bubble): a held code has its banner copy; `send_failed` is a plain retry copy. */
+/**
+ * The detail under a message that was not sent (the bubble). Only the codes that really are a held send or a failed recipient lookup use the held banners (including "the contact's key is
+ * unavailable"); every other code is a plain failure with its own copy. before, any code that was not `send_failed` fell through to the held copy, so a message cut off by a
+ * force kill (`interrupted`) said "the contact's key is unavailable" although the key was fine and the delivery was only unconfirmed.
+ */
+const HELD_BANNER_CODES: ReadonlySet<string> = new Set([
+	'route_unconfirmed',
+	'first_fetch_pending',
+	'fingerprint_changed',
+	'recipient_no_record',
+	'network_error',
+	'recipient_key_unavailable',
+	'recipient_key_invalid',
+])
 export function sendFailedDetailText(code: string): string {
-	if (code === 'send_failed') return tu('chat.failed.send_failed')
-	return chatHeldBannerText(code)
+	if (code === 'unconfirmed') return tu('chat.failed.unconfirmed')
+	if (code === 'interrupted') return tu('chat.failed.interrupted')
+	if (code === 'persist_failed') return tu('chat.failed.persist_failed')
+	if (code === 'identity_not_ready') return tu('chat.failed.identity_not_ready')
+	if (HELD_BANNER_CODES.has(code)) return chatHeldBannerText(code)
+	return tu('chat.failed.send_failed')
 }
 
 /** The label of a held message's status in the bubble. */

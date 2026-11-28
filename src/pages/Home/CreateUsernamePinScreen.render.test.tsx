@@ -23,7 +23,7 @@ jest.mock('@/services/nativeWallet', () => ({ notifyNativeWalletReady: jest.fn()
 jest.mock('@/services/nativeWalletEstablished', () => ({ announceNativeWalletEstablished: jest.fn() }))
 jest.mock('@/services/nativeFlowPending', () => ({ announceNativeFlowPending: jest.fn() }))
 jest.mock('@/services/shellChatCapability', () => ({ ensureShellChatState: jest.fn(async () => 'native_chat') }))
-jest.mock('@/services/shellContext', () => ({ isShellContext: () => false }))
+jest.mock('@/services/shellContext', () => ({ isShellContext: () => (globalThis as { __shellCtx?: boolean }).__shellCtx === true }))
 jest.mock('@/services/argon2WorkerBridge', () => ({ warmArgon2Worker: jest.fn() }))
 jest.mock('@/utils/cashTreesNativePwaLog', () => ({ publishNativePwaLog: jest.fn() }))
 jest.mock('./RecoveryQRScreen', () => ({ getActivatingSteps: () => [] }))
@@ -46,5 +46,27 @@ describe('C-2: the create-account screen is not a recovery method', () => {
 			const hint = `${el.getAttribute('placeholder') ?? ''} ${el.getAttribute('aria-label') ?? ''} ${el.getAttribute('name') ?? ''}`
 			expect(hint.toLowerCase()).not.toMatch(/mnemonic|phrase|seed|private|recovery/)
 		}
+	})
+})
+
+describe('ordinary onboarding in a shell does not go through the old native entry', () => {
+	afterEach(() => {
+		;(globalThis as { __shellCtx?: boolean }).__shellCtx = false
+	})
+	it('mounting the create screen in a shell opens no native create, no native recovery and no native chat start', () => {
+		;(globalThis as { __shellCtx?: boolean }).__shellCtx = true
+		const nr = require('@/services/nativeRecovery')
+		const cap = require('@/services/shellChatCapability')
+		render(<CreateUsernamePinScreen close={jest.fn()} />)
+		expect(nr.nativeAccountCreateOpen).not.toHaveBeenCalled()
+		expect(nr.nativeRecoveryOpen).not.toHaveBeenCalled()
+		expect(cap.ensureShellChatState).not.toHaveBeenCalled()
+		expect(screen.getAllByRole('button').length).toBeGreaterThan(0)
+	})
+	it('the submit path has no native open either: the create handler runs the page create and has no call of the shell create (static; the screen is not driven to the end here)', () => {
+		const src = require('fs').readFileSync(require('path').join(__dirname, 'CreateUsernamePinScreen.tsx'), 'utf8') as string
+		const create = src.slice(src.indexOf('const handleCreateWallet'))
+		expect(create).toContain('kks = await createRecover(')
+		expect(create).not.toMatch(/handleShellCreate\(|nativeAccountCreateOpen\(|ensureShellChatState\(/)
 	})
 })

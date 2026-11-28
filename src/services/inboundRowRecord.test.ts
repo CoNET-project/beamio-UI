@@ -57,13 +57,16 @@ describe('recordInboundLine', () => {
 		expect(l.duplicates).toEqual([])
 	})
 
-	it('a duplicate copy is recorded apart from new rows and never runs the mirror', () => {
+	it('a duplicate copy is recorded apart from new rows; the mirror is asked for it too (told it is not new), and what it returns is kept for the duplicate', () => {
 		const l = newInboundLists()
-		const mirror = jest.fn()
+		const append = { done: Promise.resolve(true), retry: async () => true }
+		const mirror = jest.fn(() => append)
 		recordInboundLine(l, 'line-d', false, { mirror, write: () => undefined })
-		expect(mirror).not.toHaveBeenCalled()
+		expect(mirror).toHaveBeenCalledWith(false)
 		expect(l.stored).toEqual([])
 		expect(l.duplicates).toEqual(['line-d'])
+		expect(l.durable?.get('line-d')).toBe(append)
+		expect(settleInputOf(l).durable?.get('line-d')).toBe(append)
 	})
 })
 

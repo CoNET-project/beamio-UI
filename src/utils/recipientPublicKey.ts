@@ -13,7 +13,9 @@
  * The fingerprint is the OpenPGP standard fingerprint, not a hash of the armor text. The fetch is injected, so the rules can be
  * tested without the chat stack.
  */
-import { openPgpFingerprintOfArmor, readStoredKeyFingerprint } from './pgpFingerprint'
+import { openPgpFingerprintOfArmor, openPgpEncryptionKeyFingerprintOfArmor, readStoredKeyFingerprint } from './pgpFingerprint'
+import { chainRecordTrust, type RecordSource } from './chainPgpTrust'
+import { fetchTypeErrorWording, isProgrammingError } from '../services/recipientRecord'
 
 export type RecipientKeyFailure = 'recipient_key_unavailable' | 'recipient_key_invalid' | 'recipient_no_record' | 'network_error'
 export type RecipientKeyResult = { ok: true; publicArmored: string } | { ok: false; code: RecipientKeyFailure }
@@ -26,12 +28,16 @@ export function isPgpPublicArmor(value: unknown): value is string {
 
 /** The three exclusive results of an AddressPGP read (chat.ts lookupRecipientRecord has the same shape). */
 export type RecipientLookup =
-	| { status: 'ok'; publicArmored: string; routersArmoreds: string; routePgpKeyID?: string; userPgpKeyID?: string }
+	| { status: 'ok'; publicArmored: string; routersArmoreds: string; routePgpKeyID?: string; userPgpKeyID?: string; source?: RecordSource }
 	| { status: 'no_record' }
 	| { status: 'network_error'; reason: string }
 	| { status: 'internal_error'; reason: string }
 
-export type FetchRecipientRoute = (address: string) => Promise<RecipientLookup>
+/**
+ * `freshChain`: the first contact (no pinned value yet) is allowed to rely on the chain record, so the reader must have asked the RPC for its chain id for THIS
+ * lookup, not reuse a session answer. A contact that already has a pinned value does not need it: the pin is the anchor and a record from another chain only fails the pin.
+ */
+export type FetchRecipientRoute = (address: string, opts?: { freshChain?: boolean }) => Promise<RecipientLookup>
 
 export interface RecipientChat {
 	address?: string
@@ -53,14 +59,18 @@ export async function fingerprintOfArmor(armor: string): Promise<string> {
 	return openPgpFingerprintOfArmor(armor)
 }
 
-async function lookupOrNetworkError(address: string, fetchRoute: FetchRecipientRoute): Promise<RecipientLookup> {
+async function lookupOrNetworkError(address: string, fetchRoute: FetchRecipientRoute, opts?: { freshChain?: boolean }): Promise<RecipientLookup> {
 	try {
-		const lookup = await fetchRoute(address)
+		const lookup = await (opts?.freshChain ? fetchRoute(address, { freshChain: true }) : fetchRoute(address))
 		return lookup ?? { status: 'network_error', reason: 'empty_answer' }
 	} catch (ex) {
-		const name = typeof ex === 'object' && ex !== null ? String((ex as { name?: unknown }).name ?? '') : ''
-		if (name === 'TypeError' || name === 'ReferenceError' || name === 'RecipientInternalError') return { status: 'internal_error', reason: name }
-		return { status: 'network_error', reason: 'exception' }
+		// a fetch network TypeError is a network failure (held, retried), not a programming error (recipientRecord.isProgrammingError)
+		if (isProgrammingError(ex)) {
+			const name = typeof ex === 'object' && ex !== null ? String((ex as { name?: unknown }).name ?? '') : ''
+			return { status: 'internal_error', reason: name }
+		}
+		const wording = fetchTypeErrorWording(ex)
+		return { status: 'network_error', reason: wording ? `fetch_typeerror:${wording}` : 'exception' }
 	}
 }
 
@@ -90,7 +100,20 @@ export const RECIPIENT_ROUTE_RETRY_DELAYS_MS: readonly number[] = [30_000, 120_0
 
 /** A re-read of the recipient's key and route. `changed`: either value differs from the chat copy. `fingerprintChanged`: the key differs from the one stored at the last successful fetch. */
 export type RecipientRefresh =
-	| { ok: true; changed: boolean; publicArmored: string; routersArmoreds: string; routePgpKeyID?: string; fingerprint: string; fingerprintChanged: boolean }
+	| {
+			ok: true
+			changed: boolean
+			publicArmored: string
+			routersArmoreds: string
+			routePgpKeyID?: string
+			fingerprint: string
+			fingerprintChanged: boolean
+			/** The key id the chain record carries, and where the read came from (see chainPgpTrust.ts). Absent for a read that did not come from the chain reader. */
+			userPgpKeyID?: string
+			source?: RecordSource
+			/** The fingerprint of the key that encrypts (the encryption subkey): the record's userPgpKeyID is its key ID. Empty when it cannot be read. */
+			encryptionFingerprint?: string
+	  }
 	| { ok: false; code: 'recipient_no_record' | 'network_error' | 'recipient_key_unavailable' | 'recipient_key_invalid' }
 
 /**
@@ -101,7 +124,9 @@ export type RecipientRefresh =
 export async function refreshRecipient(chat: RecipientChat | null | undefined, fetchRoute: FetchRecipientRoute): Promise<RecipientRefresh> {
 	const address = (chat?.address ?? '').trim()
 	if (!address) return { ok: false, code: 'recipient_key_unavailable' }
-	const lookup = await lookupOrNetworkError(address, fetchRoute)
+	// no pinned value yet = a first contact: the chain id is asked fresh for this lookup (single RPC, one extra eth_chainId)
+	const firstContact = !readStoredKeyFingerprint(chat?.chatData?.verifiedFingerprint)
+	const lookup = await lookupOrNetworkError(address, fetchRoute, firstContact ? { freshChain: true } : undefined)
 	if (lookup.status === 'no_record') return { ok: false, code: 'recipient_no_record' }
 	if (lookup.status === 'network_error') return { ok: false, code: 'network_error' }
 	if (lookup.status === 'internal_error') return { ok: false, code: 'recipient_key_unavailable' }
@@ -114,6 +139,12 @@ export async function refreshRecipient(chat: RecipientChat | null | undefined, f
 		fingerprint = await fingerprintOfArmor(publicArmored)
 	} catch {
 		return { ok: false, code: 'recipient_key_invalid' }
+	}
+	let encryptionFingerprint = ''
+	try {
+		encryptionFingerprint = await openPgpEncryptionKeyFingerprintOfArmor(publicArmored)
+	} catch {
+		encryptionFingerprint = ''
 	}
 	const oldPublic = (chat?.chatData?.publicArmored ?? '').trim()
 	const oldRoute = (chat?.chatData?.routersArmoreds ?? '').trim()
@@ -128,6 +159,9 @@ export async function refreshRecipient(chat: RecipientChat | null | undefined, f
 		routePgpKeyID: lookup.routePgpKeyID,
 		fingerprint,
 		fingerprintChanged: !!previous && previous !== fingerprint,
+		userPgpKeyID: lookup.userPgpKeyID,
+		source: lookup.source,
+		encryptionFingerprint,
 	}
 }
 
@@ -145,6 +179,8 @@ export type TrustedRoute =
 			routePgpKeyID?: string
 			fingerprint: string
 			refreshed: Extract<RecipientRefresh, { ok: true }>
+			/** true: no verified value existed and the chain record carried the key (chainPgpTrust.ts): this fingerprint is to be recorded as the first pinned value after the send. */
+			firstPin?: boolean
 	  }
 	| { ok: false; code: 'route_unconfirmed' | 'fingerprint_changed' | 'first_fetch_pending' | RecipientKeyFailure; held?: HeldKey }
 
@@ -155,6 +191,25 @@ export type TrustedRoute =
 export async function resolveTrustedRoute(chat: RecipientChat | null | undefined, fetchKeys: FetchRecipientRoute): Promise<TrustedRoute> {
 	const fresh = await refreshRecipient(chat, fetchKeys)
 	return decideTrustedRoute(chat, fresh)
+}
+
+/**
+ * records the first pinned fingerprint for a contact whose key was allowed by the chain-trust rule (route.firstPin). The recorder is installed by the page
+ * (chat.ts) and writes only for a contact that already has a row; it never throws into the caller. Text sends pin through sendWithFreshRoute's onFirstPinned instead.
+ */
+export type FirstPinned = { publicArmored: string; routersArmoreds: string; routePgpKeyID?: string; fingerprint: string }
+let firstPinRecorder: ((address: string, pinned: FirstPinned) => void) | null = null
+export function setFirstPinRecorder(fn: ((address: string, pinned: FirstPinned) => void) | null): void {
+	firstPinRecorder = fn
+}
+export function recordFirstPinFor(address: string | undefined, route: { firstPin?: boolean; publicArmored: string; routersArmoreds: string; routePgpKeyID?: string; fingerprint: string }): void {
+	const a = String(address ?? '').trim()
+	if (!a || route.firstPin !== true || !firstPinRecorder) return
+	try {
+		firstPinRecorder(a, { publicArmored: route.publicArmored, routersArmoreds: route.routersArmoreds, routePgpKeyID: route.routePgpKeyID, fingerprint: route.fingerprint })
+	} catch {
+		// recording a pin never changes the decision
+	}
 }
 
 /** Observer of every trust decision made from a fresh read (the shell's native receipt route table follows it). */
@@ -177,7 +232,21 @@ export function decideTrustedRoute(chat: RecipientChat | null | undefined, fresh
 			fingerprint: fresh.fingerprint,
 		}
 		const verified = readStoredKeyFingerprint(chat?.chatData?.verifiedFingerprint)
-		if (!verified) return { ok: false, code: 'first_fetch_pending', held }
+		if (!verified) {
+			// the product rule: a first contact whose key comes from the whitelisted AddressPGP contract, for this contact's address, with the
+			// fingerprint of the key in use equal to the record's, is trusted (no notice). Anything else is held as before.
+			const chain = chainRecordTrust({ contactAddress: chat?.address, source: fresh.source, userPgpKeyID: fresh.userPgpKeyID, fingerprint: fresh.fingerprint, encryptionFingerprint: fresh.encryptionFingerprint })
+			if (!chain.trusted) return { ok: false, code: 'first_fetch_pending', held }
+			return {
+				ok: true,
+				publicArmored: fresh.publicArmored,
+				routersArmoreds: fresh.routersArmoreds,
+				routePgpKeyID: fresh.routePgpKeyID,
+				fingerprint: fresh.fingerprint,
+				refreshed: fresh,
+				firstPin: true,
+			}
+		}
 		if (fresh.fingerprint !== verified) return { ok: false, code: 'fingerprint_changed', held }
 		return {
 			ok: true,
@@ -212,12 +281,24 @@ export async function sendWithFreshRoute<TNodes>(
 		fetchKeys: FetchRecipientRoute
 		send: (pgpPublic: string, text: string, privateKeyArmor: string, nodes: TNodes) => Promise<boolean>
 		onRefreshed?: (refreshed: Extract<RecipientRefresh, { ok: true }>) => void
+		/** Called after a delivered send whose key was trusted from the chain with no verified value yet: record `fingerprint` as the first pinned value. */
+		onFirstPinned?: (pinned: { publicArmored: string; routersArmoreds: string; routePgpKeyID?: string; fingerprint: string }) => void
 	},
 ): Promise<RouteSendResult> {
 	const route = await resolveTrustedRoute(chat, deps.fetchKeys)
 	if (!route.ok) return { ok: false, code: route.code, held: route.held }
 	deps.onRefreshed?.(route.refreshed)
-	if (await deps.send(route.publicArmored, text, privateKeyArmor, nodes)) return { ok: true, viaUnconfirmedRoute: false }
+	if (await deps.send(route.publicArmored, text, privateKeyArmor, nodes)) {
+		// the key that was used for encryption is the one recorded (route.publicArmored and route.fingerprint come from the same read)
+		if (route.firstPin) {
+			try {
+				deps.onFirstPinned?.({ publicArmored: route.publicArmored, routersArmoreds: route.routersArmoreds, routePgpKeyID: route.routePgpKeyID, fingerprint: route.fingerprint })
+			} catch {
+				// recording the pin never changes the result of a delivered send
+			}
+		}
+		return { ok: true, viaUnconfirmedRoute: false }
+	}
 	return { ok: false, code: 'send_failed' }
 }
 
@@ -290,5 +371,8 @@ export type RecipientForSend =
 export async function resolveRecipientForSend(chat: RecipientChat | null | undefined, fetchRoute: FetchRecipientRoute): Promise<RecipientForSend> {
 	const route = await resolveTrustedRoute(chat, fetchRoute)
 	if (!route.ok) return { ok: false, code: route.code }
+	// a screen other than the chat text send (payment, group, gift, receipt, call) uses the key the chain-trusted rule allowed: the first pinned value is recorded
+	// here too, so a later key change on this contact is fingerprint_changed on every path, not only after a text send.
+	recordFirstPinFor(chat?.address, route)
 	return { ok: true, publicArmored: route.publicArmored, routersArmoreds: route.routersArmoreds }
 }

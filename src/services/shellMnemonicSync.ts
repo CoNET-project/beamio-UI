@@ -14,6 +14,7 @@ import { setShellSyncState } from './shellSyncStatus'
 import { pwaWalletSyncTransportAvailable, sendPwaWalletSync, sendPwaWalletSyncCipher, type PwaSyncReply } from './pwaWalletSyncTransport'
 import { readWalletEoaAddress } from './walletEoaAddress'
 import { NO_KEY_ERROR } from './nativeKeyState'
+import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
 
 /** The bridge command of the post-home sync (spec r2.5.1, item 46(4)). Replies: ok, stale_seq, write_failed, untrusted_source. */
 export const SHELL_MNEMONIC_SYNC_COMMAND = 'pwaWalletSync'
@@ -226,7 +227,11 @@ export async function rereadNativeAccountState(): Promise<'valid' | 'absent' | '
 /** The app-wide sync. It is started after the home is entered and never awaited by the route. */
 export const shellMnemonicSync: ShellMnemonicSync = createShellMnemonicSync({
 	// r94: the production request goes over the shell transport (window or iOS chat); a test or a shell may install another sender.
-	send: (command, txId, mnemonic, eoa) => (bridgeSender ? bridgeSender(command, txId, mnemonic, eoa) : sendPwaWalletSync(command, txId, mnemonic, eoa)),
+	send: (command, txId, mnemonic, eoa) => {
+		// one counting line per legacy delivery (source tag and seq only; no phrase, no address)
+		publishNativePwaLog('info', `[syncSender] src=shellMnemonicSync.send seq=${txId}`)
+		return bridgeSender ? bridgeSender(command, txId, mnemonic, eoa) : sendPwaWalletSync(command, txId, mnemonic, eoa)
+	},
 	reread: () => rereadNativeAccountState(),
 	retryDelaysMs: RETRY_DELAYS_MS,
 	wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),

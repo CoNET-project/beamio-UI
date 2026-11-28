@@ -1,3 +1,4 @@
+import { safeResourceUrl } from '@/utils/retiredHost'
 /**
  * Local-first permanent IPFS fragment image library (IndexedDB, keyed by keccak hash).
  * Read local cache before network getFragment; persist trusted fetches indefinitely.
@@ -358,7 +359,8 @@ export async function resolveIpfsFragmentRecord(hash: string): Promise<IpfsImage
 
 /** Resolve any IPFS fragment URL to a blob: URL (caller must revoke). Non-IPFS URLs pass through. */
 export async function resolveIpfsImageUrlToObjectUrl(url: string): Promise<string> {
-  const trimmed = String(url || '').trim()
+  // the blocked host first: every later fallback returns this value
+  const trimmed = safeResourceUrl(String(url || '').trim())
   if (!trimmed) return ''
 
   if (trimmed.startsWith('data:image/') || trimmed.startsWith('blob:')) {

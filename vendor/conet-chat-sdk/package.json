@@ -31,7 +31,15 @@
     "test:voice": "tsx scripts/testVoiceReorder.ts && tsx scripts/testVoiceEntryPool.ts && tsx scripts/testVoicePeerWait.ts && tsx scripts/testInboundArmor.ts",
     "test:local": "tsx scripts/testLocalChatStore.ts",
     "test:history": "tsx scripts/testHistorySyncAdopt.ts",
-    "test": "npm run test:voice && npm run test:local && npm run test:signing && npm run test:history",
+    "test:plaincache": "tsx scripts/testPlainCacheLegacy.ts",
+    "test:libraryrow": "tsx scripts/testLibraryRowConfirm.ts",
+    "test:remotecommit": "tsx scripts/testRemoteCommit.ts",
+    "test:restoremerge": "tsx scripts/testRestoreMerge.ts",
+    "test:twotabs": "tsx scripts/testHistoryTwoTabs.ts",
+    "test:objectcontent": "tsx scripts/testUploadObjectContent.ts",
+    "test:localfirst": "tsx scripts/testHistoryLocalFirst.ts && tsx scripts/testInboundOnce.ts",
+    "test:batch": "tsx scripts/testHistoryBatchQueue.ts && tsx scripts/testPinResult.ts",
+    "test": "npm run test:voice && npm run test:local && npm run test:signing && npm run test:history && npm run test:plaincache && npm run test:libraryrow && npm run test:remotecommit && npm run test:restoremerge && npm run test:twotabs && npm run test:batch && npm run test:objectcontent && npm run test:localfirst",
     "test:signing": "tsx scripts/testWorkerSigning.ts"
   },
   "peerDependencies": {

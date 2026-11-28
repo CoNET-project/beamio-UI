@@ -78,6 +78,7 @@ import { ensureConetAaForProfileAndPersist } from '@/utils/ensureConetAa'
 import { tu } from '@/locale/beamioLocale'
 import ShellSyncNotice from '@/components/Home/ShellSyncNotice'
 import { HomeLanguageSelector } from './HomeLanguageSelector'
+import { runColdStartHomeHandoffOnce } from '@/services/homeBridgeHandoff'
 import {
 	CoinbaseCMark,
 	ReceiveWalletClusterMark,
@@ -583,6 +584,13 @@ const Home = (_props: HomeProps) => {
 	const { resolveName, resolveImage, registerCardAddresses } = useMerchantCardDatabase()
 	const navigate = useNavigate()
 	const location = useLocation()
+
+	// home-bridge-deferred-sdk: first actual /home entry hands mnemonic to shell (once per JS process).
+	// Browser → no-op. Revisit with no pending → skip. Failure keeps pending for retry.
+	useEffect(() => {
+		if (location.pathname !== '/') return
+		void runColdStartHomeHandoffOnce()
+	}, [location.pathname])
 
 	useEffect(() => {
 		const addrs = myBrandCards.map((c) => c.cardAddress).filter(Boolean)

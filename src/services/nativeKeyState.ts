@@ -13,6 +13,8 @@
 import { postAndroidChatCommand } from '../utils/androidChatChannel'
 import { noteBridgeCommand } from '@/utils/qaBridgeCounter'
 import { IMPORT_REQ_BASE } from './reqIdSpaces'
+import { forgetNativeSessionReady } from './nativeSessionReady'
+import { setShellChatLive } from './shellChatLive'
 
 export const NO_KEY_ERROR = 'no_key'
 export const NATIVE_EVENT_NAMES = ['cashtreesios', 'cashtreesandroid'] as const
@@ -101,6 +103,9 @@ export function buildGlobalDestroyCommand(): { type: 'destroy'; reqId: number } 
 
 /** Sends the logout / lock teardown through the running shell. False when no shell channel takes it. */
 export function sendGlobalDestroyOnLogout(): boolean {
+	// the native session ends: the next init starts a new one (nativeSessionReady.ts)
+	forgetNativeSessionReady()
+	setShellChatLive(false)
 	return postChatModuleCommand(buildGlobalDestroyCommand())
 }
 

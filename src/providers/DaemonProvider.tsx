@@ -1,4 +1,5 @@
 import React, { createContext, useContext, ReactNode, useState, useEffect, useLayoutEffect, useRef, useCallback, Dispatch, SetStateAction } from "react";
+import { useFirstPinSync } from './useFirstPinSync'
 import { SHELL_SESSION_KEY_CLEARED_EVENT } from '../services/shellSessionSigner';
 import packageData from '../../package.json'
 import ScanButton, { type  ScanButtonHandle } from "@/components/scanBtn/ScanButton"
@@ -1055,6 +1056,8 @@ export function DaemonProvider({ children }: DaemonProps) {
     window.addEventListener(SHELL_SESSION_KEY_CLEARED_EVENT, onKeyCleared)
     return () => window.removeEventListener(SHELL_SESSION_KEY_CLEARED_EVENT, onKeyCleared)
   }, [])
+  // a first pinned value written to the stored record by a non-text path (services/chat.ts) is applied to this state copy too (providers/useFirstPinSync.ts)
+  useFirstPinSync(setProfilesState)
   const profiles = profilesState
   const profileWalletKeyId = profiles?.[0]?.keyID
   const profilesRef = useRef(profiles)

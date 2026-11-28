@@ -3,7 +3,8 @@
  * written with the commit and rolled back when it fails.
  */
 import { settleInboundBatch, type InboundAckTarget, type InboundBatchSettleDeps } from './inboundBatchSettle'
-import { parseInboundLine } from './inboundRowRecord'
+import { durablePendingCount, resetDurablePendingForTest, type DurableMirror } from './inboundDurable'
+import { newInboundLists, recordDroppedLine, recordInboundLine, classifyInboundLine, settleInputOf, routeArrivedLine, unparseableDropLogLine } from './inboundRowRecord'
 import { issueInboundAck } from './inboundBatchSettle'
 
 const H = (n: number) => `0x${n.toString(16).padStart(64, '0')}`
@@ -41,9 +42,11 @@ function harness(opts: Opts) {
 			hashes.forEach((h) => acked.add(h))
 		},
 	}
+	// like the page: `release` (releaseInboundLines) removes the line from the pending map and `hashesOf` (inboundArmorHashesOf) reads what is still pending, so a lookup made after the release answers nothing
+	const released = new Set<string>()
 	const deps: InboundBatchSettleDeps = {
 		target,
-		hashesOf: (lines) => lines.map((l) => opts.lineHash[l]).filter((h): h is string => !!h),
+		hashesOf: (lines) => lines.filter((l) => !released.has(l)).map((l) => opts.lineHash[l]).filter((h): h is string => !!h),
 		markHashes: (hashes) => {
 			log.push(`mark:${hashes.join(',')}`)
 			const added = hashes.filter((h) => !memory.has(h))
@@ -62,6 +65,7 @@ function harness(opts: Opts) {
 		},
 		release: (lines) => {
 			log.push(`release:${lines.join(',')}`)
+			lines.forEach((l) => released.add(l))
 		},
 	}
 	return { log, memory, persisted, mailbox, displayed, deps, acked }
@@ -93,7 +97,7 @@ describe('settleInboundBatch', () => {
 			finish = resolve
 		})
 		const h = harness({ browser: true, commit: () => pending, lineHash: { chat: H(4) } })
-		const run = settleInboundBatch({ rowLines: ['chat'], dropLines: [] }, h.deps)
+		const run = settleInboundBatch({ rowLines: [], dropLines: ['chat'] }, h.deps) // a dropped line: the only kind this step ACKs in the browser
 		await new Promise((r) => setTimeout(r, 0))
 		expect(h.mailbox).toEqual([])
 		finish(true)
@@ -124,7 +128,7 @@ describe('settleInboundBatch', () => {
 		expect(h.displayed).toEqual([])
 	})
 
-	it('browser discarded frame: its marker is written before the commit, and the ACK follows the commit', async () => {
+	it('browser discarded frame: its marker is written before the commit, and the ACK follows the commit; a message row of the same batch is neither marked nor ACKed here', async () => {
 		const h = harness({ browser: true, lineHash: { chat: H(10), voice: H(11) } })
 		await settleInboundBatch({ rowLines: ['chat'], dropLines: ['voice'] }, h.deps)
 		const marks = h.log.findIndex((e) => e.startsWith('mark:'))
@@ -134,7 +138,8 @@ describe('settleInboundBatch', () => {
 		expect(marks).toBeLessThan(commit)
 		expect(commit).toBeLessThan(ack)
 		expect(h.persisted.has(H(11))).toBe(true)
-		expect(h.mailbox).toEqual([[H(10), H(11)]])
+		expect(h.persisted.has(H(10))).toBe(false)
+		expect(h.mailbox).toEqual([[H(11)]])
 	})
 
 	it('browser discarded frame whose marker commit fails: no marker is kept and no ACK is sent', async () => {
@@ -174,23 +179,114 @@ describe('settleInboundBatch', () => {
 		expect(h.displayed).toEqual([[H(23)]])
 	})
 
-	it('browser: a duplicate copy is marked and ACKed after the commit, as before ', async () => {
+	it('browser: a duplicate copy with no append to wait for is neither marked nor ACKed (the mailbox sends it again)', async () => {
 		const h = harness({ browser: true, lineHash: { dup: H(24) } })
 		await settleInboundBatch({ rowLines: [], duplicateLines: ['dup'], dropLines: [] }, h.deps)
-		expect(h.log.indexOf(`mark:${H(24)}`)).toBeLessThan(h.log.indexOf('commit'))
-		expect(h.log.indexOf('commit')).toBeLessThan(h.log.indexOf('ackMailbox'))
-		expect(h.mailbox).toEqual([[H(24)]])
+		expect(h.log.some((e) => e.startsWith('mark:'))).toBe(false)
+		expect(h.log).not.toContain('ackMailbox')
+		expect(h.mailbox).toEqual([])
 	})
 
-	it('browser: an unparseable line is a dropped frame: marker before the commit, ACK after it', async () => {
-		const raw = '{"text": not json'
-		expect(parseInboundLine(raw)).toBeNull()
-		const h = harness({ browser: true, lineHash: { [raw]: H(25) } })
-		await settleInboundBatch({ rowLines: [], dropLines: [raw] }, h.deps)
-		expect(h.log.indexOf(`mark:${H(25)}`)).toBeLessThan(h.log.indexOf('commit'))
-		expect(h.log.indexOf('commit')).toBeLessThan(h.log.indexOf('ackMailbox'))
-		expect(h.persisted.has(H(25))).toBe(true)
+	/**
+	 * One batch the way the page takes it: App.tsx processQueue routes each arrived line with routeArrivedLine (a handled line goes to the replay branch, not modelled here),
+	 * and addNewMessage records an unparseable one as dropped and a chat line as a row with its append, then runs ONE settle step. App.tsx's wiring of these calls is held by the static tests.
+	 */
+	async function pageBatch(h: ReturnType<typeof harness>, raws: string[], appends: Record<string, DurableMirror> = {}) {
+		const lists = newInboundLists()
+		const routes: string[] = []
+		const rows: string[] = []
+		for (const raw of raws) {
+			const isMessage = !!appends[raw]
+			const route = routeArrivedLine(raw, { key: isMessage ? appends[raw]!.sendId : null, marked: false, seen: false })
+			routes.push(route)
+			if (route === 'already_handled') continue
+			if (classifyInboundLine(raw).kind === 'unparseable') { recordDroppedLine(lists, raw); continue }
+			recordInboundLine(lists, raw, true, { mirror: () => appends[raw], write: () => { rows.push(raw) } })
+		}
+		await settleInboundBatch(settleInputOf(lists), { ...h.deps, durableOptions: { waitMs: 1000, backoffMs: [1] } })
+		return { routes, rows }
+	}
+	const GARBAGE = '{"text": not json'
+	const MESSAGE = JSON.stringify({ text: 't', signMessage: '0x12', from: '0xa', timestamp: 1 })
+	const tick = () => new Promise((r) => setTimeout(r, 15))
+	/** an append whose remote commit fails until `open()`: the page's wait keeps asking */
+	const remoteAppend = (sendId: string) => {
+		let ok = false
+		let asked = 0
+		const attempt = async () => { asked += 1; return ok }
+		return { mirror: { done: attempt(), retry: attempt, sendId, failure: () => 'pointer' as const } satisfies DurableMirror, open: () => { ok = true }, asked: () => asked }
+	}
+
+	it('browser: a frame that does not parse is dropped and ACKed on its FIRST arrival (marker, commit, ACK), with no row', async () => {
+		resetDurablePendingForTest()
+		const h = harness({ browser: true, lineHash: { [GARBAGE]: H(25) } })
+		const r = await pageBatch(h, [GARBAGE])
+		expect(r.routes).toEqual(['drop_unparseable'])
+		expect(r.rows).toEqual([])
+		expect(h.log).toEqual([`mark:${H(25)}`, 'commit', `release:${GARBAGE}`, 'ackMailbox'])
 		expect(h.mailbox).toEqual([[H(25)]])
+		expect(h.persisted.has(H(25))).toBe(true)
+	})
+
+	it('browser: a redelivery of that frame (now marked) takes the same route, is ACKed again and processes nothing', async () => {
+		resetDurablePendingForTest()
+		expect(routeArrivedLine(GARBAGE, { key: null, marked: true, seen: false })).toBe('drop_unparseable')
+		const mailbox: string[][] = []
+		for (let i = 0; i < 2; i++) {
+			const h = harness({ browser: true, lineHash: { [GARBAGE]: H(25) } }) // a new delivery: the pending map has the line again
+			const r = await pageBatch(h, [GARBAGE])
+			expect(r.rows).toEqual([])
+			mailbox.push(...h.mailbox)
+		}
+		expect(mailbox).toEqual([[H(25)], [H(25)]])
+		expect(durablePendingCount()).toBe(0) // no append was ever started
+	})
+
+	it('browser: a dropped frame that shares its armor hash with a message row is not marked and not ACKed early: the hash is ACKed only by the row\'s wait, after the remote commit', async () => {
+		resetDurablePendingForTest()
+		const h = harness({ browser: true, lineHash: { [GARBAGE]: H(30), [MESSAGE]: H(30) } })
+		const a = remoteAppend('s-shared')
+		await pageBatch(h, [GARBAGE, MESSAGE], { [MESSAGE]: a.mirror })
+		await tick()
+		expect(h.mailbox).toEqual([])
+		expect(h.log.some((e) => e.startsWith('mark:'))).toBe(false)
+		a.open()
+		await tick()
+		expect(h.mailbox).toEqual([[H(30)]])
+	})
+
+	it('browser: in the same batch the dropped frame is ACKed at once and the message row still waits for the remote commit', async () => {
+		resetDurablePendingForTest()
+		const h = harness({ browser: true, lineHash: { [GARBAGE]: H(25), [MESSAGE]: H(31) } })
+		const a = remoteAppend('s-row')
+		const r = await pageBatch(h, [GARBAGE, MESSAGE], { [MESSAGE]: a.mirror })
+		await tick()
+		expect(r.rows).toEqual([MESSAGE])
+		expect(h.mailbox).toEqual([[H(25)]])
+		expect(a.asked()).toBeGreaterThan(1) // the remote commit failed and is asked again; still no ACK
+		expect(h.persisted.has(H(31))).toBe(false)
+		a.open()
+		await tick()
+		expect(h.mailbox).toEqual([[H(25)], [H(31)]])
+	})
+
+	it('scope: only frames that do not parse. JSON without a message key, and JSON that is not a signed line, keep the previous route; a keyed, marked or seen chat line too', () => {
+		const keyless = JSON.stringify({ text: 't', signMessage: '0x12' })
+		expect(routeArrivedLine(keyless, { key: null, marked: false, seen: false })).toBe('already_handled')
+		expect(routeArrivedLine('{"a":1}', { key: null, marked: false, seen: false })).toBe('already_handled')
+		expect(routeArrivedLine('42', { key: null, marked: false, seen: false })).toBe('already_handled')
+		expect(routeArrivedLine(MESSAGE, { key: '0xa_1', marked: false, seen: false })).toBe('fresh')
+		expect(routeArrivedLine(MESSAGE, { key: '0xa_1', marked: true, seen: false })).toBe('already_handled')
+		expect(routeArrivedLine(MESSAGE, { key: '0xa_1', marked: false, seen: true })).toBe('already_handled')
+		expect(routeArrivedLine('null', { key: null, marked: false, seen: false })).toBe('drop_unparseable')
+		expect(routeArrivedLine('   ', { key: null, marked: false, seen: false })).toBe('drop_unparseable')
+	})
+
+	it('log: a count and the last 8 hex digits of each armor hash, never the text or a whole hash', () => {
+		const line = unparseableDropLogLine(2, [H(0xabc), `0x${'1'.repeat(56)}DEADBEEF`])
+		expect(line).toContain('2 frame(s)')
+		expect(line).toContain('hash tails: 00000abc,deadbeef')
+		expect(line).not.toMatch(/[0-9a-f]{9}/i)
 	})
 
 	it('native: an unparseable line is never ACKed', async () => {

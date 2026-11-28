@@ -1,7 +1,7 @@
 /**
- * 0.53.49 (plan A, P1): the restore page in a shell, real component, simulated shell replies. The page shows the PWA screens, hands the
- * credential to the engine (nativeRecoverySubmit), clears its state at once whatever the outcome, shows PWA copy for each result code,
- * and never calls the in-page restore. The shells are not built yet: every shell answer here is simulated.
+ * The restore page in a shell, real component, simulated shell replies. Rewritten for the current design: the PWA onboards itself in a shell too (restoreWithUserPin /
+ * restoreWithRedeemDetailed in the page), and the shell receives the phrase only at the first /home through pwaWalletSync. The earlier tests (0.53.49 plan A: nativeRecoveryOpen,
+ * nativeRecoverySubmit, result codes, cooldown, the 120 s wait, the capability gate) described a flow the page no longer has and are gone (30 cases, see PLAN-34-failing-tests-disposition).
  */
 const nodeUtil = require('util')
 Object.assign(globalThis, { TextEncoder: nodeUtil.TextEncoder, TextDecoder: nodeUtil.TextDecoder })
@@ -119,27 +119,6 @@ describe('shell: the PWA login screen is shown directly', () => {
 })
 
 describe('shell: account name and password', () => {
-	it('opens the session, submits exactly the account request, clears the password at once, and never restores in the page', async () => {
-		await mount()
-		fillLogin()
-		let sentPassword = ''
-		submit.mockImplementation(async (p: { password?: string }) => {
-			sentPassword = p.password ?? ''
-			// the page state is already cleared when the request goes out: the loading screen replaced the form
-			return { ok: true }
-		})
-		await submitLogin()
-		expect(open).toHaveBeenCalledTimes(1)
-		expect(submit).toHaveBeenCalledWith({ path: 'account', name: 'synthtag', password: PASSWORD })
-		expect(sentPassword).toBe(PASSWORD)
-		expect(restoreWithUserPin).not.toHaveBeenCalled()
-		expect(restoreWithRedeemDetailed).not.toHaveBeenCalled()
-		// a result brings the form back; the password field is empty (cleared when the request was built)
-		await act(async () => emit({ code: 'bad_pin' }))
-		expect((screen.getByPlaceholderText('••••••••••••') as HTMLInputElement).value).toBe('')
-		expect(document.body.textContent).not.toContain(PASSWORD)
-	})
-
 	it('a short password is refused by the page and nothing is sent or cleared', async () => {
 		await mount()
 		fireEvent.change(screen.getByPlaceholderText('yourtag'), { target: { value: 'synthtag' } })
@@ -151,53 +130,9 @@ describe('shell: account name and password', () => {
 		expect((screen.getByPlaceholderText('••••••••••••') as HTMLInputElement).value).toBe('123')
 	})
 
-	it('a retry after a wrong password reuses the open session', async () => {
-		await mount()
-		fillLogin()
-		await submitLogin()
-		await act(async () => emit({ code: 'bad_pin' }))
-		expect(screen.getByText('recovery.native.bad_pin')).toBeTruthy()
-		fillLogin()
-		await submitLogin()
-		expect(open).toHaveBeenCalledTimes(1)
-		expect(submit).toHaveBeenCalledTimes(2)
-	})
-
-	it('ok enters the app without a reload: wallet established, EOA remembered, wallet ready announced', async () => {
-		await mount({ initialBeamioTag: 'synthtag' })
-		fillLogin()
-		await submitLogin()
-		await act(async () => emit({ code: 'ok', eoa: '0x' + '1'.repeat(40) }))
-		expect(rememberNativeEoa).toHaveBeenCalledWith('0x' + '1'.repeat(40))
-		await waitFor(() => expect(notifyNativeWalletReady).toHaveBeenCalled())
-		expect(cancel).not.toHaveBeenCalled()
-	})
 })
 
 describe('shell: recovery code', () => {
-	it('submits only the code request and clears the box at once', async () => {
-		await mount()
-		goRecovery()
-		fireEvent.change(codeBox(), { target: { value: CODE } })
-		await submitCode()
-		expect(open).toHaveBeenCalledTimes(1)
-		expect(submit).toHaveBeenCalledWith({ path: 'code', code: CODE })
-		expect(codeBox().value).toBe('')
-		expect(restoreWithRedeemDetailed).not.toHaveBeenCalled()
-	})
-
-	it('a malformed code (and a URL) is refused by the page before anything is sent', async () => {
-		await mount()
-		goRecovery()
-		fireEvent.change(codeBox(), { target: { value: 'not a code' } })
-		await submitCode()
-		expect(screen.getByText('invalid_recovery_code_format')).toBeTruthy()
-		fireEvent.change(codeBox(), { target: { value: 'https://example.invalid/x' } })
-		await submitCode()
-		expect(open).not.toHaveBeenCalled()
-		expect(submit).not.toHaveBeenCalled()
-	})
-
 	it('a scanned code in the right format fills the box in a shell; a mnemonic does not', async () => {
 		await mount()
 		goRecovery()
@@ -277,77 +212,7 @@ describe('shell: recovery code', () => {
 	})
 })
 
-describe('shell: results and retry', () => {
-	it.each([
-		['not_found', 'recovery.native.not_found'],
-		['network_error', 'network_error'],
-		['already_exists', 'recovery.native.already_exists'],
-		['record_invalid', 'recovery.native.record_invalid'],
-		['write_failed', 'recovery.native.write_failed'],
-		['readback_failed', 'recovery.native.write_failed'],
-		['legacy_record', 'recovery.native.legacy_record'],
-		['invalid_format', 'invalid_recovery_code_format'],
-		['busy', 'recovery.native.busy'],
-		['unknown', 'recovery.native.import_incomplete'],
-		['invalid_key', 'something_went_wrong_while_restoring_your_wallet'],
-	])('%s shows %s and the form returns for a retry', async (code, key) => {
-		await mount()
-		fillLogin()
-		await submitLogin()
-		await act(async () => emit({ code }))
-		expect(screen.getAllByText(key).length).toBeGreaterThan(0)
-		expect(screen.getByPlaceholderText('••••••••••••')).toBeTruthy()
-	})
-
-	it('backoff shows the seconds and refuses a new submit until the cooldown is over', async () => {
-		await mount()
-		fillLogin()
-		await submitLogin()
-		await act(async () => emit({ code: 'backoff', cooldownSec: 30 }))
-		expect(screen.getAllByText('recovery.native.backoff|{"seconds":30}').length).toBeGreaterThan(0)
-		fillLogin()
-		await submitLogin()
-		expect(submit).toHaveBeenCalledTimes(1)
-	})
-
-	it('a refused submit (shell answers origin_refused) shows the origin copy and the form stays usable', async () => {
-		submit.mockResolvedValue({ ok: false, reason: 'origin_refused' })
-		await mount()
-		fillLogin()
-		await submitLogin()
-		expect(screen.getAllByText('recovery.native.untrusted_origin').length).toBeGreaterThan(0)
-		expect(screen.getByPlaceholderText('••••••••••••')).toBeTruthy()
-	})
-
-	it('a session the engine no longer has (not_available) is reopened on the next try', async () => {
-		submit.mockResolvedValueOnce({ ok: false, reason: 'not_available' })
-		await mount()
-		fillLogin()
-		await submitLogin()
-		fillLogin()
-		await submitLogin()
-		expect(open).toHaveBeenCalledTimes(2)
-	})
-
-	it('a failed open shows its reason and sends nothing', async () => {
-		open.mockResolvedValue({ ok: false, reason: 'not_supported' })
-		await mount()
-		fillLogin()
-		await submitLogin()
-		expect(submit).not.toHaveBeenCalled()
-		expect(screen.getAllByText('recovery.native.not_supported').length).toBeGreaterThan(0)
-	})
-
-	it('going back with a session open sends nativeRecoveryCancel once', async () => {
-		const { onClose } = await mount()
-		fillLogin()
-		await submitLogin()
-		await act(async () => emit({ code: 'bad_pin' }))
-		fireEvent.click(screen.getByRole('button', { name: 'back' }))
-		expect(cancel).toHaveBeenCalledTimes(1)
-		expect(onClose).toHaveBeenCalled()
-	})
-
+describe('shell: leaving the page', () => {
 	it('going back before any submit sends no cancel (no session was opened)', async () => {
 		await mount()
 		fireEvent.click(screen.getByRole('button', { name: 'back' }))
@@ -356,17 +221,6 @@ describe('shell: results and retry', () => {
 })
 
 describe('shell: the gate (capability, origin, frame)', () => {
-	it('capability missing: error and retry, no forms, no native page, nothing sent', async () => {
-		hasCap.mockResolvedValue(false)
-		render(<RestoreWalletUnifiedScreen onClose={jest.fn()} onRestore={jest.fn()} />)
-		await waitFor(() => expect(screen.getByText('recovery.native.capability_missing')).toBeTruthy())
-		expect(screen.queryByPlaceholderText('yourtag')).toBeNull()
-		expect(open).not.toHaveBeenCalled()
-		hasCap.mockResolvedValue(true)
-		fireEvent.click(screen.getByText('recovery.native.retry'))
-		await waitFor(() => expect(screen.getByPlaceholderText('yourtag')).toBeTruthy())
-	})
-
 	it('untrusted origin: error and retry, no forms', async () => {
 		trusted.mockReturnValue(false)
 		render(<RestoreWalletUnifiedScreen onClose={jest.fn()} onRestore={jest.fn()} />)
@@ -383,6 +237,112 @@ describe('shell: the gate (capability, origin, frame)', () => {
 	})
 })
 
+describe('shell: the page restores in the page, and never uses the native recovery functions', () => {
+	const PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+	const restored = () => ({ mnemonicPhrase: PHRASE, beamio: { accountName: 'synthtag' }, profiles: [{ keyID: '0x0', privateKeyArmor: 'armor' }] })
+	const nativeUntouched = () => {
+		for (const fn of [open, submit, cancel, hasCap, onResult]) expect(fn).not.toHaveBeenCalled()
+	}
+	beforeEach(() => {
+		hasCap.mockClear()
+		onResult.mockClear()
+		;(restoreWithUserPin as jest.Mock).mockReset()
+		;(restoreWithRedeemDetailed as jest.Mock).mockReset()
+	})
+
+	it('BeamioTag and password: the shell goes through restoreWithUserPin in the page, hands the result to onRestore, and calls no nativeRecovery* function', async () => {
+		;(restoreWithUserPin as jest.Mock).mockResolvedValue(restored())
+		const onRestore = jest.fn()
+		await mount({ onRestore })
+		fillLogin()
+		await submitLogin()
+		await waitFor(() => expect(onRestore).toHaveBeenCalledTimes(1))
+		expect(restoreWithUserPin).toHaveBeenCalledTimes(1)
+		expect(restoreWithUserPin).toHaveBeenCalledWith('synthtag', PASSWORD)
+		expect(restoreWithRedeemDetailed).not.toHaveBeenCalled()
+		expect((onRestore.mock.calls[0][0] as { temp: { mnemonicPhrase: string } }).temp.mnemonicPhrase).toBe(PHRASE)
+		nativeUntouched()
+	})
+
+	it('recovery code: the shell goes through restoreWithRedeemDetailed in the page, and calls no nativeRecovery* function', async () => {
+		;(restoreWithRedeemDetailed as jest.Mock).mockResolvedValue({ kind: 'ok', temp: restored() })
+		const onRestore = jest.fn()
+		await mount({ onRestore })
+		goRecovery()
+		fireEvent.change(codeBox(), { target: { value: CODE } })
+		await submitCode()
+		await waitFor(() => expect(onRestore).toHaveBeenCalledTimes(1))
+		expect(restoreWithRedeemDetailed).toHaveBeenCalledWith(CODE, '')
+		expect(restoreWithUserPin).not.toHaveBeenCalled()
+		nativeUntouched()
+	})
+
+	it('a wrong code shows the page copy and the line stays long after 4 seconds; typing in the box clears it (the page path, no native result code)', async () => {
+		;(restoreWithRedeemDetailed as jest.Mock).mockResolvedValue({ kind: 'invalid_code' })
+		await mount()
+		goRecovery()
+		fireEvent.change(codeBox(), { target: { value: CODE } })
+		jest.useFakeTimers()
+		try {
+			await submitCode()
+			expect(screen.getAllByText('invalid_recovery_code').length).toBeGreaterThan(0)
+			act(() => {
+				jest.advanceTimersByTime(60_000)
+			})
+			expect(screen.getAllByText('invalid_recovery_code').length).toBeGreaterThan(0)
+		} finally {
+			jest.useRealTimers()
+		}
+		fireEvent.change(codeBox(), { target: { value: 'a' } })
+		expect(screen.queryByText('invalid_recovery_code')).toBeNull()
+		nativeUntouched()
+	})
+
+	it('page path, wrong BeamioTag or password: the restore answers false (or rejects), the page shows the failure copy, the form stays usable, nothing is restored and no native function is called', async () => {
+		for (const failure of [() => Promise.resolve(false), () => Promise.reject(new Error('wrong'))]) {
+			;(restoreWithUserPin as jest.Mock).mockReset()
+			;(restoreWithUserPin as jest.Mock).mockImplementation(failure)
+			const onRestore = jest.fn()
+			const { unmount } = (() => {
+				const r = render(<RestoreWalletUnifiedScreen onClose={jest.fn()} onRestore={onRestore} />)
+				return r
+			})()
+			await waitFor(() => expect(screen.getByPlaceholderText('yourtag')).toBeTruthy())
+			fillLogin()
+			await submitLogin()
+			await waitFor(() => expect(screen.getAllByText('something_went_wrong_while_restoring_your_wallet').length).toBeGreaterThan(0))
+			expect(onRestore).not.toHaveBeenCalled()
+			expect(screen.getByPlaceholderText('yourtag')).toBeTruthy() // the form is back and usable
+			expect(restoreWithRedeemDetailed).not.toHaveBeenCalled()
+			nativeUntouched()
+			unmount()
+		}
+	})
+
+	it('KNOWN GAP: on the page path the secret inputs are NOT cleared by the submit. The password and the recovery code stay in the component state and in the field (the old native path cleared them at once); after a successful submit the screen only goes away when the parent unmounts it', async () => {
+		;(restoreWithUserPin as jest.Mock).mockResolvedValue(restored())
+		;(restoreWithRedeemDetailed as jest.Mock).mockResolvedValue({ kind: 'ok', temp: restored() })
+		await mount({ onRestore: jest.fn() })
+		fillLogin()
+		await submitLogin()
+		await waitFor(() => expect(restoreWithUserPin).toHaveBeenCalled())
+		expect((screen.getByPlaceholderText('••••••••••••') as HTMLInputElement).value).toBe(PASSWORD) // the gap: still there
+		goRecovery()
+		fireEvent.change(codeBox(), { target: { value: CODE } })
+		await submitCode()
+		await waitFor(() => expect(restoreWithRedeemDetailed).toHaveBeenCalled())
+		expect(codeBox().value).toBe(CODE) // the gap: still there
+	})
+
+	it('the screen source has no nativeRecovery* call, no onNativeRecoveryResult and no nativeRecoverySubmit (the shell phrase handoff is pwaWalletSync at the first /home)', () => {
+		const src = require('fs').readFileSync(require('path').join(__dirname, 'RestoreWalletUnifiedScreen.tsx'), 'utf8') as string
+		const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+		expect(code).not.toMatch(/nativeRecovery(Open|Submit|Cancel|CopyKey)|onNativeRecoveryResult|hasPageInputRecovery|rememberNativeEoa|notifyNativeWalletReady/)
+		expect(code).toMatch(/restoreWithUserPin\(trimmed, password\)/)
+		expect(code).toMatch(/restoreWithRedeemDetailed\(recoveryCode, ''\)/)
+	})
+})
+
 describe('hidden page masks the secret fields again', () => {
 	it('a hidden page turns the peek toggles off', async () => {
 		await mount()
@@ -394,132 +354,5 @@ describe('hidden page masks the secret fields again', () => {
 		})
 		expect((screen.getByPlaceholderText('••••••••••••') as HTMLInputElement).type).toBe('password')
 		Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
-	})
-})
-
-describe('shell: the result wait is bounded (120 s)', () => {
-	afterEach(() => {
-		jest.useRealTimers()
-	})
-
-	it('no result event in 120 s after an accepted submit: the session is cancelled, generic copy shows, the state stays cleared, and a new submit reopens the session', async () => {
-		await mount()
-		fillLogin()
-		jest.useFakeTimers()
-		await submitLogin()
-		expect(submit).toHaveBeenCalledTimes(1)
-		// still waiting just before the limit: no cancel, no form
-		act(() => {
-			jest.advanceTimersByTime(119_000)
-		})
-		expect(cancel).not.toHaveBeenCalled()
-		expect(screen.queryByPlaceholderText('••••••••••••')).toBeNull()
-		act(() => {
-			jest.advanceTimersByTime(1_000)
-		})
-		expect(cancel).toHaveBeenCalledTimes(1)
-		expect(screen.getAllByText('something_went_wrong_while_restoring_your_wallet').length).toBeGreaterThan(0)
-		expect((screen.getByPlaceholderText('••••••••••••') as HTMLInputElement).value).toBe('')
-		expect(document.body.textContent).not.toContain(PASSWORD)
-		// retry: the old session is gone, so a new one is opened and the credential goes out again
-		fillLogin()
-		await submitLogin()
-		expect(open).toHaveBeenCalledTimes(2)
-		expect(submit).toHaveBeenCalledTimes(2)
-	})
-
-	it('the recovery code path times out the same way', async () => {
-		await mount()
-		goRecovery()
-		fireEvent.change(codeBox(), { target: { value: CODE } })
-		jest.useFakeTimers()
-		await submitCode()
-		act(() => {
-			jest.advanceTimersByTime(120_000)
-		})
-		expect(cancel).toHaveBeenCalledTimes(1)
-		expect(codeBox().value).toBe('')
-		expect(screen.getAllByText('something_went_wrong_while_restoring_your_wallet').length).toBeGreaterThan(0)
-	})
-
-	it('a result event before the limit stops the timer: no cancel later', async () => {
-		await mount()
-		fillLogin()
-		jest.useFakeTimers()
-		await submitLogin()
-		await act(async () => emit({ code: 'bad_pin' }))
-		act(() => {
-			jest.advanceTimersByTime(300_000)
-		})
-		expect(cancel).not.toHaveBeenCalled()
-	})
-
-	it('unmounting the page stops the timer: the unmount cancel is the only one', async () => {
-		const view = render(<RestoreWalletUnifiedScreen onClose={jest.fn()} onRestore={jest.fn()} />)
-		await waitFor(() => expect(screen.getByPlaceholderText('yourtag')).toBeTruthy())
-		fillLogin()
-		jest.useFakeTimers()
-		await submitLogin()
-		view.unmount()
-		expect(cancel).toHaveBeenCalledTimes(1)
-		act(() => {
-			jest.advanceTimersByTime(300_000)
-		})
-		expect(cancel).toHaveBeenCalledTimes(1)
-	})
-})
-
-describe('an error line stays until the user types again or submits again (no timer)', () => {
-	afterEach(() => {
-		jest.useRealTimers()
-	})
-
-	it('a recovery code error is still there long after 4 seconds', async () => {
-		await mount()
-		goRecovery()
-		fireEvent.change(codeBox(), { target: { value: CODE } })
-		// fake timers before the error appears, so a timer started by the error is the one that is advanced
-		jest.useFakeTimers()
-		await submitCode()
-		await act(async () => emit({ code: 'not_found' }))
-		expect(screen.getAllByText('recovery.native.not_found').length).toBeGreaterThan(0)
-		act(() => {
-			jest.advanceTimersByTime(60_000)
-		})
-		expect(screen.getAllByText('recovery.native.not_found').length).toBeGreaterThan(0)
-	})
-
-	it('typing in the code box clears it', async () => {
-		await mount()
-		goRecovery()
-		fireEvent.change(codeBox(), { target: { value: CODE } })
-		await submitCode()
-		await act(async () => emit({ code: 'not_found' }))
-		fireEvent.change(codeBox(), { target: { value: 'a' } })
-		expect(screen.queryByText('recovery.native.not_found')).toBeNull()
-	})
-
-	it('submitting again clears it while the request runs', async () => {
-		await mount()
-		goRecovery()
-		fireEvent.change(codeBox(), { target: { value: CODE } })
-		await submitCode()
-		await act(async () => emit({ code: 'already_exists' }))
-		expect(screen.getAllByText('recovery.native.already_exists').length).toBeGreaterThan(0)
-		fireEvent.change(codeBox(), { target: { value: CODE } })
-		expect(screen.queryByText('recovery.native.already_exists')).toBeNull()
-	})
-
-	it('a backoff line stays while the cooldown still blocks a new submit', async () => {
-		await mount()
-		goRecovery()
-		fireEvent.change(codeBox(), { target: { value: CODE } })
-		await submitCode()
-		await act(async () => emit({ code: 'backoff', cooldownSec: 30 }))
-		jest.useFakeTimers()
-		act(() => {
-			jest.advanceTimersByTime(10_000)
-		})
-		expect(screen.getAllByText(/recovery\.native\.backoff/).length).toBeGreaterThan(0)
 	})
 })

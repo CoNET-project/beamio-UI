@@ -8,7 +8,7 @@
  * The rules here never mutate the object they are given. A write builds a new `chatData`, reports whether any route field moved compared with
  * the object before the write, and the stored rows are replaced where the fields differ or where the write moved them.
  */
-import { storedKeyFingerprint } from '../utils/pgpFingerprint'
+import { storedKeyFingerprint, readStoredKeyFingerprint } from '../utils/pgpFingerprint'
 
 export interface PeerRouteFields {
 	publicArmored?: string
@@ -70,4 +70,49 @@ export function applyPeerRouteToRows<T extends PeerRouteRow>(rows: T[], address:
 		return { ...row, chatData: written }
 	})
 	return { rows: changed ? out : rows, changed }
+}
+
+
+/**
+ * a first pinned value recorded outside the chat page (payment, call, group, gift, receipt) goes to the stored record in services/chat.ts. The page's React `profiles`
+ * state is a separate copy that later writes can persist, so it must see the pin too. The stored write therefore announces itself with this event and the profile provider applies the same pin to its state.
+ */
+export const FIRST_PIN_APPLIED_EVENT = 'beamio:first-pin-applied'
+export type FirstPinAppliedDetail = { address: string; pinned: PeerRouteIncoming }
+
+type ProfileWithChats = { chats?: PeerRouteRow[] } & Record<string, unknown>
+
+/**
+ * The profiles with the first pinned value written to the row of `address` in the first profile: only a row that exists and holds no verified value is written (a stranger gets
+ * no row; a verified value is never replaced). Returns the same array when nothing changes. Pure.
+ */
+export function applyPinnedToProfiles<T extends ProfileWithChats>(profiles: T[] | null | undefined, address: string, pinned: PeerRouteIncoming): T[] | null | undefined {
+	if (!Array.isArray(profiles) || profiles.length === 0) return profiles
+	const first = profiles[0]
+	const rows = Array.isArray(first?.chats) ? first.chats : []
+	const want = String(address ?? '').trim().toLowerCase()
+	const row = rows.find((r) => String(r?.address ?? '').toLowerCase() === want)
+	if (!want || !row) return profiles
+	if (readStoredKeyFingerprint(row.chatData?.verifiedFingerprint)) return profiles
+	const next = nextPeerChatData(row.chatData ?? null, pinned, true)
+	const { rows: written, changed } = applyPeerRouteToRows(rows, address, next, true)
+	if (!changed) return profiles
+	const out = [...profiles]
+	out[0] = { ...first, chats: written }
+	return out
+}
+
+/**
+ * the chat page that is open holds its own `chatData` copy (the frozen object from the route state). A first pin written elsewhere
+ * (a call or payment started from this page, a gift, a receipt) reaches the stored record and the profile provider's state, but not this copy,
+ * which would then read "first contact" again (a second fresh chain read, a fingerprint prompt). The page applies the same pin to its copy on
+ * FIRST_PIN_APPLIED_EVENT. Only the open contact's copy, only when it holds no verified value (a verified value is never replaced); a new object, never an in-place change.
+ * Returns the new chatData, or null when nothing changes.
+ */
+export function pinnedChatDataForOpenChat(open: { address?: string; chatData?: PeerRouteFields | null } | null | undefined, address: string, pinned: PeerRouteIncoming): PeerRouteFields | null {
+	const want = String(address ?? '').trim().toLowerCase()
+	if (!open || !want || String(open.address ?? '').trim().toLowerCase() !== want) return null
+	if (readStoredKeyFingerprint(open.chatData?.verifiedFingerprint)) return null
+	const next = nextPeerChatData(open.chatData ?? null, pinned, true)
+	return routeFieldsDiffer(open.chatData, next) ? next : null
 }

@@ -154,8 +154,8 @@ describe('static pins: the local-wallet database is opened only after the probe,
 	it('every PouchDB open in beamio.ts is preceded by the probe await', () => {
 		const opens = beamio.split('PouchDB(localDatabaseName').length - 1
 		const awaits = beamio.split('await idbBlobCompatReady()').length - 1
-		expect(opens).toBe(5)
-		expect(awaits).toBe(5)
+		expect(opens).toBe(7) // purgeKeyOnlyPageRecord removed; probe-gated opens only. + the chat draft / queue documents (list by prefix, remove), both probe-gated
+		expect(awaits).toBe(7)
 	})
 	it('the read path maps storage_unavailable to the same unavailable reason as a failed open', () => {
 		expect(beamio).toContain("if (blobCompat === 'storage_unavailable') return { status: 'unavailable', reason: 'indexeddb' }")

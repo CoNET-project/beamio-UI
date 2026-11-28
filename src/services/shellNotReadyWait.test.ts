@@ -28,4 +28,36 @@ describe('shell guard: any walletStatus that is not an explicit no_key waits (20
 	test('a browser is never held by this guard', () => {
 		expect(shellNotReadyWaitReason({ isShell: false, walletStatus: 'not_ready', presence: 'no_account' })).toBeNull()
 	})
+
+	test('not_ready + key_only is not held (local mode is the caller)', () => {
+		expect(
+			shellNotReadyWaitReason({
+				isShell: true,
+				walletStatus: 'not_ready',
+				presence: 'no_account',
+				notReadyReason: 'key_only',
+			}),
+		).toBeNull()
+		expect(
+			shellNotReadyWaitReason({
+				isShell: true,
+				walletStatus: 'not_ready',
+				presence: 'undetermined',
+				notReadyReason: 'key_only',
+			}),
+		).toBeNull()
+	})
+
+	test('other not_ready reasons still wait', () => {
+		for (const notReadyReason of ['unreadable', 'g1_uninitialized', 'passcode_not_provided', undefined, null, '']) {
+			expect(
+				shellNotReadyWaitReason({
+					isShell: true,
+					walletStatus: 'not_ready',
+					presence: 'no_account',
+					notReadyReason: notReadyReason as string | null | undefined,
+				}),
+			).toMatch(WAIT)
+		}
+	})
 })

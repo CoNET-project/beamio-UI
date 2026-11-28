@@ -4,12 +4,14 @@
  * - Closed (`init` answered clear_failed or unregister_refused): no automatic retry. The button starts the clear: a confirmation, then
  *   `clearIdentity`. The native layer runs its recovery-source check and refuses without deleting anything when it fails. After a
  *   successful clear the page reloads, which re-judges the account. When the closed state came from an account import, the button
- *   goes back to the native import page instead (the native layer confirms there).
+ *   goes back to the native import
+ * page instead (the native layer confirms there).
  * - Retries stopped (the sixth consecutive failed start): "chat is unavailable" with a manual retry.
  *
  * The copy is a placeholder pending final wording. SYNTHETIC values only.
  */
 import { lazy, Suspense, useEffect, useState } from 'react'
+import { requestUserReload } from '@/services/chatWriteLock'
 import { tu } from '../locale/beamioLocale'
 import { useVisibleReadPoll } from '../hooks/useHelloWait'
 import {
@@ -35,7 +37,8 @@ export function useShellRetryExhausted(): boolean {
 	return value
 }
 
-const reloadPage = () => window.location.reload()
+// a reload the app asks for is held while a chat write is in progress or a message exists only in memory (chatWriteLock.ts)
+const reloadPage = () => { requestUserReload() }
 
 /** The account settings hold the recovery-code backup. The default switches to them without a reload (the router listens to popstate). */
 const openSettingsForBackup = () => {

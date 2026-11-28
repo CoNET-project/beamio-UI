@@ -15,6 +15,7 @@ import { ethers } from 'ethers'
 import { markHistoryEntriesSeen, unseenHistoryEntries } from './historyRestoreSeen'
 import { mergeHistoryEntriesIntoMessages } from './chatHistoryMirror'
 import { mergePhoneCallRecord, sameCallId } from '../utils/voiceCallSession'
+import { qaNoteCopy, qaSendIdOfEntry } from '../utils/qaCopySource'
 
 export interface RestorePlan {
 	/** The account the entries were checked for (lower case). */
@@ -153,6 +154,11 @@ export function mergeRestoreIntoProfile(current: profile | undefined, plan: Rest
 		}
 		const beforeCount = Array.isArray(chats[idx].messages) ? chats[idx].messages.length : 0
 		const { messages, added } = mergeHistoryEntriesIntoMessages(chats[idx].messages, es)
+		// hook variant only (G1-b, first-copy source): the messages this App-level restore ADDED to the page's chat are marked `app_history` (ids only, in memory; nothing is printed)
+		if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && added > 0) {
+			const had = new Set((Array.isArray(chats[idx].messages) ? chats[idx].messages : []).map((m) => m?.sendId).filter((x): x is string => typeof x === 'string'))
+			qaNoteCopy('app_history', es.map(qaSendIdOfEntry).filter((x): x is string => !!x && !had.has(x)))
+		}
 		for (const entry of es) {
 			try {
 				const callRecord = (JSON.parse(entry.body) as ChatMessage)?.callRecord

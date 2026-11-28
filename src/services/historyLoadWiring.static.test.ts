@@ -82,7 +82,8 @@ describe('the page reads the full corpus through the scheduler, not after a load
 		expect(app).toContain('corpusReadRef.current?.sync({')
 		expect(app).toContain('const account = corpusAccountOf(profiles?.[0])')
 		expect(app).toContain('account,')
-		expect(app).toContain('useEffect(() => onWorkerReady(() => setWorkerEpoch((n) => n + 1)), [])')
+		// the same epoch bump, plus the hook-only event and the library-evidence refresh on a ready worker
+		expect(app).toContain('useEffect(() => onWorkerReady(() => { setWorkerEpoch((n) => n + 1); if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === \'true\') qaEvent(\'chat_worker_ready\'); void refreshEvidenceOnWorkerReady() }), [])')
 	})
 
 	it('the dead decrypted-history listener is gone from the app and the bridge', () => {

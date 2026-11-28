@@ -1,0 +1,838 @@
+{
+ "schema": "beamio.firstContactChainTrust.v2",
+ "decision": "first-contact trust of a chain-published key. v2: the record id is the ENCRYPTION SUBKEY's key id",
+ "whitelist": [
+  {
+   "chainId": 224422,
+   "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2"
+  }
+ ],
+ "rule": "With no pinned value: send directly (and record the PRIMARY key's fingerprint as the first pinned value) only when ALL hold: (1) the record's source is a whitelisted AddressPGP contract on its chain, (2) the address the read was made for equals the contact's address, (3) the AddressPGP record's userPgpKeyID is the key id (16 hex: low 64 bits of a v4 fingerprint, high 64 bits of a v6 one; or the full fingerprint) of the key that actually encrypts (the encryption subkey OpenPGP selects, the primary key when there is none). Otherwise first_fetch_pending. With a pinned value (primary fingerprint): equal -> send; different -> fingerprint_changed. A failed read is route_unconfirmed and is never trusted.",
+ "fields": "read.fingerprint = primary key fingerprint; read.encryptionFingerprint = fingerprint of the encrypting (sub)key; read.userPgpKeyID = the chain record's field",
+ "realData": "FC-01..03 are public keys of three accounts measured on the CoNET chain: the chain field equals the subkey's key id and differs from the primary's",
+ "nativeNote": "The native SDKs hold no contact trust rule: they encrypt to the key the page hands them and take the receipt route table the page builds. The page's decision (this vector set) is the single rule; a native implementation that ever decides first-contact trust must pass these vectors.",
+ "cases": [
+  {
+   "id": "FC-01",
+   "description": "real registration B measured on the chain: the record id is the ENCRYPTION SUBKEY's key id (not the primary's) -> send directly, first pin = the primary fingerprint",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "send_direct",
+    "firstPin": true
+   }
+  },
+  {
+   "id": "FC-02",
+   "description": "real registration A measured on the chain: the record id is the ENCRYPTION SUBKEY's key id (not the primary's) -> send directly, first pin = the primary fingerprint",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fbf77240d77e266f879598591777c57276295541",
+    "encryptionFingerprint": "082d67e1ec8c442be6777fda8db5d947d05c5104",
+    "userPgpKeyID": "8DB5D947D05C5104",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "send_direct",
+    "firstPin": true
+   }
+  },
+  {
+   "id": "FC-03",
+   "description": "real registration T measured on the chain: the record id is the ENCRYPTION SUBKEY's key id (not the primary's) -> send directly, first pin = the primary fingerprint",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "3cdcafcdc82a174280309452417b731dadf6b968",
+    "encryptionFingerprint": "cf5f360d369a04e55cb0cd05d399e974a47cc5e5",
+    "userPgpKeyID": "D399E974A47CC5E5",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "send_direct",
+    "firstPin": true
+   }
+  },
+  {
+   "id": "FC-04",
+   "description": "same, record id lower case with 0x and spaces around it",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "  0x714cd9758b863480  ",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "send_direct",
+    "firstPin": true
+   }
+  },
+  {
+   "id": "FC-05",
+   "description": "same, contract address in lower case",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cee9c9b85de36d69746420648cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "send_direct",
+    "firstPin": true
+   }
+  },
+  {
+   "id": "FC-06",
+   "description": "same, contact address in a different case",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xAB12AB12AB12AB12AB12AB12AB12AB12AB12AB12"
+    }
+   },
+   "expect": {
+    "decision": "send_direct",
+    "firstPin": true
+   }
+  },
+  {
+   "id": "FC-07",
+   "description": "v6 subkey (64 hex, head and tail differ): the record id is the HIGH 64 bits of the subkey fingerprint -> send directly",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "0123456789abcdefa1b2c3d4e5f607181829384756a7b6c5fedcba9876543210",
+    "encryptionFingerprint": "89abcdef01234567112233445566778899aabbccddeeff000f1e2d3c4b5a6978",
+    "userPgpKeyID": "89abcdef01234567",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "send_direct",
+    "firstPin": true
+   }
+  },
+  {
+   "id": "FC-08",
+   "description": "the record carries the full subkey fingerprint instead of the key id -> send directly",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "a334271a366d39aad713cac1714cd9758b863480",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "send_direct",
+    "firstPin": true
+   }
+  },
+  {
+   "id": "FC-09",
+   "description": "key with no encryption subkey: the primary key encrypts and its key id is the record id -> send directly",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "userPgpKeyID": "fee824a905f3947f",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "send_direct",
+    "firstPin": true
+   }
+  },
+  {
+   "id": "FC-10",
+   "description": "REGRESSION 0.53.55: the record id equals the primary key's low 64 bits, but the encrypting key is the subkey -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "fee824a905f3947f",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-11",
+   "description": "the record id is the primary key's high 64 bits (not an id of the encrypting key) -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "fa204495c9de957d",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-12",
+   "description": "the record id belongs to another account's subkey -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "8DB5D947D05C5104",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-13",
+   "description": "v6: the record id is the LOW 64 bits of the subkey fingerprint (v4 rule applied to v6) -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "0123456789abcdefa1b2c3d4e5f607181829384756a7b6c5fedcba9876543210",
+    "encryptionFingerprint": "89abcdef01234567112233445566778899aabbccddeeff000f1e2d3c4b5a6978",
+    "userPgpKeyID": "0f1e2d3c4b5a6978",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-14",
+   "description": "v4 subkey with an 8-hex id that is its tail -> held (a key id is 16 hex)",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "8b863480",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-15",
+   "description": "v4 subkey with a 17-hex id -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "1714cd9758b863480",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-16",
+   "description": "v6 subkey with an 8-hex head id -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "0123456789abcdefa1b2c3d4e5f607181829384756a7b6c5fedcba9876543210",
+    "encryptionFingerprint": "89abcdef01234567112233445566778899aabbccddeeff000f1e2d3c4b5a6978",
+    "userPgpKeyID": "89abcdef",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-17",
+   "description": "v6 subkey with a 17-hex head id -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "0123456789abcdefa1b2c3d4e5f607181829384756a7b6c5fedcba9876543210",
+    "encryptionFingerprint": "89abcdef01234567112233445566778899aabbccddeeff000f1e2d3c4b5a6978",
+    "userPgpKeyID": "89abcdef012345671",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-18",
+   "description": "a 64-hex record id against a 40-hex subkey fingerprint -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "0123456789abcdefa1b2c3d4e5f607181829384756a7b6c5fedcba9876543210",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-19",
+   "description": "a 40-hex record id against a 64-hex subkey fingerprint -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "0123456789abcdefa1b2c3d4e5f607181829384756a7b6c5fedcba9876543210",
+    "encryptionFingerprint": "89abcdef01234567112233445566778899aabbccddeeff000f1e2d3c4b5a6978",
+    "userPgpKeyID": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-20",
+   "description": "record id missing -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-21",
+   "description": "record id not hexadecimal -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "ZZZZZZZZZZZZZZZZ",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-22",
+   "description": "the encryption key's fingerprint could not be read (empty) -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-23",
+   "description": "the primary fingerprint is malformed -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "abc123",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-30",
+   "description": "no source (the record did not come from the chain reader) -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": null
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-31",
+   "description": "source contract not on the whitelist -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x4444444444444444444444444444444444444444",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-32",
+   "description": "whitelisted contract address on another chain -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": {
+     "chainId": 8453,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-33",
+   "description": "chain id as a string, not the number 224422 -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": {
+     "chainId": "224422",
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-34",
+   "description": "the read was made for another address (record is not this contact's) -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0x3333333333333333333333333333333333333333"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-35",
+   "description": "the read has no queried address -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": ""
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-36",
+   "description": "the RPC reported another chain (Ethereum 1): the source carries the ACTUAL chain id, so it is not whitelisted -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": {
+     "chainId": 1,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-37",
+   "description": "the RPC reported chain 224166 (a near miss of 224422) -> held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": {
+     "chainId": 224166,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "first_fetch_pending",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-38",
+   "description": "chain correct (224422, real value) and the record is right: sent directly (control for FC-36/37)",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "send_direct",
+    "firstPin": true
+   }
+  },
+  {
+   "id": "FC-40",
+   "description": "chain read failed (network error): held, never trusted",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "fail",
+    "code": "network_error"
+   },
+   "expect": {
+    "decision": "route_unconfirmed",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-41",
+   "description": "chain read timed out (reported as network error): held",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "fail",
+    "code": "network_error"
+   },
+   "expect": {
+    "decision": "route_unconfirmed",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-42",
+   "description": "no record on the chain: not sent, no trust",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "fail",
+    "code": "recipient_no_record"
+   },
+   "expect": {
+    "decision": "recipient_no_record",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-43",
+   "description": "the key on the chain is not a readable key",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": null,
+   "read": {
+    "kind": "fail",
+    "code": "recipient_key_invalid"
+   },
+   "expect": {
+    "decision": "recipient_key_invalid",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-50",
+   "description": "already pinned (primary fingerprint) and the chain key is the pinned one: send, not a first pin",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "send_direct",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-51",
+   "description": "already pinned and the chain key differs: fingerprint_changed, even though the chain record is trusted",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fbf77240d77e266f879598591777c57276295541",
+    "encryptionFingerprint": "082d67e1ec8c442be6777fda8db5d947d05c5104",
+    "userPgpKeyID": "8DB5D947D05C5104",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "fingerprint_changed",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-52",
+   "description": "already pinned, same key, unknown source: still sent on the pin (the pin is the anchor)",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "714CD9758B863480",
+    "source": null
+   },
+   "expect": {
+    "decision": "send_direct",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-53",
+   "description": "already pinned and the chain key differs, unknown source: fingerprint_changed",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fbf77240d77e266f879598591777c57276295541",
+    "encryptionFingerprint": "082d67e1ec8c442be6777fda8db5d947d05c5104",
+    "userPgpKeyID": "8DB5D947D05C5104",
+    "source": null
+   },
+   "expect": {
+    "decision": "fingerprint_changed",
+    "firstPin": false
+   }
+  },
+  {
+   "id": "FC-54",
+   "description": "already pinned and the record id is the old wrong (primary) id but the key is the pinned one: sent on the pin",
+   "contactAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+   "storedVerifiedFingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+   "read": {
+    "kind": "ok",
+    "fingerprint": "fa204495c9de957db3b26a1ffee824a905f3947f",
+    "encryptionFingerprint": "a334271a366d39aad713cac1714cd9758b863480",
+    "userPgpKeyID": "fee824a905f3947f",
+    "source": {
+     "chainId": 224422,
+     "contract": "0x684b0ac760cEE9c9b85de36d69746420648Cf9e2",
+     "queriedAddress": "0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+    }
+   },
+   "expect": {
+    "decision": "send_direct",
+    "firstPin": false
+   }
+  }
+ ],
+ "runtimeChainCheck": "source.chainId is the value the RPC reported for eth_chainId at run time (kept per endpoint, dropped after an endpoint change or a failed read). A failed or mismatching chain id check never reaches this decision: the lookup answers network_error (contact unavailable, nothing sent)."
+}

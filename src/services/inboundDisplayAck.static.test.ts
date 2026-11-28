@@ -75,9 +75,12 @@ describe('ackInbound and the server ACK', () => {
 		expect(app).toContain('(key && storedRowKeysRef.current.has(key) ? replayRows : replayDrops).push(raw)')
 		// a replayed line is verified again (fields and signature) before it can be ACKed, whatever its key.
 		expect(app).toContain('const replayed = classifyInboundLine(raw)')
-		expect(app).toContain("if (replayed.kind === 'rejected') continue")
-		expect(app).toContain("if (replayed.kind === 'signed' && !inboundSignatureValid(replayed.message as unknown as message)) continue")
-		expect(app).toContain('settleInboundBatch({ rowLines: replayRows, dropLines: replayDrops }, {')
+		expect(app).toContain("if (replayed.kind !== 'signed') continue")
+		expect(app).toContain('const replaySigner = inboundSignerOf(replayed.message as unknown as message)')
+		expect(app).toContain('if (!replaySigner) continue')
+		// in the browser a replayed line is ACKed only with a dedupe marker (inboundReplay.ts); the native shell keeps the old split
+		expect(app).toContain('const replayPlan = planReplayAcks({ browser: ackTarget.browser, rows: replayRows, drops: replayDrops, hasMarker: isInboundLineMarked })')
+		expect(app).toContain('settleInboundBatch({ rowLines: replayPlan.rowLines, dropLines: replayPlan.dropLines }, {')
 		expect(app).toContain('storedRowKeysRef.current.add(rowKey)')
 		// -1: a row is recorded through the helper, after its write (the helper runs the mirror, then the write, then records).
 		expect(app).toContain('recordInboundLine(inboundLists, raw, isNew, {')
@@ -86,7 +89,9 @@ describe('ackInbound and the server ACK', () => {
 
 	it('App.tsx: a line that does not parse is a dropped line, not an unknown one', () => {
 		expect(app).toContain('const line = classifyInboundLine(raw)')
-		expect(app).toContain("if (line.kind === 'unparseable') { recordDroppedLine(inboundLists, raw); continue }")
+		expect(app).toContain("if (line.kind === 'unparseable') { recordDroppedLine(inboundLists, raw); unparseableLines.push(raw); continue }")
+		// and the page really gets there: processQueue puts such a frame into the batch (it has no message key)
+		expect(app).toMatch(/if \(route === 'drop_unparseable'\) \{\s*toProcess\.push\(raw\)/)
 		expect(app).toContain("if (line.kind === 'rejected') {")
 		expect(app).not.toContain('const msg: message = JSON.parse(raw)')
 	})
@@ -100,13 +105,14 @@ describe('ackInbound and the server ACK', () => {
 		// a signature that is not valid is rejected, not dropped; it is never passed to the settle step.
 		expect(app).toContain('recordRejectedLine(inboundLists, raw)')
 		expect(app).not.toContain('discardedLines')
-		expect(app).toContain('if (isInboundLineMarked(raw) || !key || processedIdsRef.current.has(key)) {')
+		expect(app).toContain('const route = routeArrivedLine(raw, { key, marked: isInboundLineMarked(raw), seen: !!key && processedIdsRef.current.has(key) })')
+		expect(app).toContain("if (route === 'already_handled') {")
 		expect(app).toContain('if (!nativeReceiptPath() && !inboundAckIsBrowser() && armorHashRaw && ackCtx?.routerArmoredPublicKey && pk) {')
 		expect(app).toContain('skipMailboxAck: inboundAckIsBrowser(),')
 		const settle = app.indexOf('settleInboundBatch(settleInputOf(inboundLists)')
 		expect(settle).toBeGreaterThan(app.indexOf('setCoNET_Data(temp)'))
 		expect(app.indexOf('markHashes: recordInboundDedupeMarkers', settle)).toBeGreaterThan(settle)
-		expect(app.indexOf('commit: storeSystemDataAndWait', settle)).toBeGreaterThan(app.indexOf('markHashes: recordInboundDedupeMarkers', settle))
+		expect(app.indexOf('commit: storeSystemDataNow', settle)).toBeGreaterThan(app.indexOf('markHashes: recordInboundDedupeMarkers', settle))
 	})
 
 	it('nativeConetChatTransport: the page declares support (deferAck: true) in init and ackInbound is documented as the display step', () => {

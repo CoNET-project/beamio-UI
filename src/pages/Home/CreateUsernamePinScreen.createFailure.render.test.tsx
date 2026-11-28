@@ -169,29 +169,22 @@ describe('browser branch: every failed attempt shows its error', () => {
 	})
 })
 
-describe('shell branch: every refused open shows its message', () => {
+
+describe(' the product rule: in a shell the create runs in the page (PWA self-onboarding)', () => {
 	beforeEach(() => {
 		mockShellMode = true
 	})
-
-	it('two refusals in a row (not_ready): the message shows after each; then an accepted open clears it', async () => {
-		nativeRecovery.nativeAccountCreateOpen
-			.mockResolvedValueOnce({ ok: false, reason: 'not_ready' })
-			.mockResolvedValueOnce({ ok: false, reason: 'not_ready' })
-			.mockResolvedValueOnce({ ok: true, page: 'opened' })
+	it('driven to the end: the page create (createRecover) is called exactly once with the typed tag and password, no native create is opened, no native chat state is asked, and the created account is handed to close', async () => {
+		beamio.createRecover.mockResolvedValue(CREATED)
 		const close = jest.fn()
 		const press = await fill(close)
 		press()
-		expect(await screen.findByText('create_account_try_later', {}, { timeout: 5000 })).toBeTruthy()
-		await waitFor(() => expect((screen.getByText('next').closest('button') as HTMLButtonElement).disabled).toBe(false))
-		press()
-		await waitFor(() => expect(nativeRecovery.nativeAccountCreateOpen).toHaveBeenCalledTimes(2), { timeout: 5000 })
-		expect(await screen.findByText('create_account_try_later', {}, { timeout: 5000 })).toBeTruthy()
-		await waitFor(() => expect((screen.getByText('next').closest('button') as HTMLButtonElement).disabled).toBe(false))
-		press()
-		await waitFor(() => expect(nativeRecovery.nativeAccountCreateOpen).toHaveBeenCalledTimes(3), { timeout: 5000 })
-		await waitFor(() => expect(screen.queryByText('create_account_try_later')).toBeNull(), { timeout: 5000 })
-		expect(beamio.createRecover).not.toHaveBeenCalled() // the shell never generates a key in the page
-		expect(close).not.toHaveBeenCalled()
+		await waitFor(() => expect(close).toHaveBeenCalledTimes(1), { timeout: 5000 })
+		expect(beamio.createRecover).toHaveBeenCalledTimes(1)
+		expect(beamio.createRecover).toHaveBeenCalledWith(TAG, PWD, { mustReuseKey: false })
+		expect(nativeRecovery.nativeAccountCreateOpen).not.toHaveBeenCalled()
+		expect(nativeRecovery.nativeRecoveryOpen).not.toHaveBeenCalled()
+		expect(shellChatCapability.ensureShellChatState).not.toHaveBeenCalled()
+		expect(close.mock.calls[0][0]).toMatchObject({ beamioTag: TAG, passcode: 'SYNTH-CODE' })
 	})
 })

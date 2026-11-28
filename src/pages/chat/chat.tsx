@@ -1,4 +1,4 @@
-import { resolveRecipientForSend, isHeldRouteCode, resolveTrustedRoute, decideTrustedRoute, refreshRecipient, sendWithFreshRoute, sendViaCachedRoute, sendWithPinnedRoute, type HeldKey, RECIPIENT_REFRESH_PERIOD_MS, RECIPIENT_ROUTE_RETRY_DELAYS_MS } from "@/utils/recipientPublicKey"
+import { resolveRecipientForSend, recordFirstPinFor, isHeldRouteCode, resolveTrustedRoute, decideTrustedRoute, refreshRecipient, sendWithFreshRoute, sendViaCachedRoute, sendWithPinnedRoute, type HeldKey, RECIPIENT_REFRESH_PERIOD_MS, RECIPIENT_ROUTE_RETRY_DELAYS_MS } from "@/utils/recipientPublicKey"
 import { chatHeldBannerText, chatHeldLabelText, callHeldText, sendFailedDetailText } from "@/services/recipientCopy"
 import { formatFingerprintForCompare, readStoredKeyFingerprint, storedKeyFingerprint } from "@/utils/pgpFingerprint"
 import { oneTimeVerifyPromptDue } from "@/services/verifyPrompt"
@@ -18,9 +18,20 @@ import { motion, AnimatePresence } from "framer-motion"
 import { ethers } from "ethers"
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf"
 import { checkSign, emitReactionAsNewMessage, createMembershipActivatedCard, sendVoiceCallOffer } from '@/services/chat'
-import { backfillChatMessagesToHistory, mergeHistoryEntriesIntoMessages, mirrorChatMessageToHistory } from '@/services/chatHistoryMirror'
-import { awaitChatPreheat, chatPreheatState } from '@/services/chatPreheat'
-import { nextPeerChatData, routeFieldsDiffer, applyPeerRouteToRows } from '@/services/peerRouteRecord'
+import { backfillChatMessagesToHistory, mergeHistoryEntriesIntoMessages, mirrorChatMessageToHistory, mirrorChatMessageToHistoryAck, mirrorVerifiedHeldSend } from '@/services/chatHistoryMirror'
+import { libraryHoldsForClient, readLibraryStateBounded, senderCopyDurable } from '@/services/senderCopy'
+import { remoteUnsentInboundSendIds, subscribeUnsavedInbound, unsavedInboundSendIds } from '@/services/inboundDurable'
+import { LIBRARY_BACKUP_NOTICE_CHECK_MS, LIBRARY_BACKUP_NOTICE_COPY_KEY, backupPendingSendIds } from '@/services/libraryBackupNotice'
+import { isChatBodiesPurgedFor, libraryPersistModeFor, noteLibraryEvidence } from '@/services/chatLocalPurge'
+import { ensureLibraryEvidenceRetry } from '@/services/chatLocalMigration'
+import { createNodeWaiter, type NodeWaiter } from '@/services/nodeWait'
+import { mayCleanChatDocs } from '@/services/sendQueueCodec'
+import { createChatDocStores } from '@/services/chatDocStores'
+import { type ReceiptStore } from '@/services/receiptEvidence'
+import { applyDeliveredMarks, type DeliveredStore } from '@/services/deliveredMarks'
+import { MAX_UNKNOWN_STATE_RETRIES, UNKNOWN_STATE_RETRY_MS, awaitBounded, awaitChatPreheat, chatPreheatState, isMigratedState, preheatWaitPlan, resolveLibraryState, unknownStateRetryOf } from '@/services/chatPreheat'
+import { qaPlainCacheKeyCount } from '@/utils/qaPlainCache'
+import { nextPeerChatData, routeFieldsDiffer, applyPeerRouteToRows, pinnedChatDataForOpenChat, FIRST_PIN_APPLIED_EVENT, type FirstPinAppliedDetail } from '@/services/peerRouteRecord'
 import { recordVerifyTrace } from '@/services/verifyTrace'
 import { IpfsImg } from '@/components/IpfsImg'
 import { publishMinimizedVoiceCallWindow } from '@/utils/minimizedVoiceCallWindow'
@@ -85,6 +96,8 @@ import {
 	mailboxAlignErrorMessage,
 	askShellChatStartForSend,
 	offerContactRoute,
+	type SendArmorContext,
+	type SendReceipt,
 } from '@/services/chat'
 import { nativeDialerCancelOutcome } from '@/utils/dialerCancelHandoff'
 import {
@@ -99,15 +112,36 @@ import {
 	stopWorkerVoiceListen,
 	sendWorkerVoiceFrame,
 	onVoiceFrame,
+	localChatLibraryCapable,
 	localChatMigrationState,
+	onWorkerReady,
 	openLocalChatPage,
 	readLocalChatHistory,
+	localHistorySyncOnce,
 } from '@/services/chatWorkerBridge'
+import { followUpOlderPending } from '@/services/chatLocalSyncOnce'
 import { ChatAccessBoundary } from '@/services/passcode/chatAccessBoundary'
 import { PlusActionMenu } from "./components/PlusActionMenu"
 import { useDaemonContext } from "@/providers/DaemonProvider"
-import { storeSystemData, storeSystemDataAndWait, readStoredProfilesForVerify, AuthorizationSign, pageWriteGateStatus } from '@/services/beamio'
+import { storeSystemData, storeSystemDataAndWait, commitForChat, chatDraftDocAdapter, readStoredProfilesForVerify, AuthorizationSign, pageWriteGateStatus } from '@/services/beamio'
 import { heldWireFromMessage } from '@/services/heldWire'
+import { bubbleRetryPlan, retryTapFor, tapFailedBubble, markSendingById, settleStaleSending } from '@/services/failedRetry'
+import { isChatWriting, chatWriteVersion, readIsStale, deferWhileWriting, noteMessageDropped, noteDraftDirty, noteDraftSaved, setQueueHold } from '@/services/chatWriteLock'
+import { createOutgoingPersister, sendWithRecord, retryWithRecord } from '@/services/outgoingSend'
+import { createDraftAutosaver, type DraftAutosaver } from '@/services/chatDraftStore'
+import { sendMediaJobs, conversationMediaContext, type MediaSendContext } from '@/services/chatMediaSend'
+import { abortUpload, discardVoice, forgetUploadController, heldFiles, heldVoice, holdRecording, holdUploadController, sendHeldVoice, subscribeDrafts, updateHeldFiles } from '@/services/mediaDraftHolder'
+import { acceptOutgoingText, inputAfterAccept, readConversationQueue, messagesForUnlisted, queueItemFromDraft, restoreOnMount } from '@/services/sendFlow'
+import { armorContextFor, noteArmorContextUnreadable } from '@/services/sendArmorContext'
+import { createSendQueue, webLocksClaim, type AttemptResult, type QueueItem, type SendQueue } from '@/services/sendQueue'
+import { decideReceipt } from '@/services/sendReceiptPolicy'
+import { heldSettleOf, resumeClassOf, resumeEntryOf, resumeResultOf, mapDeliverFailure, statusAfterPostAnswered } from '@/services/sendResultMapping'
+import { qaEvent, qaHoldAck, qaRegisterProbe } from '@/utils/qaAckOrder'
+import { qaClassifyCopies, qaClassifyCopyNames, qaNoteCopy, qaSendIdOfEntry, qaSetFirstCopySource } from '@/utils/qaCopySource'
+import { mergeOwnRowIntoCurrent, pickCurrentProfiles, tombstonesOf } from '@/services/chatRowMerge'
+import { hasDeliveryReceipt, onDeliveryReceipt, recordReceiptOutcome } from '@/services/deliveryReceiptBus'
+import { releaseDecisionOf } from '@/services/releaseDecision'
+import { durableCommitError } from '@/services/durableCommit'
 import { gateCopyWithStore, heldBubble, nextMemoryTrustWriter, verifyModeDecision, type HeldBubble, type MemoryTrustWriter } from '@/utils/verifiedTrustGate'
 import { useBeamioTagDatabase } from '@/providers/BeamioTagDatabaseProvider'
 import { fiatPrefix } from '@/services/currency'
@@ -254,6 +288,8 @@ import {
 	type ChatFileMessageManifest,
 } from '@/utils/chatFileMessage'
 import { toggleMediaPlayback, useStableMediaManifest, playbackErrorMessage, startVideoFromTap } from '@/utils/mediaPlaybackControl'
+/** when this page load began; a stored `sending` text message made before it has no send in flight any more (settleStaleSending). */
+const CHAT_PAGE_START_MS = Date.now()
 
 const VOICE_RELAY_UNAVAILABLE = 'Voice audio relay is unavailable. Please try the call again.'
 
@@ -2108,7 +2144,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 	
 
 
-	const [messages, setMessages] = useState<ChatMessage[]>(chatData.messages)
+	const [messages, setMessages] = useState<ChatMessage[]>(() => settleStaleSending(chatData.messages, CHAT_PAGE_START_MS))
 	//logout clears the rendered conversation (lockChatLocalOnLogout dispatches this event).
 	useEffect(() => {
 		const onLocked = () => setMessages([])
@@ -2119,23 +2155,95 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 	// newest text rows are merged into the list. Media rows are not in the library response; they stay with the list.
 	const [libraryOlderPending, setLibraryOlderPending] = useState(false)
 	const [historyRereadTick, setHistoryRereadTick] = useState(0)
+	// (QA hook only): when this conversation mounted, when each message first showed (ms after the mount), and whether the library read has answered: where a late copy waited
+	const qaMountAtRef = useRef(0)
+	const qaSeenRef = useRef(new Map<string, number>())
+	const qaLibraryReadRef = useRef('')
+	const qaNodesReadyRef = useRef(false)
 	const [localHistoryRead, setLocalHistoryRead] = useState<LocalHistoryRead>({ kind: 'not_read' })
+	if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaLibraryReadRef.current = `${localHistoryRead.kind}`
 	//a history client not ready yet (not_read) is read again once it is ready: 1 s steps, up to 10 times; the read result replaces not_read.
 	useEffect(() => {
 		if (localHistoryRead.kind !== 'not_read' || historyRereadTick >= 10) return
 		const timer = window.setTimeout(() => setHistoryRereadTick((t) => t + 1), 1000)
 		return () => window.clearTimeout(timer)
 	}, [localHistoryRead.kind, historyRereadTick])
+	// the worker becoming ready also asks for a re-read. The 1 s steps above stop after 10 tries (~10 s); a worker that is ready later
+	// still gets the conversation read. The re-read runs the same effect as a tick; it changes nothing else.
+	useEffect(() => onWorkerReady(() => setHistoryRereadTick((t) => t + 1)), [])
+	// hook variant only: the 10 re-reads were used up while the library is still not read (the event says when)
+	const unknownStateRetryRef = useRef(0)
+	const qaRereadExhaustedRef = useRef(false)
+	// hook variant only: the moment the first copy of a message shows after the mount, ONE read-only boolean: does the stored account record hold a body for any of the messages shown
+	// (true / false, never the body), and how many plaintext history-cache keys the worker's database holds (a number). Nothing else leaves.
+	const qaFirstCopyRef = useRef(false)
+	// hook variant only: the stored-record snapshot is started at the EARLIEST moment, the mount of this conversation (this effect runs before the first-copy effect below, in the same commit), so it is read before the page's own first
+	// persistence after a message shows can strip the bodies (the race the first-copy boolean had). The sendIds that the stored record holds WITH a body for this peer; ids only, in memory. A read that is slow can still lose to a
+	// write that landed first: the snapshot then says what the record held when the read ran (named in the receipt).
+	const qaRecordSnapshotRef = useRef<Promise<Set<string>> | null>(null)
+	useEffect(() => {
+		if (process.env.REACT_APP_QA_ACK_ORDER_HOOK !== 'true') return
+		const peerSnap = String(chatData.address || '').toLowerCase()
+		qaRecordSnapshotRef.current = (async () => {
+			const ids = new Set<string>()
+			try {
+				const stored = (await readStoredProfilesForVerify()) as Array<{ chats?: Array<{ address?: string; messages?: Array<{ sendId?: string; text?: unknown }> }> }> | null
+				const chat = (stored?.[0]?.chats ?? []).find((c) => String(c?.address || '').toLowerCase() === peerSnap)
+				for (const m of chat?.messages ?? []) if (typeof m?.sendId === 'string' && typeof m.text === 'string' && m.text.length > 0) ids.add(m.sendId)
+			} catch { /* an unreadable record is an empty snapshot */ }
+			return ids
+		})()
+	}, [chatData.address])
+	useEffect(() => {
+		if (process.env.REACT_APP_QA_ACK_ORDER_HOOK !== 'true' || qaFirstCopyRef.current || messages.length === 0) return
+		qaFirstCopyRef.current = true
+		const peerLower = String(chatData.address || '').toLowerCase()
+		const shownIds = new Set(messages.map((m) => m.sendId).filter((id): id is string => typeof id === 'string' && !!id))
+		void (async () => {
+			let recordHasBody = false
+			const recordIds = new Set<string>()
+			try {
+				// the snapshot taken at the mount (not a read now, after the first message and the page's own persistence)
+				const snapshot = (await qaRecordSnapshotRef.current) ?? new Set<string>()
+				for (const id of shownIds) if (snapshot.has(id)) recordIds.add(id)
+				recordHasBody = recordIds.size > 0
+			} catch {
+				recordHasBody = false
+			}
+			qaEvent('first_copy_record_body', undefined, `rec_${recordHasBody ? 'true' : 'false'}`)
+			// where the copy came from: record / queue (put back) / library (library read merge) / app_history (App-level history overwrite); only the NAME of the source, never an id or a body
+			const sourceNames = qaClassifyCopyNames(shownIds, recordIds)
+			qaSetFirstCopySource(peerLower, qaClassifyCopies(shownIds, recordIds))
+			for (const name of sourceNames) qaEvent('first_copy_src', undefined, name)
+			qaEvent('first_copy_plain_keys', undefined, `n${Math.max(0, await qaPlainCacheKeyCount())}`)
+		})()
+	}, [messages.length])
+	useEffect(() => {
+		if (process.env.REACT_APP_QA_ACK_ORDER_HOOK !== 'true') return
+		if (localHistoryRead.kind === 'not_read' && historyRereadTick >= 10 && !qaRereadExhaustedRef.current) { qaRereadExhaustedRef.current = true; qaEvent('history_reread_exhausted') }
+		if (localHistoryRead.kind !== 'not_read') qaRereadExhaustedRef.current = false
+	}, [localHistoryRead.kind, historyRereadTick])
 	useEffect(() => {
 		let cancelled = false
 		const address = chatData.address
 		if (!address) return
 		void (async () => {
-			// the prepared history (chatPreheat): while the preheat is requested, join it (no second fetch); ready or failed reads at once
-			if (chatPreheatState() === 'requested') await awaitChatPreheat()
+			// G1-b: the library read does not wait for the whole preheat (its tail signal may never come: ~90 s). The library state is read FIRST; a library that already answers
+			// (switched / purged) is read at once, anything else joins the prepared history for at most PREHEAT_JOIN_MAX_MS (chatPreheat.ts preheatWaitPlan)
+			const stateBefore = await readLibraryStateBounded(localChatMigrationState) // bounded: no answer within the bound is "unknown" (null), which then takes the 3 s join below
+			if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaEvent('library_read_start')
+			const waitPlan = preheatWaitPlan(stateBefore)
+			let waited = false
+			if (waitPlan.wait && chatPreheatState() === 'requested') {
+				if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaEvent('preheat_await_begin')
+				await awaitBounded(awaitChatPreheat(), waitPlan.boundMs)
+				waited = true
+				if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaEvent('preheat_await_end')
+			}
 			if (cancelled) return
-			const state = await localChatMigrationState()
-			const migrated = state === 'switched' || state === 'purged'
+			// the state is read AGAIN after a wait, and `migrated` is computed from THAT: a state that was unknown before and `switched` now must merge the library page (freeze blocker 1)
+			const state = resolveLibraryState(stateBefore, waited ? await readLibraryStateBounded(localChatMigrationState) : stateBefore)
+			const migrated = isMigratedState(state)
 			if (cancelled) return
 			const el = scrollRef.current
 			const viewport = viewportForScroller({
@@ -2148,13 +2256,30 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			// a failed read is unreadable, never a silent empty history
 			const page = await openLocalChatPage(address, viewport).catch(() => null)
 			// the page's own read result, for every chat: a read without items is empty, a failed or non-local read is unreadable
-			if (!cancelled) setLocalHistoryRead(historyReadOf(await readLocalChatHistory(address, viewport)))
+			const readResult = historyReadOf(await readLocalChatHistory(address, viewport))
+			if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaEvent('library_read_end', undefined, readResult.kind)
+			if (!cancelled) setLocalHistoryRead(readResult)
+			// still unknown although the library page came back local: ask once more shortly (the read above may have run before the state was known); at most MAX_UNKNOWN_STATE_RETRIES per mount
+			if (!cancelled && unknownStateRetryOf({ state, pageLocal: !!page && page.source === 'local', retries: unknownStateRetryRef.current })) {
+				unknownStateRetryRef.current += 1
+				window.setTimeout(() => setHistoryRereadTick((t) => t + 1), UNKNOWN_STATE_RETRY_MS)
+			}
 			if (!migrated || cancelled || !page || page.source !== 'local') return
 			setLibraryOlderPending(page.olderState === 'pending')
+			// the pending state ends only when the library's full sync has run; run it once (not awaited), then read once more.
+			// (no `cancelled` gate on the callback: a later read of this effect must still see the finished sync; a state set after unmount is a no-op)
+			void followUpOlderPending(page.olderState, localHistorySyncOnce, () => setHistoryRereadTick((t) => t + 1))
 			const entries = page.items
 				.filter((it) => it.kind === 'text' && typeof it.body === 'string')
 				.map((it) => ({ seq: 0, ts: it.sortTs, peer: address, dir: it.dir, body: it.body as string }))
-			if (entries.length) setMessages((prev) => mergeHistoryEntriesIntoMessages(prev, entries).messages)
+			if (entries.length) setMessages((prev) => {
+				// hook variant only (first-copy source): the entries this library read ADDS to the shown list are marked `library` (ids in memory only)
+				if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') {
+					const had = new Set(prev.map((m) => m.sendId).filter((x): x is string => typeof x === 'string'))
+					qaNoteCopy('library', entries.map(qaSendIdOfEntry).filter((x): x is string => !!x && !had.has(x)))
+				}
+				return mergeHistoryEntriesIntoMessages(prev, entries).messages
+			})
 		})()
 		return () => {
 			cancelled = true
@@ -2204,8 +2329,12 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 	const [remoteVoiceVideoUrl, setRemoteVoiceVideoUrl] = useState<string | null>(null)
 	const [peerVoiceVideoEnabled, setPeerVoiceVideoEnabled] = useState(false)
 	const [softLocalVideoOn, setSoftLocalVideoOn] = useState(false)
-	const [voiceDraftBlob, setVoiceDraftBlob] = useState<Blob | null>(null)
-	const [voiceSending, setVoiceSending] = useState(false)
+	// the unsent recording and file drafts of this conversation live outside the component (mediaDraftHolder.ts)
+	const draftWallet = String(profiles?.[0]?.keyID || '')
+	const draftPeer = String(chatData?.address || '')
+	const voiceHeld = useSyncExternalStore(subscribeDrafts, () => heldVoice(draftWallet, draftPeer))
+	const voiceDraftBlob = voiceHeld?.recording ?? null
+	const voiceSending = voiceHeld?.sending ?? false
 	const [voiceError, setVoiceError] = useState<string | null>(null)
 	const [voiceCallState, setVoiceCallState] = useState<'idle' | 'outgoing' | 'ended'>('idle')
 	const [voiceCallMuted, setVoiceCallMuted] = useState(false)
@@ -2466,9 +2595,34 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		pendingShowActiveCallRef.current = false
 		revealActiveVoiceCall()
 	}, [revealActiveVoiceCall, voiceCallState])
-	const [fileJobs, setFileJobs] = useState<ChatFileJob[]>([])
-	const fileControllersRef = useRef(new Map<string, AbortController>())
-	const storageDataRef = useRef<(() => Promise<void>) | null>(null)
+	const fileJobs = useSyncExternalStore(subscribeDrafts, () => heldFiles<ChatFileJob>(draftWallet, draftPeer))
+	/** writes to the drafts of the conversation this callback was made for: a late upload result goes to its own conversation */
+	const setFileJobs = useCallback((update: (previous: ChatFileJob[]) => ChatFileJob[]) => updateHeldFiles<ChatFileJob>(draftWallet, draftPeer, update), [draftWallet, draftPeer])
+	const storageDataRef = useRef<((immediate?: boolean) => Promise<void>) | null>(null)
+	/** the write of the `sending` message of the send in progress (send() waits for it before the network send). */
+	const storedSendingRef = useRef<Promise<void> | null>(null)
+	/** the draft autosaver of the open conversation (chatDraftStore.ts); null while the draft store cannot be made (no account yet). */
+	const draftAutosaverRef = useRef<DraftAutosaver | null>(null)
+	/** the durable send queue of the open conversation (sendQueue.ts); null while there is no account yet. */
+	const sendQueueRef = useRef<SendQueue | null>(null)
+	/** sendIds of the messages the user removed on purpose in this conversation (tombstones, written with the row; see chatRowMerge.tombstonesOf) */
+	const removedSendIdsRef = useRef<Set<string>>(new Set(chatData.removedSendIds ?? []))
+	/** sendIds whose sent / delivered state this page has already written to the account record (no second write of the same state) */
+	const sentStateWrittenRef = useRef<Set<string>>(new Set())
+	/** sendIds whose message the history worker has ACKed into the local library (senderCopy.ts: in library mode that, not the record write, is the sender's copy) */
+	const libraryAckedRef = useRef<Set<string>>(new Set())
+	const libraryAckInFlightRef = useRef<Map<string, Promise<boolean>>>(new Map())
+	/** the last answer about the library mode (for the QA state export) */
+	const libraryModeRef = useRef<boolean | null>(null)
+	/** what the last library-mode decision was made from (QA export): the purged flag and the library's own state (null: unreadable) */
+	const libraryEvidenceRef = useRef<{ flag: boolean; state: string | null } | null>(null)
+	/** the sendIds the entry accepted by transport only (an empty 200): shown as awaiting confirmation until a bound receipt or the recipient's delivery receipt arrives. */
+	const [awaitingSendIds, setAwaitingSendIds] = useState<ReadonlySet<string>>(() => new Set())
+	// sendIds that show the "backup pending" notice
+	const [backupPendingIds, setBackupPendingIds] = useState<ReadonlySet<string>>(() => new Set())
+	// displayed inbound messages whose library write is not confirmed (inboundDurable.ts): their status line says "not saved" until the page saved them (it clears itself)
+	const unsavedInboundIds = useSyncExternalStore(subscribeUnsavedInbound, unsavedInboundSendIds, unsavedInboundSendIds)
+	const remoteUnsentInboundIds = useSyncExternalStore(subscribeUnsavedInbound, remoteUnsentInboundSendIds, remoteUnsentInboundSendIds)
 	const fileInputRef = useRef<HTMLInputElement | null>(null)
 	const photoInputRef = useRef<HTMLInputElement | null>(null)
 	const cameraInputRef = useRef<HTMLInputElement | null>(null)
@@ -3241,6 +3395,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			markCallTiming('route-refresh-start')
 			const trust = await resolveTrustedRoute(chatData, lookupRecipientRecord)
 			if (trust.ok) {
+				recordFirstPinFor(chatData.address, trust) // the call uses the chain-trusted key; record the first pinned value
 				route = trust.routersArmoreds?.trim() || route
 				recipientPgp = trust.publicArmored?.trim() || recipientPgp
 			} else {
@@ -5751,6 +5906,8 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 	const messagesRef = useRef<ChatMessage[]>(chatData.messages || [])
 	const liveFileMessagesRef = useRef(new Map<string, ChatMessage>())
 	const skipNextReflashdataRef = useRef(false)
+	/** bumped by a deferred re-read (chatWriteLock.ts) so the re-read effect runs again once the writers are done. */
+	const [reflashTick, setReflashTick] = useState(0)
 	const [showContactProfile, setShowContactProfile] = useState(false)
 	const [plusOpen, setPlusOpen] = useState(false)
 	const plusBtnRef = useRef<HTMLButtonElement | null>(null)
@@ -6047,6 +6204,20 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		void storedVerifiedFingerprintOf((chatData.address || '').trim()).then((fp) => { if (!cancelled) setStoredVerifiedFp(fp) }).catch(() => undefined)
 		return () => { cancelled = true }
 	}, [chatData.address, routeHydrateGen])
+	// a first pin written by a non-text path (a call or payment started from this page, a gift, a receipt) is applied to this page's own chatData copy too
+	useEffect(() => {
+		const onPinned = (e: Event) => {
+			const d = (e as CustomEvent<FirstPinAppliedDetail>).detail
+			if (!d || !d.address || !d.pinned) return
+			const current = chatDataRef.current
+			const next = pinnedChatDataForOpenChat(current, d.address, d.pinned)
+			if (!next) return
+			current.chatData = next as chatData['chatData']
+			setRouteHydrateGen(g => g + 1)
+		}
+		window.addEventListener(FIRST_PIN_APPLIED_EVENT, onPinned)
+		return () => window.removeEventListener(FIRST_PIN_APPLIED_EVENT, onPinned)
+	}, [])
 	/** The bubble of a held message: the stored trust decides between "Not verified yet" and the send-again state (BCHAT 43). */
 	const heldBubbleOf = (m: { sendFingerprint?: string | null }): HeldBubble => heldBubble({ sendFingerprint: m.sendFingerprint, storedVerified: storedVerifiedFp, storedKeyFingerprint })
 	/**held sends (route_unconfirmed) by message id: the text, the number of retries so far, and the timer of the next retry. */
@@ -6279,9 +6450,10 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		}
 		return false
 	}
-	async function sendChatToRecipient(text: string, opts?: { viaCachedRoute?: boolean; pinned?: HeldKey }): Promise<boolean> {
+	async function sendChatToRecipient(text: string, opts?: { viaCachedRoute?: boolean; pinned?: HeldKey; armor?: SendArmorContext; onReceipt?: (r: SendReceipt) => void }): Promise<boolean> {
 		const current = chatDataRef.current
-		const send = (pgp: string, body: string, pk: string, nodes: typeof allNodes) => sendMessage(pgp, body, pk, nodes ?? [])
+		// a queued text message carries its stored armor context (the retry posts the first armor) and hears the entry's receipt
+		const send = (pgp: string, body: string, pk: string, nodes: typeof allNodes) => sendMessage(pgp, body, pk, nodes ?? [], opts?.armor || opts?.onReceipt ? { armor: opts.armor, onReceipt: opts.onReceipt } : undefined)
 		//every send fetches the recipient's key and route first; a network error holds the send.: a key the user has not verified is held
 		// (first_fetch_pending), or another key is held (fingerprint_changed). The user's verification or acceptance sends the key on screen (pinned,
 		// no fetch).
@@ -6297,6 +6469,9 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 					fetchKeys: lookupRecipientRecord,
 					send,
 					onRefreshed: (r) => applyPeerRoute(current, r),
+					// the product rule: a first contact trusted from the chain (chainPgpTrust.ts) is sent with no notice; its fingerprint becomes the first pinned value
+					// a pin that does not persist already shows applyPeerRoute's notice; the trace records the outcome either way (booleans only)
+					onFirstPinned: (r) => { void applyPeerRoute(current, r, true).then((saved) => recordVerifyTrace('first-pin', { saved }), () => recordVerifyTrace('first-pin', { saved: false })) },
 				})
 		lastSendHeldRef.current = result.ok ? undefined : result.held
 		if (result.ok) {
@@ -6313,6 +6488,9 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 	function scheduleHeldSend(tempId: string) {
 		const held = heldSendsRef.current.get(tempId)
 		if (!held) return
+		// a message in the send queue is retried by the queue (back-off, online, visible, reopen), through the same claim; this ladder does not run a second, unclaimed retry for it
+		const queuedSendId = (messagesRef.current || []).find(x => x.id === tempId)?.sendId
+		if (queuedSendId && sendQueueRef.current?.has(queuedSendId)) return
 		const delay = RECIPIENT_ROUTE_RETRY_DELAYS_MS[held.attempt]
 		if (delay === undefined) return
 		held.timer = window.setTimeout(() => { void retryHeldSend(tempId, 'fresh') }, delay)
@@ -6385,10 +6563,22 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		// and "Verified, continue" writes the trust (BCHAT 38, R86 item 1).
 		const effective: 'fresh' | 'cached' | 'accept' | 'verify' = wantsPinned && !pinned ? 'fresh' : mode
 		recordVerifyTrace('held-retry', { mode: effective, pinned: !!pinned })
-		const ok = await sendChatToRecipient(held.text, { viaCachedRoute: effective === 'cached', pinned })
+		// a held retry follows the same rules as every other send of this sendId: the stored armor is reused (no second ciphertext) and the queue lets the item go ONLY on a bound receipt for this
+		// sendId, never on `ok` alone
+		const heldSid = (messagesRef.current || []).find(x => x.id === tempId)?.sendId
+		const heldQueue = sendQueueRef.current
+		let heldArmor: SendArmorContext | undefined
+		let heldArmorUnreadable = false
+		try { heldArmor = (await armorContextFor({ rowSendId: heldSid, wire: held.text, queue: heldQueue })).ctx } catch { heldArmorUnreadable = true; noteArmorContextUnreadable() }
+		let heldReceipt: SendReceipt | null = null
+		if (heldArmorUnreadable) lastSendCodeRef.current = 'send_failed'
+		const ok = heldArmorUnreadable ? false : await sendChatToRecipient(held.text, { viaCachedRoute: effective === 'cached', pinned, armor: heldArmor, onReceipt: (r) => { heldReceipt = r } })
 		const code = lastSendCodeRef.current
 		const heldKey = lastSendHeldRef.current
+		// the kind of answer is stored with the item as on every other send path (diagnostic: it releases nothing)
+		{ const answered = heldReceipt as SendReceipt | null; if (heldSid && answered) await heldQueue?.recordReceipt(heldSid, answered.kind).catch(() => undefined) }
 		recordVerifyTrace('held-retry', { mode: effective, ok, code: code ?? '' })
+		const heldBefore = (messagesRef.current || []).find(m => m.id === tempId)
 		const next: ChatMessage[] = (messagesRef.current || []).map(m => {
 			if (m.id !== tempId) return m
 			if (ok) return { ...m, status: 'sent' as const, sendError: undefined, sendFingerprint: undefined, sentViaUnconfirmedRoute: effective === 'cached' ? true : m.sentViaUnconfirmedRoute }
@@ -6397,8 +6587,17 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		messagesRef.current = next
 		setMessages(next)
 		chatData.messages = next
-		await storageData()
+		// the state of the message is on disk before the queue lets go of it: a durable write whose outcome is known
+		const heldPersisted = await persistOutgoing().then(() => true, () => false)
+		if (heldBefore?.sendId) {
+			const heldSendId = heldBefore.sendId
+			// the decision is one pure function (sendResultMapping.ts heldSettleOf, table-tested): a failure maps as before; an ok WITHOUT a bound receipt stays awaiting; a bound receipt releases only with the sender's copy safe
+			void heldSettleOf({ ok, code, receipt: heldReceipt, persisted: heldPersisted, ackCopy: (p) => senderCopyPersisted(heldSendId, p) }).then((result) => sendQueueRef.current?.settle(heldSendId, result))
+		} // route_unconfirmed is retryable (failed), only the trust holds stay held (sendResultMapping.ts)
 		if (ok) {
+			// the held message settled as sent: mirror it to the history and the local library exactly like deliverText does
+			// (it was never mirrored before, so a refresh in library mode lost it). Never twice: only on the transition into sent.
+			mirrorVerifiedHeldSend(chatData.address, next.find(m => m.id === tempId), heldBefore?.status)
 			heldSendsRef.current.delete(tempId)
 			return
 		}
@@ -6595,7 +6794,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		const previewMediaFile = mediaFile && (mediaFile.type.startsWith('video/') || mediaFile.type.startsWith('image/')) ? mediaFile : null
 		const videoFile = mediaFile?.type.startsWith('video/') ? mediaFile : null
 		const controller = new AbortController()
-		fileControllersRef.current.set(id, controller)
+		holdUploadController(id, controller)
 		setFileJobs(previous => [
 			...previous,
 			{
@@ -6630,7 +6829,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			// render the decrypted media when no local thumbnail is available.
 		}
 		if (controller.signal.aborted) {
-			fileControllersRef.current.delete(id)
+			forgetUploadController(id)
 			return
 		}
 		let thumbnailUrl: string | undefined
@@ -6670,9 +6869,9 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 				setFileJobs(previous => previous.map(item => item.id === id ? { ...item, status: 'failed', error: chatFileReadErrorMessage(error) } : item))
 			}
 		} finally {
-			fileControllersRef.current.delete(id)
+			forgetUploadController(id)
 		}
-	}, [hasRoute, profiles])
+	}, [hasRoute, profiles, setFileJobs])
 	addChatFilesRef.current = addChatFiles
 
 	const handleChatFileDragEnter = useCallback((event: React.DragEvent) => {
@@ -6822,13 +7021,13 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 	}, [cameraStream])
 
 	const cancelChatFileJob = useCallback((id: string) => {
-		fileControllersRef.current.get(id)?.abort()
+		abortUpload(id)
 		setFileJobs(previous => {
 			const removed = previous.find(item => item.id === id)
 			if (removed?.thumbnailUrl) URL.revokeObjectURL(removed.thumbnailUrl)
 			return previous.filter(item => item.id !== id)
 		})
-	}, [])
+	}, [setFileJobs])
 
 	const stopVoiceDurationTimer = useCallback(() => {
 		if (recordingTimerRef.current !== null) {
@@ -6960,77 +7159,63 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			setVoiceError('No audio was recorded. Please try again.')
 			return
 		}
-		setVoiceDraftBlob(blob)
+		holdRecording(draftWallet, draftPeer, { recording: blob, durationMs })
 		setVoiceRecordedBytes(blob.size)
 		setVoiceError(null)
-	}, [stopVoiceDurationTimer, stopVoiceLevelMeter])
+	}, [stopVoiceDurationTimer, stopVoiceLevelMeter, draftWallet, draftPeer])
 
 	const cancelVoiceDraft = useCallback(() => {
-		if (voiceSending) return
-		setVoiceDraftBlob(null)
+		// the user discards the recording: nothing is unsent any more on its account. While it is being sent nothing happens.
+		if (!discardVoice(draftWallet, draftPeer)) return
 		setVoiceDurationMs(0)
 		setVoiceRecordedBytes(0)
 		setVoiceError(null)
-	}, [voiceSending])
+	}, [draftWallet, draftPeer])
 
 	const sendVoiceDraft = useCallback(async () => {
 		if (!chatActionsRef.current) return // encryption actions disabled while the chat crypto is not available
-		if (!voiceDraftBlob || voiceSending || !profiles?.[0]?.privateKeyArmor) return
-		setVoiceSending(true)
+		if (!profiles?.[0]?.privateKeyArmor) return
+		const key = profiles[0].privateKeyArmor
 		setVoiceError(null)
-		try {
-			const encrypted = await encryptVoiceBlob(voiceDraftBlob, voiceDurationMs)
-			const fragmentHash = await uploadEncryptedVoiceDataUrl(
-				profiles[0].privateKeyArmor,
-				encrypted.dataUrl,
-			)
-			const now = Date.now()
-			const sendId = crypto.randomUUID()
-			const payload: ChatMessage = {
-				id: `tmp_${now}_${Math.random().toString(16).slice(2)}`,
-				sendId,
-				from: 'me',
-				text: '',
-				createdAt: now,
-				status: 'sending',
-				voiceMessage: { ...encrypted.manifest, fragmentHash },
-			}
-			const next = [...(messagesRef.current || []), payload]
-			messagesRef.current = next
-			setMessages(next)
-			const wirePayload = {
-				sendId,
-				from: 'me' as const,
-				text: '',
-				createdAt: now,
-				voiceMessage: payload.voiceMessage,
-			}
-			const wireVoice = JSON.stringify(wirePayload)
-			const sent = await sendChatToRecipient(wireVoice)
-			const voiceStatus = settleSendStatus(String(payload.id), wireVoice, sent)
-			const settled = next.map(message =>
-				message.id === payload.id ? { ...message, status: voiceStatus, sendError: sent ? undefined : lastSendCodeRef.current, sendFingerprint: lastSendHeldRef.current?.fingerprint } : message,
-			)
-			messagesRef.current = settled
-			setMessages(settled)
-			chatData.messages = settled
-			await storageDataRef.current?.()
-			if (sent) mirrorChatMessageToHistory(chatData.address, settled.find(message => message.id === payload.id), 'out')
-			else setVoiceError('Voice message failed to reach CoNET entry nodes. Please retry.')
-			if (sent) {
-				setVoiceDraftBlob(null)
+		// counted as unsent from the click until accepted or discarded; the recording stays in the holder until then
+		const result = await sendHeldVoice<Awaited<ReturnType<typeof encryptVoiceBlob>>, ChatMessage>(draftWallet, draftPeer, {
+			newSendId: () => crypto.randomUUID(),
+			now: () => Date.now(),
+			seal: (recording, durationMs) => encryptVoiceBlob(recording, durationMs),
+			upload: (sealed) => uploadEncryptedVoiceDataUrl(key, sealed.dataUrl),
+			job: ({ sendId, createdAt: now, sealed, fragmentHash }) => {
+				const payload: ChatMessage = {
+					id: `tmp_${now}_${Math.random().toString(16).slice(2)}`,
+					sendId,
+					from: 'me',
+					text: '',
+					createdAt: now,
+					status: 'sending',
+					voiceMessage: { ...sealed.manifest, fragmentHash },
+				}
+				const wirePayload = {
+					sendId,
+					from: 'me' as const,
+					text: '',
+					createdAt: now,
+					voiceMessage: payload.voiceMessage,
+				}
+				return { jobId: `voice:${sendId}`, sendId, createdAt: now, wire: JSON.stringify(wirePayload), message: payload }
+			},
+			// the conversation of the click: encryption and upload take time, and the page may show another one by the end
+			context: () => mediaSendContext(() => {
 				setVoiceDurationMs(0)
 				setVoiceRecordedBytes(0)
-			}
-		} catch (error) {
-			setVoiceError(error instanceof Error ? error.message : 'Voice message could not be sent.')
-		} finally {
-			setVoiceSending(false)
-		}
-	}, [allNodes, chatData, privateKey, profiles, voiceDraftBlob, voiceDurationMs, voiceSending])
+			}),
+		})
+		if (result.kind === 'not_saved') setVoiceError(tu('chat.send.not_saved'))
+		else if (result.kind === 'failed') setVoiceError(result.error instanceof Error ? result.error.message : 'Voice message could not be sent.')
+	}, [allNodes, chatData, privateKey, profiles, draftWallet, draftPeer])
 
 	const reflashdata = async () => {
 		if (!profiles?.length) return
+		// a read of the stored copy that began before a write must not replace what that write stored (chatWriteLock.ts)
+		const readVersion = chatWriteVersion()
 
 		const p0: profile = profiles[0]
 		const chats = Array.isArray(p0?.chats) ? p0.chats : []
@@ -7054,12 +7239,12 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 
 		// profiles/落盘的消息（“远端”）
 		const remoteStored = Array.isArray(myChat.messages) ? myChat.messages : []
-		const remote = await Promise.all(remoteStored.map(async message => {
+		const remote = settleStaleSending(await Promise.all(remoteStored.map(async message => {
 			if (message.fileMessage || !message.fileMessageCipher || !privateKey) return message
 			if (!chatCryptoDecryptGate.enabled) return message // no local manifest decrypt while the chat crypto is not available
 			const fileMessage = await decryptLocalFileManifest(message.fileMessageCipher, privateKey)
 			return fileMessage ? { ...message, fileMessage } : message
-		}))
+		})), CHAT_PAGE_START_MS)
 
 		// Local UI rows may include tmp_ / a more advanced status. Outbound file
 		// sends put the same optimistic bubble in both messagesRef and
@@ -7178,6 +7363,12 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		if (fresh.length) backfillChatMessagesToHistory(chatData.address, fresh)
 
 		// ✅ 3) 刷 UI
+		// a write began while this read was running (or is running now): the read is older than the write and is dropped; it is asked again once the writers are done
+		if (readIsStale(readVersion) || isChatWriting()) {
+			deferWhileWriting('chat-reflash', () => setReflashTick((t) => t + 1))
+			if (!isChatWriting()) setReflashTick((t) => t + 1)
+			return
+		}
 		// Only pin after a real message change, and only when the user was
 		// already at the bottom (or this is the first hydration). A profile
 		// refresh must preserve a user's reading position.
@@ -7649,6 +7840,14 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 	useEffect(() => {
 		messagesRef.current = messages
 	}, [messages])
+	// (QA hook only): the first time each message of this conversation shows, in ms after the conversation mounted
+	useEffect(() => {
+		if (process.env.REACT_APP_QA_ACK_ORDER_HOOK !== 'true' || !qaMountAtRef.current) return
+		for (const m of messages) {
+			const id = m.sendId || m.id
+			if (id && !qaSeenRef.current.has(id)) qaSeenRef.current.set(id, Date.now() - qaMountAtRef.current)
+		}
+	}, [messages])
 
 	useLayoutEffect(() => {
 		setShowFooter(voiceCallState === 'outgoing' && voiceCallMinimized)
@@ -7673,6 +7872,12 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			return
 		}
 
+		// no re-read of the stored copy while a chat write is in progress; the requests are merged and one runs when the last writer has released
+		if (isChatWriting()) {
+			deferWhileWriting('chat-reflash', () => setReflashTick((t) => t + 1))
+			return
+		}
+
 		if (runningRef.current) return
 		runningRef.current = true
 
@@ -7683,7 +7888,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			runningRef.current = false
 			}
 		})()
-	}, [profiles])
+	}, [profiles, reflashTick])
 
 
 
@@ -7820,6 +8025,24 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		}, 400)
 	}
 
+	/** the page's pieces for chatMediaSend.ts, fixed to the conversation of the click */
+	const mediaSendContext = (releaseDraft: (jobId: string) => void): MediaSendContext<ChatMessage> => conversationMediaContext<ChatMessage>({
+		wallet: String(profiles?.[0]?.keyID || ''),
+		peer: String(chatData?.address || ''),
+		queueRef: sendQueueRef,
+		shownPeer: () => String(chatDataRef.current?.address || ''),
+		messagesRef,
+		applyMessages: (next) => {
+			messagesRef.current = next
+			setMessages(next)
+			chatData.messages = next
+		},
+		persistOutgoing: (id) => persistOutgoing(id),
+		markSendPersistFailed: (id) => markSendPersistFailed(id),
+		deliverTextRef,
+		releaseDraft,
+	})
+
 	const sendFileDrafts = useCallback(async () => {
 		if (!chatActionsRef.current) return // encryption actions disabled while the chat crypto is not available
 		const ready = fileJobs.filter(job => job.status === 'ready' && job.manifest)
@@ -7829,10 +8052,11 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			setFileError('Not sent yet. Please try again shortly.')
 			return
 		}
-		for (const job of ready) {
-			const now = Date.now()
+		// built and handed over with no await in between: every ready job is claimed in this same step (a second tap finds nothing left)
+		const jobs = ready.map((job, index) => {
+			const now = Date.now() + index
 			const sendId = crypto.randomUUID()
-			const payload: ChatMessage = {
+			const message: ChatMessage = {
 				id: `tmp_${now}_${Math.random().toString(16).slice(2)}`,
 				sendId,
 				from: 'me',
@@ -7841,32 +8065,26 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 				status: 'sending',
 				fileMessage: job.manifest,
 			}
-			if (payload.sendId) liveFileMessagesRef.current.set(payload.sendId, payload)
-			const next = [...(messagesRef.current || []), payload]
-			messagesRef.current = next
-			setMessages(next)
 			// a held file keeps its message with the held status and its retry, not a banner only.
 			const fileWire = JSON.stringify({
 				sendId, from: 'me', text: '', createdAt: now, fileMessage: job.manifest,
 			})
-			const sent = await sendChatToRecipient(fileWire).catch(() => false)
-			const fileStatus = settleSendStatus(String(payload.id), fileWire, sent)
-			const settled = next.map(message => message.id === payload.id ? { ...message, status: fileStatus, sendError: sent ? undefined : lastSendCodeRef.current, sendFingerprint: lastSendHeldRef.current?.fingerprint } : message)
-			messagesRef.current = settled
-			setMessages(settled)
-			chatData.messages = settled
-			const settledFileMessage = settled.find(message => message.id === payload.id)
-			if (settledFileMessage?.sendId) {
-				liveFileMessagesRef.current.set(settledFileMessage.sendId, settledFileMessage)
-			}
-			await storageData()
-			if (sent) mirrorChatMessageToHistory(chatData.address, settledFileMessage, 'out')
-			else setFileError('A file message failed to reach CoNET entry nodes. Please try again.')
-			if (sent) setFileJobs(previous => {
-				const removed = previous.find(item => item.id === job.id)
+			return { jobId: job.id, sendId, createdAt: now, wire: fileWire, message }
+		})
+		const outcome = await sendMediaJobs(jobs, mediaSendContext((jobId) => {
+			const message = jobs.find((j) => j.jobId === jobId)?.message
+			if (message?.sendId) liveFileMessagesRef.current.set(message.sendId, message)
+			// the message holds the file from here on (shown, stored, retried under this sendId): its draft job is released
+			setFileJobs(previous => {
+				const removed = previous.find(item => item.id === jobId)
 				if (removed?.thumbnailUrl) URL.revokeObjectURL(removed.thumbnailUrl)
-				return previous.filter(item => item.id !== job.id)
+				return previous.filter(item => item.id !== jobId)
 			})
+		}))
+		if (outcome.notAccepted.length) setFileError(tu('chat.send.not_saved'))
+		for (const job of jobs) {
+			const settled = (messagesRef.current || []).find(message => message.id === job.message.id)
+			if (settled?.sendId) liveFileMessagesRef.current.set(settled.sendId, settled)
 		}
 	}, [allNodes, chatData, fileJobs, privateKey])
 
@@ -7887,8 +8105,26 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		const prev = lastSentGuardRef.current
 		if (prev.text === t && nowGuard - prev.at < 900) return
 		lastSentGuardRef.current = { text: t, at: nowGuard }
+		if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaEvent('click')
 
-		clearChatInput()
+		// the text becomes a queue item (its own document per sendId) and is written at once; the input is cleared, and the send accepted, only after it has landed, and nothing is sent when
+		// it did not. The sendId was made when the draft was created and stays the same. Without a queue (account or key not ready) nothing is accepted: the input keeps its text (acceptOutgoingText).
+		const sendQueue = sendQueueRef.current
+		const begun = await acceptOutgoingText({
+			autosaver: draftAutosaverRef.current,
+			queueReady: !!sendQueue,
+			currentText: t,
+			clearInput: () => {
+				// what was typed while the message was being written stays in the input
+				const rest = inputAfterAccept(inputRef.current?.value ?? t, t)
+				if (rest === '') clearChatInput()
+				else if (rest !== null) { if (inputRef.current) inputRef.current.value = rest; setText(rest); draftAutosaverRef.current?.onInput(rest) }
+			},
+			onNotSaved: () => { lastSentGuardRef.current = { text: '', at: 0 }; setChatError(tu('chat.send.not_saved')) },
+		})
+		if (!begun.ok) return
+		const sendId: string = begun.sendId // the queue item's sendId (a plain string)
+		if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaEvent('accepted', begun.sendId)
 
 		const mode = isUrl(t)
 		void mode
@@ -7896,7 +8132,6 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 
 		const tempId = `tmp_${Date.now()}_${Math.random().toString(16).slice(2)}`
 		const now = Date.now()
-		const sendId = crypto.randomUUID()
 
 		// 引用回复：发送方视角 from 取反（我引用对方=them，引用自己=me）；接收方解析时同样取反还原
 		const quoteForSend = replyTo
@@ -7910,6 +8145,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			from: "me",
 			text: t,
 			createdAt: now,
+			sendAttemptAt: now,
 			status: "sending",
 			...(quoteForSend ? { quote: quoteForSend } : {}),
 		}
@@ -7918,81 +8154,190 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			const next: ChatMessage[] = [...(messagesRef.current || []), pendingMsg]
 			messagesRef.current = next
 			setMessages(next)
+			// the message is stored in the `sending` state BEFORE it goes out (local first, then the network): the write starts at once and the send below waits for it
+			chatData.messages = next
+			storedSendingRef.current = persistOutgoing(tempId)
 		}
 
 		// ✅ 3) 发送：统一发 JSON 包，带 sendId，对方据此可 reply
 		const payload = { sendId, from: 'me' as const, text: t, createdAt: now, ...(quoteForSend ? { quote: quoteForSend } : {}) }
-		// ✅ 2) entry pool（sendMessage 内部挑选健康节点并重试）
-		if (!allNodes?.length) {
-			if (isShellContext()) {
-				setReplyTo(null) // the send is accepted (it waits for the chat start): the quote draft is cleared
-				// send re-check: no nodes means the shell chat start has not finished (identityPublic was not ready when it ran).
-				// Never a local refusal: the message stays "sending", one start is asked for (single flight), and it goes out by itself once the nodes
-				// arrive (effect on allNodes). Only after the 180 s window is it shown as not sent with a tap to retry; the text is kept.
-				waitSendForNodes(tempId, JSON.stringify(payload), now)
-				return
-			}
-			const next: ChatMessage[] = (messagesRef.current || []).map(m =>
-			m.id === tempId ? { ...m, status: "failed" as const, sendError: lastSendCodeRef.current } : m
-			)
-			messagesRef.current = next
-			setMessages(next)
+		// the `sending` record must be on disk before anything leaves the device (outgoingSend.ts). A write that failed: no network request at all, the message becomes
+		// failed (persist_failed) with Retry, and the lock is already released.
+		const firstAttempt = async (): Promise<AttemptResult> => {
+			let result: AttemptResult = { kind: 'failed' }
+			const outcome = await sendWithRecord({
+				record: storedSendingRef.current,
+				inFlightId: tempId,
+				onPersistFailed: () => {
+					setReplyTo(null)
+					markSendPersistFailed(tempId)
+				},
+				deliver: async () => {
+					// ✅ 2) entry pool（sendMessage 内部挑选健康节点并重试）
+					if (!allNodes?.length) {
+						if (isShellContext()) {
+							setReplyTo(null) // the send is accepted (it waits for the chat start): the quote draft is cleared
+							// send re-check: no nodes means the shell chat start has not finished (identityPublic was not ready when it ran).
+							// Never a local refusal: the message stays "sending", one start is asked for (single flight), and it goes out by itself once the nodes
+							// arrive (effect on allNodes). Only after the 180 s window is it shown as not sent with a tap to retry; the text is kept.
+							waitSendForNodes(tempId, JSON.stringify(payload), now)
+							result = { kind: 'waiting' } // the wait owns this message now (the nodes arriving deliver it, its end settles the queue item); the queue ticks it like a failure and every tick finds the wait still live
+							return
+						}
+						const next: ChatMessage[] = (messagesRef.current || []).map(m =>
+						m.id === tempId ? { ...m, status: "failed" as const, sendError: lastSendCodeRef.current } : m
+						)
+						messagesRef.current = next
+						setMessages(next)
 
-			chatData.messages = next
-			await storageData()
-			return
+						chatData.messages = next
+						await storageData()
+						return
+					}
+					// 发送后清除引用草稿（只在发送真正开始之后，和原来一样）
+					setReplyTo(null)
+					result = await deliverText(tempId, JSON.stringify(payload), now)
+				},
+			})
+			return outcome === 'persist_failed' ? { kind: 'failed' } : result
 		}
-		// 发送后清除引用草稿（只在发送真正开始之后，和原来一样）
-		setReplyTo(null)
-		await deliverText(tempId, JSON.stringify(payload), now)
+		// the `sending` record must be on disk before anything leaves the device (outgoingSend.ts). A write that failed: no network request at all, the message becomes
+		// failed (persist_failed) with Retry, and the lock is already released.
+		// the first attempt runs as the item's inline attempt in the queue: the item stays queued until the receipt for it was seen and the sent state is on disk.
+		if (sendQueue) await sendQueue.run(sendId, firstAttempt, { inline: true })
+		else await firstAttempt()
 	}
 
-	/** Messages waiting for the entry nodes (shell, the chat start not finished): id → wire text and the 180 s timer. */
-	const nodeWaitSendsRef = useRef(new Map<string, { wire: string; timer: number; t0: number }>())
+	/**
+	 * "Failed · Tap to retry": a failed text message is sent again from its original text through the full new-send path (deliverText: a new recipient lookup, chain id
+	 * check and encryption); it keeps its sendId and time, so a copy that did get through is not doubled on the other side. Anything that cannot be sent again as it is (a reply, a payment card)
+	 * stays as it is: a failed bubble is never removed or turned back into input text.
+	 */
+	/** The attempt that sends a failed text message again (null for what cannot be rebuilt as a text wire). The retry button and the automatic resume run this same attempt. */
+	function retryAttemptFor(m: ChatMessage): (() => Promise<AttemptResult>) | null {
+		const id = m.id as string
+		// a file or voice message is sent again from the payload stored with its queue item (same sendId, same stored armor)
+		const plan = bubbleRetryPlan(m, m.sendId ? sendQueueRef.current?.wireOf(m.sendId) : undefined)
+		if (plan.kind !== 'resend') return null
+		const t0 = Date.now()
+		return async (): Promise<AttemptResult> => {
+			let result: AttemptResult = { kind: 'failed' }
+			// the same rule as a first send: the `sending` record is on disk before the request goes out; a failed write sends nothing and leaves the message failed with Retry
+			const outcome = await retryWithRecord({
+				markSending: () => {
+					const sending = markSendingById(messagesRef.current, id, t0)
+					messagesRef.current = sending
+					setMessages(sending)
+					chatData.messages = sending
+				},
+				persist: () => persistOutgoing(id),
+				inFlightId: id,
+				onPersistFailed: () => markSendPersistFailed(id),
+				deliver: async () => {
+					if (!allNodesRef.current?.length) {
+						if (isShellContext()) {
+							// the shell chat start has not finished: the message waits for the nodes exactly like a first send (180 s, then failed again)
+							waitSendForNodes(id, plan.wire, t0)
+							result = { kind: 'waiting' }
+							return
+						}
+						const failed: ChatMessage[] = (messagesRef.current || []).map(x => (x.id === id ? { ...x, status: 'failed' as const, sendError: lastSendCodeRef.current } : x))
+						messagesRef.current = failed
+						setMessages(failed)
+						chatData.messages = failed
+						await storageData()
+						return
+					}
+					result = await deliverText(id, plan.wire, t0)
+				},
+			})
+			return outcome === 'persist_failed' ? { kind: 'failed' } : result
+		}
+	}
+
+	async function retryFailedSend(m: ChatMessage): Promise<AttemptResult | 'skipped' | void> {
+		return tapFailedBubble({
+			sendId: m.sendId,
+			attempt: retryAttemptFor(m),
+			queue: sendQueueRef.current,
+			tellKept: () => setChatError(tu(m.fileMessage || m.voiceMessage ? 'chat.send.queue_unreadable' : 'chat.send.cannot_resend')),
+		})
+	}
+
+	/** messages waiting for the entry nodes (shell, the native chat start not finished): nodeWait.ts. Memory only; a kill leaves none and the stored message is retried by the resume. */
+	const deliverTextRef = useRef<(tempId: string, wire: string, t0: number) => Promise<AttemptResult>>(async () => ({ kind: 'failed' }))
+	const nodeWaiterRef = useRef<NodeWaiter | null>(null)
+	if (nodeWaiterRef.current === null) {
+		nodeWaiterRef.current = createNodeWaiter({
+			windowMs: SEND_NODE_WAIT_WINDOW_MS,
+			reaskMs: SEND_NODE_WAIT_REASK_MS,
+			setTimer: (fn, ms) => window.setTimeout(fn, ms),
+			clearTimer: (h) => window.clearTimeout(h as number),
+			nodesReady: () => !!allNodesRef.current?.length,
+			askStart: () => askShellChatStartForSend(),
+			// the send goes through the queue's claim for a queued item: a heartbeat or back-off attempt for the same sendId cannot run at the same moment (single flight), so no double POST
+			deliver: (id, wire, t0) => {
+				const sid = (messagesRef.current || []).find((x) => x.id === id)?.sendId
+				const q = sendQueueRef.current
+				if (sid && q?.has(sid)) return q.run(sid, () => deliverTextRef.current(id, wire, t0))
+				return deliverTextRef.current(id, wire, t0)
+			},
+			onExpire: (tempId, t0) => {
+				if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', `failed stage=no_nodes ms=${Date.now() - t0}`)
+				// the window is used up: not sent, tap to retry, the content stays (a retryable state, not a final failure)
+				const next: ChatMessage[] = (messagesRef.current || []).map(m =>
+					m.id === tempId ? { ...m, status: 'failed' as const, sendError: 'identity_not_ready' } : m)
+				messagesRef.current = next
+				setMessages(next)
+				chatData.messages = next
+				void storageData()
+				{ const sid = next.find(x => x.id === tempId)?.sendId; if (sid) void sendQueueRef.current?.settle(sid, { kind: 'failed' }) } // the wait is over: the queue item is retried (back-off, heartbeat)
+			},
+		})
+	}
 	function waitSendForNodes(tempId: string, wire: string, t0: number) {
 		if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', 'waiting stage=no_nodes')
-		const timer = window.setTimeout(() => {
-			const w = nodeWaitSendsRef.current.get(tempId)
-			if (!w) return
-			nodeWaitSendsRef.current.delete(tempId)
-			if (process.env.REACT_APP_QA_BRIDGE_COUNTER === 'true') qaLine('[send]', `failed stage=no_nodes ms=${Date.now() - w.t0}`)
-			// the window is used up: not sent, tap to retry, the content stays (a retryable state, not a final failure)
-			const next: ChatMessage[] = (messagesRef.current || []).map(m =>
-				m.id === tempId ? { ...m, status: 'failed' as const, sendError: 'identity_not_ready' } : m)
-			messagesRef.current = next
-			setMessages(next)
-			chatData.messages = next
-			void storageData()
-		}, SEND_NODE_WAIT_WINDOW_MS)
-		nodeWaitSendsRef.current.set(tempId, { wire, timer, t0 })
-		askShellChatStartForSend()
+		nodeWaiterRef.current?.wait(tempId, wire, t0)
 	}
 	useEffect(() => () => {
-		nodeWaitSendsRef.current.forEach((w) => window.clearTimeout(w.timer))
+		nodeWaiterRef.current?.dispose()
+		nodeWaiterRef.current = null
 	}, [])
 	// the nodes arrived (the chat start finished): the waiting sends go out, no second tap
-	const deliverTextRef = useRef<(tempId: string, wire: string, t0: number) => Promise<void>>(async () => {})
 	useEffect(() => {
-		if (!allNodes?.length || nodeWaitSendsRef.current.size === 0) return
-		const waiting = Array.from(nodeWaitSendsRef.current.entries())
-		nodeWaitSendsRef.current.clear()
-		for (const [id, w] of waiting) {
-			window.clearTimeout(w.timer)
-			void deliverTextRef.current(id, w.wire, w.t0)
-		}
+		if (!allNodes?.length) return
+		if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && !qaNodesReadyRef.current) { qaNodesReadyRef.current = true; qaEvent('native_chat_ready') }
+		nodeWaiterRef.current?.nodesArrived()
 	}, [allNodes])
-	// while a send waits, the start is asked again on the shell's own cadence (a start that ended not_ready is re-asked here too, 1 s debounce)
-	useEffect(() => {
-		const id = window.setInterval(() => {
-			if (nodeWaitSendsRef.current.size > 0 && !allNodesRef.current?.length) askShellChatStartForSend()
-		}, SEND_NODE_WAIT_REASK_MS)
-		return () => window.clearInterval(id)
-	}, [])
 
-	async function deliverText(tempId: string, wire: string, t0: number) {
+	async function deliverText(tempId: string, wire: string, t0: number): Promise<AttemptResult> {
+		const result = await deliverTextInner(tempId, wire, t0)
+		// the queue item of this message follows the outcome (idempotent: the attempt that called this settles it again with the same result)
+		const sid = (messagesRef.current || []).find(x => x.id === tempId)?.sendId
+		if (sid) void sendQueueRef.current?.settle(sid, result)
+		return result
+	}
+
+	async function deliverTextInner(tempId: string, wire: string, t0: number): Promise<AttemptResult> {
 		let ok = false
+		let receipt: SendReceipt | null = null
+		// the armor of this sendId: stored by the first attempt before the request leaves, posted again by every retry (never encrypted a second time)
+		// the sendId comes from the message row and, when the row is not found by this temp id (the list was rebuilt meanwhile), from the wire itself; the armor context reads the item's own document when it has no slot
+		// (sendArmorContext.ts). A document that cannot be read holds the attempt back: it is counted, nothing is sent (a send without the context would be a second ciphertext).
+		let sendIdOfThis: string | null = null
+		let armorCtx: SendArmorContext | undefined
+		let armorUnreadable = false
 		try {
-			ok = await sendChatToRecipient(wire)
+			const got = await armorContextFor({ rowSendId: (messagesRef.current || []).find(x => x.id === tempId)?.sendId, wire, queue: sendQueueRef.current })
+			sendIdOfThis = got.sendId
+			armorCtx = got.ctx
+		} catch {
+			armorUnreadable = true
+			noteArmorContextUnreadable()
+		}
+		try {
+			if (armorUnreadable) { lastSendCodeRef.current = 'send_failed'; ok = false } else ok = await sendChatToRecipient(wire, { armor: armorCtx, onReceipt: (r) => { receipt = r } })
+			if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaEvent(ok ? 'post_answer' : 'post_failed', sendIdOfThis ?? undefined)
 		} catch {
 			ok = false
 		}
@@ -8013,25 +8358,55 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			setMessages(next)
 
 			chatData.messages = next
-			await storageData()
+			await persistOutgoingAfterSend()
 			if (!lastSendCodeRef.current || lastSendCodeRef.current === 'send_failed') setChatError('Message failed to reach CoNET entry nodes. Please try again.')
-			return
+			// route_unconfirmed is a retryable failure (the queue tries again, re-reading the route); only the trust holds wait for the user
+			return mapDeliverFailure(failCode)
 		}
+
+		// the node's answer to THIS POST is stored with the queue item (the leave lock reads it; release and re-posting follow their own rules). A write that fails only leaves the item counted as unsent.
+		{
+			const answered = receipt as SendReceipt | null
+			if (sendIdOfThis && answered) await sendQueueRef.current?.recordReceipt(sendIdOfThis, answered.kind).catch(() => undefined)
+		}
+		// QA build only (utils/qaAckOrder.ts, compile-time switch): the receipt of this send can be held, so two receipts can arrive out of order
+		await qaHoldAck((messagesRef.current || []).find(x => x.id === tempId)?.sendId || tempId)
 
 		// ✅ 4) 标记 sent（同步构造 next），并用同一份 next 去落盘
 		{
+			// the status never goes back: a delivery receipt that arrived before this answer keeps the message delivered (and is the positive proof for the queue)
+			const prevStatusBeforeAnswer = (messagesRef.current || []).find(m => m.id === tempId)?.status
+			const statusChangedByAnswer = prevStatusBeforeAnswer !== 'sent' && prevStatusBeforeAnswer !== 'delivered'
 			const next: ChatMessage[] = (messagesRef.current || []).map(m =>
-			m.id === tempId ? { ...m, status: "sent" as const } : m
+			m.id === tempId ? { ...m, status: statusAfterPostAnswered(m.status) } : m
 			)
 			messagesRef.current = next
 			setMessages(next)
 
 			chatData.messages = next
-			await storageData()
+			// the message went out: a held record (and its ladder timer) from an earlier route failure must not send it a second time
+			{ const h = heldSendsRef.current.get(tempId); if (h?.timer !== undefined) window.clearTimeout(h.timer); heldSendsRef.current.delete(tempId) }
+			// a message already written as sent / delivered by this page is not written again with the same state (a repeated POST changes nothing in the account record)
+			// The write happens when the state is new or the earlier write did not land.
+			const sidForWrite = (messagesRef.current || []).find(m => m.id === tempId)?.sendId
+			const alreadyWritten = !!sidForWrite && sentStateWrittenRef.current.has(sidForWrite) && !statusChangedByAnswer
+			const persisted = alreadyWritten ? true : await persistOutgoingAfterSend()
+			if (sidForWrite) { if (persisted) sentStateWrittenRef.current.add(sidForWrite); else sentStateWrittenRef.current.delete(sidForWrite) }
+			// the entry's answer decides whether the queue lets go of the item (sendReceiptPolicy.ts): a bound receipt does; an empty 200 never does
+			const proofSid = (messagesRef.current || []).find(m => m.id === tempId)?.sendId
+			const decision = await releaseDecisionOf({ sendId: proofSid, peer: String(chatData.address || ''), receipt, evidence: receiptStoreRef.current })
 
 			// Mirror the settled outbound message into encrypted history (fresh-device recovery).
 			const sentMsg = next.find(m => m.id === tempId)
+			// with the local library switched on, the library (not the record write) holds the sender's copy: the item may only go once history.append has ACKed (senderCopy.ts). That call is
+			// network bound (~12 s): with proof in hand (bound receipt) it is awaited, otherwise it runs in the background and the later receipt / resume re-checks it (the append is idempotent per sendId).
+			if (sidForWrite && (await libraryHoldsNow())) {
+				if (decision === 'confirmed') return { kind: 'sent', persisted: await senderCopyPersisted(sidForWrite, persisted) }
+				void senderCopyPersisted(sidForWrite, persisted)
+				return { kind: 'awaiting', persisted }
+			}
 			mirrorChatMessageToHistory(chatData.address, sentMsg, 'out')
+			return decision === 'confirmed' ? { kind: 'sent', persisted } : { kind: 'awaiting', persisted }
 		}
 	}
 	deliverTextRef.current = deliverText
@@ -8160,16 +8535,26 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		forceClearUnread()
 	}
 
-	const storageData = async () => {
+	const storageData = async (immediate = false) => {
 		const temp = CoNET_Data
-		const ps = Array.isArray(profiles) ? profiles : []
-		if (!temp || ps.length === 0) return
+		// the CURRENT record, not this component's `profiles` state (an older snapshot: the inbound batch and other writers may have changed the rows since). CoNET_Data is mutated by every writer.
+		const snapshotPs = Array.isArray(profiles) ? profiles : []
+		const ps = pickCurrentProfiles(temp, snapshotPs).profiles
+		// an immediate write that has nothing to write to is NOT a written record: it throws (storage_no_account / storage_no_contact), so the send path keeps the message failed (persist_failed)
+		// with Retry and sends nothing. The deferred write (immediate = false) returns quietly: it has no caller that treats it as a commit.
+		if (!temp || ps.length === 0) {
+			if (immediate) throw new Error('storage_no_account')
+			return
+		}
 
 		const p0: profile = ps[0]
 		const chats: chatData[] = Array.isArray(p0?.chats) ? p0.chats : []
 
 		const addr = String(chatData?.address || "").toLowerCase()
-		if (!addr) return
+		if (!addr) {
+			if (immediate) throw new Error('storage_no_contact')
+			return
+		}
 
 		const idx = chats.findIndex(c => String(c?.address || "").toLowerCase() === addr)
 
@@ -8181,12 +8566,19 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 			const { fileMessage: _fileMessage, ...safeMessage } = message
 			return fileMessageCipher ? { ...safeMessage, fileMessageCipher } : safeMessage
 		}))
-		const persistableChat = { ...chatData, messages: persistableMessages }
-		const persistableChats = idx >= 0
-			? chats.map((c, i) => i === idx ? persistableChat : c)
-			: [...chats, persistableChat]
-		const nextProfile = { ...p0, chats: persistableChats }
-		const nextProfiles = ps.slice()
+		const persistableChat = { ...chatData, messages: persistableMessages, ...(removedSendIdsRef.current.size ? { removedSendIds: tombstonesOf({ removedSendIds: [...(chatData.removedSendIds ?? []), ...removedSendIdsRef.current] }) } : {}) }
+		// the record is read AGAIN here, after the awaits above (file manifests are sealed asynchronously): what the other writers did meanwhile is in it
+		const livePs = pickCurrentProfiles(CoNET_Data, ps).profiles
+		const liveP0: profile = livePs[0] ?? p0
+		const liveChats: chatData[] = Array.isArray(liveP0?.chats) ? liveP0.chats : chats
+		const liveIdx = liveChats.findIndex(c => String(c?.address || "").toLowerCase() === addr)
+		void idx
+		// the row is merged into the current row: its messages are kept (an inbound message added meanwhile is not dropped) and the higher status of each message stays (a stale copy cannot take it back)
+		const persistableChats = liveIdx >= 0
+			? liveChats.map((c, i) => i === liveIdx ? (mergeOwnRowIntoCurrent(c, persistableChat as unknown as Record<string, unknown>) as unknown as chatData) : c)
+			: [...liveChats, persistableChat]
+		const nextProfile = { ...liveP0, chats: persistableChats }
+		const nextProfiles = livePs.slice()
 		nextProfiles[0] = nextProfile
 
 		// ✅ 关键：告诉 useEffect([profiles]) 这次更新是我自己触发的，不要 reflashdata 覆盖 messages
@@ -8198,9 +8590,331 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 		nextTemp.profiles = nextProfiles
 		setCoNET_Data(nextTemp)
 
-		await storeSystemData()
+		// storeSystemData only schedules the write (a 200 ms debounce that every later call restarts: a received message, a receipt, a presence update). A message that
+		// the user just sent is written at once (flushStoreSystemData resolves when it has landed), so a refresh right after the send cannot drop it.
+		if (immediate) {
+			// a write that did not land is an error here (the gate refused it, or it failed): the caller keeps the message recoverable and shows Retry
+			const failure = durableCommitError(await commitForChat())
+			if (failure) throw failure
+		} else await storeSystemData()
 	}
 	storageDataRef.current = storageData
+	/** The message the user just sent (and its state changes) are written at once and in order. */
+	const outgoingPersisterRef = useRef<((messageId?: string) => Promise<void>) | null>(null)
+	if (!outgoingPersisterRef.current) outgoingPersisterRef.current = createOutgoingPersister(() => (storageDataRef.current ? storageDataRef.current(true) : Promise.reject(new Error('persist_no_writer'))))
+	// the chat write lock is taken in the same turn as the caller's change of the message list and released when this write has committed or failed (outgoingSend.ts): no refresh of the
+	// page's own copy, no history overlay and no controlled reload runs in between, and a failed write never leaves the lock held
+	const persistOutgoing = (messageId?: string): Promise<void> => (outgoingPersisterRef.current as (messageId?: string) => Promise<void>)(messageId)
+
+	/**
+	 * one automatic attempt for a queued message (a reload, the network back, the page visible again, the retry timer). It is the retry button's attempt, run by the queue with the
+	 * same sendId, so the recipient never sees a second message and nobody has to tap Retry. A message that is held for the user (key not verified) is never sent here.
+	 */
+	const [queueProblem, setQueueProblem] = useState<null | 'load_failed' | 'unreadable'>(null)
+	const [queueReadAttempt, setQueueReadAttempt] = useState(0)
+	const resumeSendRef = useRef<(item: QueueItem) => Promise<AttemptResult>>(async () => ({ kind: 'failed' }))
+	/** The recipient's delivery receipt for a queued sendId: the message turns delivered, is written, and only then does the queue let the item go. Returns whether the delivered state is on disk. */
+	const applyDeliveryReceiptRef = useRef<(sendId: string) => Promise<boolean>>(async () => false)
+	/** the durable receipt evidence of this conversation's queue (receiptEvidence.ts); read from disk on every resume entry, so a second tab and a restart see it */
+	const receiptStoreRef = useRef<ReceiptStore | null>(null)
+	/** the sendIds of this conversation that were delivered (deliveredMarks.ts): kept in the page's own small documents in library mode, applied as a one-way upgrade sent -> delivered when the list is built from the library */
+	const deliveredStoreRef = useRef<DeliveredStore | null>(null)
+	const deliveredMarksRef = useRef<Set<string>>(new Set())
+	const [deliveredTick, setDeliveredTick] = useState(0)
+	useEffect(() => {
+		if (deliveredMarksRef.current.size === 0) return
+		const next = applyDeliveredMarks(messages, deliveredMarksRef.current)
+		if (next !== messages) setMessages(next)
+	}, [messages, deliveredTick])
+	resumeSendRef.current = async (item: QueueItem): Promise<AttemptResult> => {
+		// the recipient's receipt arrived (while this conversation was closed, or before this tick): positive proof for the sendId, applied and written first
+		// the receipt in memory (this page load) or on disk (an earlier page, another tab, a conversation that was closed): read from the disk on EVERY entry; the document is checked (sendId, contact, key)
+		// BEFORE the two early returns below. The proof needs neither the chat crypto nor a send; releasing the item needs only two things, both inside applyDeliveryReceipt: the message is in the list, and its delivered state persisted.
+		const evidenceInMemory = hasDeliveryReceipt(item.sendId, item.peer)
+		const evidenceOnDisk = evidenceInMemory ? false : (await receiptStoreRef.current?.has(item.peer, item.sendId).catch(() => false)) === true
+		// only a row of the user's own is this item's message: a received row that carries the same sendId is not
+		const m = (messagesRef.current || []).find(x => x.sendId === item.sendId && x.from === 'me')
+		// the first decision is one pure function (sendResultMapping.ts resumeEntryOf, table-tested): evidence first, then the chat-crypto guard, then "not in the list yet (the restore adds it)"
+		const entry = resumeEntryOf({ evidenceInMemory, evidenceOnDisk, chatReady: !!chatActionsRef.current, messageInList: !!m })
+		if (entry === 'apply_evidence') return { kind: 'sent', persisted: await applyDeliveryReceiptRef.current(item.sendId) }
+		if (entry === 'chat_not_ready' || entry === 'message_not_in_list' || !m) return { kind: 'failed' } // the next trigger tries again
+		// the row's status is not evidence (a row can come from a merged or restored copy): without the receipt itself the item is asked again, like a sent one
+		if (m.status === 'sent' || m.status === 'delivered') {
+			// "sent" only means the entry answered with an empty 200: not proof (it does not say the message was stored). An item that survives without a delivery receipt or a bound receipt is unconfirmed: the
+			// same armor is posted again (the mailbox keeps identical armor once), never released on this evidence.
+			const wire = item.wire ?? heldWireFromMessage(m)
+			if (wire === null || !allNodesRef.current?.length) return { kind: 'awaiting', persisted: true }
+			return deliverText(m.id as string, wire, Date.now())
+		}
+		// a trust hold (key not verified / changed) waits for the user; route_unconfirmed is retried here, and every attempt reads the route again through the trust gate
+		// the class of a stored message is decided by one pure function (sendResultMapping.ts resumeClassOf): trust hold -> held (the user decides), a wait for the entry nodes that THIS page started -> held
+		// (that wait settles the item; a wait does not survive a restart, so a stored message is never in it), everything else is retried
+		const resumeClass = resumeClassOf(m, { waitingForNodes: !!nodeWaiterRef.current?.has(m.id as string) })
+		if (resumeClass === 'trust_hold' || resumeClass === 'live_node_wait') return resumeResultOf(resumeClass)
+		const attempt = retryAttemptFor(m)
+		if (!attempt) {
+			// a message of this page load that is still `sending` after its wait for the nodes ended (the nodes arrived, the wait entry was taken out, and a tick found it before the delivery finished or after it
+			// was skipped): send it again with the same sendId. A first attempt that is really in flight is `busy` in the queue, so this tick never reaches here for it.
+			if (m.status === 'sending') {
+				const wireOfSending = heldWireFromMessage(m)
+				if (wireOfSending !== null) return deliverText(m.id as string, wireOfSending, Date.now())
+			}
+			return { kind: 'held' } // cannot be rebuilt as a text wire (a reply): the user decides on the failed bubble
+		}
+		return attempt()
+	}
+
+	// the draft and the send queue of this conversation. Two kinds of small documents in the account database (not the account record `init`): `chat-draft-v1:<eoa>` (the text being typed,
+	// one per contact, throttled autosave) and `chat-queue-v1:<eoa>:<sendId>` (a message the user clicked send on, one document per sendId, written at once at the click; sendQueue.ts). In the
+	// browser the content is sealed with AES-GCM under keccak256(private key) (the scheme of fileMessageCipher); the shells have no page private key, so the documents get the same protection as the
+	// messages already sent (base64 JSON, NOT encryption). No localStorage.
+	useEffect(() => {
+		const peer = String(chatData?.address || '').trim().toLowerCase()
+		const eoa = String(profiles?.[0]?.keyID || '').trim().toLowerCase()
+		if (!peer || !eoa) {
+			draftAutosaverRef.current = null
+			sendQueueRef.current = null
+			return
+		}
+		// a browser page without its key armor (its first mount, before the key state is set) creates NO store and writes NO document (chatDocStores.ts): with no key the codec is base64 JSON, and a
+		// draft, a queue item or a receipt written then would be plaintext that the keyed page can never read again. The effect runs again when the key arrives. A native shell has no key by design and goes on.
+		const stores = createChatDocStores({ eoa, privateKey, nativeShell: isShellContext(), doc: chatDraftDocAdapter })
+		if (!stores) {
+			draftAutosaverRef.current = null
+			sendQueueRef.current = null
+			receiptStoreRef.current = null
+			deliveredStoreRef.current = null
+			return
+		}
+		const { tags, queueStore, receiptStore, deliveredStore } = stores // the stores share one codec (sendQueueCodec.ts); the tags are the keyed tags of the receipt and delivered ids
+		let cancelled = false
+		const depthKey = `${eoa}:${peer}`
+		receiptStoreRef.current = receiptStore
+		deliveredStoreRef.current = deliveredStore
+		deliveredMarksRef.current = new Set()
+		const queue = createSendQueue({
+			store: queueStore,
+			peer,
+			resume: (item) => resumeSendRef.current(item),
+			persistConfirmed: async (item) => {
+				// the receipt was seen, the sent state was not on disk: write the list again (the message is sent already; nothing is sent)
+				const m = (messagesRef.current || []).find(x => x.sendId === item.sendId && x.from === 'me')
+				if (!m) return false
+				if (m.status !== 'sent' && m.status !== 'delivered') {
+					const next: ChatMessage[] = (messagesRef.current || []).map(x => (x.sendId === item.sendId && x.from === 'me' ? { ...x, status: 'sent' as const, sendError: undefined } : x))
+					messagesRef.current = next
+					setMessages(next)
+					chatData.messages = next
+				}
+				return senderCopyPersisted(item.sendId, await persistOutgoing().then(() => true, () => false))
+			},
+			claim: webLocksClaim(eoa),
+			isOnline: () => typeof navigator === 'undefined' || navigator.onLine !== false,
+			onHold: (h) => setQueueHold(depthKey, h),
+			onAttemptStart: (sid) => { if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaEvent('attempt_start', sid) },
+			onKick: (trigger, started) => { if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaEvent('kick', undefined, trigger) ; void started },
+			onState: (sendId, state) => setAwaitingSendIds((prev) => {
+				if ((state === 'awaiting') === prev.has(sendId)) return prev
+				const next = new Set(prev)
+				if (state === 'awaiting') next.add(sendId)
+				else next.delete(sendId)
+				return next
+			}),
+		})
+		sendQueueRef.current = queue
+		if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') { qaMountAtRef.current = Date.now(); qaSeenRef.current = new Map() }
+		// the backup notice is re-evaluated on a slow clock from the queue's own timestamps (libraryBackupNotice.ts)
+		const backupTimer = window.setInterval(() => {
+			const ids = backupPendingSendIds(queue.snapshot(), Date.now())
+			setBackupPendingIds((prev) => (prev.size === ids.length && ids.every((i) => prev.has(i)) ? prev : new Set(ids)))
+		}, LIBRARY_BACKUP_NOTICE_CHECK_MS)
+		if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') {
+			// QA build only: read-only state export (sendId, state, attempts; the conversation as shown: sendId, status; which messages the library has ACKed)
+			qaRegisterProbe('queue', () => queue.snapshot())
+			qaRegisterProbe('kicks', () => queue.kickLog())
+			qaRegisterProbe('conversation', () => ({ address: peer, messages: (messagesRef.current || []) as unknown as Array<Record<string, unknown>>, mountAt: qaMountAtRef.current, seen: Object.fromEntries([...qaSeenRef.current.entries()].map(([k, v]) => [k.slice(-8), v])), libraryRead: qaLibraryReadRef.current, libraryAcked: [...libraryAckedRef.current], libraryMode: libraryModeRef.current, purgedFlag: libraryEvidenceRef.current?.flag ?? null, libraryState: libraryEvidenceRef.current?.state ?? null, persistMode: libraryPersistModeFor(String(profiles?.[0]?.keyID || '').toLowerCase()), capable: localChatLibraryCapable() }))
+		}
+		const applyDeliveryReceipt = async (sendId: string): Promise<boolean> => {
+			if (cancelled) return false
+			if (!queue.has(sendId)) { recordReceiptOutcome(sendId, peer, 'no_queue_item'); return false }
+			const m = (messagesRef.current || []).find(x => x.sendId === sendId && x.from === 'me')
+			if (!m) { recordReceiptOutcome(sendId, peer, 'no_message'); return false } // the message is not in the list (yet): nothing to mark; the restore / next tick finds the receipt in the bus
+			if (m.status !== 'delivered') {
+				const next: ChatMessage[] = (messagesRef.current || []).map(x => (x.sendId === sendId && x.from === 'me' ? { ...x, status: 'delivered' as const, sendError: undefined } : x))
+				messagesRef.current = next
+				setMessages(next)
+				chatData.messages = next
+			}
+			// in library mode the delivered state is written to its own small document in THIS step, before the queue item is released and before the receipt document is deleted; a failed write keeps both (the evidence stays)
+			if (!(await markDeliveredDurable(sendId))) { recordReceiptOutcome(sendId, peer, 'delivered_mark_failed'); return false }
+			const persisted = await senderCopyPersisted(sendId, await persistOutgoing().then(() => true, () => false))
+			await queue.settle(sendId, { kind: 'sent', persisted })
+			// release order (receiptEvidence.ts): the queue document is gone first (settle), only then the receipt document; a kill in between leaves at most one orphan receipt document, never an item without its proof
+			if (persisted && !queue.has(sendId)) await receiptStore.remove(peer, sendId).catch(() => undefined)
+			recordReceiptOutcome(sendId, peer, persisted ? 'applied' : 'applied_not_durable')
+			return persisted
+		}
+		applyDeliveryReceiptRef.current = applyDeliveryReceipt
+		// only a receipt from THIS conversation's contact counts (the bus carries the sender of the receipt)
+		const offReceipt = onDeliveryReceipt((sendId, from) => { if (from === peer) void applyDeliveryReceipt(sendId); else recordReceiptOutcome(sendId, from, 'other_peer') })
+		const store = stores.draftStore
+		const autosaver = createDraftAutosaver({
+			store,
+			peer,
+			enqueue: (rec) => queue.enqueue(queueItemFromDraft(rec, peer, Date.now()), { inline: true }).then((r) => { if (r.ok && process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaEvent('queue_doc_landed', rec.sendId); return r }),
+			onDirty: () => noteDraftDirty(peer),
+			onSaved: () => noteDraftSaved(peer),
+		})
+		draftAutosaverRef.current = autosaver
+		// online / visible also ask the shell chat start at once when a send waits for the nodes (nodeWait.ts nudge), not at the next 5 s tick
+		const onOnline = () => { nodeWaiterRef.current?.nudge(); queue.kick('online') }
+		const onVisible = () => { if (document.visibilityState === 'visible') { nodeWaiterRef.current?.nudge(); queue.kick('visible') } }
+		window.addEventListener('online', onOnline)
+		document.addEventListener('visibilitychange', onVisible)
+		void (async () => {
+			// a queue that cannot be read, or a record that cannot be opened, is not an empty queue: it is shown, with a retry (the records stay on disk)
+			const items: QueueItem[] = await readConversationQueue(queue, queueStore, setQueueProblem, () => !cancelled)
+			// lazily, at load: the receipt documents without a queue document (older than 7 days, or beyond 2000, oldest first); a receipt whose queue document exists is never removed
+			// the delivered marks of this contact are read now (they raise `sent` to `delivered` when the list is built from the library); the newest 500 per contact / 5000 in all are kept, cleaned lazily here
+			void deliveredStore.loadFor(peer).then((marks) => { if (!cancelled) { deliveredMarksRef.current = marks; setDeliveredTick((t) => t + 1) } }).catch(() => undefined)
+			// the cleaners run only with the right key (sendQueueCodec.ts mayCleanChatDocs): a browser page that has no key armor yet sees every sealed document as unreadable and every keyed id as foreign
+			if (mayCleanChatDocs(tags, isShellContext())) {
+				void deliveredStore.prune().catch(() => 0)
+				void receiptStore.pruneOrphans({ queueSendIds: () => queueStore.rawSendIds() }).catch(() => 0) // the RAW queue records decide: a queue record that cannot be read still protects its receipt
+			}
+			if (cancelled) return
+			const restored = await restoreOnMount({ store, peer, queueItems: items, stored: messagesRef.current || [] })
+			if (cancelled) return
+			if (restored.seed) autosaver.seed(restored.seed)
+			// a draft is put back into the input and is NEVER sent by itself
+			if (restored.inputText && !(inputRef.current?.value ?? '').trim()) {
+				if (inputRef.current) inputRef.current.value = restored.inputText
+				setText(restored.inputText)
+			}
+			if (restored.dropDraftSendId) await store.removeSlot(peer, 'draft', restored.dropDraftSendId).catch(() => undefined)
+			// a queued message whose list record did not land before the page died: it comes back into the list at once (state: being resumed), then the resume sends it with the same sendId
+			const unlisted = messagesForUnlisted(items, messagesRef.current || [])
+			if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaNoteCopy('queue', unlisted.map((u) => (u as { sendId?: string }).sendId)) // first-copy source: put back from the send queue (hook variant only)
+			if (unlisted.length) {
+				const next = [...(messagesRef.current || []), ...(unlisted as unknown as ChatMessage[])]
+				messagesRef.current = next
+				setMessages(next)
+				chatData.messages = next
+				try {
+					await persistOutgoing(unlisted[0].id)
+				} catch {
+					setChatError(tu('chat.send.not_saved'))
+				}
+			}
+			if (cancelled) return
+			for (const it of items) if (hasDeliveryReceipt(it.sendId, peer) || (await receiptStore.has(peer, it.sendId).catch(() => false))) await applyDeliveryReceipt(it.sendId) // a receipt that came while this conversation was closed, or in an earlier page (on disk)
+			if (cancelled) return
+			queue.kick('load')
+		})()
+		return () => {
+			cancelled = true
+			offReceipt()
+			window.clearInterval(backupTimer)
+			if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') { qaRegisterProbe('queue', null); qaRegisterProbe('conversation', null); qaRegisterProbe('kicks', null) }
+			window.removeEventListener('online', onOnline)
+			document.removeEventListener('visibilitychange', onVisible)
+			void autosaver.flushNow()
+			noteDraftSaved(peer)
+			queue.dispose()
+			if (draftAutosaverRef.current === autosaver) draftAutosaverRef.current = null
+			if (sendQueueRef.current === queue) sendQueueRef.current = null
+			if (receiptStoreRef.current === receiptStore) receiptStoreRef.current = null
+			if (deliveredStoreRef.current === deliveredStore) deliveredStoreRef.current = null
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [chatData?.address, profiles?.[0]?.keyID, privateKey, queueReadAttempt])
+
+	// the text of the input is the draft (not while an IME composition is open: the composed text arrives with compositionend)
+	useEffect(() => {
+		if (imeComposingRef.current) return
+		draftAutosaverRef.current?.onInput(inputRef.current?.value ?? text)
+	}, [text])
+
+	// leaving the page or hiding it writes the latest version at once
+	useEffect(() => {
+		const flush = () => { void draftAutosaverRef.current?.flushNow() }
+		const onVisibility = () => { if (document.visibilityState === 'hidden') flush() }
+		document.addEventListener('visibilitychange', onVisibility)
+		window.addEventListener('pagehide', flush)
+		return () => {
+			document.removeEventListener('visibilitychange', onVisibility)
+			window.removeEventListener('pagehide', flush)
+		}
+	}, [])
+	/** Does the next page load read the sender's copy from the local library (or can that not be told)? senderCopy.ts */
+	const libraryHoldsNow = async (): Promise<boolean> => {
+		const eoa = String(profiles?.[0]?.keyID || '').toLowerCase()
+		const flag = isChatBodiesPurgedFor(eoa)
+		const libState = await readLibraryStateBounded(localChatMigrationState)
+		libraryEvidenceRef.current = { flag, state: libState }
+		const capableNow = localChatLibraryCapable()
+		noteLibraryEvidence({ eoa, capable: capableNow, state: libState }) // the persistence rule (chatLocalPurge.ts) follows what this decision just read
+		if (capableNow && libState === null) ensureLibraryEvidenceRetry(eoa) // an unknown read is asked again in 10 s, like the migration start does
+		// the sender's copy is judged by the SAME rule as the persisted record (libraryPersistModeFor): a client without a library (a native shell) is record-based, an unknown read keeps the last known state
+		// a native shell without a library is never library mode (senderCopy.ts libraryHoldsForClient)
+		const holds = libraryHoldsForClient({ mode: libraryPersistModeFor(eoa), capable: capableNow, nativeShell: isShellContext() })
+		libraryModeRef.current = holds
+		return holds
+	}
+	/** The library ACK of one message (one append in flight per sendId; the append is idempotent). */
+	const ackSenderCopyToLibrary = (sendId: string): Promise<boolean> => {
+		const running = libraryAckInFlightRef.current.get(sendId)
+		if (running) return running
+		const p = (async () => {
+			const m = (messagesRef.current || []).find(x => x.sendId === sendId && x.from === 'me')
+			if (!m) return false
+			// the settled copy: status `sent` (the mirror skips a tmp_ message in any other status); the body is the message as the library shows it
+			const ok = await mirrorChatMessageToHistoryAck(chatData.address, { ...m, status: 'sent' as const }, 'out')
+			if (ok) libraryAckedRef.current.add(sendId)
+			return ok
+		})().finally(() => { libraryAckInFlightRef.current.delete(sendId) })
+		libraryAckInFlightRef.current.set(sendId, p)
+		return p
+	}
+	/** Is the sender's copy of this message durable where the next load reads it? Record write outside library mode, library ACK in it. */
+	/**
+	 * record that this message was delivered where the next load reads it. Library mode only (the sender's copy is judged by the library): outside it the account record holds `delivered` already and nothing is
+	 * written. A failed write is `false`: the caller releases nothing and deletes no receipt document. The mark is in memory at once, so the bubble does not wait for the next load.
+	 */
+	const markDeliveredDurable = async (sendId: string): Promise<boolean> => {
+		const store = deliveredStoreRef.current
+		if (!store || (!localChatLibraryCapable() && isShellContext())) return true // a shell has no library: its record holds `delivered`, no document is written
+		if (!(await libraryHoldsNow())) return true
+		try {
+			await store.put(chatData.address, sendId)
+		} catch {
+			return false
+		}
+		deliveredMarksRef.current = new Set([...deliveredMarksRef.current, sendId])
+		setDeliveredTick((t) => t + 1)
+		return true
+	}
+	const senderCopyPersisted = async (sendId: string, recordPersisted: boolean): Promise<boolean> =>
+		senderCopyDurable({ recordPersisted, libraryHolds: await libraryHoldsNow(), alreadyAcked: libraryAckedRef.current.has(sendId), ackLibrary: () => ackSenderCopyToLibrary(sendId) })
+
+	/** A write after the send already left (the sent / failed state): it cannot undo the send. A failure is shown, and the stored copy keeps `sending`, which the next load turns into failed + Retry (same sendId, the receiver de-duplicates). */
+	const persistOutgoingAfterSend = async (): Promise<boolean> => {
+		try {
+			await persistOutgoing()
+			return true
+		} catch {
+			setChatError('This message could not be saved on this device. It stays in the list and can be sent again.')
+			return false
+		}
+	}
+	/** The `sending` record could not be written: nothing goes out. The message stays in the list as failed (persist_failed) with Retry. */
+	const markSendPersistFailed = (tempId: string): void => {
+		const next: ChatMessage[] = (messagesRef.current || []).map(m => (m.id === tempId ? { ...m, status: 'failed' as const, sendError: 'persist_failed' } : m))
+		messagesRef.current = next
+		setMessages(next)
+		chatData.messages = next
+		setChatError('This message could not be saved on this device, so it was not sent. Tap to retry.')
+	}
 
 	function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
 		// keyCode 229 = IME processing (Android WebView / legacy); isComposing = modern browsers
@@ -9039,7 +9753,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 												>
 													{reactionBadges}
 													<ChatFileMessagePlayer manifest={m.fileMessage} isMe={isMe} />
-													{isMe ? <div className="absolute -bottom-2 -right-2"><BubbleCornerStatus status={m.status} /></div> : null}
+													{isMe ? <div className="absolute -bottom-2 -right-2"><BubbleCornerStatus status={m.status} onRetry={retryTapFor(m, retryFailedSend)} /></div> : null}
 												</div>
 											) : hasVoice && m.voiceMessage ? (
 												<div
@@ -9059,7 +9773,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 													<VoiceMessagePlayer manifest={m.voiceMessage} isMe={isMe} />
 													{isMe && (
 														<div className="absolute -bottom-2 -right-2">
-															<BubbleCornerStatus status={m.status} onRetry={() => setVoiceError('Please record and send the voice message again.')} />
+															<BubbleCornerStatus status={m.status} onRetry={retryTapFor(m, retryFailedSend)} />
 														</div>
 													)}
 												</div>
@@ -9374,11 +10088,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 														<div className="absolute -bottom-2 -right-2">
 														<BubbleCornerStatus
 															status={m.status}
-															onRetry={() => {
-															if (m.status !== "failed") return
-															setText(m.text)
-															setMessages(prev => prev.filter(x => x.id !== m.id))
-															}}
+															onRetry={() => { if (m.status !== "failed") return; void retryFailedSend(m) }}
 														/>
 														</div>
 													)}
@@ -9402,11 +10112,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 														<div className="absolute -bottom-2 -right-2">
 															<BubbleCornerStatus
 																status={m.status}
-																onRetry={() => {
-																	if (m.status !== "failed") return
-																	setText(m.text)
-																	setMessages(prev => prev.filter(x => x.id !== m.id))
-																}}
+																onRetry={() => { if (m.status !== "failed") return; void retryFailedSend(m) }}
 															/>
 														</div>
 													)}
@@ -9425,11 +10131,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 														<div className="absolute -bottom-2 -right-2">
 															<BubbleCornerStatus
 																status={m.status}
-																onRetry={() => {
-																	if (m.status !== "failed") return
-																	setText(m.text)
-																	setMessages(prev => prev.filter(x => x.id !== m.id))
-																}}
+																onRetry={() => { if (m.status !== "failed") return; void retryFailedSend(m) }}
 															/>
 														</div>
 													)}
@@ -9507,11 +10209,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 												{isMe && (
 													<BubbleCornerStatus
 													status={m.status}
-													onRetry={() => {
-														if (m.status !== "failed") return
-														setText(m.text)
-														setMessages(prev => prev.filter(x => x.id !== m.id))
-													}}
+													onRetry={() => { if (m.status !== "failed") return; void retryFailedSend(m) }}
 													/>
 												)}
 												</div>
@@ -9533,18 +10231,32 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 												{fmtTime(getMsgTs(m))}
 												</span>
 
+												{!isMe && m.sendId && unsavedInboundIds.has(m.sendId) && (
+													<span data-testid="inbound-not-saved" className="text-[11px] text-amber-700">{tu('chat.status.not_saved')}</span>
+												)}
+												{!isMe && m.sendId && remoteUnsentInboundIds.has(m.sendId) && (
+													<span data-testid="inbound-remote-pending" className="text-[11px] text-amber-700">{tu('chat.status.remote_pending')}</span>
+												)}
 												{isMe && (
 												<span className="text-[11px]">
 													{m.status === "sending" && <span className="text-slate-400">Sending…</span>}
-													{m.status === "sent" && <span className="text-slate-400">Sent</span>}
+													{m.status === "sent" && <span className="text-slate-400">{m.sendId && awaitingSendIds.has(m.sendId) ? tu('chat.status.awaiting_ack') : 'Sent'}</span>}
+													{m.status === "sent" && m.sendId && awaitingSendIds.has(m.sendId) && (
+													<button
+														type="button"
+														data-testid="awaiting-retry"
+														onClick={() => sendQueueRef.current?.kick('manual')}
+														className="ml-1 text-slate-500 underline underline-offset-2"
+													>
+														{tu('chat.held.action.retry')}
+													</button>
+													)}
 													{m.status === "delivered" && <span className="text-[#1652f0]">Delivered</span>}
+													{(m.status === "sent" || m.status === "delivered") && m.sendId && backupPendingIds.has(m.sendId) && <span className="ml-1 text-amber-700">{tu(LIBRARY_BACKUP_NOTICE_COPY_KEY)}</span>}
 													{m.status === "failed" && (
 													<button
 														type="button"
-														onClick={() => {
-														setText(m.text)
-														setMessages(prev => prev.filter(x => x.id !== m.id))
-														}}
+														onClick={() => void retryFailedSend(m)}
 														className="text-rose-600 underline underline-offset-2"
 													>
 														Failed · Tap to retry</button>
@@ -9667,6 +10379,12 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 								</div>
 							</div>
 						)}
+						{queueProblem && (
+							<div role="alert" data-testid="send-queue-problem" className="mb-2 flex items-center gap-3 rounded-lg bg-amber-500/15 px-3 py-2 text-xs text-amber-200">
+								<span className="flex-1">{tu('chat.send.queue_unreadable')}</span>
+								<button type="button" className="shrink-0 font-semibold underline" onClick={() => { setQueueProblem(null); setQueueReadAttempt((n) => n + 1) }}>{tu('chat.send.queue_retry')}</button>
+							</div>
+						)}
 						{chatError && (
 							<div role="alert" className="mb-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-700">
 								{chatError}
@@ -9775,7 +10493,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 													</span>
 													<div className="min-w-0">
 														<p className="truncate text-[13px] font-semibold text-slate-700">Voice message</p>
-														<p className="text-[11px] text-slate-500">{formatVoiceDuration(voiceDurationMs)} · {formatVoiceBytes(voiceRecordedBytes)}</p>
+														<p className="text-[11px] text-slate-500">{formatVoiceDuration(voiceHeld?.durationMs ?? 0)} · {formatVoiceBytes(voiceHeld?.recording.size ?? 0)}</p>
 													</div>
 													<button type="button" tabIndex={-1} disabled={voiceSending} onClick={cancelVoiceDraft} aria-label="Delete voice message" className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-slate-500 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50">
 														<X className="h-4 w-4" strokeWidth={2.4} />
@@ -9834,6 +10552,7 @@ function ChatInterface({ onBack, chatData, privateKey, autoVoiceCallAction, onAu
 										}
 										setText(e.target.value)
 									}}
+									onBlur={() => { void draftAutosaverRef.current?.flushNow() }}
 									onBeforeInput={hasRoute ? onBeforeInput : undefined}
 									onKeyDown={hasRoute ? onKeyDown : undefined}
 									onCompositionStart={hasRoute ? onCompositionStart : undefined}

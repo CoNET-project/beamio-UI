@@ -22,6 +22,11 @@ function stubProvider(abiForEncoding: ethers.InterfaceAbi, answer: Answer) {
 	return {
 		provider: null,
 		resolveName: async (n: string) => n,
+		// the runtime chain id check asks the RPC for eth_chainId (224422)
+		send: async (method: string) => {
+			if (method === 'eth_chainId') return '0x36ca6'
+			throw new Error('unexpected ' + method)
+		},
 		call: async () => {
 			if (answer instanceof Error) throw answer
 			return iface.encodeFunctionResult('searchKey', answer)
@@ -56,6 +61,15 @@ for (const shell of [true, false]) {
 		it('a registered address reads ok', async () => {
 			const chat = loadChat(shell, ['uid', b64('USERKEY'), 'rid', b64('ROUTEKEY'), true])
 			expect(await chat.lookupRecipientRecord(WALLET)).toMatchObject({ status: 'ok', publicArmored: 'USERKEY', routersArmoreds: 'ROUTEKEY' })
+		})
+		// the product rule (chainPgpTrust.ts): the reader reports where the record came from; the whitelist decides whether it is trusted
+		it('an ok read reports its source: the whitelisted AddressPGP contract, chain 224422, and the address asked for (the same in both builds)', async () => {
+			const chat = loadChat(shell, ['uid', b64('USERKEY'), 'rid', b64('ROUTEKEY'), true])
+			const r = await chat.lookupRecipientRecord(WALLET)
+			expect(r).toMatchObject({ status: 'ok', userPgpKeyID: 'uid', source: { chainId: 224422, contract: '0x684b0ac760cEE9c9b85de36d69746420648Cf9e2', queriedAddress: WALLET } })
+		})
+		it('no source on a read that is not ok', async () => {
+			expect(await loadChat(shell, ['', '', '', '', false]).lookupRecipientRecord(WALLET)).not.toHaveProperty('source')
 		})
 		it('an empty answer is no_record; a failed call is network_error', async () => {
 			expect(await loadChat(shell, ['', '', '', '', false]).lookupRecipientRecord(WALLET)).toEqual({ status: 'no_record' })

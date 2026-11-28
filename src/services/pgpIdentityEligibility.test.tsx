@@ -7,6 +7,12 @@ import { firstIdentityConfirmed, grantPgpCreateEligibility, pgpCreateEligible, r
 
 jest.mock('./nativeIdentityPublic', () => ({ shellAccountKeyOrEmpty: () => (globalThis as { __acct?: string }).__acct ?? '' }))
 jest.mock('./shellContext', () => ({ isShellContext: () => (globalThis as { __shell?: boolean }).__shell !== false }))
+// 0.53.52: the click path is closed in the shipped build; a test opens it explicitly
+jest.mock('../utils/pgpIdentityCreateFlag', () => ({
+	get PGP_IDENTITY_CREATE_ENABLED() {
+		return (globalThis as { __createOpen?: boolean }).__createOpen === true
+	},
+}))
 
 describe('firstIdentityConfirmed: only ABSENT and unregistered', () => {
 	it('confirms only the one combination', () => {
@@ -57,11 +63,20 @@ describe('the first-identity notice renders the create button only for an eligib
 		expect(screen.getByRole('button')).toBeTruthy()
 		;(globalThis as { __shell?: boolean }).__shell = true
 	})
-	it('eligible: the create button is rendered', () => {
+	it('eligible but the click path is closed (PGP_IDENTITY_CREATE_ENABLED false, 0.53.52): no create button, so no click that sends nothing', () => {
 		;(globalThis as { __acct?: string }).__acct = '0x0000000000000000000000000000000000000004'
 		grantPgpCreateEligibility('0x0000000000000000000000000000000000000004')
 		const PgpFirstIdentityNotice = require('../components/PgpFirstIdentityNotice').default
 		render(<PgpFirstIdentityNotice />)
+		expect(screen.queryByRole('button')).toBeNull()
+	})
+	it('eligible and the click path open (a future build): the create button is rendered', () => {
+		;(globalThis as { __createOpen?: boolean }).__createOpen = true
+		;(globalThis as { __acct?: string }).__acct = '0x0000000000000000000000000000000000000006'
+		grantPgpCreateEligibility('0x0000000000000000000000000000000000000006')
+		const PgpFirstIdentityNotice = require('../components/PgpFirstIdentityNotice').default
+		render(<PgpFirstIdentityNotice />)
 		expect(screen.getByRole('button')).toBeTruthy()
+		;(globalThis as { __createOpen?: boolean }).__createOpen = false
 	})
 })

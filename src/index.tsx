@@ -4,6 +4,8 @@
 import './utils/legacyRestoreLinkBoot'
 // WebSocket refusal (project rule): installed before any library that captures the global constructor is evaluated.
 import { probeWebSocketRefusal } from './utils/webSocketGuard'
+// The blocked host is refused at every request and resource entry point: before any module that may use one.
+import './utils/retiredHostGuardBoot'
 import './utils/ignoreResizeObserverLoopError'
 import React from 'react';
 import ReactDOM from 'react-dom/client';
@@ -27,12 +29,19 @@ import { reportWebSocketProbe } from './utils/webSocketProbeReport'
 import { publishNativePwaLog } from './utils/cashTreesNativePwaLog'
 // Y.62 pgpUpgradeState: listen from startup so an event that arrives before the chat page mounts is recorded.
 import { installPgpUpgradeStateListener } from './services/pgpUpgradeState';
+import { installReloadHeldNotice } from './services/reloadHeldNotice';
 import { installFirstIdentityStatusListener } from './services/firstIdentityStatus';
 import { installQaChainReadCounter } from './utils/qaChainReadCounter';
+import QaTransportFaultSwitch from './components/QaTransportFaultSwitch';
+import QaRemoteFaultSwitch from './components/QaRemoteFaultSwitch';
+import QaPlainCacheClear from './components/QaPlainCacheClear';
+import QaSkipAppHistorySwitch from './components/QaSkipAppHistorySwitch';
+import ReloadHoldStatus from './components/ReloadHoldStatus';
 installQaChainReadCounter();
 // R81 item 8: the runtime refusal probe runs at boot (it opens no connection). R84: the result is kept on window.__beamioWsProbe and a failure goes to the native log; console is stripped in production.
 reportWebSocketProbe(probeWebSocketRefusal(), (level, message) => publishNativePwaLog(level, message))
 installPgpUpgradeStateListener();
+installReloadHeldNotice();
 installFirstIdentityStatusListener();
 void loadApiExcludedUserCards()
 // the Android shell's new chat channel (window.BeamioChat); top frame only, a no-op in a child frame or without it.
@@ -57,6 +66,11 @@ root.render(
 						<IpfsImageLibraryProvider>
 							<BeamioLocaleRoot>
 								<App />
+								<ReloadHoldStatus />
+								{process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && <QaTransportFaultSwitch />}
+								{process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && <QaRemoteFaultSwitch />}
+								{process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && <QaPlainCacheClear />}
+								{process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && <QaSkipAppHistorySwitch />}
 							</BeamioLocaleRoot>
 						</IpfsImageLibraryProvider>
 					</BeamioTagDatabaseProvider>

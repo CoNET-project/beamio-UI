@@ -14,6 +14,8 @@
  * delete-conversation feature is ever added, it MUST add a deletion marker (removed peer + time) in the same change, and `keepStoredChats` /
  * `keepMemoryChats` must skip marked rows; otherwise the floor brings a deleted row back.
  */
+import { applyTombstones, mergeMessagesMonotonic, tombstonesOf } from './chatRowMerge'
+
 type Loose = Record<string, unknown>
 
 const isObject = (v: unknown): v is Loose => v !== null && typeof v === 'object' && !Array.isArray(v)
@@ -43,31 +45,20 @@ export type FloorOptions = {
 	keepMessages?: boolean
 }
 
-/** The messages of a row: the union by message key (a new copy never makes them fewer); a message in both takes the new copy's fields. Order by createdAt. */
-function mergeMessages(oldMsgs: unknown[], newMsgs: unknown[]): unknown[] {
-	const out: unknown[] = []
-	const index = new Map<string, number>()
-	const put = (m: unknown): void => {
-		const k = msgKeyOf(m)
-		if (!k) {
-			if (!out.some((o) => sameJson(o, m))) out.push(m)
-			return
-		}
-		const at = index.get(k)
-		if (at === undefined) {
-			index.set(k, out.length)
-			out.push(m)
-		} else out[at] = m
-	}
-	for (const m of oldMsgs) put(m)
-	for (const m of newMsgs) put(m)
-	return out
-		.map((m, i) => ({ m, i }))
-		.sort((a, b) => createdOf(a.m) - createdOf(b.m) || a.i - b.i)
-		.map((x) => x.m)
-}
+/** The messages of a row: the union by message key (a new copy never makes them fewer); a message in both keeps the HIGHER status (a stale copy cannot take a message back), the new copy otherwise. Order by createdAt. */
+const mergeMessages = (oldMsgs: unknown[], newMsgs: unknown[]): unknown[] => mergeMessagesMonotonic(oldMsgs, newMsgs, true)
 
 export const CHATS_FLOOR_REFUSED = 'chats_floor'
+export const STORED_RECORD_UNREADABLE = 'stored_record_unreadable'
+
+/**
+ * The browser write plan from what the stored record read as (walletVault.readPlainForFloor). when a record exists but cannot be read, NOTHING is written (the in-memory copy stays, the caller
+ * reports a failed write and tries again later): the floor cannot be applied, and writing the memory copy over a record that could not be read could replace newer rows with older ones.
+ */
+export function planBrowserWrite(read: { status: 'absent' } | { status: 'loaded'; data: unknown } | { status: 'unreadable'; reason: string }): { action: 'write'; floorFrom: unknown | null } | { action: 'refuse'; code: string } {
+	if (read.status === 'unreadable') return { action: 'refuse', code: STORED_RECORD_UNREADABLE }
+	return { action: 'write', floorFrom: read.status === 'loaded' ? read.data : null }
+}
 
 /** A copy of the record whose chat rows carry no peer PGP public armor. The input is not changed; the same object is returned when nothing is dropped. */
 export function withoutPeerArmorForShell<T>(record: T): T {
@@ -105,7 +96,8 @@ function mergeRow(oldRow: Loose, newRow: Loose, keepMessages: boolean): Loose {
 	// new list never drops a stored message (only the user's plaintext purge, passed as keepMessages=false, clears bodies)
 	if (!Array.isArray(newRow.messages) && Array.isArray(oldRow.messages)) merged.messages = oldRow.messages
 	else if (keepMessages && Array.isArray(oldRow.messages) && Array.isArray(newRow.messages)) merged.messages = mergeMessages(oldRow.messages, newRow.messages)
-	return merged
+	// the stored copy's messages that the user removed (tombstones of either copy) are not kept by the floor
+	return applyTombstones(merged, tombstonesOf(oldRow, newRow))
 }
 
 /**

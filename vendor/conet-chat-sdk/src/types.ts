@@ -444,7 +444,7 @@ export interface BeamioChatHistory {
 	 */
 	load(options?: HistoryLoadOptions): Promise<void>
 	/** Append (persist) a new sent/received entry to encrypted history + local mirror. */
-	append(entry: Omit<HistoryEntry, 'seq'>): Promise<void>
+	append(entry: Omit<HistoryEntry, 'seq'>, opts?: { qaRemoteFault?: 'upload' | 'pointer' | 'timeout' }): Promise<void>
 	/**
 	 * Global read of the decrypted corpus. UI must use this instead of fetching
 	 * fragments itself. A `query` runs full-text search over the whole local history.

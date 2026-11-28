@@ -32,6 +32,18 @@ export function readPersistedShellEoa(): string {
 	}
 }
 
+/** Forgets the kept public address when it is this wallet's (or any, with no argument). Used when a key-only wallet is deleted. */
+export function forgetPersistedShellEoa(eoa?: string): void {
+	if (typeof window === 'undefined') return
+	try {
+		const stored = window.localStorage.getItem(STORAGE_KEY) || ''
+		if (!stored) return
+		if (eoa === undefined || stored === String(eoa).toLowerCase()) window.localStorage.removeItem(STORAGE_KEY)
+	} catch {
+		/* storage unavailable */
+	}
+}
+
 // "Retry later" state: the key is present but no identity source is known.
 let pending = false
 const listeners = new Set<(value: boolean) => void>()

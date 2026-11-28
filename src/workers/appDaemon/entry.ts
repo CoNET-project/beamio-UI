@@ -7,6 +7,7 @@
  * 15s aa pending / 5min oracle
  */
 import '../../utils/webSocketGuard'  // WebSocket refusal (project rule): first, before any module that may use it
+import '../../utils/retiredHostGuardBoot'
 import { installQaChainReadCounter } from '../../utils/qaChainReadCounter'
 
 import type {

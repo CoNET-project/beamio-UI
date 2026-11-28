@@ -17,6 +17,8 @@
  * Module state is per cold start (a new JS realm). SYNTHETIC values only in tests.
  */
 
+import { qaEvent } from '../utils/qaAckOrder'
+
 export type ChatPreheatState = 'idle' | 'requested' | 'ready' | 'failed'
 
 export interface ChatPreheatDeps {
@@ -50,6 +52,8 @@ let current: Preheat | null = null
 /** Status line: codes and timing only. */
 const emit = (log: (line: string) => void, state: ChatPreheatState, startedAt: number, now: () => number): void => {
 	log(`[sdk] preheat state=${state} ms=${Math.max(0, now() - startedAt)}`)
+	// hook variant only: the console line above is removed from a production-style build, so the state change is also an event (preheat_requested / preheat_ready / preheat_failed)
+	if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaEvent(`preheat_${state}`)
 }
 
 /**
@@ -101,6 +105,39 @@ export function startChatPreheat(deps: ChatPreheatDeps): Promise<boolean> {
 /** The UI's read of the prepared history: joins the in-flight preheat. Resolves false at once when none is running. */
 export function awaitChatPreheat(): Promise<boolean> {
 	return current ? current.promise : Promise.resolve(false)
+}
+
+/**
+ * the conversation's LOCAL library read does not wait for the whole preheat. The preheat's completion signal (the history tail batch) may not come at all
+ * (the worker only emits a tail batch when it decrypted NEW rows). The library read is local and needs no sync.
+ *  - the library already answers (`switched` or `purged`): read at once, no wait;
+ *  - anything else (not answered yet, or a record-based library): join the preheat for at most PREHEAT_JOIN_MAX_MS, then read anyway. 3 s: long enough for an almost-finished preheat to hand over its prepared history,
+ *    short enough that no screen waits for the 90 s bound. The 90 s bound itself is NOT lowered (the preheat keeps its own state and log).
+ */
+export const PREHEAT_JOIN_MAX_MS = 3_000
+export function preheatWaitPlan(libraryState: string | null): { wait: boolean; boundMs: number } {
+	if (libraryState === 'switched' || libraryState === 'purged') return { wait: false, boundMs: 0 }
+	return { wait: true, boundMs: PREHEAT_JOIN_MAX_MS }
+}
+
+/**
+ * the library state is read BEFORE the preheat wait and again after it: a state that was unknown before the wait may be known after it, and a known state is never replaced by an unknown one.
+ */
+export const isMigratedState = (state: string | null): boolean => state === 'switched' || state === 'purged'
+export const resolveLibraryState = (before: string | null, after: string | null): string | null => (after !== null ? after : before)
+/** Still unknown after the wait although the library page came back local: ask once more shortly (at most MAX_UNKNOWN_STATE_RETRIES per mount), so the page is not left without its library messages. */
+export const MAX_UNKNOWN_STATE_RETRIES = 3
+export const UNKNOWN_STATE_RETRY_MS = 2_000
+export function unknownStateRetryOf(input: { state: string | null; pageLocal: boolean; retries: number }): boolean {
+	return input.state === null && input.pageLocal && input.retries < MAX_UNKNOWN_STATE_RETRIES
+}
+
+/** Joins a promise for at most `boundMs`: resolves false when the bound is reached first. */
+export function awaitBounded(p: Promise<boolean>, boundMs: number, setTimer: (fn: () => void, ms: number) => unknown = (fn, ms) => setTimeout(fn, ms), clearTimer: (h: unknown) => void = (h) => clearTimeout(h as ReturnType<typeof setTimeout>)): Promise<boolean> {
+	return new Promise<boolean>((resolve) => {
+		const timer = setTimer(() => resolve(false), Math.max(0, boundMs))
+		p.then((v) => { clearTimer(timer); resolve(v) }, () => { clearTimer(timer); resolve(false) })
+	})
 }
 
 /** The current preheat state (or 'idle'). Status only. */

@@ -155,6 +155,11 @@ function createWorkerPersistence() {
 				/* ignore */
 			}
 		},
+		/** key names under a prefix (key range `prefix` to `prefix` + U+FFFF); values are not read. A failed read throws (the caller must not treat it as "no keys"). */
+		async keys(prefix: string) {
+			const all = await tx<IDBValidKey[]>('readonly', (s) => s.getAllKeys(IDBKeyRange.bound(prefix, `${prefix}\uffff`)))
+			return all.filter((k): k is string => typeof k === 'string')
+		},
 	}
 }
 
@@ -371,7 +376,7 @@ async function handle(cmd: WorkerInbound): Promise<void> {
 		}
 		case 'historyAppend': {
 			try {
-				await history!.append(cmd.entry as Omit<HistoryEntry, 'seq'>)
+				await history!.append(cmd.entry as Omit<HistoryEntry, 'seq'>, process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' ? { qaRemoteFault: cmd.qaRemoteFault } : undefined)
 				post({ type: 'ack', reqId: cmd.reqId, ok: true })
 			} catch (ex) {
 				post({ type: 'ack', reqId: cmd.reqId, ok: false, error: (ex as Error)?.message ?? String(ex) })

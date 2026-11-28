@@ -85,7 +85,8 @@ async function runVector(frame: Frame) {
 	}
 
 	const lists: InboundLists = newInboundLists()
-	if (frame.kind === 'row') recordInboundLine(lists, line, true, { write: () => undefined })
+	// in the browser a message row is ACKed only by the wait for its history append: the row carries a (healthy) append here
+	if (frame.kind === 'row') recordInboundLine(lists, line, true, { mirror: () => ({ done: Promise.resolve(true), retry: async () => true }), write: () => undefined })
 	else if (frame.kind === 'drop' || frame.kind === 'unparseable') recordDroppedLine(lists, line)
 	else if (frame.kind === 'unsigned') recordRejectedLine(lists, line)
 	const stored = await settleInboundBatch(settleInputOf(lists), {
@@ -105,8 +106,9 @@ async function runVector(frame: Frame) {
 		},
 		release: () => undefined,
 	})
+	await new Promise((r) => setTimeout(r, 15)) // the wait for the append runs in the background
 	await Promise.all(ackPromises)
-	return { stored, commits, persisted, posted, rowLines: lists.stored, dropLines: lists.dropped, rejectedLines: lists.rejected }
+	return { stored, commits, persisted, memory, posted, rowLines: lists.stored, dropLines: lists.dropped, rejectedLines: lists.rejected }
 }
 
 const frame = (id: string): Frame => {
@@ -116,7 +118,7 @@ const frame = (id: string): Frame => {
 }
 
 describe('browser inbound ACK vectors to ', () => {
-	it('commit succeeds, one row written, one ACK after the commit, dedupe record written with the commit', async () => {
+	it('commit succeeds, one row written, one ACK after the commit AND the confirmed append; the dedupe marker is set after the confirmation (not carried by this commit)', async () => {
 		const f = frame('row-01')
 		const r = await runVector(f)
 		expect(r.stored).toBe(true)
@@ -124,7 +126,8 @@ describe('browser inbound ACK vectors to ', () => {
 		expect(r.rowLines).toHaveLength(1)
 		expect(r.posted.map((c) => c.armorHash)).toEqual([f.armorHash])
 		expect(r.posted[0]).toMatchObject({ command: 'gossip_delivery_ack', walletAddress: OWN_EOA })
-		expect(r.persisted.has(f.armorHash)).toBe(true)
+		expect(r.persisted.has(f.armorHash)).toBe(false) // no marker reached the disk with the commit
+		expect(r.memory.has(f.armorHash)).toBe(true) // set by the wait, after the confirmed append, right before the ACK
 	})
 
 	it('commit fails, no ACK, no dedupe record, the frame stays on the server', async () => {

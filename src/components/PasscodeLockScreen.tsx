@@ -4,8 +4,10 @@
  * Shown by AppEntryGate before any app content mounts. Failed tries are counted and waited on; nothing is erased here.
  * Forgetting the passcode leads to an explicit local reset and re-import with the recovery phrase.
  */
+import { requestReloadAfterLocalWipe } from '@/services/chatWriteLock'
 import { useEffect, useState, type CSSProperties } from 'react'
-import { readPageCipherEnvelope, unlockWalletVaultWithPasscode, wipeLocalWalletForRestore } from '../services/beamio'
+import { chatDraftDocAdapter, readPageCipherEnvelope, unlockWalletVaultWithPasscode, wipeLocalWalletForRestore } from '../services/beamio'
+import { canConfirmReset, hasUnsaved, hasUnsent, readUnsentSummary, unsentWarningLines, type UnsentSummary } from '../services/chatAuxDocs'
 import { shellMnemonicSync } from '../services/shellMnemonicSync'
 import { PASSCODE_DIGITS } from '../services/passcode/passcodeRules'
 import { PASSCODE_TOKENS as T } from '../services/passcode/passcodeTokens'
@@ -46,7 +48,13 @@ const currentAccountEoa = (): string | null => {
 }
 
 /** R-16: `lock` 'native' is a native-side lock; the forgot-passcode path is offered only for the page lock. */
-export default function PasscodeLockScreen({ onUnlocked, lock = 'page', onNativeMismatch }: { onUnlocked: () => void; lock?: 'page' | 'native'; onNativeMismatch?: () => void }) {
+export default function PasscodeLockScreen({ onUnlocked, lock = 'page', onNativeMismatch, readUnarchived }: {
+	onUnlocked: () => void
+	lock?: 'page' | 'native'
+	onNativeMismatch?: () => void
+	/** how many sent and received messages are not yet saved to the cloud history. No source exists yet: without it the reset says it cannot tell, and asks the second confirmation. */
+	readUnarchived?: () => Promise<number>
+}) {
 	const [snap, setSnap] = useState<FlowSnapshot>(() => startFlow('unlock'))
 	const [digits, setDigits] = useState('')
 	const [notice, setNotice] = useState('')
@@ -55,6 +63,15 @@ export default function PasscodeLockScreen({ onUnlocked, lock = 'page', onNative
 	const [now, setNow] = useState(Date.now())
 	const [forgot, setForgot] = useState(false)
 	const [confirmReset, setConfirmReset] = useState(false)
+	// the messages the reset would delete (counted when the reset screen opens; null until read) and the user's extra confirmation for them
+	const [unsent, setUnsent] = useState<UnsentSummary | null>(null)
+	const [confirmUnsent, setConfirmUnsent] = useState(false)
+	useEffect(() => {
+		if (!forgot) { setUnsent(null); setConfirmUnsent(false); setConfirmReset(false); return }
+		let live = true
+		void readUnsentSummary(chatDraftDocAdapter, readUnarchived).then((s) => { if (live) setUnsent(s) })
+		return () => { live = false }
+	}, [forgot])
 
 	useEffect(() => {
 		if (waitUntil <= Date.now()) return
@@ -141,10 +158,13 @@ export default function PasscodeLockScreen({ onUnlocked, lock = 'page', onNative
 
 	const reset = async () => {
 		if (!confirmReset || busy) return
+		// the unsent messages are deleted only after the user confirmed them; cancelling (Back) deletes nothing
+		if (!canConfirmReset({ confirmGeneric: confirmReset, confirmUnsent, summary: unsent, busy })) return
 		setBusy(true)
 		try {
-			await wipeLocalWalletForRestore()
-			window.location.reload()
+			await wipeLocalWalletForRestore({ includeUnsent: unsent !== null && hasUnsent(unsent) && confirmUnsent })
+			// the reset's reload goes through the single reload entry; the holds of the erased wallet are dropped there first (chatWriteLock.ts)
+			requestReloadAfterLocalWipe()
 		} catch {
 			setNotice('Reset failed. Your data may still be on this device. Reload and try again.')
 			setBusy(false)
@@ -205,6 +225,16 @@ export default function PasscodeLockScreen({ onUnlocked, lock = 'page', onNative
 							A forgotten passcode cannot be recovered on this device. The only way back is to delete the local
 							copy and re-import this wallet with your recovery phrase.
 						</p>
+						{unsent !== null && hasUnsaved(unsent) && (
+							<div role="alert" data-testid="reset-unsent-warning" style={{ display: 'flex', flexDirection: 'column', gap: 8, color: T.color.warn }}>
+								<p>{unsentWarningLines(unsent).headline}</p>
+								<p>{unsentWarningLines(unsent).effect}</p>
+								<label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+									<input type="checkbox" checked={confirmUnsent} onChange={(e) => setConfirmUnsent(e.target.checked)} style={{ marginTop: 4 }} />
+									<span>{unsentWarningLines(unsent).checkbox}</span>
+								</label>
+							</div>
+						)}
 						<label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
 							<input type="checkbox" checked={confirmReset} onChange={(e) => setConfirmReset(e.target.checked)} style={{ marginTop: 4 }} />
 							<span>I understand the local wallet data on this device will be deleted.</span>
@@ -215,9 +245,9 @@ export default function PasscodeLockScreen({ onUnlocked, lock = 'page', onNative
 							</button>
 							<button
 								type="button"
-								disabled={!confirmReset || busy}
+								disabled={!canConfirmReset({ confirmGeneric: confirmReset, confirmUnsent, summary: unsent, busy })}
 								onClick={() => void reset()}
-								style={{ minHeight: T.touch.minTarget, padding: '0 20px', borderRadius: 999, background: T.color.danger, color: T.color.fg, fontWeight: 600, opacity: !confirmReset || busy ? 0.4 : 1 }}
+								style={{ minHeight: T.touch.minTarget, padding: '0 20px', borderRadius: 999, background: T.color.danger, color: T.color.fg, fontWeight: 600, opacity: !canConfirmReset({ confirmGeneric: confirmReset, confirmUnsent, summary: unsent, busy }) ? 0.4 : 1 }}
 							>
 								Delete and re-import
 							</button>

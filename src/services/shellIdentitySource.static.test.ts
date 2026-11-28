@@ -9,12 +9,19 @@ import path from 'path'
 
 const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8')
 
-describe('the public address is kept only on an ok restore', () => {
-	it('the recovery ok branch keeps the eoa through rememberNativeEoa (which persists it), and does not reload (directive)', () => {
-		const src = read('pages/Home/RestoreWalletUnifiedScreen.tsx')
-		expect(src).toMatch(/onNativeRecoveryResult\(\(\{ code, eoa, cooldownSec \}\) => \{[\s\S]*?if \(code === 'ok'\) \{[\s\S]*?rememberNativeEoa\(eoa\)/)
-		expect(src).not.toMatch(/if \(code === 'ok'\) \{[\s\S]{0,400}window\.location\.reload\(\)/)
+describe('the public address is kept only on an ok native recovery exit or a created account', () => {
+	it(' the page restore screen no longer takes a native result: the address is kept by the entry gate\'s native recovery exit on ok (rememberNativeEoa, which persists it), with no reload', () => {
+		// the restore screen restores in the page; it has no native result listener and keeps no native address
+		const screenCode = read('pages/Home/RestoreWalletUnifiedScreen.tsx').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+		expect(screenCode).not.toMatch(/onNativeRecoveryResult|rememberNativeEoa/)
+		const gate = read('components/AppEntryGate.tsx')
+		expect(gate).toMatch(/onNativeRecoveryResult\(\(\{ code, eoa \}\) => \{[\s\S]*?if \(code === 'ok'\) \{[\s\S]*?rememberNativeEoa\(eoa\)/)
+		expect(gate).not.toMatch(/if \(code === 'ok'\) \{[\s\S]{0,600}window\.location\.reload\(\)/)
 		expect(read('services/nativeWallet.ts')).toMatch(/export function rememberNativeEoa[\s\S]*?persistShellEoa\(nativeEoaHint\)/)
+	})
+	it('a created account keeps its address the same way (rememberNativeEoa in the create screen), never on a guess', () => {
+		const create = read('pages/Home/CreateUsernamePinScreen.tsx')
+		expect(create).toMatch(/rememberNativeEoa\(wallet\)/)
 	})
 
 	it('the start file takes the persisted address only as an input, never as the entry or identity basis', () => {

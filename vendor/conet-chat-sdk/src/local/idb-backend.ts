@@ -122,6 +122,11 @@ export class IdbBackend implements LocalBackend {
 		return [...set]
 	}
 
+	async countRows(): Promise<number> {
+		const t = this.db.transaction([STORE_MSG], 'readonly')
+		return (await req(t.objectStore(STORE_MSG).count())) as number
+	}
+
 	async countPending(): Promise<number> {
 		const t = this.db.transaction([STORE_MSG], 'readonly')
 		const rows = (await req(t.objectStore(STORE_MSG).getAll())) as LocalMsgRow[]

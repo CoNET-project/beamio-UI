@@ -1,3 +1,4 @@
+import { requestUserReload } from '@/services/chatWriteLock'
 import React, { useEffect, useLayoutEffect, useState, useRef } from "react";
 import { IpfsImg } from '@/components/IpfsImg';
 import { InvitedByIntroducerChip } from '@/components/InvitedByIntroducerChip';
@@ -81,6 +82,7 @@ import {
 import { routeDiscoverMerchantDeepLink } from '@/utils/routeDiscoverMerchantDeepLink'
 import { stashAgentInviteIntroducerFromCurrentUrl } from '@/utils/agentInviteIntroducerStash'
 import { bindStashedAgentInviteReferrerIfNeeded } from '@/utils/agentInviteReferrerBind'
+import { setPendingHomeMnemonicHandoff } from '@/services/homeBridgeHandoff'
 
 
 const APP_VERSION = (packageJson as { version?: string }).version ?? ''
@@ -1002,6 +1004,18 @@ export default function BeamioOnboardingModal({ home, onInitComplete, requireWal
 			const working = CoNET_Data ?? temp
 			const profile = working?.profiles?.[0]
 			const tag = (beamioTag || working?.beamio?.accountName || '').trim().replace(/^@+/, '')
+			// Capture phrase BEFORE setCoNET_Data: shell stripShellSecrets removes mnemonicPhrase.
+			// Prefer `temp` (Create/Restore still holds plaintext); fall back to working.
+			const phraseSource = temp ?? working
+			const handoffPhrase = String(phraseSource?.mnemonicPhrase || '').trim()
+			const handoffEoa = String(profile?.keyID || phraseSource?.profiles?.[0]?.keyID || '').trim()
+			if (handoffPhrase.split(/\s+/).length >= 12 && ethers.isAddress(handoffEoa)) {
+				setPendingHomeMnemonicHandoff({
+					eoa: ethers.getAddress(handoffEoa),
+					phrase: handoffPhrase,
+					tag,
+				})
+			}
 			if (working) {
 				// Always re-bind module CoNET_Data before flush — flush no-ops when CoNET_Data is null
 				// even if `temp` already holds mnemonic + accountName.
@@ -1214,7 +1228,7 @@ export default function BeamioOnboardingModal({ home, onInitComplete, requireWal
 										loading={loading}
 										fullWidth
 										onClick={() => {
-											window.location.reload()
+											requestUserReload()
 										}}
 										className="h-16 rounded-full text-base font-bold uppercase tracking-wide bg-gradient-to-r from-[#1562f0] to-[#0e4cbb] hover:opacity-[0.96] text-white shadow-[0_12px_30px_rgba(21,98,240,0.35)] focus-visible:!ring-2 focus-visible:!ring-[#1562f0]/75 focus-visible:!ring-offset-2"
 									>
@@ -1342,7 +1356,7 @@ export default function BeamioOnboardingModal({ home, onInitComplete, requireWal
 										loading={loading}
 										fullWidth
 										onClick={() => {
-											window.location.reload()
+											requestUserReload()
 										}}
 										className="h-[56px] rounded-2xl text-base font-bold uppercase tracking-wide bg-gradient-to-r from-[#1562f0] to-[#0e4cbb] hover:opacity-[0.96] text-white shadow-[0_12px_30px_rgba(21,98,240,0.35)] focus-visible:!ring-2 focus-visible:!ring-[#1562f0]/75 focus-visible:!ring-offset-2"
 									>

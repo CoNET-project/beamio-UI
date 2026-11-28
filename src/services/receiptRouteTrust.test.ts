@@ -152,12 +152,73 @@ describe('offer (inbound sender, cold start, after a verification)', () => {
 		h.fire()
 		expect(h.sent.every((t) => t.length === 1)).toBe(true)
 	})
-	it('a contact the STORED copy shows as unverified is judged without any network read and removed if it was offered', async () => {
-		const w = base({ stored: { readable: true, hasRow: true, verified: undefined } })
+	it('a contact the STORED copy shows as unverified is read once and a key that is not chain-trusted removes it (the read decides, nothing is removed first)', async () => {
+		const w = base({ stored: { readable: true, hasRow: true, verified: undefined }, nextDecision: { ok: false, code: 'first_fetch_pending', held: { fingerprint: FP, publicArmored: ARMOR, routersArmoreds: ARMOR } } })
 		const h = setup(w)
 		h.table.note(A, ARMOR, ARMOR)
 		await h.trust.offer(A)
-		expect(w.reads).toBe(0)
+		expect(w.reads).toBe(1)
+		expect(h.table.has(A)).toBe(false)
+	})
+	// the review reproduced true,false,true. A chain-trusted unverified contact that only receives must keep its route across repeated offers.
+	it('repeated offers for an unverified chain-trusted contact never flap the route (inside and after the 3-minute gate window)', async () => {
+		const w = base({ stored: { readable: true, hasRow: true, verified: undefined }, nextDecision: { ok: true, fingerprint: FP, publicArmored: ARMOR, routersArmoreds: ARMOR, firstPin: true } })
+		const h = setup(w)
+		const seen: boolean[] = []
+		await h.trust.offer(A)
+		seen.push(h.table.has(A))
+		h.advance(10_000)
+		await h.trust.offer(A) // inside the window: the read is skipped, the previous judgement stays
+		seen.push(h.table.has(A))
+		h.advance(5_000)
+		await h.trust.offer(A)
+		seen.push(h.table.has(A))
+		expect(w.reads).toBe(1)
+		h.advance(3 * 60 * 1000)
+		await h.trust.offer(A) // after the window: read again, still offered
+		seen.push(h.table.has(A))
+		expect(w.reads).toBe(2)
+		expect(seen).toEqual([true, true, true, true])
+	})
+	it('a skipped read inside the window also keeps a route that was offered before (unverified contact, previous judgement kept)', async () => {
+		const w = base({ stored: { readable: true, hasRow: true, verified: undefined }, nextDecision: { ok: true, fingerprint: FP, publicArmored: ARMOR, routersArmoreds: ARMOR, firstPin: true } })
+		const h = setup(w)
+		h.table.note(A, ARMOR, ARMOR)
+		await h.trust.offer(A)
+		await h.trust.offer(A)
+		await h.trust.offer(A)
+		expect(h.table.has(A)).toBe(true)
+		expect(w.reads).toBe(1)
+	})
+	it('a later read that says the key is no longer chain-trusted removes the route (the change is still seen, after the window)', async () => {
+		const w = base({ stored: { readable: true, hasRow: true, verified: undefined }, nextDecision: { ok: true, fingerprint: FP, publicArmored: ARMOR, routersArmoreds: ARMOR, firstPin: true } })
+		const h = setup(w)
+		await h.trust.offer(A)
+		expect(h.table.has(A)).toBe(true)
+		w.nextDecision = { ok: false, code: 'first_fetch_pending', held: { fingerprint: FP, publicArmored: ARMOR, routersArmoreds: ARMOR } }
+		h.advance(3 * 60 * 1000 + 1)
+		await h.trust.offer(A)
+		expect(h.table.has(A)).toBe(false)
+	})
+	// the product rule (chainPgpTrust.ts): the same rule as the send. An unverified contact whose key is trusted from the chain is offered.
+	it('an unverified contact whose key is trusted from the chain (firstPin) is offered, as the send is allowed', async () => {
+		const w = base({ stored: { readable: true, hasRow: true, verified: undefined }, nextDecision: { ok: true, fingerprint: FP, publicArmored: ARMOR, routersArmoreds: ARMOR, firstPin: true } })
+		const h = setup(w)
+		await h.trust.offer(A)
+		expect(w.reads).toBe(1)
+		expect(h.table.has(A)).toBe(true)
+	})
+	it('a chain-trusted read never overrides a stored verified value that differs: removed', async () => {
+		const w = base({ stored: { readable: true, hasRow: true, verified: OTHER_FP }, nextDecision: { ok: true, fingerprint: FP, publicArmored: ARMOR, routersArmoreds: ARMOR, firstPin: true } })
+		const h = setup(w)
+		h.table.note(A, ARMOR, ARMOR)
+		await h.trust.offer(A)
+		expect(h.table.has(A)).toBe(false)
+	})
+	it('an unverified contact whose read fails is never offered on that read (a failed read keeps what was there: nothing)', async () => {
+		const w = base({ stored: { readable: true, hasRow: true, verified: undefined }, nextDecision: { ok: false, code: 'route_unconfirmed' } })
+		const h = setup(w)
+		await h.trust.offer(A)
 		expect(h.table.has(A)).toBe(false)
 	})
 	it('a stored copy that cannot be read changes nothing and reads nothing', async () => {

@@ -1,6 +1,6 @@
 {
 	"name": "Beamio",
-	"version": "0.53.51",
+	"version": "0.53.63",
 	"private": true,
 	"homepage": "/app",
 	"dependencies": {
@@ -73,7 +73,7 @@
 	"scripts": {
 		"start": "craco start",
 		"prebuild:react": "npm --prefix vendor/conet-chat-sdk ci --ignore-scripts && npm --prefix vendor/conet-chat-sdk run build",
-		"build:react": "CI=false env=production node node_modules/.bin/craco build && node scripts/check-worker-chunks.js \"${BUILD_PATH:-build}\" $([ \"$REACT_APP_SHELL_BUILD\" = true ] && echo --shell) && node scripts/check-ws-guard-build.js \"${BUILD_PATH:-build}\"",
+		"build:react": "CI=false env=production node node_modules/.bin/craco build && node scripts/check-worker-chunks.js \"${BUILD_PATH:-build}\" $([ \"$REACT_APP_SHELL_BUILD\" = true ] && echo --shell) && node scripts/check-ws-guard-build.js \"${BUILD_PATH:-build}\" && node scripts/check-retired-domain.js \"${BUILD_PATH:-build}\"",
 		"build:embedded": "PUBLIC_URL=/ npm run build:react",
 		"build:qa-embedded": "REACT_APP_BEAMIO_BOOT_TRACE=true REACT_APP_PGP_IDENTITY_CREATE_ENABLED=true REACT_APP_NEW_ACCOUNT_REGISTRATION=true GENERATE_SOURCEMAP=false npm run build:embedded",
 		"build:shell-embedded": "node scripts/check-node-version.js && REACT_APP_SHELL_BUILD=true PUBLIC_URL=/ npm run build:react && node scripts/inject-qa-update-json.js build && node scripts/check-shell-terminal-single-copy.js build",

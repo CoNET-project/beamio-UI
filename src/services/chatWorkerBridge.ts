@@ -13,6 +13,7 @@
  * Routing: listen encrypted to mailbox B via entry C ≠ B; never direct-connect B.
  */
 
+import { createLocalSyncOnce, type LocalSyncHistory, type LocalSyncOnce } from './chatLocalSyncOnce'
 import { nativeReceiptPath } from './receiptCapability'
 import { isShellContext } from './shellContext'
 import { sharedOfferGate } from './routeOfferGate'
@@ -20,6 +21,11 @@ import { invalidateStoredTrust } from './receiptRouteTrust'
 import { createRouteTable, applyRouteEligibility, type RouteTable, type RouteEligibility } from './nativeRouteTable'
 import { onShellPublicEoaChange, shellPublicEoaOrEmpty } from './nativeIdentityPublic'
 import { qaSendStage, qaLine, qaErrorName, qaErrorCode } from '@/utils/qaLog'
+import { qaEvent } from '@/utils/qaAckOrder'
+import { qaPlainPurgeEventsOf } from '@/utils/qaPlainCache'
+import { qaTransportFaultGate } from './qaTransportFault'
+import { nativeSendReuseOf, sendViaNative, type NativeSendClient } from './nativeSendProtocol'
+import type { SendArmorContext, SendReceipt } from './sendAnswer'
 import { NATIVE_CLIENT_HAS_LOCAL_LIBRARY } from './historyCapability'
 import {
 	createBeamioChatClient,
@@ -75,6 +81,9 @@ import {
 	preferIosNativeChatClient,
 } from './nativeConetChatTransport'
 import { ackInboundHashesInBrowser } from './browserInboundAck'
+import { appendFailureCodeOf, appendHistoryAck, clearAppendFailure, noteAppendFailure } from './historyAppendAck'
+import { qaRemoteFaultForAppend } from './qaRemoteFault'
+import { publishNativePwaLog } from '@/utils/cashTreesNativePwaLog'
 import { createHistoryLoadGate, type HistoryLoadCaller } from './historyLoadGate'
 import { inboundLineForAccount } from './historyClientBinding'
 import { createHistoryLoadPath } from './historyLoadPath'
@@ -88,6 +97,8 @@ import { createInitRefusalLatch, type IdentityClosedInitReason } from './nativeI
 import { isMailboxAckSent, noteMailboxAckSent } from '../utils/chatDeliveryReceipt'
 import { WORKER_READY_TIMEOUT, WorkerReadyTimeout, withWorkerReadyWatchdog } from './workerReadyWatchdog'
 import { chatAccessRefused } from './passcode/chatAccessGuard'
+/** how long a simulated `timeout` holds one native send attempt (hook variant only) */
+const NATIVE_FAULT_TIMEOUT_MS = 8_000
 
 /** True when any native shell path must own Chat (no TS gossip Worker). */
 function mustUseNativeChatBridge(): boolean {
@@ -162,6 +173,9 @@ onShellPublicEoaChange(() => {
 
 /** `hello` result of the active daemon (`legacy` until it answers, or for daemons before protocol v1). */
 let activeFeatures: ChatDaemonFeatures = negotiateChatDaemon(null)
+/** the native layer negotiated `send.armorReuse.v1` (IFACE-native-send-v1), read from the raw hello answer; false for every older shell and before the answer */
+let activeSendReuse = false
+export const nativeSendReuseNegotiated = (): boolean => activeSendReuse
 
 /** What the running chat daemon negotiated. Decide by capability, never by "does this method exist". */
 export const getChatDaemonFeatures = (): ChatDaemonFeatures => activeFeatures
@@ -190,7 +204,7 @@ const nativeSendReady = (): boolean =>
 export async function sendChatViaNativeDaemon(
 	to: ChatRoute,
 	payload: string,
-	opts?: { beamioNoPush?: boolean },
+	opts?: { beamioNoPush?: boolean; armor?: SendArmorContext; matchesRecipient?: (armor: string) => Promise<boolean>; onReceipt?: (receipt: SendReceipt) => void },
 ): Promise<boolean> {
 	// unit e: the UI lock refuses the send before any bridge request.
 	if (chatAccessRefused('send')) {
@@ -207,13 +221,25 @@ export async function sendChatViaNativeDaemon(
 		qaSendStage('daemon_not_ready')
 		return false
 	}
-	try {
-		await client.sendMessage(to, payload, opts?.beamioNoPush ? { beamioNoPush: true } : undefined)
-		return true
-	} catch (e) {
-		qaSendStage(`native_error:${String((e as { code?: unknown })?.code ?? (e as Error)?.name ?? 'unknown').slice(0, 40)}`)
+	// hook variant only (qaTransportFault.ts, "模拟传输故障"): this page's own native send fails in a controlled way before the command is posted; the other end is untouched
+	if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && (await qaTransportFaultGate(NATIVE_FAULT_TIMEOUT_MS))) {
+		qaSendStage('simulated_transport_fault')
 		return false
 	}
+	// IFACE-native-send-v1 (nativeSendProtocol.ts): with `send.armorReuse.v1` the page prepares, stores the armor, then sends it (every retry sends the SAME armor); an older shell takes the old path and its
+	// `sent: true` is reported as unconfirmed (never a proof). The result is the entry's acceptance, not a release: the queue decides that.
+	const result = await sendViaNative({
+		client: client as unknown as NativeSendClient,
+		reuse: activeSendReuse,
+		to: to as never,
+		payload,
+		beamioNoPush: opts?.beamioNoPush,
+		armor: opts?.armor,
+		matchesRecipient: opts?.matchesRecipient,
+		onReceipt: opts?.onReceipt,
+		stage: qaSendStage,
+	})
+	return result.ok
 }
 
 /**
@@ -258,6 +284,9 @@ export const releaseInboundLines = (lines: readonly string[]): void => {
 const nativeAckedHashes = new Set<string>()
 const NATIVE_ACKED_MAX = 5000
 
+/** a native shell that declares `inbound.deferAck`: its `ackInbound` is sent only after the history append of the line returned ok (this page declares `ackAfterAppend.v1` in init) */
+export const nativeAckAfterAppendActive = (): boolean => !!activeClient && activeClientIsNative && isNativeConetChatClient(activeClient) && daemonAllows('inbound.deferAck')
+
 export const captureInboundAckTarget = (): InboundAckTarget => {
 	const client = activeClient
 	if (client && !activeClientIsNative) {
@@ -267,6 +296,8 @@ export const captureInboundAckTarget = (): InboundAckTarget => {
 			browser: true,
 			alreadyAcked: () => false,
 			ackMailbox: (armorHashes) => {
+				// diagnostics only: the one place a browser mailbox ACK leaves the page (hash tails; the time is the event's own)
+				if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') for (const h of armorHashes) qaEvent('ack_post', undefined, `h${String(h).toLowerCase().replace(/[^0-9a-f]/g, '').slice(-8)}`)
 				void ackInboundHashesInBrowser(armorHashes, {
 					eoa,
 					post: (command) => browserClient.postOwnMailboxCommand(command),
@@ -280,6 +311,7 @@ export const captureInboundAckTarget = (): InboundAckTarget => {
 	const native = client && isNativeConetChatClient(client) && daemonAllows('inbound.deferAck') ? client : null
 	return {
 		browser: false,
+		nativeAckAfterAppend: native !== null,
 		alreadyAcked: (armorHash) => nativeAckedHashes.has(armorHash),
 		ackMailbox: () => undefined,
 		// Recorded only when the call is made: no client, or a throw, leaves the hashes unrecorded.
@@ -320,7 +352,8 @@ const voiceConflictListeners = new Set<(event: VoiceConflictEvent) => void>()
 const groupInboundListeners = new Set<(event: GroupInboundEvent) => void>()
 
 /** single-flight, dirty re-run, minimum interval and the numbers-only log (historyLoadGate.ts). */
-const historyLoadGate = createHistoryLoadGate()
+// the line goes to the native log too (a production build strips console.info), so a device capture shows each load, its caller, its time and the entries it delivered
+const historyLoadGate = createHistoryLoadGate({ log: (line) => publishNativePwaLog('info', line) })
 /** The caller of the next listen start's history load: a foreground resume is reported by chat.ts before the restart. */
 let listenLoadCaller: HistoryLoadCaller | null = null
 
@@ -393,10 +426,7 @@ const runHistoryLoad = async (options?: HistoryLoadOptions): Promise<void> => {
 	try {
 		await client.history.load(options)
 	} catch (ex) {
-		console.warn(
-			'[chatHistory] history.load failed:',
-			(ex as Error)?.message ?? String(ex),
-		)
+		publishNativePwaLog('warn', `[chatHistory] history.load failed: ${(ex as Error)?.message ?? String(ex)}`)
 	}
 }
 
@@ -414,7 +444,7 @@ const historyTail = createHistoryTailWaiter()
 const historyLoadPath = createHistoryLoadPath<HistoryLoadOptions>({
 	gate: historyLoadGate,
 	runLoad: runHistoryLoad,
-	onQueued: () => console.info('[chatHistory] load queued — worker not ready yet'),
+	onQueued: () => publishNativePwaLog('info', '[chatHistory] load queued — worker not ready yet'),
 })
 
 /**
@@ -449,6 +479,23 @@ export const appendWorkerHistory = async (
 	} catch {
 		/* best-effort persist; the local profile.chats mirror is still authoritative */
 	}
+}
+
+/**
+ * the same append, but it says whether the worker ACKed it (the entry is in the manifest and the local library) instead of swallowing the failure. false: no worker client, or the append failed
+ * or timed out. The append is idempotent per sendId, so asking again is safe.
+ */
+export const appendWorkerHistoryAck = (entry: Omit<HistoryEntry, 'seq'>): Promise<boolean> => {
+	// (hook builds only: the inline test is folded in every other build): the page's "simulated remote-commit failure" switch rides on this append
+	const fault = process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && entry.dir === 'in' ? qaRemoteFaultForAppend() : undefined
+	return appendHistoryAck(activeClient, entry, {
+		opts: process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && fault ? { qaRemoteFault: fault } : undefined,
+		// why it failed (remote step vs local), kept for the wait loop that decides the status wording and the diagnostics
+		onFail: (message) => noteAppendFailure(entry.sendId, appendFailureCodeOf(message)),
+	}).then((ok) => {
+		if (ok) clearAppendFailure(entry.sendId)
+		return ok
+	})
 }
 
 /**
@@ -578,6 +625,9 @@ export const syncLocalChatHistory = async (): Promise<boolean> => {
 	}
 }
 
+/** one full library sync per history client (see chatLocalSyncOnce.ts). */
+export const localHistorySyncOnce: LocalSyncOnce = createLocalSyncOnce(() => activeClient?.history as LocalSyncHistory)
+
 export const migrateLocalChatHistory = async (
 	extra: Array<{ peer: string; dir: 'in' | 'out'; ts: number; sendId?: string; body: string; pending?: boolean }>,
 ): Promise<{ verified: boolean; conversations: number } | null> => {
@@ -590,16 +640,23 @@ export const migrateLocalChatHistory = async (
 	}
 }
 
+/** does the active client have a local chat library? Only the browser worker does; a native shell client has none (its migrationState throws). */
+export const localChatLibraryCapable = (): boolean => !!activeClient && !activeClientIsNative && typeof activeClient.history?.migrationState === 'function'
+
 /** Migration state of the library: none, running, complete, switched or purged. Null when unavailable. */
 export const localChatMigrationState = async (): Promise<string | null> => {
 	const h = activeClient?.history
 	if (!h || typeof h.migrationState !== 'function') return null
 	try {
-		return await h.migrationState()
+		const answer = await h.migrationState()
+		// hook variant only: the first time the library answers with a state (the event says when)
+		if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && answer !== null && answer !== undefined && !qaLibraryStateAnswered) { qaLibraryStateAnswered = true; qaEvent('library_state_first_answer') }
+		return answer
 	} catch {
 		return null
 	}
 }
+let qaLibraryStateAnswered = false
 
 /**switch the UI to the library. Null when unavailable; false when refused. */
 export const switchLocalChatHistory = async (): Promise<boolean | null> => {
@@ -638,6 +695,7 @@ export const unlockLocalChatKeys = async (keys: { kIdHex: string; kIdxHex: strin
 	}
 	try {
 		await h.unlockLocal(keys)
+		if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaEvent('local_keys_delivered')
 		return true
 	} catch {
 		return false
@@ -750,6 +808,7 @@ export const stopWorkerGossip = (): void => {
 	}
 	activeClientEoa = null
 	activeFeatures = negotiateChatDaemon(null)
+	activeSendReuse = false
 	voiceRelayOpen = null
 	voiceRelayOpenSessionId = ''
 }
@@ -912,9 +971,11 @@ const startWorkerGossipListenInternal = async (p: StartWorkerGossipParams): Prom
 		p.onLog?.('info', 'chat listen: TypeScript gossip Worker (browser)')
 	}
 	activeClient = client
+	if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') qaEvent('chat_client_created')
 	activeClientEoa = eoaAddress.toLowerCase()
 	activeClientIsNative = useIosNative || useAndroidNative
 	activeFeatures = negotiateChatDaemon(null)
+	activeSendReuse = false
 	if (pendingLocalUnlock) {
 		const held = pendingLocalUnlock
 		pendingLocalUnlock = null
@@ -958,6 +1019,8 @@ const startWorkerGossipListenInternal = async (p: StartWorkerGossipParams): Prom
 	unsubs.push(
 		client.on('log', (l) => {
 			p.onLog?.(l.level, l.message)
+			// hook variant only: the worker's legacy-plaintext purge line becomes two count events (junk is readable on a real account)
+			if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true') for (const e of qaPlainPurgeEventsOf(l.message)) qaEvent(e.name, undefined, e.detail)
 		}),
 	)
 	unsubs.push(client.on('voiceFrame', (frame) => {
@@ -988,6 +1051,7 @@ const startWorkerGossipListenInternal = async (p: StartWorkerGossipParams): Prom
 		client.history.onBuffer((batch) => {
 			if (p.rootSignal.aborted) return
 			historyTail.noteTail(client, batch?.isTail)
+			if (process.env.REACT_APP_QA_ACK_ORDER_HOOK === 'true' && batch?.isTail) qaEvent('history_tail_noted', undefined, `n${Array.isArray((batch as { entries?: unknown[] })?.entries) ? (batch as { entries: unknown[] }).entries.length : 0}`)
 			// Counted by the gate, then forwarded (historyLoadPath.deliverBuffer).
 			historyLoadPath.deliverBuffer(batch, (b) => {
 				// each batch carries the account of the client that produced it.
@@ -1037,8 +1101,12 @@ const startWorkerGossipListenInternal = async (p: StartWorkerGossipParams): Prom
 		if (typeof window !== 'undefined') window.dispatchEvent(new Event('beamio:chat-worker-ready'))
 		// Protocol v1: decide by capability. Native clients already asked during
 		// init; daemons before v1 answer null and keep the legacy rules.
-		const features = negotiateChatDaemon(await client.hello().catch(() => null))
-		if (activeClient === client) activeFeatures = features
+		const helloAnswer = await client.hello().catch(() => null)
+		const features = negotiateChatDaemon(helloAnswer)
+		if (activeClient === client) {
+			activeFeatures = features
+			activeSendReuse = nativeSendReuseOf(helloAnswer, features.status === 'negotiated')
+		}
 		p.onLog?.(
 			'info',
 			features.status === 'negotiated'
